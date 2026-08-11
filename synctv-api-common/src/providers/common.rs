@@ -6,11 +6,13 @@ use synctv_core::models::{
 };
 use synctv_core::models::{SortDirection as CoreSortDirection, UserId};
 use synctv_core::provider::ExecutionControl;
-use synctv_core::provider::ProviderError;
+use synctv_core::provider::{DirectUrlProvider, LiveProxyProvider, ProviderError};
 use synctv_core::service::{
     AuditEventParams, AuditService, ProvidersManager, RemoteProviderManager, UserService,
 };
 use synctv_proto::providers::common::ProviderInstanceQuery;
+
+use super::discovery::discovered_media;
 
 use crate::impls::admin::{AdminAuthValidator, RequestContext, ValidatedAdmin};
 use crate::impls::source_provider::{
@@ -26,6 +28,253 @@ pub fn provider_instance_name_for_response(value: Option<String>) -> String {
 
 fn i64_to_i32(value: i64, field: &'static str) -> Result<i32, ApiError> {
     i32::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds i32::MAX")))
+}
+
+fn prepared_playback_kind(value: Option<synctv_core::models::PlaybackKind>) -> i32 {
+    match value {
+        Some(synctv_core::models::PlaybackKind::Regular) => {
+            synctv_proto::source_config::PlaybackKind::Regular as i32
+        }
+        Some(synctv_core::models::PlaybackKind::Live) => {
+            synctv_proto::source_config::PlaybackKind::Live as i32
+        }
+        None => synctv_proto::source_config::PlaybackKind::Unspecified as i32,
+    }
+}
+
+fn core_playback_kind(
+    value: Option<i32>,
+) -> Result<Option<synctv_core::models::PlaybackKind>, ApiError> {
+    match value
+        .map(synctv_proto::source_config::PlaybackKind::try_from)
+        .transpose()
+        .map_err(|_| ApiError::InvalidInput("Unsupported DirectUrl playback kind".to_string()))?
+    {
+        Some(synctv_proto::source_config::PlaybackKind::Regular) => {
+            Ok(Some(synctv_core::models::PlaybackKind::Regular))
+        }
+        Some(synctv_proto::source_config::PlaybackKind::Live) => {
+            Ok(Some(synctv_core::models::PlaybackKind::Live))
+        }
+        Some(synctv_proto::source_config::PlaybackKind::Unspecified) | None => Ok(None),
+    }
+}
+
+fn normalize_direct_url_input(input: &mut synctv_proto::source_config::DirectUrlMediaSourceConfig) {
+    for media in &mut input.medias {
+        media.name = media.name.trim().to_string();
+        media.url = normalize_http_url(&media.url);
+        media.format = media.format.trim().to_string();
+    }
+    for subtitle in &mut input.subtitles {
+        subtitle.name = subtitle.name.trim().to_string();
+        subtitle.language = subtitle.language.trim().to_string();
+        subtitle.url = normalize_http_url(&subtitle.url);
+        subtitle.format = subtitle.format.trim().to_string();
+    }
+    for danmaku in &mut input.danmakus {
+        danmaku.name = danmaku.name.trim().to_string();
+        danmaku.url = normalize_http_url(&danmaku.url);
+        danmaku.format = danmaku.format.take().map(|value| value.trim().to_string());
+    }
+}
+
+fn normalize_http_url(value: &str) -> String {
+    let value = value.trim();
+    if value.is_empty() || url::Url::parse(value).is_ok() || value.contains("://") {
+        value.to_string()
+    } else {
+        format!("https://{value}")
+    }
+}
+
+fn core_direct_url_config(
+    input: &synctv_proto::source_config::DirectUrlMediaSourceConfig,
+) -> Result<synctv_core::models::DirectUrlMediaSourceConfig, ApiError> {
+    Ok(synctv_core::models::DirectUrlMediaSourceConfig {
+        playback_kind: core_playback_kind(input.playback_kind)?,
+        duration_seconds: input.duration_seconds,
+        proxy_mode: core_playback_proxy_mode(input.proxy_mode)?,
+        medias: input
+            .medias
+            .iter()
+            .map(|media| synctv_core::models::DirectUrlMediaResourceConfig {
+                name: media.name.clone(),
+                url: media.url.clone(),
+                headers: media.headers.clone(),
+                format: media.format.clone(),
+                expires_at: media.expires_at,
+            })
+            .collect(),
+        default_media_index: input
+            .default_media_index
+            .map(|value| usize::try_from(value).unwrap_or(usize::MAX)),
+        subtitles: input
+            .subtitles
+            .iter()
+            .map(
+                |subtitle| synctv_core::models::DirectUrlSubtitleSourceConfig {
+                    name: subtitle.name.clone(),
+                    language: subtitle.language.clone(),
+                    url: subtitle.url.clone(),
+                    headers: subtitle.headers.clone(),
+                    format: subtitle.format.clone(),
+                    expires_at: subtitle.expires_at,
+                },
+            )
+            .collect(),
+        default_subtitle_index: input
+            .default_subtitle_index
+            .map(|value| usize::try_from(value).unwrap_or(usize::MAX)),
+        danmakus: input
+            .danmakus
+            .iter()
+            .map(
+                |danmaku| synctv_core::models::DirectUrlDanmakuSourceConfig {
+                    name: danmaku.name.clone(),
+                    url: danmaku.url.clone(),
+                    headers: danmaku.headers.clone(),
+                    format: danmaku.format.clone(),
+                    expires_at: danmaku.expires_at,
+                },
+            )
+            .collect(),
+        default_danmaku_index: input
+            .default_danmaku_index
+            .map(|value| usize::try_from(value).unwrap_or(usize::MAX)),
+    })
+}
+
+fn core_playback_proxy_mode(
+    value: i32,
+) -> Result<synctv_core::models::PlaybackProxyMode, ApiError> {
+    match synctv_proto::source_config::PlaybackProxyMode::try_from(value)
+        .map_err(|_| ApiError::InvalidInput("playback proxy mode is invalid".to_string()))?
+    {
+        synctv_proto::source_config::PlaybackProxyMode::Auto => {
+            Ok(synctv_core::models::PlaybackProxyMode::Auto)
+        }
+        synctv_proto::source_config::PlaybackProxyMode::Prefer => {
+            Ok(synctv_core::models::PlaybackProxyMode::Prefer)
+        }
+        synctv_proto::source_config::PlaybackProxyMode::Only => {
+            Ok(synctv_core::models::PlaybackProxyMode::Only)
+        }
+    }
+}
+
+fn suggested_name_from_url(url: &str, fallback: &str) -> String {
+    let Ok(parsed) = url::Url::parse(url) else {
+        return fallback.to_string();
+    };
+    parsed
+        .path_segments()
+        .and_then(|mut segments| segments.rfind(|value| !value.is_empty()))
+        .map(ToString::to_string)
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| parsed.host_str().map(ToString::to_string))
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+fn core_rtmp_mode(value: i32) -> Result<synctv_core::models::RtmpStreamMode, ApiError> {
+    match synctv_proto::source_config::RtmpStreamMode::try_from(value)
+        .map_err(|_| ApiError::InvalidInput("Unsupported RTMP stream mode".to_string()))?
+    {
+        synctv_proto::source_config::RtmpStreamMode::Default => {
+            Ok(synctv_core::models::RtmpStreamMode::Default)
+        }
+        synctv_proto::source_config::RtmpStreamMode::VideoOnly => {
+            Ok(synctv_core::models::RtmpStreamMode::VideoOnly)
+        }
+        synctv_proto::source_config::RtmpStreamMode::AudioOnly => {
+            Ok(synctv_core::models::RtmpStreamMode::AudioOnly)
+        }
+        synctv_proto::source_config::RtmpStreamMode::Unspecified => Err(ApiError::InvalidInput(
+            "RTMP stream mode is required".to_string(),
+        )),
+    }
+}
+
+fn core_rtsp_track(
+    value: Option<&synctv_proto::source_config::RtspTrackSelection>,
+    field: &str,
+) -> Result<synctv_core::models::RtspTrackSelection, ApiError> {
+    use synctv_proto::source_config::rtsp_track_selection::Mode;
+    match value.and_then(|value| value.mode.as_ref()) {
+        Some(Mode::FirstCompatible(true)) => {
+            Ok(synctv_core::models::RtspTrackSelection::FirstCompatible)
+        }
+        Some(Mode::Index(index)) => Ok(synctv_core::models::RtspTrackSelection::Index(*index)),
+        Some(Mode::Disabled(true)) => Ok(synctv_core::models::RtspTrackSelection::Disabled),
+        _ => Err(ApiError::InvalidInput(format!(
+            "RTSP {field} track selection is required"
+        ))),
+    }
+}
+
+fn prepared_rtsp_track(
+    value: Option<synctv_proto::providers::common::PrepareRtspTrackIntent>,
+    field: &str,
+) -> Result<synctv_proto::source_config::RtspTrackSelection, ApiError> {
+    use synctv_proto::providers::common::prepare_rtsp_track_intent::Mode as Intent;
+    use synctv_proto::source_config::rtsp_track_selection::Mode;
+
+    let mode = match value.and_then(|value| value.mode) {
+        Some(Intent::FirstCompatible(value)) => Mode::FirstCompatible(value),
+        Some(Intent::Index(value)) => Mode::Index(value),
+        Some(Intent::Disabled(value)) => Mode::Disabled(value),
+        None => {
+            return Err(ApiError::InvalidInput(format!(
+                "RTSP {field} track selection is required"
+            )));
+        }
+    };
+    Ok(synctv_proto::source_config::RtspTrackSelection { mode: Some(mode) })
+}
+
+fn core_live_proxy_config(
+    input: &synctv_proto::source_config::LiveProxyMediaSourceConfig,
+) -> Result<synctv_core::models::LiveProxyMediaSourceConfig, ApiError> {
+    use synctv_proto::source_config::live_proxy_media_source_config::Source;
+    let source = match input.source.as_ref() {
+        Some(Source::Rtmp(config)) => synctv_core::models::ExternalLiveSourceConfig::Rtmp {
+            url: config.url.clone(),
+            mode: core_rtmp_mode(config.mode)?,
+        },
+        Some(Source::Rtsp(config)) => {
+            let transport =
+                match synctv_proto::source_config::RtspTransport::try_from(config.transport)
+                    .map_err(|_| ApiError::InvalidInput("Unsupported RTSP transport".to_string()))?
+                {
+                    synctv_proto::source_config::RtspTransport::Tcp => {
+                        synctv_core::models::RtspTransport::Tcp
+                    }
+                    synctv_proto::source_config::RtspTransport::Udp => {
+                        synctv_core::models::RtspTransport::Udp
+                    }
+                    synctv_proto::source_config::RtspTransport::Unspecified => {
+                        return Err(ApiError::InvalidInput(
+                            "RTSP transport is required".to_string(),
+                        ));
+                    }
+                };
+            synctv_core::models::ExternalLiveSourceConfig::Rtsp {
+                url: config.url.clone(),
+                transport,
+                video_track: core_rtsp_track(config.video_track.as_ref(), "video")?,
+                audio_track: core_rtsp_track(config.audio_track.as_ref(), "audio")?,
+            }
+        }
+        Some(Source::HttpFlv(config)) => synctv_core::models::ExternalLiveSourceConfig::HttpFlv {
+            url: config.url.clone(),
+        },
+        None => {
+            return Err(ApiError::InvalidInput(
+                "LiveProxy source protocol is required".to_string(),
+            ));
+        }
+    };
+    Ok(synctv_core::models::LiveProxyMediaSourceConfig { source })
 }
 
 pub fn provider_instance_name_from_value(value: &str) -> Result<Option<&str>, ApiError> {
@@ -97,6 +346,139 @@ impl ProviderCommonApiImpl {
 
     fn request_executor(&self) -> &Arc<RequestExecutor> {
         &self.request_executor
+    }
+
+    pub fn prepare_direct_url(
+        &self,
+        req: synctv_proto::providers::common::PrepareDirectUrlRequest,
+    ) -> Result<synctv_proto::providers::common::PreparedMediaSource, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let mut input = synctv_proto::source_config::DirectUrlMediaSourceConfig {
+            medias: vec![synctv_proto::source_config::DirectUrlMediaResourceConfig {
+                name: String::new(),
+                url: req.url,
+                headers: req.headers,
+                format: String::new(),
+                expires_at: req.expires_at,
+            }],
+            default_media_index: Some(0),
+            subtitles: Vec::new(),
+            default_subtitle_index: None,
+            danmakus: Vec::new(),
+            default_danmaku_index: None,
+            playback_kind: Some(req.playback_kind),
+            duration_seconds: None,
+            proxy_mode: req.proxy_mode,
+        };
+        normalize_direct_url_input(&mut input);
+        let core = core_direct_url_config(&input)?;
+        DirectUrlProvider::new_with_ssrf_guard(self.providers_manager.ssrf_guard())
+            .validate_prepared_config(&core)
+            .map_err(ApiError::from)?;
+
+        let media = input
+            .default_media_index
+            .and_then(|index| usize::try_from(index).ok())
+            .and_then(|index| input.medias.get(index))
+            .or_else(|| input.medias.first())
+            .ok_or_else(|| {
+                ApiError::InvalidInput("DirectUrl requires at least one media".to_string())
+            })?;
+        let suggested_name = if media.name.is_empty() {
+            suggested_name_from_url(&media.url, "Direct URL")
+        } else {
+            media.name.clone()
+        };
+        Ok(synctv_proto::providers::common::PreparedMediaSource {
+            source: Some(discovered_media(
+                synctv_proto::source_config::media_source_config::Provider::DirectUrl(input),
+                None,
+            )),
+            suggested_name,
+            playback_kind: prepared_playback_kind(core.inferred_playback_kind()),
+        })
+    }
+
+    pub async fn prepare_live_proxy(
+        &self,
+        req: synctv_proto::providers::common::PrepareLiveProxyRequest,
+    ) -> Result<synctv_proto::providers::common::PreparedMediaSource, ApiError> {
+        use synctv_proto::providers::common::prepare_live_proxy_request::Source as Intent;
+        use synctv_proto::source_config::live_proxy_media_source_config::Source;
+
+        crate::impls::validate_proto_request(&req)?;
+        let (source, url) = match req.source {
+            Some(Intent::Rtmp(intent)) => {
+                let url = intent.url.trim().to_string();
+                (
+                    Source::Rtmp(synctv_proto::source_config::RtmpPullSourceConfig {
+                        url: url.clone(),
+                        mode: intent.mode,
+                    }),
+                    url,
+                )
+            }
+            Some(Intent::Rtsp(intent)) => {
+                let url = intent.url.trim().to_string();
+                (
+                    Source::Rtsp(synctv_proto::source_config::RtspPullSourceConfig {
+                        url: url.clone(),
+                        transport: intent.transport,
+                        video_track: Some(prepared_rtsp_track(intent.video_track, "video")?),
+                        audio_track: Some(prepared_rtsp_track(intent.audio_track, "audio")?),
+                    }),
+                    url,
+                )
+            }
+            Some(Intent::HttpFlv(intent)) => {
+                let url = intent.url.trim().to_string();
+                (
+                    Source::HttpFlv(synctv_proto::source_config::HttpFlvPullSourceConfig {
+                        url: url.clone(),
+                    }),
+                    url,
+                )
+            }
+            None => {
+                return Err(ApiError::InvalidInput(
+                    "LiveProxy source protocol is required".to_string(),
+                ));
+            }
+        };
+        let input = synctv_proto::source_config::LiveProxyMediaSourceConfig {
+            source: Some(source),
+        };
+        let core = core_live_proxy_config(&input)?;
+        LiveProxyProvider::new_with_ssrf_guard(self.providers_manager.ssrf_guard())
+            .validate_prepared_config(&core)
+            .await
+            .map_err(ApiError::from)?;
+        Ok(synctv_proto::providers::common::PreparedMediaSource {
+            source: Some(discovered_media(
+                synctv_proto::source_config::media_source_config::Provider::LiveProxy(input),
+                None,
+            )),
+            suggested_name: suggested_name_from_url(&url, "Live source"),
+            playback_kind: synctv_proto::source_config::PlaybackKind::Live as i32,
+        })
+    }
+
+    pub fn prepare_rtmp(
+        &self,
+        req: synctv_proto::providers::common::PrepareRtmpRequest,
+    ) -> Result<synctv_proto::providers::common::PreparedMediaSource, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        core_rtmp_mode(req.mode)?;
+        Ok(synctv_proto::providers::common::PreparedMediaSource {
+            source: Some(discovered_media(
+                synctv_proto::source_config::media_source_config::Provider::Rtmp(
+                    synctv_proto::source_config::RtmpMediaSourceConfig { mode: req.mode },
+                ),
+                None,
+            )),
+            suggested_name: "RTMP live stream".to_string(),
+            playback_kind: synctv_proto::source_config::PlaybackKind::Live as i32,
+        })
     }
 
     pub fn execute_admin_endpoint<'a, T, F, Fut>(
@@ -798,6 +1180,22 @@ mod tests {
 
     fn core_ok<T>(result: synctv_core::Result<T>) -> TestResult<T> {
         result.map_err(|error| test_error(error.to_string()))
+    }
+
+    #[test]
+    fn direct_url_normalization_is_owned_by_prepare_api() {
+        assert_eq!(
+            normalize_http_url(" media.example.test/video.mp4 "),
+            "https://media.example.test/video.mp4"
+        );
+        assert_eq!(
+            normalize_http_url("http://media.example.test/live.m3u8"),
+            "http://media.example.test/live.m3u8"
+        );
+        assert_eq!(
+            normalize_http_url("rtmp://example.test/live"),
+            "rtmp://example.test/live"
+        );
     }
 
     #[test]

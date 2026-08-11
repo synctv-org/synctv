@@ -3,6 +3,7 @@ syntax = "proto3";
 package synctv.provider.qnap;
 
 import "proto/buf/validate/validate.proto";
+import "proto/providers/common.proto";
 
 message LoginRequest {
   string endpoint = 1 [(buf.validate.field).string.min_len = 1];
@@ -35,6 +36,7 @@ message FileItem {
   uint64 modified_at = 5;
   uint64 file_type = 6;
   repeated uint32 pre_transcoded_heights = 7;
+  synctv.provider.common.DiscoveredSource source = 8;
 }
 
 message ListResponse {
@@ -43,6 +45,7 @@ message ListResponse {
   uint64 page = 3;
   bool has_more = 4;
   bool realtime_transcode = 5;
+  synctv.provider.common.DiscoveredSource source = 6;
 }
 
 message GetCapabilitiesRequest {

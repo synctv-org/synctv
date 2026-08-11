@@ -385,7 +385,7 @@ impl NextcloudProvider {
                 "Nextcloud cached playback resource is invalid".to_string(),
             ));
         };
-        let (credential_owner_id, server_id, path) = resource_descriptor(provider);
+        let (credential_owner_id, server_id, path) = resource_descriptor(provider)?;
         let owner = credential_owner_id
             .parse::<UserId>()
             .map_err(ProviderError::InvalidConfig)?;
@@ -423,7 +423,7 @@ impl NextcloudProvider {
                 "Nextcloud cached HLS manifest is invalid".to_string(),
             ));
         };
-        let (credential_owner_id, server_id, root_manifest_path) = resource_descriptor(provider);
+        let (credential_owner_id, server_id, root_manifest_path) = resource_descriptor(provider)?;
         let owner = credential_owner_id
             .parse::<UserId>()
             .map_err(ProviderError::InvalidConfig)?;
@@ -462,7 +462,7 @@ impl NextcloudProvider {
                 "Nextcloud cached HLS resource is invalid".to_string(),
             ));
         };
-        let (credential_owner_id, server_id, root_manifest_path) = resource_descriptor(provider);
+        let (credential_owner_id, server_id, root_manifest_path) = resource_descriptor(provider)?;
         let resource_path = super::playback_transport::storage_hls_resource_path(
             root_manifest_path,
             request.target_url,
@@ -511,7 +511,7 @@ impl NextcloudProvider {
         let PlaybackMediaProvider::Nextcloud(provider) = &media.provider else {
             return Err(ProviderError::NotFound);
         };
-        let (owner, server_id, _) = resource_descriptor(provider);
+        let (owner, server_id, _) = resource_descriptor(provider)?;
         let owner = owner
             .parse::<UserId>()
             .map_err(ProviderError::InvalidConfig)?;
@@ -719,6 +719,26 @@ impl MediaProvider for NextcloudProvider {
                 default_danmaku_index: None,
             },
         );
+        if config.proxy_mode == crate::models::PlaybackProxyMode::Prefer {
+            let mut direct = playback_infos.get("original").cloned().ok_or_else(|| {
+                ProviderError::Internal("Nextcloud playback mode missing".to_string())
+            })?;
+            let url = auth.client.file_url(&auth.user_id, &config.path);
+            let headers = NextcloudClient::auth_headers(&auth.username, &auth.app_password);
+            for media in &mut direct.medias {
+                if let PlaybackMediaProvider::Nextcloud(PlaybackNextcloudMedia::Refresh {
+                    ..
+                }) = media.provider
+                {
+                    media.provider =
+                        PlaybackMediaProvider::Nextcloud(PlaybackNextcloudMedia::Direct {
+                            url: url.clone(),
+                            headers: headers.clone(),
+                        });
+                }
+            }
+            playback_infos.insert("direct".to_string(), direct);
+        }
         let result = PlaybackResult {
             playback_infos,
             default_mode: "original".to_string(),
@@ -731,15 +751,19 @@ impl MediaProvider for NextcloudProvider {
         super::cached_versioned_playback_or_fill(
             Self::NAME,
             &format!(
-                "playback:{owner}:{}:room:{}:{}",
+                "playback:{owner}:{}:room:{}:{}:proxy:{}",
                 config.server_id,
                 ctx.room_id
                     .map_or_else(|| "none".to_string(), |room| room.to_string()),
-                config.path
+                config.path,
+                config.proxy_mode.as_str()
             ),
             PLAYBACK_CACHE_TTL,
             ctx,
-            mark_playback_resources,
+            |result, version, expires_at| {
+                mark_playback_resources(result, version, expires_at);
+                super::apply_provider_playback_policy(result, config.proxy_mode, true);
+            },
             || async { Ok(result) },
         )
         .await
@@ -966,6 +990,7 @@ impl DynamicPlaylistProvider for NextcloudProvider {
                 server_id: config.server_id.clone(),
                 path: target.path,
                 file_id: target.file_id,
+                proxy_mode: config.proxy_mode,
             }),
             target: provider_target,
         }))
@@ -1100,16 +1125,32 @@ fn map_directory_item(
 }
 
 fn mark_playback_resources(result: &mut PlaybackResult, version: &str, expires_at: i64) {
-    for (mode_name, info) in &mut result.playback_infos {
-        for (media_index, media) in info.medias.iter_mut().enumerate() {
-            if let PlaybackMediaProvider::Nextcloud(PlaybackNextcloudMedia::Refresh {
-                credential_owner_id,
-                server_id,
-                path,
-                file_id,
-            }) = &media.provider
-            {
-                media.provider = PlaybackMediaProvider::Nextcloud(PlaybackNextcloudMedia::Proxy {
+    let original_modes = result
+        .playback_infos
+        .iter()
+        .map(|(name, info)| (name.clone(), info.clone()))
+        .collect::<Vec<_>>();
+    for (mode_name, original_info) in original_modes {
+        if mode_name.starts_with("proxy_") {
+            continue;
+        }
+        let mut proxy_info = original_info.clone();
+        proxy_info.medias = original_info
+            .medias
+            .iter()
+            .enumerate()
+            .filter_map(|(media_index, media)| {
+                let PlaybackMediaProvider::Nextcloud(PlaybackNextcloudMedia::Refresh {
+                    credential_owner_id,
+                    server_id,
+                    path,
+                    file_id,
+                }) = &media.provider
+                else {
+                    return None;
+                };
+                let mut proxy = media.clone();
+                proxy.provider = PlaybackMediaProvider::Nextcloud(PlaybackNextcloudMedia::Proxy {
                     version: version.to_string(),
                     expires_at,
                     mode_name: mode_name.clone(),
@@ -1119,20 +1160,37 @@ fn mark_playback_resources(result: &mut PlaybackResult, version: &str, expires_a
                     path: path.clone(),
                     file_id: *file_id,
                 });
-            }
+                Some(proxy)
+            })
+            .collect();
+        if proxy_info.medias.is_empty() {
+            continue;
         }
-        for (subtitle_index, subtitle) in info.subtitles.iter_mut().enumerate() {
+        for (subtitle_index, subtitle) in proxy_info.subtitles.iter_mut().enumerate() {
             if let PlaybackSubtitleProvider::Nextcloud(resource) = &mut subtitle.provider {
                 resource.version = version.to_string();
                 resource.expires_at = expires_at;
-                resource.mode_name.clone_from(mode_name);
+                resource.mode_name.clone_from(&mode_name);
                 resource.subtitle_index = subtitle_index;
             }
+        }
+        result
+            .playback_infos
+            .insert(format!("proxy_{mode_name}"), proxy_info);
+        if original_info.medias.iter().all(|media| {
+            matches!(
+                media.provider,
+                PlaybackMediaProvider::Nextcloud(PlaybackNextcloudMedia::Refresh { .. })
+            )
+        }) {
+            result.playback_infos.remove(&mode_name);
         }
     }
 }
 
-fn resource_descriptor(provider: &PlaybackNextcloudMedia) -> (&str, &str, &str) {
+fn resource_descriptor(
+    provider: &PlaybackNextcloudMedia,
+) -> Result<(&str, &str, &str), ProviderError> {
     match provider {
         PlaybackNextcloudMedia::Refresh {
             credential_owner_id,
@@ -1145,7 +1203,10 @@ fn resource_descriptor(provider: &PlaybackNextcloudMedia) -> (&str, &str, &str) 
             server_id,
             path,
             ..
-        } => (credential_owner_id, server_id, path),
+        } => Ok((credential_owner_id, server_id, path)),
+        PlaybackNextcloudMedia::Direct { .. } => Err(ProviderError::InvalidConfig(
+            "Nextcloud direct media has no provider resource descriptor".to_string(),
+        )),
     }
 }
 
@@ -1567,8 +1628,14 @@ mod tests {
         };
 
         let expected = ("42", "nextcloud-main", "/Videos/Movie.mkv");
-        assert_eq!(resource_descriptor(&refresh), expected);
-        assert_eq!(resource_descriptor(&proxy), expected);
+        assert_eq!(
+            resource_descriptor(&refresh).expect("refresh descriptor"),
+            expected
+        );
+        assert_eq!(
+            resource_descriptor(&proxy).expect("proxy descriptor"),
+            expected
+        );
     }
 
     #[test]

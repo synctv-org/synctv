@@ -3,6 +3,7 @@ syntax = "proto3";
 package synctv.provider.truenas;
 
 import "proto/buf/validate/validate.proto";
+import "proto/providers/common.proto";
 
 message LoginRequest {
   string endpoint = 1 [(buf.validate.field).string.min_len = 1];
@@ -40,12 +41,14 @@ message FileItem {
   repeated string attributes = 14;
   repeated string xattrs = 15;
   repeated string zfs_attributes = 16;
+  synctv.provider.common.DiscoveredSource source = 17;
 }
 message ListResponse {
   repeated FileItem content = 1;
   uint64 total = 2;
   uint64 page = 3;
   bool has_more = 4;
+  synctv.provider.common.DiscoveredSource source = 5;
 }
 message LogoutRequest {
   string server_id = 1 [(buf.validate.field).string.min_len = 1];

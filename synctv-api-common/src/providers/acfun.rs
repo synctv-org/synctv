@@ -4,7 +4,12 @@ use synctv_media_providers::acfun::{
 use synctv_proto::providers::acfun::{self as proto, *};
 use synctv_proto::source_config::{self as source_proto, ac_fun_media_source_config};
 
-pub fn resolve_response(media: AcFunMedia) -> ResolveResponse {
+use super::discovery::discovered_media;
+
+pub fn resolve_response(
+    media: AcFunMedia,
+    provider_instance_name: Option<&str>,
+) -> ResolveResponse {
     let kind = resource_kind(media.playback.resource.kind);
     let source = match media.playback.resource.kind {
         AcFunResourceKind::Video => {
@@ -44,9 +49,14 @@ pub fn resolve_response(media: AcFunMedia) -> ResolveResponse {
                 quality_type: quality.quality_type,
             })
             .collect(),
-        source_config: Some(source_proto::AcFunMediaSourceConfig {
-            source: Some(source),
-        }),
+        source: Some(discovered_media(
+            source_proto::media_source_config::Provider::AcFun(
+                source_proto::AcFunMediaSourceConfig {
+                    source: Some(source),
+                },
+            ),
+            provider_instance_name,
+        )),
     }
 }
 

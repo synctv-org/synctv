@@ -177,6 +177,26 @@ impl Default for DirectUrlProvider {
 }
 
 impl DirectUrlProvider {
+    pub fn validate_prepared_config(
+        &self,
+        config: &DirectUrlMediaSourceConfig,
+    ) -> Result<(), ProviderError> {
+        Self::validate_config_shape(config)?;
+        for media in &config.medias {
+            Self::validate_source_url(&media.url, &self.ssrf_guard)?;
+            Self::validate_headers(&media.headers)?;
+        }
+        for subtitle in &config.subtitles {
+            Self::validate_source_url(&subtitle.url, &self.ssrf_guard)?;
+            Self::validate_headers(&subtitle.headers)?;
+        }
+        for danmaku in &config.danmakus {
+            Self::validate_source_url(&danmaku.url, &self.ssrf_guard)?;
+            Self::validate_headers(&danmaku.headers)?;
+        }
+        Ok(())
+    }
+
     fn validate_config_shape(config: &DirectUrlMediaSourceConfig) -> Result<(), ProviderError> {
         if config.medias.is_empty() {
             return Err(ProviderError::InvalidConfig(
@@ -304,10 +324,8 @@ fn mark_direct_url_playback_resources(
     result: &mut PlaybackResult,
     version: &str,
     expires_at: i64,
-    prefer_proxy: bool,
-    proxy_only: bool,
+    proxy_mode: crate::models::PlaybackProxyMode,
 ) {
-    let original_default_mode = result.default_mode.clone();
     let original_modes = result
         .playback_infos
         .iter()
@@ -408,14 +426,8 @@ fn mark_direct_url_playback_resources(
             .collect();
 
         result.playback_infos.insert(proxy_mode_name, proxy_info);
-        if proxy_only {
-            result.playback_infos.remove(&mode_name);
-        }
     }
-
-    if prefer_proxy || proxy_only {
-        result.default_mode = format!("proxy_{original_default_mode}");
-    }
+    super::apply_provider_playback_policy(result, proxy_mode, false);
 }
 
 impl DirectUrlProvider {
@@ -618,21 +630,7 @@ impl MediaProvider for DirectUrlProvider {
                 "DirectUrl requires DirectUrl media source_config".to_string(),
             ));
         };
-        Self::validate_config_shape(config)?;
-        for media in &config.medias {
-            Self::validate_source_url(&media.url, &self.ssrf_guard)?;
-            Self::validate_headers(&media.headers)?;
-        }
-        for subtitle in &config.subtitles {
-            Self::validate_source_url(&subtitle.url, &self.ssrf_guard)?;
-            Self::validate_headers(&subtitle.headers)?;
-        }
-        for danmaku in &config.danmakus {
-            Self::validate_source_url(&danmaku.url, &self.ssrf_guard)?;
-            Self::validate_headers(&danmaku.headers)?;
-        }
-
-        Ok(())
+        self.validate_prepared_config(config)
     }
 
     async fn generate_playback(
@@ -708,8 +706,7 @@ impl MediaProvider for DirectUrlProvider {
                                     result,
                                     version,
                                     expires_at,
-                                    config.prefer_proxy == Some(true),
-                                    config.proxy_only,
+                                    config.proxy_mode,
                                 );
                             },
                         )
@@ -923,13 +920,7 @@ impl MediaProvider for DirectUrlProvider {
             cache_ttl,
             _ctx,
             |result, version, expires_at| {
-                mark_direct_url_playback_resources(
-                    result,
-                    version,
-                    expires_at,
-                    config.prefer_proxy == Some(true),
-                    config.proxy_only,
-                );
+                mark_direct_url_playback_resources(result, version, expires_at, config.proxy_mode);
             },
         )
         .await
@@ -998,7 +989,7 @@ mod tests {
             "https://example.com/video.mp4".to_string(),
             HashMap::new(),
         );
-        config.proxy_only = true;
+        config.proxy_mode = crate::models::PlaybackProxyMode::Only;
         let source_config = crate::models::MediaSourceConfig::DirectUrl(config);
 
         let result = provider
@@ -1024,7 +1015,7 @@ mod tests {
             "https://example.com/video.mp4".to_string(),
             HashMap::from([("authorization".to_string(), "Bearer secret".to_string())]),
         );
-        config.prefer_proxy = Some(true);
+        config.proxy_mode = crate::models::PlaybackProxyMode::Prefer;
 
         let result = provider
             .generate_playback(&ctx, &crate::models::MediaSourceConfig::DirectUrl(config))
@@ -1050,7 +1041,7 @@ mod tests {
             "https://example.com/video.mp4".to_string(),
             HashMap::new(),
         );
-        config.prefer_proxy = Some(true);
+        config.proxy_mode = crate::models::PlaybackProxyMode::Prefer;
         config.subtitles = vec![
             crate::models::DirectUrlSubtitleSourceConfig {
                 name: "expired".to_string(),
@@ -1123,8 +1114,7 @@ mod tests {
         let config = crate::models::DirectUrlMediaSourceConfig {
             playback_kind: Some(crate::models::PlaybackKind::Regular),
             duration_seconds: None,
-            prefer_proxy: Some(false),
-            proxy_only: false,
+            proxy_mode: crate::models::PlaybackProxyMode::Auto,
             medias: vec![
                 crate::models::DirectUrlMediaResourceConfig {
                     name: "expired".to_string(),
@@ -1192,15 +1182,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn generate_playback_proxy_only_takes_priority_over_prefer_proxy() {
+    async fn generate_playback_proxy_only_returns_proxy_modes() {
         let provider = DirectUrlProvider::new();
         let ctx = test_context();
         let mut config = crate::models::DirectUrlMediaSourceConfig::single(
             "https://example.com/video.mp4".to_string(),
             HashMap::new(),
         );
-        config.prefer_proxy = Some(true);
-        config.proxy_only = true;
+        config.proxy_mode = crate::models::PlaybackProxyMode::Only;
 
         let result = provider
             .generate_playback(&ctx, &crate::models::MediaSourceConfig::DirectUrl(config))
@@ -1227,8 +1216,7 @@ mod tests {
             crate::models::DirectUrlMediaSourceConfig {
                 playback_kind: Some(crate::models::PlaybackKind::Regular),
                 duration_seconds: Some(20.0),
-                prefer_proxy: Some(false),
-                proxy_only: false,
+                proxy_mode: crate::models::PlaybackProxyMode::Auto,
                 medias: vec![
                     media("video", "mp4"),
                     media("playlist", "hls"),
@@ -1288,8 +1276,7 @@ mod tests {
             crate::models::DirectUrlMediaSourceConfig {
                 playback_kind: Some(crate::models::PlaybackKind::Regular),
                 duration_seconds: Some(20.0),
-                prefer_proxy: Some(false),
-                proxy_only: false,
+                proxy_mode: crate::models::PlaybackProxyMode::Auto,
                 medias: vec![
                     crate::models::DirectUrlMediaResourceConfig {
                         name: "Protected MP4".to_string(),
@@ -1347,8 +1334,7 @@ mod tests {
         let config = crate::models::DirectUrlMediaSourceConfig {
             playback_kind: Some(crate::models::PlaybackKind::Regular),
             duration_seconds: None,
-            prefer_proxy: None,
-            proxy_only: true,
+            proxy_mode: crate::models::PlaybackProxyMode::Only,
             medias: vec![crate::models::DirectUrlMediaResourceConfig {
                 name: "Protected DASH".to_string(),
                 url: "https://example.com/protected.mpd".to_string(),
@@ -1393,7 +1379,7 @@ mod tests {
             "https://cdn.example.com/dash/manifest.mpd".to_string(),
             HashMap::from([("authorization".to_string(), "Bearer secret".to_string())]),
         );
-        config.proxy_only = true;
+        config.proxy_mode = crate::models::PlaybackProxyMode::Only;
         config.medias[0].format = "dash".to_string();
         let result = provider
             .generate_playback(&ctx, &crate::models::MediaSourceConfig::DirectUrl(config))

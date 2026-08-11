@@ -60,6 +60,7 @@ pub(super) async fn execute_provider_douyin(command: ProviderDouyinCommand) -> R
                     request: Some(synctv_proto::providers::douyin::ResolveRequest {
                         resource: args.resource,
                         instance_name: provider_service_instance_name(&args.instance),
+                        shared: false,
                     }),
                 }
             )?;
@@ -78,6 +79,7 @@ pub(super) async fn execute_provider_douyin(command: ProviderDouyinCommand) -> R
                         cursor: args.cursor,
                         page_size: args.page_size,
                         instance_name: provider_service_instance_name(&args.instance),
+                        shared: false,
                     }),
                 }
             )?;

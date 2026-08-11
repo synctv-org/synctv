@@ -20,6 +20,7 @@ fn qnap_source_and_provider_contracts_keep_native_types() {
         provider: Some(media_source_config::Provider::Qnap(
             synctv_proto::source_config::QnapMediaSourceConfig {
                 server_id: "qnap-home".to_string(),
+                proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
                 path: "/Multimedia/Movie.mkv".to_string(),
             },
         )),
@@ -28,6 +29,7 @@ fn qnap_source_and_provider_contracts_keep_native_types() {
         provider: Some(playlist_source_config::Provider::Qnap(
             synctv_proto::source_config::QnapPlaylistSourceConfig {
                 server_id: "qnap-home".to_string(),
+                proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
                 path: "/Multimedia".to_string(),
             },
         )),

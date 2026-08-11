@@ -130,6 +130,52 @@ use std::future::Future;
 
 use crate::cache::{SingleFlight, SingleFlightError};
 
+pub(crate) fn apply_provider_playback_policy(
+    result: &mut PlaybackResult,
+    proxy_mode: crate::models::PlaybackProxyMode,
+    default_proxy: bool,
+) {
+    let base_default = result
+        .default_mode
+        .strip_prefix("proxy_")
+        .unwrap_or(&result.default_mode)
+        .to_string();
+    let proxy_default = format!("proxy_{base_default}");
+    let has_proxy_default = result
+        .playback_infos
+        .get(&proxy_default)
+        .is_some_and(|info| !info.medias.is_empty());
+
+    match proxy_mode {
+        crate::models::PlaybackProxyMode::Auto if default_proxy => {
+            result.playback_infos.retain(|mode_name, info| {
+                mode_name.starts_with("proxy_") && !info.medias.is_empty()
+            });
+            if has_proxy_default {
+                result.default_mode = proxy_default;
+            }
+        }
+        crate::models::PlaybackProxyMode::Prefer => {
+            if has_proxy_default {
+                result.default_mode = proxy_default;
+            }
+        }
+        crate::models::PlaybackProxyMode::Only => {
+            result.playback_infos.retain(|mode_name, info| {
+                mode_name.starts_with("proxy_") && !info.medias.is_empty()
+            });
+            if has_proxy_default {
+                result.default_mode = proxy_default;
+            } else {
+                let mut remaining = result.playback_infos.keys().cloned().collect::<Vec<_>>();
+                remaining.sort();
+                result.default_mode = remaining.into_iter().next().unwrap_or_default();
+            }
+        }
+        crate::models::PlaybackProxyMode::Auto => {}
+    }
+}
+
 pub(crate) fn playback_session_registration(
     ctx: &ProviderContext<'_>,
     resource_key: String,
@@ -208,7 +254,9 @@ pub use bilibili::{
     DASH_MANIFEST_METADATA_KEY, LIVE_DANMAKU_FORMAT, LIVE_DANMAKU_TRACK_NAME,
 };
 pub use cctv::CctvProvider;
-pub use cloudreve::{CloudreveBind, CloudreveListResponse, CloudreveProvider};
+pub use cloudreve::{
+    CloudreveBind, CloudreveHlsResourceRequest, CloudreveListResponse, CloudreveProvider,
+};
 pub use direct_url::{
     DirectUrlDashResourceRequest, DirectUrlHlsResourceRequest, DirectUrlProvider,
 };
@@ -1105,17 +1153,18 @@ async fn wait_for_fresh_versioned_playback(
     None
 }
 
-pub(crate) async fn cached_versioned_playback_or_fill<F, Fut>(
+pub(crate) async fn cached_versioned_playback_or_fill<F, Fut, M>(
     provider_name: &'static str,
     cache_key: &str,
     cache_ttl: Duration,
     ctx: &ProviderContext<'_>,
-    mark_provider_resources: fn(&mut PlaybackResult, &str, i64),
+    mark_provider_resources: M,
     fill: F,
 ) -> std::result::Result<PlaybackResult, ProviderError>
 where
     F: FnOnce() -> Fut + Send,
     Fut: Future<Output = std::result::Result<PlaybackResult, ProviderError>> + Send,
+    M: Fn(&mut PlaybackResult, &str, i64) + Copy,
 {
     let store = ctx.store.as_ref().ok_or_else(|| {
         ProviderError::Internal(format!(
@@ -1351,6 +1400,96 @@ where
     SOURCE_COVER_CACHE
         .get_or_fill(provider_name, cache_key, cache_ttl, ctx, fill)
         .await
+}
+
+#[cfg(test)]
+mod playback_policy_tests {
+    use super::*;
+    use crate::models::{
+        PlaybackDirectUrlMedia, PlaybackMedia, PlaybackMediaProvider, PlaybackProxyMode,
+    };
+    use std::collections::HashMap;
+
+    fn playback_result() -> PlaybackResult {
+        let info = PlaybackInfo {
+            thumbnail: None,
+            medias: vec![PlaybackMedia {
+                name: "Movie".to_string(),
+                format: "mp4".to_string(),
+                expire_at: None,
+                metadata: None,
+                p2p_swarm_id: None,
+                provider: PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::Direct {
+                    url: "https://media.example/movie.mp4".to_string(),
+                    headers: HashMap::new(),
+                }),
+            }],
+            default_media_index: Some(0),
+            subtitles: Vec::new(),
+            default_subtitle_index: None,
+            danmakus: Vec::new(),
+            default_danmaku_index: None,
+        };
+        PlaybackResult {
+            playback_infos: HashMap::from([
+                ("direct".to_string(), info.clone()),
+                ("proxy_direct".to_string(), info),
+            ]),
+            default_mode: "direct".to_string(),
+            provider: "test".to_string(),
+            provider_instance_name: None,
+            duration_seconds: None,
+            playback_kind: None,
+            metadata: None,
+        }
+    }
+
+    #[test]
+    fn auto_uses_only_proxy_routes_for_private_providers() {
+        let mut result = playback_result();
+
+        apply_provider_playback_policy(&mut result, PlaybackProxyMode::Auto, true);
+
+        assert_eq!(result.default_mode, "proxy_direct");
+        assert_eq!(
+            result.playback_infos.keys().cloned().collect::<Vec<_>>(),
+            vec!["proxy_direct"]
+        );
+    }
+
+    #[test]
+    fn prefer_keeps_both_routes_and_selects_proxy() {
+        let mut result = playback_result();
+
+        apply_provider_playback_policy(&mut result, PlaybackProxyMode::Prefer, true);
+
+        assert_eq!(result.default_mode, "proxy_direct");
+        assert!(result.playback_infos.contains_key("direct"));
+        assert!(result.playback_infos.contains_key("proxy_direct"));
+    }
+
+    #[test]
+    fn only_filters_direct_routes() {
+        let mut result = playback_result();
+
+        apply_provider_playback_policy(&mut result, PlaybackProxyMode::Only, true);
+
+        assert_eq!(result.default_mode, "proxy_direct");
+        assert_eq!(
+            result.playback_infos.keys().cloned().collect::<Vec<_>>(),
+            vec!["proxy_direct"]
+        );
+    }
+
+    #[test]
+    fn auto_keeps_direct_route_for_public_url_sources() {
+        let mut result = playback_result();
+
+        apply_provider_playback_policy(&mut result, PlaybackProxyMode::Auto, false);
+
+        assert_eq!(result.default_mode, "direct");
+        assert_eq!(result.playback_infos.len(), 2);
+    }
 }
 
 #[cfg(test)]

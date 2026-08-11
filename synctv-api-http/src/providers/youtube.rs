@@ -9,8 +9,8 @@ use crate::http::{middleware::RequestMetadata, validation::ProtoQuery, AppResult
 use synctv_api_common::impls::EndpointRateLimitCategory;
 use synctv_proto::providers::common::ProviderInstanceQuery;
 use synctv_proto::providers::youtube::{
-    BindRequest, BindResponse, GetBindsResponse, ResolveRequest, ResolveResponse, UnbindRequest,
-    UnbindResponse,
+    BindRequest, BindResponse, GetBindsResponse, ListRequest, ListResponse, ResolveRequest,
+    ResolveResponse, UnbindRequest, UnbindResponse,
 };
 
 use super::common::{
@@ -28,6 +28,7 @@ pub(crate) fn youtube_read_routes() -> Router<AppState> {
     Router::new()
         .route("/binds", get(binds))
         .route("/resolve", post(resolve))
+        .route("/list", post(list))
 }
 
 #[cfg_attr(
@@ -158,6 +159,39 @@ pub(crate) async fn resolve(
         move |authenticated| {
             async move {
                 api.resolve(authenticated.user_id, req, instance_name.as_deref())
+                    .await
+            }
+            .boxed()
+        },
+    )
+    .await
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/providers/youtube/list",
+        tag = "Provider",
+        request_body = ListRequest,
+        responses((status = 200, description = "Listed YouTube media and dynamic playlist source", body = ListResponse)),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn list(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Json(req): Json<ListRequest>,
+) -> AppResult<Json<ListResponse>> {
+    let instance_name = provider_instance_name_from_request_field(&req.instance_name)?;
+    let api = state.shared_api_runtime.youtube_api.clone();
+    execute_provider_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Read,
+        move |authenticated| {
+            async move {
+                api.list(authenticated.user_id, req, instance_name.as_deref())
                     .await
             }
             .boxed()

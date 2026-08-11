@@ -20,8 +20,8 @@ use synctv_api_common::impls::EndpointRateLimitCategory;
 use synctv_proto::providers::bilibili::{
     CheckQrRequest, GetBindsResponse, ListFavoriteFoldersRequest, ListFollowedPgcRequest,
     ListHistoryRequest, ListLiveAreasRequest, ListPgcSeasonsRequest, ListPgcTimelineRequest,
-    LoginQrRequest, LoginSmsRequest, LogoutRequest, ParseRequest, SendSmsRequest,
-    StartSmsLoginRequest, UserInfoRequest,
+    ListPlaylistRequest, LoginQrRequest, LoginSmsRequest, LogoutRequest, ParseRequest,
+    SendSmsRequest, StartSmsLoginRequest, UserInfoRequest,
 };
 use synctv_proto::providers::common::ProviderInstanceQuery;
 
@@ -40,6 +40,7 @@ pub(crate) fn bilibili_auth_routes() -> Router<AppState> {
 pub(crate) fn bilibili_read_routes() -> Router<AppState> {
     Router::new()
         .route("/parse", post(parse))
+        .route("/playlist/list", post(list_playlist))
         .route("/live/areas", post(list_live_areas))
         .route("/favorites", post(list_favorite_folders))
         .route("/pgc/followed", post(list_followed_pgc))
@@ -107,6 +108,44 @@ pub(crate) async fn parse(
         tracing::error!("Bilibili parse failed: {}", e);
         e
     })
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/providers/bilibili/playlist/list",
+        tag = "Provider",
+        request_body = ListPlaylistRequest,
+        responses((status = 200, description = "Listed Bilibili media and dynamic playlist source", body = synctv_proto::providers::bilibili::ListPlaylistResponse)),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn list_playlist(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Json(req): Json<ListPlaylistRequest>,
+) -> AppResult<Json<synctv_proto::providers::bilibili::ListPlaylistResponse>> {
+    let instance_name = provider_instance_name_from_request_field(&req.instance_name)?;
+    let api = state.shared_api_runtime.bilibili_api.clone();
+    execute_provider_user_endpoint_with_control(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Read,
+        move |control, authenticated| {
+            async move {
+                api.list_playlist_with_context(
+                    &authenticated.user_id,
+                    req,
+                    instance_name.as_deref(),
+                    Some(&control),
+                )
+                .await
+            }
+            .boxed()
+        },
+    )
+    .await
 }
 
 /// List Bilibili live categories for dynamic playlist creation.

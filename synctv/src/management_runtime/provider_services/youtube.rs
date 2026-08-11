@@ -52,4 +52,13 @@ impl YoutubeRuntime for ManagementYoutubeRuntime {
             .resolve(*user, request, instance.as_deref())
             .await
     }
+
+    async fn list(
+        &self,
+        user: &UserId,
+        mut request: youtube_proto::ListRequest,
+    ) -> Result<youtube_proto::ListResponse, ProviderError> {
+        let instance = take_instance(&mut request.instance_name);
+        self.inner.list(*user, request, instance.as_deref()).await
+    }
 }

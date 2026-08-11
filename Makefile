@@ -16,9 +16,9 @@ CARGO_ALL_TARGETS_ARGS ?= --all-targets
 DEV_COMPOSE_FILE ?= docker-compose.dev.yml
 DEV_PROJECT ?= synctv-dev
 DEV_BASE_SERVICES ?= postgres redis
-DEV_OPTIONAL_SERVICES ?= rustfs openlist emby jellyfin casdoor
+DEV_OPTIONAL_SERVICES ?= rustfs openlist nextcloud seafile seafile-db seafile-memcached emby jellyfin casdoor
 DEV_STACK_SERVICES ?= $(DEV_BASE_SERVICES) $(DEV_OPTIONAL_SERVICES)
-DEV_STACK_WAIT_SERVICES ?= $(DEV_STACK_SERVICES) rustfs-init openlist-init emby-init jellyfin-init
+DEV_STACK_WAIT_SERVICES ?= $(DEV_STACK_SERVICES) rustfs-init openlist-init nextcloud-init seafile-init emby-init jellyfin-init
 DEV_WAIT_TIMEOUT ?= 120
 DEV_LOG_TAIL ?= 100
 DEV_START_TIMEOUT ?= 120
@@ -197,6 +197,8 @@ dev-env: ## Print local service URLs and credentials.
 	@printf "Postgres:  %s\n" "$(DEV_DATABASE_URL)"
 	@printf "Redis:     %s\n" "$(DEV_REDIS_URL)"
 	@printf "OpenList:  http://127.0.0.1:5244  admin / synctv-openlist\n"
+	@printf "Nextcloud: http://127.0.0.1:8082  synctv / synctv-nextcloud\n"
+	@printf "Seafile:   http://127.0.0.1:8083  synctv@example.com / synctv-seafile\n"
 	@printf "Emby:      http://127.0.0.1:8096  MyEmbyUser / synctv-emby\n"
 	@printf "Jellyfin:  http://127.0.0.1:8097  root / synctv-jellyfin\n"
 	@printf "RustFS:    http://127.0.0.1:9000  rustfsadmin / rustfsadmin\n"
@@ -207,10 +209,10 @@ dev-up: dev-check ## Start core development dependencies: PostgreSQL and Redis.
 	$(COMPOSE_DEV) up -d $(DEV_BASE_SERVICES)
 	@$(MAKE) dev-wait SERVICES="$(DEV_BASE_SERVICES)"
 
-dev-stack: dev-up ## Start OpenList, Emby, Jellyfin, RustFS, and Casdoor after core dependencies.
+dev-stack: dev-up ## Start media, storage, and auth development dependencies after core services.
 	@$(COMPOSE_DEV) exec -T postgres psql -U synctv -d synctv -tc "SELECT 1 FROM pg_database WHERE datname = 'casdoor'" | grep -q 1 || \
 		$(COMPOSE_DEV) exec -T postgres createdb -U synctv casdoor
-	$(COMPOSE_DEV_PROFILES) up -d $(DEV_OPTIONAL_SERVICES) rustfs-init openlist-init emby-init jellyfin-init
+	$(COMPOSE_DEV_PROFILES) up -d $(DEV_OPTIONAL_SERVICES) rustfs-init openlist-init nextcloud-init seafile-init emby-init jellyfin-init
 	@$(MAKE) dev-wait SERVICES="$(DEV_STACK_WAIT_SERVICES)"
 	@$(MAKE) dev-env
 
@@ -229,33 +231,31 @@ dev-start: dev-up dev-build ## Start SyncTV in the background with development d
 	@mkdir -p "$(DEV_DATA_DIR)/run"
 	@if [ -f "$(DEV_PID)" ] && kill -0 "$$(cat "$(DEV_PID)")" 2>/dev/null; then \
 		printf "SyncTV already running with pid %s.\n" "$$(cat "$(DEV_PID)")"; \
-		exit 0; \
-	fi
-	@if [ -S "$(DEV_SOCKET)" ] && "$(DEV_BIN)" --endpoint "unix://$(DEV_SOCKET)" system stats --output json >/dev/null 2>&1; then \
+	elif [ -S "$(DEV_SOCKET)" ] && "$(DEV_BIN)" --endpoint "unix://$(DEV_SOCKET)" system stats --output json >/dev/null 2>&1; then \
 		printf "SyncTV already responding on %s.\n" "$(DEV_SOCKET)"; \
-		exit 0; \
+	else \
+		rm -f "$(DEV_PID)" "$(DEV_SOCKET)"; \
+		$(DEV_ENV_EXPORTS); \
+		nohup "$(DEV_BIN)" serve >"$(DEV_LOG)" 2>&1 < /dev/null & \
+		pid="$$!"; \
+		printf "%s\n" "$$pid" >"$(DEV_PID)"; \
+		printf "Started SyncTV pid %s. Logs: %s\n" "$$pid" "$(DEV_LOG)"; \
+		deadline=$$((SECONDS + $(DEV_START_TIMEOUT))); \
+		until [ -S "$(DEV_SOCKET)" ] && "$(DEV_BIN)" --endpoint "unix://$(DEV_SOCKET)" system stats --output json >/dev/null 2>&1 && curl -fsS http://127.0.0.1:8081/health/ready >/dev/null; do \
+			if ! kill -0 "$$pid" 2>/dev/null; then \
+				printf "SyncTV exited during startup. Last log lines:\n"; \
+				tail -n 80 "$(DEV_LOG)" || true; \
+				exit 1; \
+			fi; \
+			if [ "$$SECONDS" -ge "$$deadline" ]; then \
+				printf "Timed out waiting for SyncTV. Last log lines:\n"; \
+				tail -n 80 "$(DEV_LOG)" || true; \
+				exit 1; \
+			fi; \
+			sleep 2; \
+		done; \
+		printf "SyncTV ready at http://127.0.0.1:8080.\n"; \
 	fi
-	@rm -f "$(DEV_PID)" "$(DEV_SOCKET)"
-	@$(DEV_ENV_EXPORTS); \
-	nohup "$(DEV_BIN)" serve >"$(DEV_LOG)" 2>&1 < /dev/null & \
-	pid="$$!"; \
-	printf "%s\n" "$$pid" >"$(DEV_PID)"; \
-	printf "Started SyncTV pid %s. Logs: %s\n" "$$pid" "$(DEV_LOG)"; \
-	deadline=$$((SECONDS + $(DEV_START_TIMEOUT))); \
-	until [ -S "$(DEV_SOCKET)" ] && "$(DEV_BIN)" --endpoint "unix://$(DEV_SOCKET)" system stats --output json >/dev/null 2>&1 && curl -fsS http://127.0.0.1:8081/health/ready >/dev/null; do \
-		if ! kill -0 "$$pid" 2>/dev/null; then \
-			printf "SyncTV exited during startup. Last log lines:\n"; \
-			tail -n 80 "$(DEV_LOG)" || true; \
-			exit 1; \
-		fi; \
-		if [ "$$SECONDS" -ge "$$deadline" ]; then \
-			printf "Timed out waiting for SyncTV. Last log lines:\n"; \
-			tail -n 80 "$(DEV_LOG)" || true; \
-			exit 1; \
-		fi; \
-		sleep 2; \
-	done; \
-	printf "SyncTV ready at http://127.0.0.1:8080.\n"
 
 dev-stop: ## Stop locally running SyncTV processes started by dev-serve/dev-start.
 	@if [ -S "$(DEV_SOCKET)" ] && [ -x "$(DEV_BIN)" ]; then \

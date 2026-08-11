@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -30,6 +31,17 @@ const DYNAMIC_PAGE_SIZE: usize = 50;
 const DYNAMIC_MAX_ITEMS: usize = 200;
 const RELATED_SUBTITLE_LIMIT: usize = 16;
 const THUMBNAIL_CONCURRENCY: usize = 8;
+const PLAYBACK_CACHE_TTL: Duration = Duration::from_mins(15);
+
+#[derive(Debug, Clone, Copy)]
+pub struct CloudreveHlsResourceRequest<'a> {
+    pub version: &'a str,
+    pub mode_name: &'a str,
+    pub media_index: usize,
+    pub target_url: &'a str,
+    pub is_manifest: bool,
+    pub range_header: Option<&'a str>,
+}
 
 #[derive(Default)]
 struct SequentialMediaScan {
@@ -439,6 +451,147 @@ impl CloudreveProvider {
             .collect()
     }
 
+    pub async fn get_resource(
+        &self,
+        store: Option<&Arc<dyn super::ProviderStore>>,
+        version: &str,
+        mode_name: &str,
+        media_index: usize,
+        request_context: Option<&super::ExecutionControl>,
+        range_header: Option<&str>,
+    ) -> Result<super::PlaybackTransportAction, ProviderError> {
+        let versioned =
+            super::playback_transport::lookup_versioned(store, version, request_context).await?;
+        let media = versioned
+            .result
+            .playback_infos
+            .get(mode_name)
+            .and_then(|info| info.medias.get(media_index))
+            .ok_or(ProviderError::NotFound)?;
+        if super::playback_media_is_hls(mode_name, media) {
+            return Err(ProviderError::InvalidConfig(
+                "Cloudreve resource request references an HLS manifest".to_string(),
+            ));
+        }
+        let PlaybackMediaProvider::Cloudreve(PlaybackCloudreveMedia::Direct { url, headers }) =
+            &media.provider
+        else {
+            return Err(ProviderError::InvalidConfig(
+                "Cloudreve cached playback resource is invalid".to_string(),
+            ));
+        };
+        Ok(super::PlaybackTransportAction::FetchAndForward {
+            url: url.clone(),
+            headers: headers.clone(),
+            range_header: range_header.map(ToString::to_string),
+        })
+    }
+
+    pub async fn get_hls_manifest(
+        &self,
+        store: Option<&Arc<dyn super::ProviderStore>>,
+        version: &str,
+        mode_name: &str,
+        media_index: usize,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<super::PlaybackTransportAction, ProviderError> {
+        let versioned =
+            super::playback_transport::lookup_versioned(store, version, request_context).await?;
+        let media = versioned
+            .result
+            .playback_infos
+            .get(mode_name)
+            .and_then(|info| info.medias.get(media_index))
+            .ok_or(ProviderError::NotFound)?;
+        if !super::playback_media_is_hls(mode_name, media) {
+            return Err(ProviderError::InvalidConfig(
+                "Cloudreve HLS manifest request references a regular media resource".to_string(),
+            ));
+        }
+        let PlaybackMediaProvider::Cloudreve(PlaybackCloudreveMedia::Direct { url, headers }) =
+            &media.provider
+        else {
+            return Err(ProviderError::InvalidConfig(
+                "Cloudreve cached HLS manifest is invalid".to_string(),
+            ));
+        };
+        Ok(super::PlaybackTransportAction::M3u8RewriteWithSource {
+            url: url.clone(),
+            headers: headers.clone(),
+            source_url: super::playback_transport::dynamic_hls_source_url(url)?,
+        })
+    }
+
+    pub async fn get_hls_resource(
+        &self,
+        store: Option<&Arc<dyn super::ProviderStore>>,
+        request: CloudreveHlsResourceRequest<'_>,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<super::PlaybackTransportAction, ProviderError> {
+        let versioned =
+            super::playback_transport::lookup_versioned(store, request.version, request_context)
+                .await?;
+        let media = versioned
+            .result
+            .playback_infos
+            .get(request.mode_name)
+            .and_then(|info| info.medias.get(request.media_index))
+            .ok_or(ProviderError::NotFound)?;
+        if !super::playback_media_is_hls(request.mode_name, media) {
+            return Err(ProviderError::InvalidConfig(
+                "Cloudreve HLS child request references a regular media resource".to_string(),
+            ));
+        }
+        let PlaybackMediaProvider::Cloudreve(PlaybackCloudreveMedia::Direct { url, headers }) =
+            &media.provider
+        else {
+            return Err(ProviderError::InvalidConfig(
+                "Cloudreve cached HLS resource is invalid".to_string(),
+            ));
+        };
+        super::playback_transport::transport_action_for_dynamic_hls_target(
+            url,
+            url,
+            headers.clone(),
+            request.target_url,
+            request.is_manifest,
+            request.range_header,
+        )
+    }
+
+    pub async fn get_subtitle(
+        &self,
+        store: Option<&Arc<dyn super::ProviderStore>>,
+        version: &str,
+        mode_name: &str,
+        subtitle_index: usize,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<super::PlaybackTransportAction, ProviderError> {
+        let versioned =
+            super::playback_transport::lookup_versioned(store, version, request_context).await?;
+        let subtitle = versioned
+            .result
+            .playback_infos
+            .get(mode_name)
+            .and_then(|info| info.subtitles.get(subtitle_index))
+            .ok_or(ProviderError::NotFound)?;
+        let PlaybackSubtitleProvider::Cloudreve(PlaybackCloudreveSubtitle::Direct {
+            url,
+            headers,
+            ..
+        }) = &subtitle.provider
+        else {
+            return Err(ProviderError::InvalidConfig(
+                "Cloudreve cached subtitle resource is invalid".to_string(),
+            ));
+        };
+        Ok(super::PlaybackTransportAction::FetchAndForward {
+            url: url.clone(),
+            headers: headers.clone(),
+            range_header: None,
+        })
+    }
+
     fn config(
         source_config: &MediaSourceConfig,
     ) -> Result<&CloudreveMediaSourceConfig, ProviderError> {
@@ -618,7 +771,7 @@ impl CloudreveProvider {
                     "subtitle",
                     &format!("server:{server_id}:path:{}", item.path),
                 )),
-                provider: PlaybackSubtitleProvider::Cloudreve(PlaybackCloudreveSubtitle {
+                provider: PlaybackSubtitleProvider::Cloudreve(PlaybackCloudreveSubtitle::Direct {
                     url,
                     headers: HashMap::new(),
                     expire_at,
@@ -641,6 +794,7 @@ impl CloudreveProvider {
             source_config: MediaSourceConfig::Cloudreve(CloudreveMediaSourceConfig {
                 server_id: base.server_id.clone(),
                 path: Self::join_path(&base.path, &relative),
+                proxy_mode: base.proxy_mode,
             }),
             target: item.target.clone(),
         })
@@ -675,6 +829,86 @@ impl CloudreveProvider {
             _ => "video".to_string(),
         }
     }
+}
+
+fn mark_cloudreve_playback_resources(result: &mut PlaybackResult, version: &str, expires_at: i64) {
+    let original_default_mode = result.default_mode.clone();
+    let original_modes = result
+        .playback_infos
+        .iter()
+        .map(|(mode_name, info)| (mode_name.clone(), info.clone()))
+        .collect::<Vec<_>>();
+
+    for (mode_name, original_info) in original_modes {
+        if original_info.medias.is_empty() || mode_name.starts_with("proxy_") {
+            continue;
+        }
+        let proxy_mode_name = format!("proxy_{mode_name}");
+        if result.playback_infos.contains_key(&proxy_mode_name) {
+            continue;
+        }
+
+        let mut proxy_info = original_info.clone();
+        proxy_info.medias = original_info
+            .medias
+            .iter()
+            .enumerate()
+            .filter(|(_, media)| {
+                matches!(
+                    media.provider,
+                    PlaybackMediaProvider::Cloudreve(PlaybackCloudreveMedia::Direct { .. })
+                )
+            })
+            .map(|(media_index, media)| {
+                let mut proxy = media.clone();
+                proxy.expire_at = chrono::DateTime::from_timestamp(expires_at, 0);
+                proxy.provider = PlaybackMediaProvider::Cloudreve(
+                    if super::playback_media_is_hls(&mode_name, media) {
+                        PlaybackCloudreveMedia::ProxyHlsManifest {
+                            version: version.to_string(),
+                            expires_at,
+                            mode_name: mode_name.clone(),
+                            media_index,
+                        }
+                    } else {
+                        PlaybackCloudreveMedia::ProxyStream {
+                            version: version.to_string(),
+                            expires_at,
+                            mode_name: mode_name.clone(),
+                            media_index,
+                        }
+                    },
+                );
+                proxy
+            })
+            .collect();
+        proxy_info.subtitles = original_info
+            .subtitles
+            .iter()
+            .enumerate()
+            .filter(|(_, subtitle)| {
+                matches!(
+                    subtitle.provider,
+                    PlaybackSubtitleProvider::Cloudreve(PlaybackCloudreveSubtitle::Direct { .. })
+                )
+            })
+            .map(|(subtitle_index, subtitle)| PlaybackSubtitle {
+                name: subtitle.name.clone(),
+                language: subtitle.language.clone(),
+                format: subtitle.format.clone(),
+                p2p_swarm_id: subtitle.p2p_swarm_id.clone(),
+                provider: PlaybackSubtitleProvider::Cloudreve(PlaybackCloudreveSubtitle::Proxy {
+                    version: version.to_string(),
+                    expires_at,
+                    mode_name: mode_name.clone(),
+                    subtitle_index,
+                }),
+            })
+            .collect();
+        result.playback_infos.insert(proxy_mode_name, proxy_info);
+    }
+
+    result.default_mode = original_default_mode;
 }
 
 #[async_trait]
@@ -744,12 +978,12 @@ impl MediaProvider for CloudreveProvider {
                 "media",
                 &format!("server:{}:path:{}", config.server_id, config.path),
             )),
-            provider: PlaybackMediaProvider::Cloudreve(PlaybackCloudreveMedia {
+            provider: PlaybackMediaProvider::Cloudreve(PlaybackCloudreveMedia::Direct {
                 url,
                 headers: HashMap::new(),
             }),
         };
-        Ok(PlaybackResult {
+        let result = PlaybackResult {
             playback_infos: HashMap::from([(
                 "direct".to_string(),
                 PlaybackInfo {
@@ -768,7 +1002,26 @@ impl MediaProvider for CloudreveProvider {
             duration_seconds: None,
             playback_kind: Some(crate::models::PlaybackKind::Regular),
             metadata: None,
-        })
+        };
+        let proxy_mode = config.proxy_mode;
+        super::cached_versioned_playback_or_fill(
+            Self::NAME,
+            &format!(
+                "playback:{user_id}:{}:room:{}:{}",
+                config.server_id,
+                ctx.room_id
+                    .map_or_else(|| "none".to_string(), |room| room.to_string()),
+                config.path
+            ),
+            PLAYBACK_CACHE_TTL,
+            ctx,
+            |result, version, expires_at| {
+                mark_cloudreve_playback_resources(result, version, expires_at);
+                super::apply_provider_playback_policy(result, proxy_mode, true);
+            },
+            || async { Ok(result) },
+        )
+        .await
     }
 
     async fn validate_source_config(
@@ -1404,6 +1657,7 @@ mod tests {
         let config = CloudrevePlaylistSourceConfig {
             server_id: "server-id".to_string(),
             path: "cloudreve://my/Shows".to_string(),
+            proxy_mode: crate::models::PlaybackProxyMode::Auto,
         };
         let item = DynamicPlaylistItem {
             name: "Episode 1".to_string(),
@@ -1426,5 +1680,127 @@ mod tests {
         assert_eq!(source.server_id, "server-id");
         assert_eq!(source.path, "cloudreve://my/Shows/Season 1/Episode 1.mp4");
         assert_eq!(next.target, item.target);
+    }
+
+    fn playback_result(format: &str) -> PlaybackResult {
+        PlaybackResult {
+            playback_infos: HashMap::from([(
+                "direct".to_string(),
+                PlaybackInfo {
+                    thumbnail: None,
+                    medias: vec![PlaybackMedia {
+                        name: "movie".to_string(),
+                        format: format.to_string(),
+                        expire_at: None,
+                        metadata: None,
+                        p2p_swarm_id: Some("media-swarm".to_string()),
+                        provider: PlaybackMediaProvider::Cloudreve(
+                            PlaybackCloudreveMedia::Direct {
+                                url: "https://storage.example/movie".to_string(),
+                                headers: HashMap::from([(
+                                    "Authorization".to_string(),
+                                    "upstream".to_string(),
+                                )]),
+                            },
+                        ),
+                    }],
+                    default_media_index: Some(0),
+                    subtitles: vec![PlaybackSubtitle {
+                        name: "movie.en.srt".to_string(),
+                        language: "en".to_string(),
+                        format: "srt".to_string(),
+                        p2p_swarm_id: Some("subtitle-swarm".to_string()),
+                        provider: PlaybackSubtitleProvider::Cloudreve(
+                            PlaybackCloudreveSubtitle::Direct {
+                                url: "https://storage.example/movie.en.srt".to_string(),
+                                headers: HashMap::new(),
+                                expire_at: None,
+                            },
+                        ),
+                    }],
+                    default_subtitle_index: None,
+                    danmakus: Vec::new(),
+                    default_danmaku_index: None,
+                },
+            )]),
+            default_mode: "direct".to_string(),
+            provider: CloudreveProvider::NAME.to_string(),
+            provider_instance_name: None,
+            duration_seconds: None,
+            playback_kind: Some(crate::models::PlaybackKind::Regular),
+            metadata: None,
+        }
+    }
+
+    #[test]
+    fn proxy_resources_keep_the_direct_cache_and_hide_upstream_urls() {
+        let mut result = playback_result("mp4");
+        mark_cloudreve_playback_resources(&mut result, "version-1", 1_900_000_000);
+
+        let direct = &result.playback_infos["direct"];
+        assert!(matches!(
+            direct.medias[0].provider,
+            PlaybackMediaProvider::Cloudreve(PlaybackCloudreveMedia::Direct { .. })
+        ));
+        let proxy = &result.playback_infos["proxy_direct"];
+        assert!(matches!(
+            proxy.medias[0].provider,
+            PlaybackMediaProvider::Cloudreve(PlaybackCloudreveMedia::ProxyStream {
+                ref version,
+                media_index: 0,
+                ..
+            }) if version == "version-1"
+        ));
+        assert!(matches!(
+            proxy.subtitles[0].provider,
+            PlaybackSubtitleProvider::Cloudreve(PlaybackCloudreveSubtitle::Proxy {
+                subtitle_index: 0,
+                ..
+            })
+        ));
+        assert_eq!(proxy.medias[0].p2p_swarm_id.as_deref(), Some("media-swarm"));
+    }
+
+    #[test]
+    fn hls_media_uses_the_manifest_proxy_route() {
+        let mut result = playback_result("hls");
+        mark_cloudreve_playback_resources(&mut result, "version-1", 1_900_000_000);
+
+        assert!(matches!(
+            result.playback_infos["proxy_direct"].medias[0].provider,
+            PlaybackMediaProvider::Cloudreve(PlaybackCloudreveMedia::ProxyHlsManifest { .. })
+        ));
+    }
+
+    #[test]
+    fn playback_proxy_modes_choose_and_lock_the_proxy_sibling() {
+        let mut preferred = playback_result("mp4");
+        mark_cloudreve_playback_resources(&mut preferred, "version-1", 1_900_000_000);
+        super::super::apply_provider_playback_policy(
+            &mut preferred,
+            crate::models::PlaybackProxyMode::Prefer,
+            true,
+        );
+        assert_eq!(preferred.default_mode, "proxy_direct");
+        assert!(preferred.playback_infos.contains_key("direct"));
+
+        let mut proxy_only = playback_result("mp4");
+        mark_cloudreve_playback_resources(&mut proxy_only, "version-1", 1_900_000_000);
+        proxy_only.playback_infos.insert(
+            "orphan_direct".to_string(),
+            proxy_only.playback_infos["direct"].clone(),
+        );
+        super::super::apply_provider_playback_policy(
+            &mut proxy_only,
+            crate::models::PlaybackProxyMode::Only,
+            true,
+        );
+        assert_eq!(proxy_only.default_mode, "proxy_direct");
+        assert!(!proxy_only.playback_infos.contains_key("direct"));
+        assert!(!proxy_only.playback_infos.contains_key("orphan_direct"));
+        assert!(proxy_only
+            .playback_infos
+            .keys()
+            .all(|mode_name| mode_name.starts_with("proxy_")));
     }
 }

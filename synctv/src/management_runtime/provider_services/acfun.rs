@@ -20,9 +20,15 @@ impl AcfunRuntime for ManagementAcfunRuntime {
         _: &UserId,
         request: acfun_proto::ResolveRequest,
     ) -> Result<acfun_proto::ResolveResponse, ProviderError> {
+        let instance_name = request.instance_name.clone();
         self.inner
             .resolve_resource(&request.resource)
             .await
-            .map(synctv_api::providers::acfun::resolve_response)
+            .map(|media| {
+                synctv_api::providers::acfun::resolve_response(
+                    media,
+                    (!instance_name.is_empty()).then_some(instance_name.as_str()),
+                )
+            })
     }
 }

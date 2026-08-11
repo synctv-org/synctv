@@ -14,11 +14,14 @@ use synctv_proto::providers::alist::{
     LoginRequest, LoginResponse, LogoutRequest, LogoutResponse, SearchItem, SearchRequest,
     SearchResponse,
 };
+use synctv_proto::source_config::{
+    media_source_config, playlist_source_config, AlistMediaSourceConfig, AlistPlaylistSourceConfig,
+};
 use synctv_realtime::fanout::RealtimeEventService;
 
 use super::{
-    provider_instance_name_for_response, publish_provider_credential_changed,
-    resolve_bound_instance_name,
+    discovered_media, discovered_playlist, provider_instance_name_for_response,
+    publish_provider_credential_changed, resolve_bound_instance_name,
 };
 
 /// Alist API implementation
@@ -127,6 +130,9 @@ impl AlistApiImpl {
         requested_instance_name: Option<&str>,
         request_context: Option<&ExecutionControl>,
     ) -> Result<ListResponse, synctv_core::provider::ProviderError> {
+        let server_id = req.server_id.clone();
+        let path = req.path.clone();
+        let password = req.password.clone();
         let (host, token, credential_instance_name) = self
             .resolve_credentials(caller_user_id, &req.server_id, request_context)
             .await?;
@@ -157,20 +163,37 @@ impl AlistApiImpl {
         let content: Vec<FileItem> = resp
             .content
             .into_iter()
-            .map(|item| FileItem {
-                name: item.name,
-                size: item.size,
-                is_dir: item.is_dir,
-                modified: item.modified,
-                sign: item.sign,
-                thumb: item.thumb,
-                r#type: item.item_type,
+            .map(|item| {
+                let item_path = join_path(&path, &item.name);
+                FileItem {
+                    name: item.name,
+                    size: item.size,
+                    is_dir: item.is_dir,
+                    modified: item.modified,
+                    sign: item.sign,
+                    thumb: item.thumb,
+                    r#type: item.item_type,
+                    source: Some(alist_source(
+                        &server_id,
+                        &item_path,
+                        &password,
+                        item.is_dir,
+                        effective_instance_name.as_deref(),
+                    )),
+                }
             })
             .collect();
 
         Ok(ListResponse {
             content,
             total: resp.total,
+            source: Some(alist_source(
+                &server_id,
+                &path,
+                &password,
+                true,
+                effective_instance_name.as_deref(),
+            )),
         })
     }
 
@@ -187,6 +210,8 @@ impl AlistApiImpl {
             ));
         }
 
+        let server_id = req.server_id.clone();
+        let password = req.password.clone();
         let (host, token, credential_instance_name) = self
             .resolve_credentials(caller_user_id, &req.server_id, request_context)
             .await?;
@@ -218,12 +243,22 @@ impl AlistApiImpl {
         let content = resp
             .content
             .into_iter()
-            .map(|item| SearchItem {
-                parent: item.parent,
-                name: item.name,
-                is_dir: item.is_dir,
-                size: item.size,
-                r#type: item.item_type,
+            .map(|item| {
+                let item_path = join_path(&item.parent, &item.name);
+                SearchItem {
+                    parent: item.parent,
+                    name: item.name,
+                    is_dir: item.is_dir,
+                    size: item.size,
+                    r#type: item.item_type,
+                    source: Some(alist_source(
+                        &server_id,
+                        &item_path,
+                        &password,
+                        item.is_dir,
+                        effective_instance_name.as_deref(),
+                    )),
+                }
             })
             .collect();
 
@@ -321,6 +356,46 @@ impl AlistApiImpl {
             .collect();
 
         Ok(GetBindsResponse { binds })
+    }
+}
+
+fn join_path(parent: &str, name: &str) -> String {
+    let parent = parent.trim_end_matches('/');
+    if parent.is_empty() {
+        format!("/{name}")
+    } else {
+        format!("{parent}/{name}")
+    }
+}
+
+fn alist_source(
+    server_id: &str,
+    path: &str,
+    password: &str,
+    playlist: bool,
+    provider_instance_name: Option<&str>,
+) -> synctv_proto::providers::common::DiscoveredSource {
+    let password = (!password.is_empty()).then(|| password.to_string());
+    if playlist {
+        discovered_playlist(
+            playlist_source_config::Provider::Alist(AlistPlaylistSourceConfig {
+                server_id: server_id.to_string(),
+                path: path.to_string(),
+                password,
+                proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
+            }),
+            provider_instance_name,
+        )
+    } else {
+        discovered_media(
+            media_source_config::Provider::Alist(AlistMediaSourceConfig {
+                server_id: server_id.to_string(),
+                path: path.to_string(),
+                password,
+                proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
+            }),
+            provider_instance_name,
+        )
     }
 }
 

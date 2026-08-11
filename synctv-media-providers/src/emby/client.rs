@@ -779,7 +779,9 @@ impl EmbyClient {
         validate_item_id(play_session_id)?;
 
         let mut url = self.endpoint_url("Videos/ActiveEncodings").await?;
-        url.push_str("?PlaySessionId=");
+        url.push_str("?DeviceId=");
+        url.push_str(&url_encode(&self.device_id));
+        url.push_str("&PlaySessionId=");
         url.push_str(&url_encode(play_session_id));
         let mut headers = self.build_headers()?;
         headers.insert(AUTHORIZATION, self.build_emby_auth_header()?);

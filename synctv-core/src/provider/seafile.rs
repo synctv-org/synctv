@@ -150,19 +150,57 @@ impl MediaProvider for SeafileProvider {
             playback_kind: Some(crate::models::PlaybackKind::Regular),
             metadata: Some(PlaybackMetadata::Seafile(metadata)),
         };
+        let mut result = result;
+        if config.proxy_mode == crate::models::PlaybackProxyMode::Prefer {
+            let url = auth
+                .client
+                .download_url(&auth.token, &config.repository_id, &config.path)
+                .await?;
+            let headers = synctv_media_providers::seafile::SeafileClient::auth_headers(&auth.token);
+            let direct = result
+                .playback_infos
+                .get("original")
+                .cloned()
+                .ok_or_else(|| {
+                    ProviderError::Internal("Seafile playback mode missing".to_string())
+                })?
+                .medias
+                .into_iter()
+                .map(|mut media| {
+                    media.provider = PlaybackMediaProvider::Seafile(PlaybackSeafileMedia::Direct {
+                        url: url.to_string(),
+                        headers: headers.clone(),
+                    });
+                    media
+                })
+                .collect::<Vec<_>>();
+            if let Some(info) = result.playback_infos.get("original").cloned() {
+                result.playback_infos.insert(
+                    "direct".to_string(),
+                    PlaybackInfo {
+                        medias: direct,
+                        ..info
+                    },
+                );
+            }
+        }
         super::cached_versioned_playback_or_fill(
             Self::NAME,
             &format!(
-                "playback:{owner}:{}:{}:room:{}:{}",
+                "playback:{owner}:{}:{}:room:{}:{}:proxy:{}",
                 config.server_id,
                 config.repository_id,
                 ctx.room_id
                     .map_or_else(|| "none".to_string(), |room| room.to_string()),
-                config.path
+                config.path,
+                config.proxy_mode.as_str()
             ),
             PLAYBACK_CACHE_TTL,
             ctx,
-            mark_playback_resources,
+            |result, version, expires_at| {
+                mark_playback_resources(result, version, expires_at);
+                super::apply_provider_playback_policy(result, config.proxy_mode, true);
+            },
             || async { Ok(result) },
         )
         .await
@@ -400,6 +438,7 @@ impl DynamicPlaylistProvider for SeafileProvider {
                 path: target.path,
                 object_id: target.object_id,
                 has_thumbnail: target.has_thumbnail,
+                proxy_mode: config.proxy_mode,
             }),
             target: provider_target,
         }))
@@ -544,17 +583,33 @@ fn map_directory_item(
 }
 
 fn mark_playback_resources(result: &mut PlaybackResult, version: &str, expires_at: i64) {
-    for (mode_name, info) in &mut result.playback_infos {
-        for (media_index, media) in info.medias.iter_mut().enumerate() {
-            if let PlaybackMediaProvider::Seafile(PlaybackSeafileMedia::Refresh {
-                credential_owner_id,
-                server_id,
-                repository_id,
-                path,
-                object_id,
-            }) = &media.provider
-            {
-                media.provider = PlaybackMediaProvider::Seafile(PlaybackSeafileMedia::Proxy {
+    let original_modes = result
+        .playback_infos
+        .iter()
+        .map(|(name, info)| (name.clone(), info.clone()))
+        .collect::<Vec<_>>();
+    for (mode_name, original_info) in original_modes {
+        if mode_name.starts_with("proxy_") {
+            continue;
+        }
+        let mut proxy_info = original_info.clone();
+        proxy_info.medias = original_info
+            .medias
+            .iter()
+            .enumerate()
+            .filter_map(|(media_index, media)| {
+                let PlaybackMediaProvider::Seafile(PlaybackSeafileMedia::Refresh {
+                    credential_owner_id,
+                    server_id,
+                    repository_id,
+                    path,
+                    object_id,
+                }) = &media.provider
+                else {
+                    return None;
+                };
+                let mut proxy = media.clone();
+                proxy.provider = PlaybackMediaProvider::Seafile(PlaybackSeafileMedia::Proxy {
                     version: version.to_string(),
                     expires_at,
                     mode_name: mode_name.clone(),
@@ -565,15 +620,30 @@ fn mark_playback_resources(result: &mut PlaybackResult, version: &str, expires_a
                     path: path.clone(),
                     object_id: object_id.clone(),
                 });
-            }
+                Some(proxy)
+            })
+            .collect();
+        if proxy_info.medias.is_empty() {
+            continue;
         }
-        for (subtitle_index, subtitle) in info.subtitles.iter_mut().enumerate() {
+        for (subtitle_index, subtitle) in proxy_info.subtitles.iter_mut().enumerate() {
             if let PlaybackSubtitleProvider::Seafile(resource) = &mut subtitle.provider {
                 resource.version = version.to_string();
                 resource.expires_at = expires_at;
-                resource.mode_name.clone_from(mode_name);
+                resource.mode_name.clone_from(&mode_name);
                 resource.subtitle_index = subtitle_index;
             }
+        }
+        result
+            .playback_infos
+            .insert(format!("proxy_{mode_name}"), proxy_info);
+        if original_info.medias.iter().all(|media| {
+            matches!(
+                media.provider,
+                PlaybackMediaProvider::Seafile(PlaybackSeafileMedia::Refresh { .. })
+            )
+        }) {
+            result.playback_infos.remove(&mode_name);
         }
     }
 }
@@ -1163,7 +1233,7 @@ impl SeafileProvider {
                 "Seafile cached playback resource is invalid".to_string(),
             ));
         };
-        let (credential_owner_id, server_id, repository_id, path) = resource_descriptor(provider);
+        let (credential_owner_id, server_id, repository_id, path) = resource_descriptor(provider)?;
         let owner = credential_owner_id
             .parse::<UserId>()
             .map_err(ProviderError::InvalidConfig)?;
@@ -1206,7 +1276,7 @@ impl SeafileProvider {
                 "Seafile cached HLS resource is invalid".to_string(),
             ));
         };
-        let (owner, server_id, repository_id, path) = resource_descriptor(provider);
+        let (owner, server_id, repository_id, path) = resource_descriptor(provider)?;
         let owner = owner
             .parse::<UserId>()
             .map_err(ProviderError::InvalidConfig)?;
@@ -1250,7 +1320,7 @@ impl SeafileProvider {
                 "Seafile cached HLS resource is invalid".to_string(),
             ));
         };
-        let (owner, server_id, repository_id, root_path) = resource_descriptor(provider);
+        let (owner, server_id, repository_id, root_path) = resource_descriptor(provider)?;
         let path =
             super::playback_transport::storage_hls_resource_path(root_path, request.target_url)?;
         validate_file_path(&path)?;
@@ -1302,7 +1372,7 @@ impl SeafileProvider {
         let PlaybackMediaProvider::Seafile(provider) = &media.provider else {
             return Err(ProviderError::NotFound);
         };
-        let (owner, server_id, _, _) = resource_descriptor(provider);
+        let (owner, server_id, _, _) = resource_descriptor(provider)?;
         let owner = owner
             .parse::<UserId>()
             .map_err(ProviderError::InvalidConfig)?;
@@ -1462,7 +1532,9 @@ fn parent_path(path: &str) -> String {
     )
 }
 
-fn resource_descriptor(provider: &PlaybackSeafileMedia) -> (&str, &str, &str, &str) {
+fn resource_descriptor(
+    provider: &PlaybackSeafileMedia,
+) -> Result<(&str, &str, &str, &str), ProviderError> {
     match provider {
         PlaybackSeafileMedia::Refresh {
             credential_owner_id,
@@ -1477,7 +1549,10 @@ fn resource_descriptor(provider: &PlaybackSeafileMedia) -> (&str, &str, &str, &s
             repository_id,
             path,
             ..
-        } => (credential_owner_id, server_id, repository_id, path),
+        } => Ok((credential_owner_id, server_id, repository_id, path)),
+        PlaybackSeafileMedia::Direct { .. } => Err(ProviderError::InvalidConfig(
+            "Seafile direct media has no provider resource descriptor".to_string(),
+        )),
     }
 }
 
@@ -1573,8 +1648,14 @@ mod tests {
         };
 
         let expected = ("42", "seafile-main", "library", "/Videos/Movie.mkv");
-        assert_eq!(resource_descriptor(&refresh), expected);
-        assert_eq!(resource_descriptor(&proxy), expected);
+        assert_eq!(
+            resource_descriptor(&refresh).expect("refresh descriptor"),
+            expected
+        );
+        assert_eq!(
+            resource_descriptor(&proxy).expect("proxy descriptor"),
+            expected
+        );
     }
 
     #[test]

@@ -455,3 +455,23 @@ async fn fs_list_supports_home_video_collections() -> TestResult {
     assert_eq!(genres.items[0].item_type, "Genre");
     Ok(())
 }
+
+#[tokio::test]
+async fn delete_active_encodings_sends_jellyfin_device_id() -> TestResult {
+    let server = MockServer::start().await;
+    mount_api_prefix_probe(&server).await;
+    let client = authenticated_client(&server)?;
+
+    Mock::given(method("DELETE"))
+        .and(path("/Videos/ActiveEncodings"))
+        .and(header("x-emby-token", "token-1"))
+        .and(query_param("DeviceId", client.device_id.as_str()))
+        .and(query_param("PlaySessionId", "session-1"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    client.delete_active_encodings("session-1").await?;
+    Ok(())
+}

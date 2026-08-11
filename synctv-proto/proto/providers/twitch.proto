@@ -4,6 +4,7 @@ package synctv.provider.twitch;
 
 import "proto/buf/validate/validate.proto";
 import "proto/source_config.proto";
+import "proto/providers/common.proto";
 
 message BindRequest {
   string auth_token = 1 [(buf.validate.field).string.min_len = 1];
@@ -58,6 +59,7 @@ enum ResourceKind {
 message ResolveRequest {
   string resource = 1 [(buf.validate.field).string.min_len = 1];
   string instance_name = 2;
+  bool shared = 3;
 }
 
 message Chapter {
@@ -95,18 +97,19 @@ message ResolveResponse {
   ResourceKind kind = 1;
   Metadata metadata = 2;
   repeated Quality qualities = 3;
-  synctv.source_config.TwitchMediaSourceConfig source_config = 4;
+  synctv.provider.common.DiscoveredSource source = 4;
 }
 
 message ListChannelItemsRequest {
-  string channel = 1 [(buf.validate.field).string = {
-    min_len: 3,
-    max_len: 25
+  string resource = 1 [(buf.validate.field).string = {
+    min_len: 1,
+    max_len: 512
   }];
   synctv.source_config.TwitchPlaylistContent content = 2;
   optional string cursor = 3;
   uint32 page_size = 4 [(buf.validate.field).uint32.lte = 100];
   string instance_name = 5;
+  bool shared = 6;
 }
 
 message ListItem {
@@ -117,13 +120,14 @@ message ListItem {
   optional uint64 duration_seconds = 5;
   optional uint64 view_count = 6;
   optional string published_at = 7;
+  synctv.provider.common.DiscoveredSource source = 8;
 }
 
 message ListChannelItemsResponse {
   repeated ListItem items = 1;
   optional string cursor = 2;
   bool has_more = 3;
-  synctv.source_config.TwitchPlaylistSourceConfig source_config = 4;
+  synctv.provider.common.DiscoveredSource source = 4;
 }
 
 message StreamItem {
@@ -140,20 +144,21 @@ message StreamItem {
   string language = 11;
   repeated string tags = 12;
   bool is_mature = 13;
-  synctv.source_config.TwitchMediaSourceConfig source_config = 14;
+  synctv.provider.common.DiscoveredSource source = 14;
 }
 
 message ListFollowedLiveRequest {
   optional string cursor = 1;
   uint32 page_size = 2 [(buf.validate.field).uint32.lte = 100];
   string instance_name = 3;
+  bool shared = 4;
 }
 
 message ListFollowedLiveResponse {
   repeated StreamItem items = 1;
   optional string cursor = 2;
   bool has_more = 3;
-  synctv.source_config.TwitchPlaylistSourceConfig source_config = 4;
+  synctv.provider.common.DiscoveredSource source = 4;
 }
 
 message ListCategoryStreamsRequest {
@@ -162,26 +167,28 @@ message ListCategoryStreamsRequest {
   optional string cursor = 3;
   uint32 page_size = 4 [(buf.validate.field).uint32.lte = 100];
   string instance_name = 5;
+  bool shared = 6;
 }
 
 message ListCategoryStreamsResponse {
   repeated StreamItem items = 1;
   optional string cursor = 2;
   bool has_more = 3;
-  synctv.source_config.TwitchPlaylistSourceConfig source_config = 4;
+  synctv.provider.common.DiscoveredSource source = 4;
 }
 
 message CategoryItem {
   string id = 1;
   string name = 2;
   string box_art_url = 3;
-  synctv.source_config.TwitchPlaylistSourceConfig source_config = 4;
+  synctv.provider.common.DiscoveredSource source = 4;
 }
 
 message ListTopCategoriesRequest {
   optional string cursor = 1;
   uint32 page_size = 2 [(buf.validate.field).uint32.lte = 100];
   string instance_name = 3;
+  bool shared = 4;
 }
 
 message ListTopCategoriesResponse {
@@ -195,6 +202,7 @@ message SearchLiveChannelsRequest {
   optional string cursor = 2;
   uint32 page_size = 3 [(buf.validate.field).uint32.lte = 100];
   string instance_name = 4;
+  bool shared = 5;
 }
 
 message SearchChannelItem {
@@ -209,14 +217,14 @@ message SearchChannelItem {
   string started_at = 9;
   string language = 10;
   repeated string tags = 11;
-  synctv.source_config.TwitchMediaSourceConfig source_config = 12;
+  synctv.provider.common.DiscoveredSource source = 12;
 }
 
 message SearchLiveChannelsResponse {
   repeated SearchChannelItem items = 1;
   optional string cursor = 2;
   bool has_more = 3;
-  synctv.source_config.TwitchPlaylistSourceConfig source_config = 4;
+  synctv.provider.common.DiscoveredSource source = 4;
 }
 
 message ListScheduleRequest {
@@ -224,6 +232,7 @@ message ListScheduleRequest {
   optional string cursor = 2;
   uint32 page_size = 3 [(buf.validate.field).uint32.lte = 25];
   string instance_name = 4;
+  bool shared = 5;
 }
 
 message ScheduleSegment {
@@ -244,5 +253,5 @@ message ListScheduleResponse {
   repeated ScheduleSegment segments = 4;
   optional string cursor = 5;
   bool has_more = 6;
-  synctv.source_config.TwitchMediaSourceConfig source_config = 7;
+  synctv.provider.common.DiscoveredSource source = 7;
 }

@@ -1239,6 +1239,13 @@ impl ManagementService for ManagementServiceImpl {
         self.provider_youtube_resolve(request).await
     }
 
+    async fn youtube_list(
+        &self,
+        request: Request<crate::proto::YoutubeListRequest>,
+    ) -> Result<Response<synctv_proto::providers::youtube::ListResponse>, Status> {
+        self.provider_youtube_list(request).await
+    }
+
     async fn cloudreve_login(
         &self,
         request: Request<crate::proto::CloudreveLoginRequest>,
@@ -1580,6 +1587,13 @@ impl ManagementService for ManagementServiceImpl {
         request: Request<crate::proto::BilibiliListLiveAreasRequest>,
     ) -> Result<Response<synctv_proto::providers::bilibili::ListLiveAreasResponse>, Status> {
         self.provider_bilibili_list_live_areas(request).await
+    }
+
+    async fn bilibili_list_playlist(
+        &self,
+        request: Request<crate::proto::BilibiliListPlaylistRequest>,
+    ) -> Result<Response<synctv_proto::providers::bilibili::ListPlaylistResponse>, Status> {
+        self.provider_bilibili_list_playlist(request).await
     }
 
     async fn bilibili_list_favorite_folders(

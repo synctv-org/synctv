@@ -5,6 +5,80 @@ package synctv.provider.common;
 import "proto/buf/validate/validate.proto";
 import "proto/source_config.proto";
 
+// A source prepared by the server during provider discovery. Clients submit
+// this value unchanged to AddMedia or CreatePlaylist.
+message DiscoveredSource {
+  oneof source_config {
+    synctv.source_config.MediaSourceConfig media = 1;
+    synctv.source_config.PlaylistSourceConfig playlist = 2;
+  }
+  string provider_instance_name = 3;
+}
+
+message PreparedMediaSource {
+  DiscoveredSource source = 1 [(buf.validate.field).required = true];
+  string suggested_name = 2;
+  synctv.source_config.PlaybackKind playback_kind = 3 [(buf.validate.field).enum.defined_only = true];
+}
+
+message PrepareDirectUrlRequest {
+  string url = 1 [(buf.validate.field).string.min_len = 1];
+  map<string, string> headers = 2;
+  synctv.source_config.PlaybackKind playback_kind = 3 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  synctv.source_config.PlaybackProxyMode proxy_mode = 4 [(buf.validate.field).enum.defined_only = true];
+  optional int64 expires_at = 6 [(buf.validate.field).int64.gt = 0];
+}
+
+message PrepareRtmpPullIntent {
+  string url = 1 [(buf.validate.field).string.min_len = 1];
+  synctv.source_config.RtmpStreamMode mode = 2 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+}
+
+message PrepareRtspTrackIntent {
+  oneof mode {
+    option (buf.validate.oneof).required = true;
+    bool first_compatible = 1;
+    uint32 index = 2;
+    bool disabled = 3;
+  }
+}
+
+message PrepareRtspPullIntent {
+  string url = 1 [(buf.validate.field).string.min_len = 1];
+  synctv.source_config.RtspTransport transport = 2 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  PrepareRtspTrackIntent video_track = 3 [(buf.validate.field).required = true];
+  PrepareRtspTrackIntent audio_track = 4 [(buf.validate.field).required = true];
+}
+
+message PrepareHttpFlvPullIntent {
+  string url = 1 [(buf.validate.field).string.min_len = 1];
+}
+
+message PrepareLiveProxyRequest {
+  oneof source {
+    option (buf.validate.oneof).required = true;
+    PrepareRtmpPullIntent rtmp = 1;
+    PrepareRtspPullIntent rtsp = 2;
+    PrepareHttpFlvPullIntent http_flv = 3;
+  }
+}
+
+message PrepareRtmpRequest {
+  synctv.source_config.RtmpStreamMode mode = 1 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+}
+
 message ProviderInstanceQuery {
   string instance_name = 1 [(buf.validate.field).cel = {
     id: "provider_instance_query.instance_name"

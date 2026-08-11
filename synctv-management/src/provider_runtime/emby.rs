@@ -20,7 +20,9 @@ pub struct EmbyLoginCommand {
 #[derive(Debug, Clone)]
 pub struct EmbyListQuery {
     pub server_id: String,
-    pub path: String,
+    pub mode: emby_proto::ListMode,
+    pub target_id: String,
+    pub item_types: Vec<String>,
     pub start_index: u64,
     pub limit: u64,
     pub search_term: String,

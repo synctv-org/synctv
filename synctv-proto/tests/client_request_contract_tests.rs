@@ -52,8 +52,7 @@ fn direct_url_media_source_config(
                     default_danmaku_index: None,
                     playback_kind: None,
                     duration_seconds: None,
-                    prefer_proxy: None,
-                    proxy_only: None,
+                    proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
                 },
             ),
         ),
@@ -68,6 +67,7 @@ fn alist_playlist_source_config(
             synctv_proto::source_config::playlist_source_config::Provider::Alist(
                 synctv_proto::source_config::AlistPlaylistSourceConfig {
                     server_id: "alist-main".to_string(),
+                    proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
                     path: path.to_string(),
                     password: None,
                 },
@@ -628,12 +628,61 @@ fn test_media_source_config_json_accepts_omitted_proto_default_fields() {
 }
 
 #[test]
-fn test_media_source_config_json_rejects_unknown_provider_key() {
-    let error = serde_json::from_str::<synctv_proto::source_config::MediaSourceConfig>(
+fn test_media_source_config_json_ignores_unknown_provider_key() {
+    let config = serde_json::from_str::<synctv_proto::source_config::MediaSourceConfig>(
         r#"{"unknown_provider":{"url":"https://example.com/video.mp4"}}"#,
     )
-    .expect_err("unknown provider key should be rejected");
-    assert!(error.to_string().contains("unknown_provider"), "{error}");
+    .expect("unknown provider key should be ignored");
+    assert!(config.provider.is_none());
+}
+
+#[test]
+fn test_media_source_config_json_ignores_unknown_fields() {
+    let config = serde_json::from_str::<synctv_proto::source_config::MediaSourceConfig>(
+        r#"{
+            "directUrl": {
+                "preferProxy": true,
+                "proxyOnly": true,
+                "futureField": {"version": 2},
+                "medias": [{
+                    "url": "https://example.com/video.mp4",
+                    "legacyHeaders": {"X-Legacy": "ignored"}
+                }]
+            }
+        }"#,
+    )
+    .expect("source config should ignore unknown fields");
+
+    let Some(synctv_proto::source_config::media_source_config::Provider::DirectUrl(config)) =
+        config.provider
+    else {
+        panic!("expected direct URL provider");
+    };
+    assert_eq!(config.proxy_mode, 0);
+    assert_eq!(config.medias.len(), 1);
+    assert_eq!(config.medias[0].url, "https://example.com/video.mp4");
+}
+
+#[test]
+fn test_playlist_source_config_json_ignores_unknown_fields() {
+    let config = serde_json::from_str::<synctv_proto::source_config::PlaylistSourceConfig>(
+        r#"{
+            "alist": {
+                "serverId": "alist-main",
+                "path": "/shows",
+                "futureField": "ignored"
+            }
+        }"#,
+    )
+    .expect("playlist source config should ignore unknown fields");
+
+    let Some(synctv_proto::source_config::playlist_source_config::Provider::Alist(config)) =
+        config.provider
+    else {
+        panic!("expected Alist playlist provider");
+    };
+    assert_eq!(config.server_id, "alist-main");
+    assert_eq!(config.path, "/shows");
 }
 
 #[test]

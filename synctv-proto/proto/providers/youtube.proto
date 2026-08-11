@@ -4,6 +4,7 @@ package synctv.provider.youtube;
 
 import "proto/buf/validate/validate.proto";
 import "proto/source_config.proto";
+import "proto/providers/common.proto";
 
 message BindRequest {
   string label = 1 [(buf.validate.field).string.min_len = 1];
@@ -39,6 +40,7 @@ message UnbindResponse { bool removed = 1; }
 message ResolveRequest {
   string resource = 1 [(buf.validate.field).string.min_len = 1];
   string instance_name = 2;
+  bool shared = 3;
 }
 
 message Metadata {
@@ -85,5 +87,58 @@ message ResolveResponse {
   repeated Format formats = 2;
   repeated Subtitle subtitles = 3;
   optional string storyboard_spec = 4;
-  synctv.source_config.YoutubeMediaSourceConfig source_config = 5;
+  synctv.provider.common.DiscoveredSource source = 5;
+}
+
+message ListRequest {
+  message Playlist {
+    string resource = 1 [(buf.validate.field).string.min_len = 1];
+  }
+  message Channel {
+    string resource = 1 [(buf.validate.field).string.min_len = 1];
+    synctv.source_config.YoutubeChannelContent content = 2 [(buf.validate.field).enum = {
+      defined_only: true,
+      not_in: 0
+    }];
+  }
+  message Search {
+    string query = 1 [(buf.validate.field).string.min_len = 1];
+  }
+  message Subscriptions {}
+  message LikedVideos {}
+  message WatchLater {}
+
+  bool shared = 1;
+  optional string cursor = 2;
+  string instance_name = 3;
+  oneof source {
+    option (buf.validate.oneof).required = true;
+    Playlist playlist = 4;
+    Channel channel = 5;
+    Search search = 6;
+    Subscriptions subscriptions = 7;
+    LikedVideos liked_videos = 8;
+    WatchLater watch_later = 9;
+  }
+}
+
+message ListItem {
+  string video_id = 1;
+  string title = 2;
+  string channel_name = 3;
+  string channel_id = 4;
+  optional uint64 duration_seconds = 5;
+  string view_count_text = 6;
+  string published_time_text = 7;
+  optional string thumbnail_url = 8;
+  bool is_live = 9;
+  bool is_short = 10;
+  synctv.provider.common.DiscoveredSource source = 11;
+}
+
+message ListResponse {
+  repeated ListItem items = 1;
+  optional string cursor = 2;
+  bool has_more = 3;
+  synctv.provider.common.DiscoveredSource source = 4;
 }

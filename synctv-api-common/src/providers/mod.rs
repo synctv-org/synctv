@@ -6,6 +6,7 @@ pub mod bilibili;
 pub mod cctv;
 pub mod cloudreve;
 pub mod common;
+mod discovery;
 pub mod douyin;
 pub mod douyu;
 pub mod emby;
@@ -33,6 +34,7 @@ pub use common::{
     resolve_bound_instance_name,
 };
 pub use common::{ProviderCommonApiImpl, ProviderCommonApiRuntime};
+pub(crate) use discovery::{discovered_media, discovered_playlist};
 pub use douyin::DouyinApiImpl;
 pub use emby::EmbyApiImpl;
 pub use fnos::FnosApiImpl;

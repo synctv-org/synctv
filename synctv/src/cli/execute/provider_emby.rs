@@ -31,11 +31,13 @@ pub(super) async fn execute_provider_emby(command: ProviderEmbyCommand) -> Resul
                     actor: Some(actor_user_id),
                     request: Some(synctv_proto::providers::emby::ListRequest {
                         server_id: args.bind.server_id,
-                        path: args.path,
+                        mode: synctv_proto::providers::emby::ListMode::Folder as i32,
                         start_index: args.start_index,
                         limit: args.limit,
                         search_term: args.search_term.unwrap_or_default(),
                         instance_name: provider_service_instance_name(&args.bind.instance),
+                        target_id: args.path,
+                        item_types: Vec::new(),
                     }),
                 }
             )?;

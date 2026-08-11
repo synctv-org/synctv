@@ -756,7 +756,7 @@ mod tests {
         let page = format!(
             r#"<script>window.videoInfo = {{
                 "title":"Main", "coverUrl":"https://img.example/cover.jpg",
-                "description":null, "viewCount":"12", "likeCountShow":"483",
+                "description":null, "viewCount":"12", "likeCountShow":"点赞",
                 "commentCountShow":"4",
                 "user":{{"name":"Author","href":"/u/42","avatarImage":"https://img.example/avatar.jpg"}},
                 "tagList":[{{"name":"Rust"}}],
@@ -781,7 +781,7 @@ mod tests {
         assert_eq!(media.metadata.author_id.as_deref(), Some("42"));
         assert_eq!(media.metadata.description, None);
         assert_eq!(media.metadata.view_count, Some(12));
-        assert_eq!(media.metadata.like_count, Some(483));
+        assert_eq!(media.metadata.like_count, None);
         assert_eq!(media.metadata.comment_count, Some(4));
         assert_eq!(media.metadata.danmaku_resource_id.as_deref(), Some("1002"));
         assert_eq!(media.playback.qualities[0].height, Some(1080));

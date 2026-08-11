@@ -19,6 +19,7 @@ fn seafile_contract_preserves_hash_ids_and_source_variants() {
         provider: Some(media_source_config::Provider::Seafile(
             synctv_proto::source_config::SeafileMediaSourceConfig {
                 server_id: "seafile-home".to_string(),
+                proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
                 repository_id: "0f70c3e8-3f73-4f07-a489-65d4c33e9130".to_string(),
                 path: "/Videos/movie.mkv".to_string(),
                 object_id: "0123456789abcdef0123456789abcdef01234567".to_string(),
@@ -30,6 +31,7 @@ fn seafile_contract_preserves_hash_ids_and_source_variants() {
         provider: Some(playlist_source_config::Provider::Seafile(
             synctv_proto::source_config::SeafilePlaylistSourceConfig {
                 server_id: "seafile-home".to_string(),
+                proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
                 source: Some(
                     synctv_proto::source_config::seafile_playlist_source_config::Source::Search(
                         synctv_proto::source_config::SeafileSearchPlaylistSourceConfig {

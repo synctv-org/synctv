@@ -163,13 +163,13 @@ pub use playback_auto_advance::{ActivePlaybackRoomSource, PlaybackAutoAdvanceSer
 pub use playback_duration_probe::PlaybackDurationProbeService;
 pub use playback_provider::{
     AcFunPlaybackProviderService, AlistPlaybackProviderService, BilibiliLiveDanmakuRequest,
-    BilibiliPlaybackProviderService, CctvPlaybackProviderService, DirectUrlPlaybackProviderService,
-    DouyinPlaybackProviderService, DouyuPlaybackProviderService, EmbyPlaybackProviderService,
-    FnosPlaybackProviderService, HuyaPlaybackProviderService, LiveProxyPlaybackProviderService,
-    NextcloudPlaybackProviderService, PlaybackProviderServiceDeps, QnapPlaybackProviderService,
-    RtmpPlaybackProviderService, SeafilePlaybackProviderService, SynologyPlaybackProviderService,
-    TikTokPlaybackProviderService, TrueNasPlaybackProviderService, TwitchPlaybackProviderService,
-    YoutubePlaybackProviderService,
+    BilibiliPlaybackProviderService, CctvPlaybackProviderService, CloudrevePlaybackProviderService,
+    DirectUrlPlaybackProviderService, DouyinPlaybackProviderService, DouyuPlaybackProviderService,
+    EmbyPlaybackProviderService, FnosPlaybackProviderService, HuyaPlaybackProviderService,
+    LiveProxyPlaybackProviderService, NextcloudPlaybackProviderService,
+    PlaybackProviderServiceDeps, QnapPlaybackProviderService, RtmpPlaybackProviderService,
+    SeafilePlaybackProviderService, SynologyPlaybackProviderService, TikTokPlaybackProviderService,
+    TrueNasPlaybackProviderService, TwitchPlaybackProviderService, YoutubePlaybackProviderService,
 };
 pub use playlist::{
     CreatePlaylistCoverUploadSession, CreatePlaylistRequest, MovePlaylistRequest, PlaylistService,

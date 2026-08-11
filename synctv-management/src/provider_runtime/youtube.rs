@@ -24,4 +24,9 @@ pub trait YoutubeRuntime: Send + Sync {
         caller_user_id: &UserId,
         request: youtube::ResolveRequest,
     ) -> Result<youtube::ResolveResponse, ProviderError>;
+    async fn list(
+        &self,
+        caller_user_id: &UserId,
+        request: youtube::ListRequest,
+    ) -> Result<youtube::ListResponse, ProviderError>;
 }

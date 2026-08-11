@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use synctv_proto::providers::youtube::youtube_provider_service_server::YoutubeProviderService;
 use synctv_proto::providers::youtube::{
-    BindRequest, BindResponse, GetBindsRequest, GetBindsResponse, ResolveRequest, ResolveResponse,
-    UnbindRequest, UnbindResponse,
+    BindRequest, BindResponse, GetBindsRequest, GetBindsResponse, ListRequest, ListResponse,
+    ResolveRequest, ResolveResponse, UnbindRequest, UnbindResponse,
 };
 use tonic::{Request, Response, Status};
 
@@ -114,6 +114,26 @@ impl YoutubeProviderService for YoutubeProviderGrpcService {
                 EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
                     api.resolve(authenticated.user_id, req, instance_name.as_deref())
+                        .await
+                        .map_err(synctv_api_common::impls::ApiError::from)
+                },
+            )
+            .await
+            .map(Response::new)
+            .map_err(crate::grpc::map_api_error)
+    }
+
+    async fn list(&self, request: Request<ListRequest>) -> Result<Response<ListResponse>, Status> {
+        let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
+        let req = request.into_inner();
+        let instance_name = super::provider_instance_name(&req.instance_name)?;
+        let api = self.api.clone();
+        self.request_executor
+            .execute_user(
+                &metadata,
+                EndpointRateLimitCategory::Read,
+                move |authenticated| async move {
+                    api.list(authenticated.user_id, req, instance_name.as_deref())
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },

@@ -46,7 +46,13 @@ impl DouyuProviderService for DouyuProviderGrpcService {
                     service
                         .resolve_resource(&req.resource)
                         .await
-                        .map(synctv_api_common::providers::douyu::resolve_response)
+                        .map(|media| {
+                            synctv_api_common::providers::douyu::resolve_response(
+                                media,
+                                (!req.instance_name.is_empty())
+                                    .then_some(req.instance_name.as_str()),
+                            )
+                        })
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },
             )

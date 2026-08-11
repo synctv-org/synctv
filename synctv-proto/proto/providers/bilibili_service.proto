@@ -10,6 +10,7 @@ import "proto/providers/bilibili.proto";
 service BilibiliProviderService {
   // Parse Bilibili URL (video, anime, live), using the user's global bind when available
   rpc Parse(ParseRequest) returns (ParseResponse);
+  rpc ListPlaylist(ListPlaylistRequest) returns (ListPlaylistResponse);
 
   // List live categories available for dynamic playlist creation
   rpc ListLiveAreas(ListLiveAreasRequest) returns (ListLiveAreasResponse);

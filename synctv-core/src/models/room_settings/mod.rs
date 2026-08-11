@@ -241,7 +241,7 @@ use serde::{Deserialize, Serialize};
 
 /// Room settings composed of individual type-safe settings
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
-#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+#[serde(default, rename_all = "camelCase")]
 pub struct RoomSettings {
     pub allow_guest_join: AllowGuestJoin,
     pub max_members: MaxMembers,
@@ -483,6 +483,19 @@ mod tests {
         );
         assert!(settings.voice_chat_enabled.0);
         assert!(settings.p2p_media_enabled.0);
+    }
+
+    #[test]
+    fn room_settings_ignore_unknown_persisted_fields() {
+        let settings: RoomSettings = ok(
+            serde_json::from_value(serde_json::json!({
+                "futureSetting": {"version": 2},
+                "voiceChatEnabled": false
+            })),
+            "room settings should ignore unknown persisted fields",
+        );
+
+        assert!(!settings.voice_chat_enabled.0);
     }
 
     #[test]

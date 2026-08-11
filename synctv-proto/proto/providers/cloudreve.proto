@@ -3,6 +3,7 @@ syntax = "proto3";
 package synctv.provider.cloudreve;
 
 import "proto/buf/validate/validate.proto";
+import "proto/providers/common.proto";
 
 message LoginRequest {
   string host = 1 [(buf.validate.field).string.min_len = 1];
@@ -32,6 +33,7 @@ message ListResponse {
     PagePagination page = 2;
     CursorPagination cursor = 3;
   }
+  synctv.provider.common.DiscoveredSource source = 4;
 }
 
 message PagePagination {
@@ -63,6 +65,7 @@ message FileItem {
   bool is_dir = 5;
   int64 modified = 6;
   string thumbnail = 7;
+  synctv.provider.common.DiscoveredSource source = 8;
 }
 
 message GetMeRequest {

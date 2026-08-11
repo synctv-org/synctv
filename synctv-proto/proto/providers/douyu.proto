@@ -4,6 +4,7 @@ package synctv.provider.douyu;
 
 import "proto/buf/validate/validate.proto";
 import "proto/source_config.proto";
+import "proto/providers/common.proto";
 
 enum StreamFormat {
   STREAM_FORMAT_UNSPECIFIED = 0;
@@ -20,6 +21,7 @@ enum Codec {
 
 message ResolveRequest {
   string resource = 1 [(buf.validate.field).string.min_len = 1];
+  string instance_name = 2;
 }
 
 message Metadata {
@@ -49,5 +51,5 @@ message Quality {
 message ResolveResponse {
   Metadata metadata = 1;
   repeated Quality qualities = 2;
-  synctv.source_config.DouyuMediaSourceConfig source_config = 3;
+  synctv.provider.common.DiscoveredSource source = 3;
 }

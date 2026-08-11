@@ -2,7 +2,13 @@ use synctv_media_providers::cctv::{CctvMedia, CctvMetadata, CctvStreamKind};
 use synctv_proto::providers::cctv::{self as proto, *};
 use synctv_proto::source_config;
 
-pub fn resolve_response(media: CctvMedia, resource: String) -> ResolveResponse {
+use super::discovery::discovered_media;
+
+pub fn resolve_response(
+    media: CctvMedia,
+    resource: String,
+    provider_instance_name: Option<&str>,
+) -> ResolveResponse {
     ResolveResponse {
         metadata: Some(metadata_message(media.metadata)),
         streams: media
@@ -15,7 +21,12 @@ pub fn resolve_response(media: CctvMedia, resource: String) -> ResolveResponse {
                 kind: stream_kind(stream.kind),
             })
             .collect(),
-        source_config: Some(source_config::CctvMediaSourceConfig { resource }),
+        source: Some(discovered_media(
+            source_config::media_source_config::Provider::Cctv(
+                source_config::CctvMediaSourceConfig { resource },
+            ),
+            provider_instance_name,
+        )),
     }
 }
 

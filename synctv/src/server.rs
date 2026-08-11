@@ -176,6 +176,7 @@ struct SharedPlaybackProviderServices {
     alist: Arc<synctv_core::service::AlistPlaybackProviderService>,
     bilibili: Arc<synctv_core::service::BilibiliPlaybackProviderService>,
     direct_url: Arc<synctv_core::service::DirectUrlPlaybackProviderService>,
+    cloudreve: Arc<synctv_core::service::CloudrevePlaybackProviderService>,
     emby: Arc<synctv_core::service::EmbyPlaybackProviderService>,
     rtmp: Arc<synctv_core::service::RtmpPlaybackProviderService>,
     live_proxy: Arc<synctv_core::service::LiveProxyPlaybackProviderService>,
@@ -566,6 +567,9 @@ fn build_playback_provider_services(
             deps.clone(),
         )),
         direct_url: Arc::new(synctv_core::service::DirectUrlPlaybackProviderService::new(
+            deps.clone(),
+        )),
+        cloudreve: Arc::new(synctv_core::service::CloudrevePlaybackProviderService::new(
             deps.clone(),
         )),
         emby: Arc::new(synctv_core::service::EmbyPlaybackProviderService::new(
@@ -2503,6 +2507,10 @@ impl SyncTvServer {
                 .shared_api_runtime
                 .direct_url_playback_provider_service
                 .clone(),
+            cloudreve_playback_provider_service: shared_http_app_state
+                .shared_api_runtime
+                .cloudreve_playback_provider_service
+                .clone(),
             emby_playback_provider_service: shared_http_app_state
                 .shared_api_runtime
                 .emby_playback_provider_service
@@ -2762,6 +2770,7 @@ impl SyncTvServer {
                 alist_playback_provider_service: playback_provider_services.alist.clone(),
                 bilibili_playback_provider_service: playback_provider_services.bilibili.clone(),
                 direct_url_playback_provider_service: playback_provider_services.direct_url.clone(),
+                cloudreve_playback_provider_service: playback_provider_services.cloudreve.clone(),
                 emby_playback_provider_service: playback_provider_services.emby.clone(),
                 rtmp_playback_provider_service: playback_provider_services.rtmp.clone(),
                 live_proxy_playback_provider_service: playback_provider_services.live_proxy.clone(),
@@ -3437,6 +3446,7 @@ mod tests {
             alist_playback_provider_service: playback_provider_services.alist.clone(),
             bilibili_playback_provider_service: playback_provider_services.bilibili.clone(),
             direct_url_playback_provider_service: playback_provider_services.direct_url.clone(),
+            cloudreve_playback_provider_service: playback_provider_services.cloudreve.clone(),
             emby_playback_provider_service: playback_provider_services.emby.clone(),
             rtmp_playback_provider_service: playback_provider_services.rtmp.clone(),
             live_proxy_playback_provider_service: playback_provider_services.live_proxy.clone(),

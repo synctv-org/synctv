@@ -140,6 +140,144 @@ services:
       - synctv-dev
     restart: "no"
 
+  nextcloud:
+    image: nextcloud:apache
+    container_name: synctv-nextcloud-dev
+    profiles: ["media"]
+    environment:
+      NEXTCLOUD_ADMIN_USER: synctv
+      NEXTCLOUD_ADMIN_PASSWORD: synctv-nextcloud
+      SQLITE_DATABASE: nextcloud
+      NEXTCLOUD_TRUSTED_DOMAINS: "localhost 127.0.0.1 nextcloud"
+    ports:
+      - "127.0.0.1:8082:80"
+    volumes:
+      - nextcloud_dev_data:/var/www/html
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1/status.php | grep -q 'installed'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 40s
+    networks:
+      - synctv-dev
+    restart: unless-stopped
+
+  nextcloud-init:
+    image: curlimages/curl:latest
+    container_name: synctv-nextcloud-init-dev
+    profiles: ["media"]
+    depends_on:
+      nextcloud:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        endpoint=http://nextcloud
+        auth='synctv:synctv-nextcloud'
+        for path in /Movies /Movies/Nested /Playlists; do
+          curl -fsS -u "$$auth" -X MKCOL "$$endpoint/remote.php/dav/files/synctv$$path" || true
+        done
+        printf 'SyncTV Nextcloud development fixture\n' | curl -fsS -u "$$auth" -T - "$$endpoint/remote.php/dav/files/synctv/README.txt"
+        curl -fsS -u "$$auth" -X PROPPATCH \
+          -H 'Content-Type: application/xml; charset=utf-8' \
+          --data-binary '<propertyupdate xmlns="DAV:" xmlns:oc="http://owncloud.org/ns"><set><prop><oc:favorite>1</oc:favorite></prop></set></propertyupdate>' \
+          "$$endpoint/remote.php/dav/files/synctv/README.txt" || true
+    networks:
+      - synctv-dev
+    restart: "no"
+
+  seafile-db:
+    image: mariadb:10.11
+    container_name: synctv-seafile-db-dev
+    profiles: ["media"]
+    environment:
+      MARIADB_ROOT_PASSWORD: seafile-db-root
+      MARIADB_LOG_CONSOLE: "true"
+      MARIADB_AUTO_UPGRADE: "1"
+    volumes:
+      - seafile_dev_mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "healthcheck.sh --connect --innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    networks:
+      - synctv-dev
+    restart: unless-stopped
+
+  seafile-memcached:
+    image: memcached:1.6-alpine
+    container_name: synctv-seafile-memcached-dev
+    profiles: ["media"]
+    command: memcached -m 128
+    networks:
+      - synctv-dev
+    restart: unless-stopped
+
+  seafile:
+    image: seafileltd/seafile-mc:12.0-latest
+    container_name: synctv-seafile-dev
+    profiles: ["media"]
+    depends_on:
+      seafile-db:
+        condition: service_healthy
+      seafile-memcached:
+        condition: service_started
+    environment:
+      DB_HOST: seafile-db
+      DB_ROOT_PASSWD: seafile-db-root
+      TIME_ZONE: Asia/Shanghai
+      SEAFILE_SERVER_HOSTNAME: 127.0.0.1:8083
+      SEAFILE_SERVER_PROTOCOL: http
+      INIT_SEAFILE_ADMIN_EMAIL: synctv@example.com
+      INIT_SEAFILE_ADMIN_PASSWORD: synctv-seafile
+      JWT_PRIVATE_KEY: synctv-dev-seafile-jwt-private-key-2026
+      SEAFILE_LOG_TO_STDOUT: "true"
+      CACHE_PROVIDER: memcached
+      MEMCACHED_HOST: seafile-memcached
+    ports:
+      - "127.0.0.1:8083:80"
+    volumes:
+      - seafile_dev_data:/shared
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1/api2/server-info/ | grep -q 'version'"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 90s
+    networks:
+      - synctv-dev
+    restart: unless-stopped
+
+  seafile-init:
+    image: curlimages/curl:latest
+    container_name: synctv-seafile-init-dev
+    profiles: ["media"]
+    depends_on:
+      seafile:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        endpoint=http://seafile
+        token="$$(curl -fsS -X POST "$$endpoint/api2/auth-token/" \
+          -d 'username=synctv@example.com' -d 'password=synctv-seafile' \
+          | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"
+        [ -n "$$token" ]
+        repos="$$(curl -fsS -H "Authorization: Token $$token" "$$endpoint/api2/repos/")"
+        if ! printf '%s' "$$repos" | grep -q 'SyncTV Dev Library'; then
+          curl -fsS -X POST -H "Authorization: Token $$token" \
+            -d 'name=SyncTV Dev Library' -d 'desc=SyncTV development media fixture' \
+            "$$endpoint/api2/repos/" >/dev/null
+        fi
+    networks:
+      - synctv-dev
+    restart: "no"
+
   emby-init:
     image: curlimages/curl:latest
     container_name: synctv-emby-init-dev
@@ -191,7 +329,7 @@ services:
           curl -fsS -X POST "$$emby/Library/VirtualFolders" \
             -H "X-Emby-Token: $$token" \
             -H 'Content-Type: application/json' \
-            -d '{"Name":"SyncTV Dev Media","CollectionType":"homevideos","RefreshLibrary":true,"LibraryOptions":{"ContentType":"homevideos","PathInfos":[{"Path":"/mnt/share1"}],"EnablePhotos":false,"EnableRealtimeMonitor":false}}' >/dev/null
+            -d '{"Name":"SyncTV Dev Media","CollectionType":"homevideos","RefreshLibrary":true,"LibraryOptions":{"ContentType":"homevideos","PathInfos":[{"Path":"/mnt/share1"}],"EnablePhotos":false,"EnableRealtimeMonitor":false,"SampleIgnoreSize":0}}' >/dev/null
         fi
 
         curl -fsS -X POST "$$emby/Library/Refresh" -H "X-Emby-Token: $$token" >/dev/null
@@ -343,6 +481,12 @@ volumes:
   openlist_dev_data:
     driver: local
   openlist_dev_media:
+    driver: local
+  nextcloud_dev_data:
+    driver: local
+  seafile_dev_mysql:
+    driver: local
+  seafile_dev_data:
     driver: local
   emby_dev_config:
     driver: local

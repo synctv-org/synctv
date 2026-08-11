@@ -7,9 +7,17 @@ use synctv_proto::providers::nextcloud::{
     LoginRequest, LoginResponse, LogoutRequest, LogoutResponse, PollLoginFlowRequest,
     StartLoginFlowRequest, StartLoginFlowResponse,
 };
+use synctv_proto::source_config::{
+    media_source_config, nextcloud_playlist_source_config, playlist_source_config,
+    NextcloudFavoritesPlaylistSourceConfig, NextcloudFolderPlaylistSourceConfig,
+    NextcloudMediaSourceConfig, NextcloudPlaylistSourceConfig,
+};
 use synctv_realtime::fanout::RealtimeEventService;
 
-use super::{publish_provider_credential_changed, resolve_bound_instance_name};
+use super::{
+    discovered_media, discovered_playlist, publish_provider_credential_changed,
+    resolve_bound_instance_name,
+};
 
 #[derive(Clone)]
 pub struct NextcloudApiImpl {
@@ -101,8 +109,20 @@ impl NextcloudApiImpl {
                 req.search.as_deref(),
             )
             .await?;
-        resolve_bound_instance_name(requested_instance_name, stored.as_deref())?;
-        Ok(list_response(response))
+        let instance_name =
+            resolve_bound_instance_name(requested_instance_name, stored.as_deref())?;
+        Ok(list_response(
+            response,
+            &req.server_id,
+            NextcloudPlaylistSourceConfig {
+                server_id: req.server_id.clone(),
+                proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
+                source: Some(nextcloud_playlist_source_config::Source::Folder(
+                    NextcloudFolderPlaylistSourceConfig { path: req.path },
+                )),
+            },
+            instance_name.as_deref(),
+        ))
     }
 
     pub async fn list_favorites(
@@ -123,8 +143,20 @@ impl NextcloudApiImpl {
                 req.page_size.clamp(1, 200) as usize,
             )
             .await?;
-        resolve_bound_instance_name(requested_instance_name, stored.as_deref())?;
-        Ok(list_response(response))
+        let instance_name =
+            resolve_bound_instance_name(requested_instance_name, stored.as_deref())?;
+        Ok(list_response(
+            response,
+            &req.server_id,
+            NextcloudPlaylistSourceConfig {
+                server_id: req.server_id.clone(),
+                proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
+                source: Some(nextcloud_playlist_source_config::Source::Favorites(
+                    NextcloudFavoritesPlaylistSourceConfig {},
+                )),
+            },
+            instance_name.as_deref(),
+        ))
     }
 
     pub async fn logout(
@@ -204,33 +236,72 @@ fn login_response(
     }
 }
 
-fn list_response(response: synctv_core::provider::NextcloudListResponse) -> ListResponse {
+fn list_response(
+    response: synctv_core::provider::NextcloudListResponse,
+    server_id: &str,
+    playlist_source: NextcloudPlaylistSourceConfig,
+    provider_instance_name: Option<&str>,
+) -> ListResponse {
     ListResponse {
         content: response
             .content
             .into_iter()
-            .map(|item| FileItem {
-                name: item.name,
-                path: item.path,
-                file_id: item.file_id,
-                is_dir: item.is_directory,
-                size: item.size,
-                modified_at: item.modified_at,
-                content_type: item.content_type,
-                etag: item.etag,
-                permissions: item.permissions,
-                owner_id: item.owner_id,
-                owner_display_name: item.owner_display_name,
-                favorite: item.favorite,
-                has_preview: item.has_preview,
-                blurhash: item.blurhash,
-                width: item.width,
-                height: item.height,
-                duration_millis: item.duration_millis,
+            .map(|item| {
+                let source = if item.is_directory {
+                    discovered_playlist(
+                        playlist_source_config::Provider::Nextcloud(
+                            NextcloudPlaylistSourceConfig {
+                                server_id: server_id.to_string(),
+                                proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto
+                                    as i32,
+                                source: Some(nextcloud_playlist_source_config::Source::Folder(
+                                    NextcloudFolderPlaylistSourceConfig {
+                                        path: item.path.clone(),
+                                    },
+                                )),
+                            },
+                        ),
+                        provider_instance_name,
+                    )
+                } else {
+                    discovered_media(
+                        media_source_config::Provider::Nextcloud(NextcloudMediaSourceConfig {
+                            server_id: server_id.to_string(),
+                            proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
+                            path: item.path.clone(),
+                            file_id: item.file_id,
+                        }),
+                        provider_instance_name,
+                    )
+                };
+                FileItem {
+                    name: item.name,
+                    path: item.path,
+                    file_id: item.file_id,
+                    is_dir: item.is_directory,
+                    size: item.size,
+                    modified_at: item.modified_at,
+                    content_type: item.content_type,
+                    etag: item.etag,
+                    permissions: item.permissions,
+                    owner_id: item.owner_id,
+                    owner_display_name: item.owner_display_name,
+                    favorite: item.favorite,
+                    has_preview: item.has_preview,
+                    blurhash: item.blurhash,
+                    width: item.width,
+                    height: item.height,
+                    duration_millis: item.duration_millis,
+                    source: Some(source),
+                }
             })
             .collect(),
         total: response.total,
         page: response.page as u64,
         has_more: response.has_more,
+        source: Some(discovered_playlist(
+            playlist_source_config::Provider::Nextcloud(playlist_source),
+            provider_instance_name,
+        )),
     }
 }

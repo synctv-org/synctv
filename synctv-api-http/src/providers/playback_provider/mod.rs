@@ -2,6 +2,7 @@ pub(crate) mod acfun;
 pub(crate) mod alist;
 pub(crate) mod bilibili;
 pub(crate) mod cctv;
+pub(crate) mod cloudreve;
 pub(crate) mod direct_url;
 pub(crate) mod douyin;
 pub(crate) mod douyu;

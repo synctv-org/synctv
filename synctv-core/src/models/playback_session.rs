@@ -23,7 +23,7 @@ impl ProviderPlaybackSession {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct EmbyPlaybackSession {
     pub server_id: String,
     pub item_id: String,
@@ -37,8 +37,7 @@ pub struct EmbyPlaybackSession {
 #[serde(
     tag = "type",
     rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
+    rename_all_fields = "camelCase"
 )]
 pub enum FnosPlaybackSession {
     MediaSession {
@@ -65,8 +64,7 @@ pub enum FnosPlaybackSession {
 #[serde(
     tag = "type",
     rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
+    rename_all_fields = "camelCase"
 )]
 pub enum SynologyPlaybackSession {
     WatchSession {
@@ -159,5 +157,29 @@ mod tests {
         assert_eq!(decoded, session);
         assert_eq!(decoded.provider(), SourceProvider::Fnos);
         Ok(())
+    }
+
+    #[test]
+    fn provider_playback_session_ignores_unknown_persisted_fields() {
+        let session: ProviderPlaybackSession = serde_json::from_value(serde_json::json!({
+            "provider": "emby",
+            "data": {
+                "serverId": "emby-home",
+                "itemId": "item-1",
+                "playSessionId": "session-1",
+                "mediaSourceId": "source-1",
+                "playbackCacheKey": "cache-1",
+                "startReported": false,
+                "futureSessionField": {"version": 2}
+            }
+        }))
+        .expect("provider playback session should ignore unknown persisted fields");
+
+        let ProviderPlaybackSession::Emby(session) = session else {
+            panic!("expected Emby playback session");
+        };
+        assert_eq!(session.server_id, "emby-home");
+        assert_eq!(session.item_id, "item-1");
+        assert!(!session.start_reported);
     }
 }

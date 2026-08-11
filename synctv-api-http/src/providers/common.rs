@@ -18,7 +18,8 @@ use synctv_proto::providers::common::{
     DeleteProviderInstanceResponse, DisableProviderInstanceRequest,
     DisableProviderInstanceResponse, EnableProviderInstanceRequest, EnableProviderInstanceResponse,
     ListAvailableProviderInstancesRequest, ListProviderBackendsRequest,
-    ListProviderInstancesRequest, ListProviderInstancesResponse, ProviderBackendsResponse,
+    ListProviderInstancesRequest, ListProviderInstancesResponse, PrepareDirectUrlRequest,
+    PrepareLiveProxyRequest, PrepareRtmpRequest, PreparedMediaSource, ProviderBackendsResponse,
     ProviderInstanceQuery, ProviderInstancesResponse, ReconnectProviderInstanceRequest,
     ReconnectProviderInstanceResponse, UpdateProviderInstanceRequest,
     UpdateProviderInstanceResponse,
@@ -77,6 +78,9 @@ fn source_provider_param(value: Option<&str>) -> Result<i32, super::super::AppEr
 
 pub(crate) fn register_common_routes() -> Router<AppState> {
     Router::new()
+        .route("/prepare/direct-url", post(prepare_direct_url))
+        .route("/prepare/live-proxy", post(prepare_live_proxy))
+        .route("/prepare/rtmp", post(prepare_rtmp))
         .route("/instances/available", get(list_instances))
         .route("/instances", get(list_provider_instances))
         .route("/instances", post(add_provider_instance))
@@ -91,6 +95,60 @@ pub(crate) fn register_common_routes() -> Router<AppState> {
         .route("/instances/{name}/enable", post(enable_provider_instance))
         .route("/instances/{name}/disable", post(disable_provider_instance))
         .route("/backends/{providerType}", get(list_backends))
+}
+
+pub(crate) async fn prepare_direct_url(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Json(req): Json<PrepareDirectUrlRequest>,
+) -> AppResult<Json<PreparedMediaSource>> {
+    let api = state.shared_api_runtime.provider_common_api.clone();
+    let executor = api.clone();
+    executor
+        .execute_user_endpoint(
+            &request_meta.0,
+            EndpointRateLimitCategory::Read,
+            move |_| async move { api.prepare_direct_url(req) },
+        )
+        .await
+        .map(Json)
+        .map_err(map_api_error)
+}
+
+pub(crate) async fn prepare_live_proxy(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Json(req): Json<PrepareLiveProxyRequest>,
+) -> AppResult<Json<PreparedMediaSource>> {
+    let api = state.shared_api_runtime.provider_common_api.clone();
+    let executor = api.clone();
+    executor
+        .execute_user_endpoint(
+            &request_meta.0,
+            EndpointRateLimitCategory::Read,
+            move |_| async move { api.prepare_live_proxy(req).await },
+        )
+        .await
+        .map(Json)
+        .map_err(map_api_error)
+}
+
+pub(crate) async fn prepare_rtmp(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Json(req): Json<PrepareRtmpRequest>,
+) -> AppResult<Json<PreparedMediaSource>> {
+    let api = state.shared_api_runtime.provider_common_api.clone();
+    let executor = api.clone();
+    executor
+        .execute_user_endpoint(
+            &request_meta.0,
+            EndpointRateLimitCategory::Read,
+            move |_| async move { api.prepare_rtmp(req) },
+        )
+        .await
+        .map(Json)
+        .map_err(map_api_error)
 }
 
 #[cfg_attr(

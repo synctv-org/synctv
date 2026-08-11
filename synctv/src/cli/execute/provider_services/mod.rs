@@ -8,7 +8,8 @@ macro_rules! resolve_provider {
                 $method,
                 $wrapper,
                 synctv_proto::providers::$provider::ResolveRequest {
-                    resource: args.resource
+                    resource: args.resource,
+                    instance_name: String::new()
                 }
             ),
         }

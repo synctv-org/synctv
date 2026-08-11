@@ -74,7 +74,7 @@ i16_enum!(ChatMessageType, "Invalid chat message type", {
 });
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+#[serde(default, rename_all = "camelCase")]
 pub struct ChatUserMetadata {
     pub presentation: Option<ChatPresentationMetadata>,
     pub playback: Option<ChatPlaybackMetadata>,
@@ -97,7 +97,7 @@ impl ChatUserMetadata {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ChatMemberJoinedMetadata {
     pub user_id: UserId,
     pub username: String,
@@ -117,7 +117,7 @@ pub enum PlaybackChangeReason {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ChatPlaybackChangedMetadata {
     pub from: Option<ChatPlaybackMetadata>,
     pub to: ChatPlaybackMetadata,
@@ -218,8 +218,7 @@ i16_enum!(ChatMessageStatus, "Invalid chat message status", {
 #[serde(
     tag = "type",
     rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
+    rename_all_fields = "camelCase"
 )]
 pub enum ChatMetadata {
     User(ChatUserMetadata),
@@ -277,7 +276,7 @@ impl ChatMetadata {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+#[serde(default, rename_all = "camelCase")]
 pub struct ChatPresentationMetadata {
     pub display_position: Option<String>,
     pub display_color: Option<String>,
@@ -291,7 +290,7 @@ impl ChatPresentationMetadata {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ChatPlaybackMetadata {
     pub media_id: Option<MediaId>,
     pub playlist_id: Option<PlaylistId>,
@@ -931,6 +930,38 @@ mod tests {
                 crate::models::try_hash_playback_target(Some(&target))
                     .expect("target hash should compute")
             )
+        );
+    }
+
+    #[test]
+    fn chat_metadata_ignores_unknown_persisted_fields() {
+        let metadata: ChatMetadata = serde_json::from_value(serde_json::json!({
+            "type": "user",
+            "futureUserField": true,
+            "playback": {
+                "target": {
+                    "provider": "alist",
+                    "relativePath": "/media/episode-1.mp4",
+                    "futureTargetField": "ignored"
+                },
+                "targetHash": "stored-hash",
+                "positionSeconds": 12.5,
+                "futurePlaybackField": {"version": 2}
+            }
+        }))
+        .expect("chat metadata should ignore unknown persisted fields");
+
+        let ChatMetadata::User(metadata) = metadata else {
+            panic!("expected user chat metadata");
+        };
+        let playback = metadata
+            .playback
+            .expect("playback metadata should be retained");
+        assert_eq!(playback.target_hash.as_deref(), Some("stored-hash"));
+        assert_eq!(playback.position_seconds, Some(12.5));
+        assert_eq!(
+            playback.target,
+            Some(ProviderTarget::alist("/media/episode-1.mp4".to_string()))
         );
     }
 

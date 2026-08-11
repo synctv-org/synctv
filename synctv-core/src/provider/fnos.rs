@@ -690,6 +690,11 @@ impl FnosProvider {
                     FnosMediaClient::auth_headers(&token)
                 }
             },
+            PlaybackFnosMedia::Direct { .. } => {
+                return Err(ProviderError::InvalidConfig(
+                    "FNOS direct media cannot use the provider proxy resource endpoint".to_string(),
+                ));
+            }
         };
         super::playback_transport::transport_action_for_target_url(
             target_url,
@@ -1219,6 +1224,7 @@ impl FnosProvider {
             item_type: item.item_type,
             source_config: MediaSourceConfig::Fnos(FnosMediaSourceConfig {
                 server_id: base.server_id.clone(),
+                proxy_mode: base.proxy_mode,
                 source: FnosMediaSource::File {
                     path: join_path(file_playlist_path(base)?, &relative),
                 },
@@ -1240,6 +1246,7 @@ impl FnosProvider {
             item_type: item.item_type,
             source_config: MediaSourceConfig::Fnos(FnosMediaSourceConfig {
                 server_id: base.server_id.clone(),
+                proxy_mode: base.proxy_mode,
                 source: FnosMediaSource::LibraryItem {
                     item_guid,
                     media_guid,
@@ -1512,44 +1519,57 @@ fn paginate_media_items(
 }
 
 fn mark_fnos_playback_resources(result: &mut PlaybackResult, version: &str, expires_at: i64) {
-    for (mode_name, info) in &mut result.playback_infos {
-        for (media_index, media) in info.medias.iter_mut().enumerate() {
-            let credentials = match &media.provider {
-                PlaybackMediaProvider::Fnos(PlaybackFnosMedia::FileRefresh {
-                    credential_owner_id,
-                    server_id,
-                    path,
-                }) => Some((
-                    credential_owner_id.clone(),
-                    server_id.clone(),
-                    FnosProxyResource::File { path: path.clone() },
-                )),
-                PlaybackMediaProvider::Fnos(PlaybackFnosMedia::MediaRefresh {
-                    credential_owner_id,
-                    server_id,
-                    media_guid,
-                    quality_index,
-                }) => Some((
-                    credential_owner_id.clone(),
-                    server_id.clone(),
-                    FnosProxyResource::Media {
-                        media_guid: media_guid.clone(),
-                        quality_index: *quality_index,
-                    },
-                )),
-                PlaybackMediaProvider::Fnos(PlaybackFnosMedia::TranscodeRefresh {
-                    credential_owner_id,
-                    server_id,
-                    spec,
-                }) => Some((
-                    credential_owner_id.clone(),
-                    server_id.clone(),
-                    FnosProxyResource::Transcode { spec: spec.clone() },
-                )),
-                _ => None,
-            };
-            if let Some((credential_owner_id, server_id, resource)) = credentials {
-                media.provider = PlaybackMediaProvider::Fnos(PlaybackFnosMedia::Proxy {
+    let original_modes = result
+        .playback_infos
+        .iter()
+        .map(|(name, info)| (name.clone(), info.clone()))
+        .collect::<Vec<_>>();
+    for (mode_name, original_info) in original_modes {
+        if mode_name.starts_with("proxy_") || mode_name.starts_with("direct_") {
+            continue;
+        }
+        let mut proxy_info = original_info.clone();
+        proxy_info.medias = original_info
+            .medias
+            .iter()
+            .enumerate()
+            .filter_map(|(media_index, media)| {
+                let (credential_owner_id, server_id, resource) = match &media.provider {
+                    PlaybackMediaProvider::Fnos(PlaybackFnosMedia::FileRefresh {
+                        credential_owner_id,
+                        server_id,
+                        path,
+                    }) => (
+                        credential_owner_id.clone(),
+                        server_id.clone(),
+                        FnosProxyResource::File { path: path.clone() },
+                    ),
+                    PlaybackMediaProvider::Fnos(PlaybackFnosMedia::MediaRefresh {
+                        credential_owner_id,
+                        server_id,
+                        media_guid,
+                        quality_index,
+                    }) => (
+                        credential_owner_id.clone(),
+                        server_id.clone(),
+                        FnosProxyResource::Media {
+                            media_guid: media_guid.clone(),
+                            quality_index: *quality_index,
+                        },
+                    ),
+                    PlaybackMediaProvider::Fnos(PlaybackFnosMedia::TranscodeRefresh {
+                        credential_owner_id,
+                        server_id,
+                        spec,
+                    }) => (
+                        credential_owner_id.clone(),
+                        server_id.clone(),
+                        FnosProxyResource::Transcode { spec: spec.clone() },
+                    ),
+                    _ => return None,
+                };
+                let mut proxy = media.clone();
+                proxy.provider = PlaybackMediaProvider::Fnos(PlaybackFnosMedia::Proxy {
                     version: version.to_string(),
                     expires_at,
                     mode_name: mode_name.clone(),
@@ -1558,9 +1578,13 @@ fn mark_fnos_playback_resources(result: &mut PlaybackResult, version: &str, expi
                     server_id,
                     resource,
                 });
-            }
+                Some(proxy)
+            })
+            .collect();
+        if proxy_info.medias.is_empty() {
+            continue;
         }
-        info.subtitles = info
+        proxy_info.subtitles = original_info
             .subtitles
             .iter()
             .enumerate()
@@ -1579,6 +1603,10 @@ fn mark_fnos_playback_resources(result: &mut PlaybackResult, version: &str, expi
                 }),
             })
             .collect();
+        result
+            .playback_infos
+            .insert(format!("proxy_{mode_name}"), proxy_info);
+        result.playback_infos.remove(&mode_name);
     }
 }
 
@@ -1639,7 +1667,7 @@ impl MediaProvider for FnosProvider {
                     &listing.files,
                 )
                 .await?;
-                let result = PlaybackResult {
+                let mut result = PlaybackResult {
                     playback_infos: HashMap::from([(
                         "direct".to_string(),
                         PlaybackInfo {
@@ -1684,6 +1712,32 @@ impl MediaProvider for FnosProvider {
                         },
                     ))),
                 };
+                if config.proxy_mode == crate::models::PlaybackProxyMode::Prefer {
+                    if let Ok(webdav) = self.client.webdav_config(&endpoints, &credential).await {
+                        if let Ok(url) = FnosClient::webdav_file_url(&webdav, path) {
+                            let headers = webdav_headers(&credential);
+                            if let Some(info) = result.playback_infos.get("direct").cloned() {
+                                let medias = info
+                                    .medias
+                                    .into_iter()
+                                    .map(|mut media| {
+                                        media.provider = PlaybackMediaProvider::Fnos(
+                                            PlaybackFnosMedia::Direct {
+                                                url: url.clone(),
+                                                headers: headers.clone(),
+                                            },
+                                        );
+                                        media
+                                    })
+                                    .collect();
+                                result.playback_infos.insert(
+                                    "direct_url".to_string(),
+                                    PlaybackInfo { medias, ..info },
+                                );
+                            }
+                        }
+                    }
+                }
                 (result, format!("file:{path}"))
             }
             FnosMediaSource::LibraryItem {
@@ -1955,7 +2009,7 @@ impl MediaProvider for FnosProvider {
                 } else {
                     0
                 };
-                let result = PlaybackResult {
+                let mut result = PlaybackResult {
                     playback_infos: HashMap::from([(
                         "direct".to_string(),
                         PlaybackInfo {
@@ -2061,21 +2115,64 @@ impl MediaProvider for FnosProvider {
                         },
                     ))),
                 };
+                if config.proxy_mode == crate::models::PlaybackProxyMode::Prefer {
+                    let direct_medias =
+                        result
+                            .playback_infos
+                            .get("direct")
+                            .cloned()
+                            .map(|mut info| {
+                                let medias = std::mem::take(&mut info.medias)
+                                    .into_iter()
+                                    .filter_map(|mut media| {
+                                        let PlaybackMediaProvider::Fnos(
+                                            PlaybackFnosMedia::MediaRefresh {
+                                                media_guid,
+                                                quality_index,
+                                                ..
+                                            },
+                                        ) = &media.provider
+                                        else {
+                                            return None;
+                                        };
+                                        media.provider = PlaybackMediaProvider::Fnos(
+                                            PlaybackFnosMedia::Direct {
+                                                url: client.media_url(media_guid, *quality_index),
+                                                headers: FnosMediaClient::auth_headers(&token),
+                                            },
+                                        );
+                                        Some(media)
+                                    })
+                                    .collect::<Vec<_>>();
+                                (medias, info)
+                            });
+                    if let Some((medias, info)) = direct_medias {
+                        if !medias.is_empty() {
+                            result
+                                .playback_infos
+                                .insert("direct_url".to_string(), PlaybackInfo { medias, ..info });
+                        }
+                    }
+                }
                 (result, format!("media:{item_guid}:{}", play.media_guid))
             }
         };
         let result = super::cached_versioned_playback_or_fill(
             Self::NAME,
             &format!(
-                "playback:{owner}:{}:room:{}:{cache_key}:profile:{}",
+                "playback:{owner}:{}:room:{}:{cache_key}:profile:{}:proxy:{}",
                 config.server_id,
                 ctx.room_id
                     .map_or_else(|| "none".to_string(), |id| id.to_string()),
-                super::playback_profile_cache_token(ctx.playback_client_profile())
+                super::playback_profile_cache_token(ctx.playback_client_profile()),
+                config.proxy_mode.as_str()
             ),
             Duration::from_hours(2),
             ctx,
-            mark_fnos_playback_resources,
+            |result, version, expires_at| {
+                mark_fnos_playback_resources(result, version, expires_at);
+                super::apply_provider_playback_policy(result, config.proxy_mode, true);
+            },
             || async { Ok(result) },
         )
         .await?;
@@ -2310,6 +2407,7 @@ impl ProviderPlaybackSessionLifecycle for FnosProvider {
         };
         let source_config = MediaSourceConfig::Fnos(FnosMediaSourceConfig {
             server_id: server_id.clone(),
+            proxy_mode: crate::models::PlaybackProxyMode::Auto,
             source: FnosMediaSource::LibraryItem {
                 item_guid: item_guid.clone(),
                 media_guid: media_guid.clone(),
@@ -3044,7 +3142,7 @@ mod tests {
 
         mark_fnos_playback_resources(&mut result, "version", 123);
 
-        let info = &result.playback_infos["direct"];
+        let info = &result.playback_infos["proxy_direct"];
         assert!(matches!(
             &info.medias[0].provider,
             PlaybackMediaProvider::Fnos(PlaybackFnosMedia::Proxy {

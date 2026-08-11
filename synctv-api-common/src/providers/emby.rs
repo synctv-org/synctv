@@ -5,20 +5,28 @@
 
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use std::sync::Arc;
-use synctv_core::models::UserId;
+use synctv_core::models::{EmbyPlaylistSource, UserId};
 use synctv_core::provider::{
     EmbyListRequest, EmbyMeRequest, EmbyProvider, ExecutionControl, ProviderAccessService,
 };
 use synctv_proto::providers::emby::{
-    BindInfo, GetBindsResponse, GetMeRequest, GetMeResponse, ListRequest, ListResponse,
+    BindInfo, GetBindsResponse, GetMeRequest, GetMeResponse, ListMode, ListRequest, ListResponse,
     LoginRequest, LoginResponse, LogoutRequest, LogoutResponse, MediaItem,
+};
+use synctv_proto::source_config::{
+    emby_playlist_source_config, media_source_config, playlist_source_config,
+    EmbyCollectionsPlaylistSource, EmbyContinueWatchingPlaylistSource,
+    EmbyFavoriteItemsPlaylistSource, EmbyFavoritePeoplePlaylistSource, EmbyFolderPlaylistSource,
+    EmbyGenreItemsPlaylistSource, EmbyGenresPlaylistSource, EmbyMediaSourceConfig,
+    EmbyNextUpPlaylistSource, EmbyPersonItemsPlaylistSource, EmbyPlaylistSourceConfig,
+    EmbyPlaylistsPlaylistSource, EmbyRecentlyAddedPlaylistSource,
 };
 use synctv_realtime::fanout::RealtimeEventService;
 
 use super::ProviderApiRuntime;
 use super::{
-    provider_instance_name_for_response, publish_provider_credential_changed,
-    resolve_bound_instance_name,
+    discovered_media, discovered_playlist, provider_instance_name_for_response,
+    publish_provider_credential_changed, resolve_bound_instance_name,
 };
 
 fn emby_thumbnail_url(server_id: &str, credential_owner_id: &UserId, item_id: &str) -> String {
@@ -139,6 +147,9 @@ impl EmbyApiImpl {
         requested_instance_name: Option<&str>,
         request_context: Option<&ExecutionControl>,
     ) -> Result<ListResponse, synctv_core::provider::ProviderError> {
+        let server_id = req.server_id.clone();
+        let source = emby_list_source(req.mode(), &req.target_id, &req.item_types)?;
+        let requested_item_types = req.item_types.clone();
         let (host, token, user_id, credential_instance_name) = self
             .resolve_credentials(caller_user_id, &req.server_id, request_context)
             .await?;
@@ -150,7 +161,7 @@ impl EmbyApiImpl {
         let list_req = EmbyListRequest {
             host,
             token,
-            path: req.path,
+            source: source.clone(),
             start_index: req.start_index,
             limit: req.limit,
             search_term: req.search_term,
@@ -169,14 +180,25 @@ impl EmbyApiImpl {
         let items: Vec<MediaItem> = resp
             .items
             .into_iter()
-            .map(|item| {
+            .filter_map(|item| {
+                let is_container = item.is_folder;
                 let thumbnail = if item.has_thumbnail {
                     emby_thumbnail_url(&req.server_id, caller_user_id, &item.id)
                 } else {
                     String::new()
                 };
-                MediaItem {
+                let discovered_source = emby_listing_item_source(
+                    &server_id,
+                    &source,
+                    &item.id,
+                    &item.item_type,
+                    is_container,
+                    &requested_item_types,
+                    effective_instance_name.as_deref(),
+                )?;
+                Some(MediaItem {
                     thumbnail,
+                    source: Some(discovered_source),
                     id: item.id,
                     name: item.name,
                     r#type: item.item_type,
@@ -185,13 +207,19 @@ impl EmbyApiImpl {
                     series_id: item.series_id,
                     season_name: item.season_name,
                     description: item.description,
-                }
+                    is_container,
+                })
             })
             .collect();
 
         Ok(ListResponse {
             items,
             total: resp.total,
+            source: Some(emby_playlist_source(
+                &server_id,
+                &source,
+                effective_instance_name.as_deref(),
+            )),
         })
     }
 
@@ -288,6 +316,200 @@ impl EmbyApiImpl {
 
         Ok(GetBindsResponse { binds })
     }
+}
+
+fn emby_list_source(
+    mode: ListMode,
+    target_id: &str,
+    item_types: &[String],
+) -> Result<EmbyPlaylistSource, synctv_core::provider::ProviderError> {
+    let target_id = target_id.trim();
+    let item_types = item_types
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let require_target = |kind: &str| {
+        (!target_id.is_empty())
+            .then(|| target_id.to_string())
+            .ok_or_else(|| {
+                synctv_core::provider::ProviderError::InvalidConfig(format!(
+                    "Emby {kind} target_id must not be empty"
+                ))
+            })
+    };
+    Ok(match mode {
+        ListMode::Folder => EmbyPlaylistSource::Folder {
+            item_id: target_id.to_string(),
+        },
+        ListMode::FavoriteItems => EmbyPlaylistSource::FavoriteItems { item_types },
+        ListMode::FavoritePeople => EmbyPlaylistSource::FavoritePeople,
+        ListMode::PersonItems => EmbyPlaylistSource::PersonItems {
+            person_id: require_target("person")?,
+            item_types,
+        },
+        ListMode::ContinueWatching => EmbyPlaylistSource::ContinueWatching,
+        ListMode::NextUp => EmbyPlaylistSource::NextUp,
+        ListMode::RecentlyAdded => EmbyPlaylistSource::RecentlyAdded { item_types },
+        ListMode::Playlists => EmbyPlaylistSource::Playlists,
+        ListMode::Collections => EmbyPlaylistSource::Collections,
+        ListMode::Genres => EmbyPlaylistSource::Genres { item_types },
+        ListMode::GenreItems => EmbyPlaylistSource::GenreItems {
+            genre_id: require_target("genre")?,
+            item_types,
+        },
+    })
+}
+
+fn emby_listing_item_source(
+    server_id: &str,
+    list_source: &EmbyPlaylistSource,
+    item_id: &str,
+    item_type: &str,
+    is_container: bool,
+    requested_item_types: &[String],
+    provider_instance_name: Option<&str>,
+) -> Option<synctv_proto::providers::common::DiscoveredSource> {
+    let nested_source = match list_source {
+        EmbyPlaylistSource::FavoritePeople => Some(EmbyPlaylistSource::PersonItems {
+            person_id: item_id.to_string(),
+            item_types: requested_item_types.to_vec(),
+        }),
+        EmbyPlaylistSource::Genres { item_types } => Some(EmbyPlaylistSource::GenreItems {
+            genre_id: item_id.to_string(),
+            item_types: item_types.clone(),
+        }),
+        EmbyPlaylistSource::Playlists | EmbyPlaylistSource::Collections => {
+            Some(EmbyPlaylistSource::Folder {
+                item_id: item_id.to_string(),
+            })
+        }
+        _ if is_container => Some(EmbyPlaylistSource::Folder {
+            item_id: item_id.to_string(),
+        }),
+        _ => None,
+    };
+    if let Some(source) = nested_source {
+        return Some(emby_playlist_source(
+            server_id,
+            &source,
+            provider_instance_name,
+        ));
+    }
+    emby_item_source(server_id, item_id, item_type, false, provider_instance_name)
+}
+
+fn emby_item_source(
+    server_id: &str,
+    item_id: &str,
+    item_type: &str,
+    is_container: bool,
+    provider_instance_name: Option<&str>,
+) -> Option<synctv_proto::providers::common::DiscoveredSource> {
+    if is_container {
+        return Some(emby_folder_source(
+            server_id,
+            item_id,
+            provider_instance_name,
+        ));
+    }
+    matches!(
+        item_type,
+        "Movie" | "Episode" | "Video" | "Audio" | "MusicAlbum"
+    )
+    .then(|| {
+        discovered_media(
+            media_source_config::Provider::Emby(EmbyMediaSourceConfig {
+                server_id: server_id.to_string(),
+                item_id: item_id.to_string(),
+                proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
+            }),
+            provider_instance_name,
+        )
+    })
+}
+
+fn emby_folder_source(
+    server_id: &str,
+    item_id: &str,
+    provider_instance_name: Option<&str>,
+) -> synctv_proto::providers::common::DiscoveredSource {
+    emby_playlist_source(
+        server_id,
+        &EmbyPlaylistSource::Folder {
+            item_id: item_id.to_string(),
+        },
+        provider_instance_name,
+    )
+}
+
+fn emby_playlist_source(
+    server_id: &str,
+    source: &EmbyPlaylistSource,
+    provider_instance_name: Option<&str>,
+) -> synctv_proto::providers::common::DiscoveredSource {
+    let source = match source {
+        EmbyPlaylistSource::Folder { item_id } => {
+            emby_playlist_source_config::Source::Folder(EmbyFolderPlaylistSource {
+                item_id: item_id.clone(),
+            })
+        }
+        EmbyPlaylistSource::FavoriteItems { item_types } => {
+            emby_playlist_source_config::Source::FavoriteItems(EmbyFavoriteItemsPlaylistSource {
+                item_types: item_types.clone(),
+            })
+        }
+        EmbyPlaylistSource::FavoritePeople => {
+            emby_playlist_source_config::Source::FavoritePeople(EmbyFavoritePeoplePlaylistSource {})
+        }
+        EmbyPlaylistSource::PersonItems {
+            person_id,
+            item_types,
+        } => emby_playlist_source_config::Source::PersonItems(EmbyPersonItemsPlaylistSource {
+            person_id: person_id.clone(),
+            item_types: item_types.clone(),
+        }),
+        EmbyPlaylistSource::ContinueWatching => {
+            emby_playlist_source_config::Source::ContinueWatching(
+                EmbyContinueWatchingPlaylistSource {},
+            )
+        }
+        EmbyPlaylistSource::NextUp => {
+            emby_playlist_source_config::Source::NextUp(EmbyNextUpPlaylistSource {})
+        }
+        EmbyPlaylistSource::RecentlyAdded { item_types } => {
+            emby_playlist_source_config::Source::RecentlyAdded(EmbyRecentlyAddedPlaylistSource {
+                item_types: item_types.clone(),
+            })
+        }
+        EmbyPlaylistSource::Playlists => {
+            emby_playlist_source_config::Source::Playlists(EmbyPlaylistsPlaylistSource {})
+        }
+        EmbyPlaylistSource::Collections => {
+            emby_playlist_source_config::Source::Collections(EmbyCollectionsPlaylistSource {})
+        }
+        EmbyPlaylistSource::Genres { item_types } => {
+            emby_playlist_source_config::Source::Genres(EmbyGenresPlaylistSource {
+                item_types: item_types.clone(),
+            })
+        }
+        EmbyPlaylistSource::GenreItems {
+            genre_id,
+            item_types,
+        } => emby_playlist_source_config::Source::GenreItems(EmbyGenreItemsPlaylistSource {
+            genre_id: genre_id.clone(),
+            item_types: item_types.clone(),
+        }),
+    };
+    discovered_playlist(
+        playlist_source_config::Provider::Emby(EmbyPlaylistSourceConfig {
+            server_id: server_id.to_string(),
+            source: Some(source),
+            proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
+        }),
+        provider_instance_name,
+    )
 }
 
 #[cfg(test)]

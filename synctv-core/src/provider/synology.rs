@@ -665,6 +665,12 @@ impl SynologyProvider {
                 resource,
                 ..
             } => (credential_owner_id, server_id, resource),
+            crate::models::PlaybackSynologyMedia::Direct { .. } => {
+                return Err(ProviderError::InvalidConfig(
+                    "Synology direct media cannot use the provider proxy resource endpoint"
+                        .to_string(),
+                ));
+            }
         };
         let owner = owner
             .parse::<UserId>()
@@ -939,7 +945,7 @@ impl MediaProvider for SynologyProvider {
         let auth = self
             .authenticated_with_repo(repo, owner, &config.server_id)
             .await?;
-        let result = match &config.source {
+        let mut result = match &config.source {
             SynologyMediaSource::File { path } => {
                 generate_file_playback(&auth, owner, &config.server_id, path).await
             }
@@ -960,6 +966,33 @@ impl MediaProvider for SynologyProvider {
                 .await
             }
         }?;
+        if config.proxy_mode == crate::models::PlaybackProxyMode::Prefer {
+            if let SynologyMediaSource::File { path } = &config.source {
+                let direct_url = auth.client.download_url(
+                    required_api(&auth.apis, "SYNO.FileStation.Download")?,
+                    &auth.file_sid,
+                    path,
+                )?;
+                if let Some(info) = result.playback_infos.get("original").cloned() {
+                    let medias = info
+                        .medias
+                        .into_iter()
+                        .map(|mut media| {
+                            media.provider = PlaybackMediaProvider::Synology(
+                                crate::models::PlaybackSynologyMedia::Direct {
+                                    url: direct_url.clone(),
+                                    headers: HashMap::new(),
+                                },
+                            );
+                            media
+                        })
+                        .collect();
+                    result
+                        .playback_infos
+                        .insert("direct".to_string(), PlaybackInfo { medias, ..info });
+                }
+            }
+        }
         let cache_identity = serde_json::to_string(config).map_err(ProviderError::JsonError)?;
         let result = super::cached_versioned_playback_or_fill(
             Self::NAME,
@@ -970,7 +1003,10 @@ impl MediaProvider for SynologyProvider {
             ),
             PLAYBACK_CACHE_TTL,
             ctx,
-            mark_synology_playback_resources,
+            |result, version, expires_at| {
+                mark_synology_playback_resources(result, version, expires_at);
+                super::apply_provider_playback_policy(result, config.proxy_mode, true);
+            },
             || async { Ok(result) },
         )
         .await?;
@@ -1216,6 +1252,7 @@ impl DynamicPlaylistProvider for SynologyProvider {
                     item_type: ItemType::Media,
                     source_config: MediaSourceConfig::Synology(SynologyMediaSourceConfig {
                         server_id: config.server_id.clone(),
+                        proxy_mode: config.proxy_mode,
                         source: SynologyMediaSource::File { path: full_path },
                     }),
                     target: target.clone(),
@@ -1231,6 +1268,7 @@ impl DynamicPlaylistProvider for SynologyProvider {
                 item_type: ItemType::Media,
                 source_config: MediaSourceConfig::Synology(SynologyMediaSourceConfig {
                     server_id: config.server_id.clone(),
+                    proxy_mode: config.proxy_mode,
                     source: SynologyMediaSource::LibraryItem {
                         kind: *kind,
                         item_id: *item_id,
@@ -2112,17 +2150,33 @@ fn single_result(
 }
 
 fn mark_synology_playback_resources(result: &mut PlaybackResult, version: &str, expires_at: i64) {
-    for (mode_name, info) in &mut result.playback_infos {
-        for (media_index, media) in info.medias.iter_mut().enumerate() {
-            if let PlaybackMediaProvider::Synology(
-                crate::models::PlaybackSynologyMedia::Refresh {
-                    credential_owner_id,
-                    server_id,
-                    resource,
-                },
-            ) = &media.provider
-            {
-                media.provider =
+    let original_modes = result
+        .playback_infos
+        .iter()
+        .map(|(name, info)| (name.clone(), info.clone()))
+        .collect::<Vec<_>>();
+    for (mode_name, original_info) in original_modes {
+        if mode_name.starts_with("proxy_") || mode_name == "direct" {
+            continue;
+        }
+        let mut proxy_info = original_info.clone();
+        proxy_info.medias = original_info
+            .medias
+            .iter()
+            .enumerate()
+            .filter_map(|(media_index, media)| {
+                let PlaybackMediaProvider::Synology(
+                    crate::models::PlaybackSynologyMedia::Refresh {
+                        credential_owner_id,
+                        server_id,
+                        resource,
+                    },
+                ) = &media.provider
+                else {
+                    return None;
+                };
+                let mut proxy = media.clone();
+                proxy.provider =
                     PlaybackMediaProvider::Synology(crate::models::PlaybackSynologyMedia::Proxy {
                         version: version.to_string(),
                         expires_at,
@@ -2132,9 +2186,13 @@ fn mark_synology_playback_resources(result: &mut PlaybackResult, version: &str, 
                         server_id: server_id.clone(),
                         resource: resource.clone(),
                     });
-            }
+                Some(proxy)
+            })
+            .collect();
+        if proxy_info.medias.is_empty() {
+            continue;
         }
-        for (subtitle_index, subtitle) in info.subtitles.iter_mut().enumerate() {
+        for (subtitle_index, subtitle) in proxy_info.subtitles.iter_mut().enumerate() {
             if let PlaybackSubtitleProvider::Synology(resource) = &mut subtitle.provider {
                 match resource {
                     crate::models::PlaybackSynologySubtitle::File {
@@ -2153,12 +2211,16 @@ fn mark_synology_playback_resources(result: &mut PlaybackResult, version: &str, 
                     } => {
                         *resource_version = version.to_string();
                         *resource_expires_at = expires_at;
-                        resource_mode_name.clone_from(mode_name);
+                        resource_mode_name.clone_from(&mode_name);
                         *resource_subtitle_index = subtitle_index;
                     }
                 }
             }
         }
+        result
+            .playback_infos
+            .insert(format!("proxy_{mode_name}"), proxy_info);
+        result.playback_infos.remove(&mode_name);
     }
 }
 
@@ -2426,5 +2488,41 @@ mod tests {
             file_subtitle_language("/video/Movie.mkv", "Movie.zh-CN.ass"),
             "zh-CN"
         );
+    }
+
+    #[test]
+    fn video_station_media_keeps_proxy_route_when_direct_is_preferred() {
+        let media = PlaybackMedia {
+            name: "Movie".to_string(),
+            format: "hls".to_string(),
+            expire_at: None,
+            metadata: None,
+            p2p_swarm_id: None,
+            provider: PlaybackMediaProvider::Synology(
+                crate::models::PlaybackSynologyMedia::Refresh {
+                    credential_owner_id: "42".to_string(),
+                    server_id: "synology-main".to_string(),
+                    resource: SynologyPlaybackResource::VideoStation {
+                        file_id: 7,
+                        profile: SynologyPlaybackProfile::HlsRemux,
+                        audio_track: None,
+                        ac3_passthrough: true,
+                    },
+                },
+            ),
+        };
+        let mut result =
+            single_result("original", media, Vec::new(), None, None, Some(false), None);
+
+        mark_synology_playback_resources(&mut result, "version", 1_900_000_000);
+        super::super::apply_provider_playback_policy(
+            &mut result,
+            crate::models::PlaybackProxyMode::Prefer,
+            true,
+        );
+
+        assert_eq!(result.default_mode, "proxy_original");
+        assert_eq!(result.playback_infos.len(), 1);
+        assert!(result.playback_infos.contains_key("proxy_original"));
     }
 }

@@ -60,6 +60,7 @@ pub(super) async fn execute_provider_tiktok(command: ProviderTikTokCommand) -> R
                     request: Some(synctv_proto::providers::tiktok::ResolveRequest {
                         resource: args.resource,
                         instance_name: provider_service_instance_name(&args.instance),
+                        shared: false,
                     }),
                 }
             )?;
@@ -74,8 +75,9 @@ pub(super) async fn execute_provider_tiktok(command: ProviderTikTokCommand) -> R
                 management_proto::TikTokGetUserRequest {
                     actor: Some(actor_user_id),
                     request: Some(synctv_proto::providers::tiktok::GetUserRequest {
-                        unique_id: args.unique_id,
+                        resource: args.unique_id,
                         instance_name: provider_service_instance_name(&args.instance),
+                        shared: false,
                     }),
                 }
             )?;
@@ -94,6 +96,7 @@ pub(super) async fn execute_provider_tiktok(command: ProviderTikTokCommand) -> R
                         cursor: args.cursor,
                         page_size: args.page_size,
                         instance_name: provider_service_instance_name(&args.instance),
+                        shared: false,
                     }),
                 }
             )?;

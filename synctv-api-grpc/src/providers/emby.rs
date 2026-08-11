@@ -79,9 +79,10 @@ impl EmbyProviderService for EmbyProviderGrpcService {
         let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         tracing::info!(
-            "gRPC Emby list request: server_id={}, path={}",
+            "gRPC Emby list request: server_id={}, mode={:?}, target_id={}",
             req.server_id,
-            req.path
+            req.mode(),
+            req.target_id,
         );
         let instance_name = super::provider_instance_name(&req.instance_name)?;
         let api = self.api.clone();

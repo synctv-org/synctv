@@ -62,10 +62,15 @@ impl SettingsRepository {
 
     /// Read the current optimistic-lock version for a setting.
     pub async fn current_version(&self, key: &str) -> Result<i32> {
+        Ok(self.current_version_optional(key).await?.unwrap_or(0))
+    }
+
+    /// Read the current optimistic-lock version while preserving a missing row.
+    pub async fn current_version_optional(&self, key: &str) -> Result<Option<i32>> {
         let version = sqlx::query_scalar!("SELECT version FROM settings WHERE key = $1", key,)
             .fetch_optional(&self.pool)
             .await?;
-        Ok(version.unwrap_or(0))
+        Ok(version)
     }
 
     /// Insert or update a setting using the exact version reserved in the

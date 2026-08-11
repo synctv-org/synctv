@@ -34,10 +34,12 @@ pub(crate) async fn resolve(
         EndpointRateLimitCategory::Read,
         move |_authenticated| {
             async move {
-                service
-                    .resolve_resource(&req.resource)
-                    .await
-                    .map(synctv_api_common::providers::acfun::resolve_response)
+                service.resolve_resource(&req.resource).await.map(|media| {
+                    synctv_api_common::providers::acfun::resolve_response(
+                        media,
+                        (!req.instance_name.is_empty()).then_some(req.instance_name.as_str()),
+                    )
+                })
             }
             .boxed()
         },

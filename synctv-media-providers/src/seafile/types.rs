@@ -76,6 +76,25 @@ pub(crate) struct DirectoryItem {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum DirectoryResponse {
+    Items(Vec<DirectoryItem>),
+    Envelope {
+        #[serde(default)]
+        dirent_list: Vec<DirectoryItem>,
+    },
+}
+
+impl DirectoryResponse {
+    pub(crate) fn into_items(self) -> Vec<DirectoryItem> {
+        match self {
+            Self::Items(items) => items,
+            Self::Envelope { dirent_list } => dirent_list,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub(crate) struct SearchResponse {
     #[serde(default)]
     pub data: Vec<SearchItem>,

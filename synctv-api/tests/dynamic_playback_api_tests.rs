@@ -219,6 +219,7 @@ impl StubDynamicProvider {
                 server_id: NEXT_ITEM_SOURCE_CONFIG_SECRET.to_string(),
                 path: path.to_string(),
                 password: None,
+                proxy_mode: synctv_core::models::PlaybackProxyMode::Auto,
             }),
             target: alist_target(path),
         }

@@ -12,7 +12,10 @@ use synctv_proto::providers::tiktok::{
 };
 use synctv_realtime::fanout::RealtimeEventService;
 
-use super::{provider_instance_name_for_response, publish_provider_credential_changed};
+use super::{
+    discovery::{discovered_media, discovered_playlist},
+    provider_instance_name_for_response, publish_provider_credential_changed,
+};
 
 #[derive(Clone)]
 pub struct TikTokApiImpl {
@@ -110,7 +113,7 @@ impl TikTokApiImpl {
             .provider
             .resolve_for_user(user_id, &req.resource, instance_name)
             .await?;
-        Ok(resolve_response(media))
+        Ok(resolve_response(media, req.shared, instance_name))
     }
 
     pub async fn list_user_posts(
@@ -130,13 +133,18 @@ impl TikTokApiImpl {
             )
             .await?;
         Ok(ListUserPostsResponse {
-            items: page.items.into_iter().map(list_item).collect(),
+            items: page
+                .items
+                .into_iter()
+                .map(|item| list_item(item, req.shared, instance_name))
+                .collect(),
             cursor: page.cursor,
             has_more: page.has_more,
-            source_config: Some(synctv_proto::source_config::TikTokPlaylistSourceConfig {
-                sec_uid: req.sec_uid,
-                shared: false,
-            }),
+            source: Some(tiktok_playlist_source(
+                req.sec_uid,
+                req.shared,
+                instance_name,
+            )),
         })
     }
 
@@ -148,25 +156,30 @@ impl TikTokApiImpl {
     ) -> Result<GetUserResponse, ProviderError> {
         let sec_uid = self
             .provider
-            .user_sec_uid_for_user(user_id, &req.unique_id, instance_name)
+            .user_sec_uid_for_user(user_id, &req.resource, instance_name)
             .await?;
         Ok(GetUserResponse {
-            source_config: Some(synctv_proto::source_config::TikTokPlaylistSourceConfig {
-                sec_uid: sec_uid.clone(),
-                shared: false,
-            }),
+            source: Some(tiktok_playlist_source(
+                sec_uid.clone(),
+                req.shared,
+                instance_name,
+            )),
             sec_uid,
         })
     }
 }
 
-fn resolve_response(media: TikTokMedia) -> ResolveResponse {
+fn resolve_response(
+    media: TikTokMedia,
+    shared: bool,
+    provider_instance_name: Option<&str>,
+) -> ResolveResponse {
     let source = match &media.resource {
         synctv_media_providers::tiktok::TikTokResource::Video { video_id } => {
             synctv_proto::source_config::tik_tok_media_source_config::Source::Video(
                 synctv_proto::source_config::TikTokVideoSourceConfig {
                     video_id: video_id.clone(),
-                    shared: false,
+                    shared,
                 },
             )
         }
@@ -174,7 +187,7 @@ fn resolve_response(media: TikTokMedia) -> ResolveResponse {
             synctv_proto::source_config::tik_tok_media_source_config::Source::Live(
                 synctv_proto::source_config::TikTokLiveSourceConfig {
                     unique_id: unique_id.clone(),
-                    shared: false,
+                    shared,
                 },
             )
         }
@@ -235,13 +248,37 @@ fn resolve_response(media: TikTokMedia) -> ResolveResponse {
                 headers_required: variant.headers_required,
             })
             .collect(),
-        source_config: Some(synctv_proto::source_config::TikTokMediaSourceConfig {
-            source: Some(source),
-        }),
+        source: Some(discovered_media(
+            synctv_proto::source_config::media_source_config::Provider::Tiktok(
+                synctv_proto::source_config::TikTokMediaSourceConfig {
+                    source: Some(source),
+                },
+            ),
+            provider_instance_name,
+        )),
     }
 }
 
-fn list_item(item: TikTokListItem) -> proto::ListItem {
+fn list_item(
+    item: TikTokListItem,
+    shared: bool,
+    provider_instance_name: Option<&str>,
+) -> proto::ListItem {
+    let source = discovered_media(
+        synctv_proto::source_config::media_source_config::Provider::Tiktok(
+            synctv_proto::source_config::TikTokMediaSourceConfig {
+                source: Some(
+                    synctv_proto::source_config::tik_tok_media_source_config::Source::Video(
+                        synctv_proto::source_config::TikTokVideoSourceConfig {
+                            video_id: item.video_id.clone(),
+                            shared,
+                        },
+                    ),
+                ),
+            },
+        ),
+        provider_instance_name,
+    );
     proto::ListItem {
         video_id: item.video_id,
         title: item.title,
@@ -249,7 +286,21 @@ fn list_item(item: TikTokListItem) -> proto::ListItem {
         cover: item.cover.map(image),
         duration_ms: item.duration_ms,
         created_at: item.created_at,
+        source: Some(source),
     }
+}
+
+fn tiktok_playlist_source(
+    sec_uid: String,
+    shared: bool,
+    provider_instance_name: Option<&str>,
+) -> synctv_proto::providers::common::DiscoveredSource {
+    discovered_playlist(
+        synctv_proto::source_config::playlist_source_config::Provider::Tiktok(
+            synctv_proto::source_config::TikTokPlaylistSourceConfig { sec_uid, shared },
+        ),
+        provider_instance_name,
+    )
 }
 
 fn author(author: TikTokAuthor) -> proto::Author {

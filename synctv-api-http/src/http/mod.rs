@@ -1274,6 +1274,29 @@ fn register_all_routes() -> Router<AppState> {
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
+            "/api/playback-providers/cloudreve/{version}/resources/{modeName}/{mediaIndex}",
+            get(crate::providers::playback_provider::cloudreve::get_cloudreve_resource)
+                .head(crate::providers::playback_provider::cloudreve::head_cloudreve_resource)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/cloudreve/{version}/hls-manifests/{modeName}/{mediaIndex}",
+            get(crate::providers::playback_provider::cloudreve::get_cloudreve_hls_manifest)
+                .head(crate::providers::playback_provider::cloudreve::head_cloudreve_hls_manifest)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/cloudreve/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
+            get(crate::providers::playback_provider::cloudreve::get_cloudreve_hls_resource)
+                .head(crate::providers::playback_provider::cloudreve::head_cloudreve_hls_resource)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/cloudreve/{version}/subtitles/{modeName}/{subtitleIndex}",
+            get(crate::providers::playback_provider::cloudreve::get_cloudreve_subtitle)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
             "/api/playback-providers/nextcloud/{version}/resources/{modeName}/{mediaIndex}",
             get(crate::providers::playback_provider::nextcloud::get_nextcloud_resource)
                 .head(crate::providers::playback_provider::nextcloud::head_nextcloud_resource)

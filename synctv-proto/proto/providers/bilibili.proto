@@ -13,11 +13,13 @@ package synctv.provider.bilibili;
 
 import "proto/buf/validate/validate.proto";
 import "proto/source_config.proto";
+import "proto/providers/common.proto";
 
 // Parse video URL request
 message ParseRequest {
   string url = 1 [(buf.validate.field).string.min_len = 1];
   string instance_name = 2; // Optional provider instance name
+  bool shared = 3;
 }
 
 // Typed candidates that can be submitted directly to the existing add media or
@@ -36,15 +38,76 @@ message ParseCandidate {
   optional uint32 part_number = 6;
   optional uint64 width = 7;
   optional uint64 height = 8;
-  oneof source_config {
-    synctv.source_config.MediaSourceConfig media = 9;
-    synctv.source_config.PlaylistSourceConfig playlist = 10;
-  }
+  synctv.provider.common.DiscoveredSource source = 9;
+  optional PlaylistListIntent browse = 10;
+}
+
+enum PlaylistListMode {
+  PLAYLIST_LIST_MODE_POPULAR = 0;
+  PLAYLIST_LIST_MODE_RECOMMENDED = 1;
+  PLAYLIST_LIST_MODE_VIDEO_PARTS = 2;
+  PLAYLIST_LIST_MODE_UP_VIDEOS = 3;
+  PLAYLIST_LIST_MODE_FAVORITE_VIDEOS = 4;
+  PLAYLIST_LIST_MODE_COLLECTION_VIDEOS = 5;
+  PLAYLIST_LIST_MODE_SERIES_VIDEOS = 6;
+  PLAYLIST_LIST_MODE_WATCH_LATER = 7;
+  PLAYLIST_LIST_MODE_PGC_SEASON = 8;
+  PLAYLIST_LIST_MODE_LIVE_RECOMMENDED = 9;
+  PLAYLIST_LIST_MODE_LIVE_FOLLOWED = 10;
+  PLAYLIST_LIST_MODE_LIVE_AREA = 11;
+  PLAYLIST_LIST_MODE_HISTORY = 12;
+  PLAYLIST_LIST_MODE_PGC_TIMELINE = 13;
+}
+
+message PlaylistListIntent {
+  PlaylistListMode mode = 1;
+  string bvid = 2;
+  optional uint64 aid = 3;
+  uint64 mid = 4;
+  string keyword = 5;
+  uint64 media_id = 6;
+  uint64 season_id = 7;
+  uint64 series_id = 8;
+  uint64 parent_area_id = 9;
+  uint64 area_id = 10;
+  synctv.source_config.BilibiliHistoryType history_type = 11;
+  synctv.source_config.BilibiliPgcTimelineType timeline_type = 12;
+  uint32 before_days = 13;
+  uint32 after_days = 14;
+}
+
+message ListPlaylistRequest {
+  PlaylistListIntent intent = 1 [(buf.validate.field).required = true];
+  uint64 page = 2 [(buf.validate.field).uint64.gte = 1];
+  uint32 page_size = 3 [(buf.validate.field).uint32 = {gte: 1, lte: 50}];
+  optional string cursor = 4;
+  string search = 5;
+  string instance_name = 6;
+  bool shared = 7;
+}
+
+message PlaylistListItem {
+  string id = 1;
+  string title = 2;
+  string description = 3;
+  string cover = 4;
+  bool is_container = 5;
+  synctv.provider.common.DiscoveredSource source = 6;
+  optional PlaylistListIntent browse = 7;
+}
+
+message ListPlaylistResponse {
+  repeated PlaylistListItem items = 1;
+  bool has_more = 2;
+  uint64 page = 3;
+  optional string cursor = 4;
+  synctv.provider.common.DiscoveredSource source = 5;
 }
 
 // List the live-area hierarchy used to build a live-area playlist source.
 message ListLiveAreasRequest {
   string instance_name = 1; // Optional provider instance name
+  bool shared = 2;
 }
 
 message LiveArea {
@@ -54,6 +117,7 @@ message LiveArea {
   string parent_name = 4;
   string picture = 5;
   bool hot = 6;
+  synctv.provider.common.DiscoveredSource source = 7;
 }
 
 message ListLiveAreasResponse {
@@ -62,6 +126,7 @@ message ListLiveAreasResponse {
 
 message ListFavoriteFoldersRequest {
   string instance_name = 1; // Optional provider instance name
+  bool shared = 2;
 }
 
 message FavoriteFolder {
@@ -70,7 +135,7 @@ message FavoriteFolder {
   uint64 media_count = 3;
   bool private = 4;
   bool default_folder = 5;
-  synctv.source_config.PlaylistSourceConfig source_config = 6;
+  synctv.provider.common.DiscoveredSource source = 6;
 }
 
 message ListFavoriteFoldersResponse {
@@ -88,6 +153,7 @@ message ListFollowedPgcRequest {
   PgcFollowType type = 2 [(buf.validate.field).enum.defined_only = true];
   uint64 page = 3 [(buf.validate.field).uint64.gte = 1];
   uint32 page_size = 4 [(buf.validate.field).uint32 = {gte: 1, lte: 30}];
+  bool shared = 5;
 }
 
 message FollowedPgcSeason {
@@ -96,7 +162,7 @@ message FollowedPgcSeason {
   string cover = 3;
   string description = 4;
   string latest_episode = 5;
-  synctv.source_config.PlaylistSourceConfig source_config = 6;
+  synctv.provider.common.DiscoveredSource source = 6;
 }
 
 message ListFollowedPgcResponse {
@@ -110,6 +176,7 @@ message ListHistoryRequest {
   optional string cursor = 2;
   uint32 page_size = 3 [(buf.validate.field).uint32.lte = 30];
   string instance_name = 4;
+  bool shared = 5;
 }
 
 message HistoryItem {
@@ -120,14 +187,14 @@ message HistoryItem {
   int64 viewed_at = 5;
   int64 progress_seconds = 6;
   uint64 duration_seconds = 7;
-  synctv.source_config.MediaSourceConfig source_config = 8;
+  synctv.provider.common.DiscoveredSource source = 8;
 }
 
 message ListHistoryResponse {
   repeated HistoryItem items = 1;
   optional string cursor = 2;
   bool has_more = 3;
-  synctv.source_config.PlaylistSourceConfig source_config = 4;
+  synctv.provider.common.DiscoveredSource source = 4;
 }
 
 message ListPgcTimelineRequest {
@@ -135,6 +202,7 @@ message ListPgcTimelineRequest {
   uint32 before_days = 2 [(buf.validate.field).uint32.lte = 7];
   uint32 after_days = 3 [(buf.validate.field).uint32.lte = 7];
   string instance_name = 4;
+  bool shared = 5;
 }
 
 message PgcTimelineItem {
@@ -150,12 +218,12 @@ message PgcTimelineItem {
   uint32 day_of_week = 10;
   bool delayed = 11;
   string delay_reason = 12;
-  optional synctv.source_config.MediaSourceConfig source_config = 13;
+  synctv.provider.common.DiscoveredSource source = 13;
 }
 
 message ListPgcTimelineResponse {
   repeated PgcTimelineItem items = 1;
-  synctv.source_config.PlaylistSourceConfig source_config = 2;
+  synctv.provider.common.DiscoveredSource source = 2;
 }
 
 enum PgcSeasonType {
@@ -189,6 +257,7 @@ message ListPgcSeasonsRequest {
   optional string year = 8;
   optional uint64 style_id = 9;
   string instance_name = 10;
+  bool shared = 11;
 }
 
 message PgcSeason {
@@ -204,7 +273,7 @@ message PgcSeason {
   string score = 10;
   bool finished = 11;
   PgcSeasonType type = 12;
-  synctv.source_config.PlaylistSourceConfig source_config = 13;
+  synctv.provider.common.DiscoveredSource source = 13;
 }
 
 message ListPgcSeasonsResponse {

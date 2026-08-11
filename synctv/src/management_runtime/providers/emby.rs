@@ -60,11 +60,13 @@ impl EmbyRuntime for ManagementEmbyRuntime {
     ) -> Result<emby_proto::ListResponse, ProviderError> {
         let req = emby_proto::ListRequest {
             server_id: query.server_id,
-            path: query.path,
+            mode: query.mode as i32,
             start_index: query.start_index,
             limit: query.limit,
             search_term: query.search_term,
             instance_name: String::new(),
+            target_id: query.target_id,
+            item_types: query.item_types,
         };
         self.inner
             .list_with_context(caller_user_id, req, instance_name, None)

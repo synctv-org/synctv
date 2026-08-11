@@ -1154,6 +1154,7 @@ fn test_seafile_source_metadata_uses_native_path() -> TestResult {
     media.source_config = synctv_core::models::MediaSourceConfig::Seafile(
         synctv_core::models::SeafileMediaSourceConfig {
             server_id: "seafile-home".to_string(),
+            proxy_mode: synctv_core::models::PlaybackProxyMode::Auto,
             repository_id: "repo-1".to_string(),
             path: "/Videos/Movie.mkv".to_string(),
             object_id: "object-1".to_string(),

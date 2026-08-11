@@ -311,7 +311,7 @@ impl SettingsService {
 
         let mut fences = Vec::with_capacity(updates.len());
         for (key, _) in &updates {
-            let observed_version = match repository.current_version(key).await {
+            let database_version = match repository.current_version_optional(key).await {
                 Ok(version) => version,
                 Err(error) => {
                     self.abort_reserved_settings_writes(&fences).await;
@@ -321,15 +321,26 @@ impl SettingsService {
                 }
             };
             let domain = Self::runtime_setting_domain(key);
+            let observed_fence_version = if let Some(version) = database_version {
+                i64::from(version)
+            } else {
+                match self.consistency.current_committed_version(&domain).await {
+                    Ok(version) => version.unwrap_or(0),
+                    Err(error) => {
+                        self.abort_reserved_settings_writes(&fences).await;
+                        return Err(error);
+                    }
+                }
+            };
             match self
                 .consistency
-                .begin_observed_write(&domain, i64::from(observed_version))
+                .begin_observed_write(&domain, observed_fence_version)
                 .await
             {
                 Ok(reservation) => {
                     let reserved_version = reservation
                         .as_ref()
-                        .map_or(i64::from(observed_version) + 1, |reservation| {
+                        .map_or(observed_fence_version + 1, |reservation| {
                             reservation.version
                         });
                     let Ok(new_version) = i32::try_from(reserved_version) else {
@@ -344,7 +355,7 @@ impl SettingsService {
                     fences.push(RuntimeSettingWriteFence {
                         key: key.clone(),
                         domain,
-                        observed_version,
+                        observed_version: database_version.unwrap_or(0),
                         new_version,
                         reservation,
                     });

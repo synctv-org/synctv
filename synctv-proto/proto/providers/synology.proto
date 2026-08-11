@@ -3,6 +3,7 @@ syntax = "proto3";
 package synctv.provider.synology;
 
 import "proto/buf/validate/validate.proto";
+import "proto/providers/common.proto";
 
 message LoginRequest {
   string endpoint = 1 [(buf.validate.field).string.min_len = 1];
@@ -35,6 +36,7 @@ message FileItem {
   uint64 modified_at = 5;
   uint64 created_at = 6;
   string file_type = 7;
+  synctv.provider.common.DiscoveredSource source = 8;
 }
 
 message ListFilesResponse {
@@ -42,6 +44,7 @@ message ListFilesResponse {
   uint64 total = 2;
   uint64 page = 3;
   bool has_more = 4;
+  synctv.provider.common.DiscoveredSource source = 5;
 }
 
 message ListLibrariesRequest {
@@ -161,6 +164,7 @@ message VideoItem {
   optional string poster_mtime = 22;
   optional string backdrop_mtime = 23;
   repeated VideoFile files = 24;
+  synctv.provider.common.DiscoveredSource source = 25;
 }
 
 message ListVideoItemsResponse {
@@ -168,6 +172,7 @@ message ListVideoItemsResponse {
   uint64 total = 2;
   uint64 page = 3;
   bool has_more = 4;
+  synctv.provider.common.DiscoveredSource source = 5;
 }
 
 message LogoutRequest {

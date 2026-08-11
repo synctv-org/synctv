@@ -19,6 +19,7 @@ fn nextcloud_contract_preserves_native_ids_and_source_variants() {
         provider: Some(media_source_config::Provider::Nextcloud(
             synctv_proto::source_config::NextcloudMediaSourceConfig {
                 server_id: "cloud-home".to_string(),
+                proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
                 path: "/Videos/movie.mkv".to_string(),
                 file_id: 9_007_199_254_740_991,
             },
@@ -28,6 +29,7 @@ fn nextcloud_contract_preserves_native_ids_and_source_variants() {
         provider: Some(playlist_source_config::Provider::Nextcloud(
             synctv_proto::source_config::NextcloudPlaylistSourceConfig {
                 server_id: "cloud-home".to_string(),
+                proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
                 source: Some(
                     synctv_proto::source_config::nextcloud_playlist_source_config::Source::Search(
                         synctv_proto::source_config::NextcloudSearchPlaylistSourceConfig {

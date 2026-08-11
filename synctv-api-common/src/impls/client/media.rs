@@ -3044,6 +3044,7 @@ mod tests {
                         server_id: "alist-server".to_string(),
                         path: path.to_string(),
                         password: None,
+                        proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
                     },
                 ),
             ),
@@ -3071,8 +3072,7 @@ mod tests {
                         default_danmaku_index: None,
                         playback_kind: None,
                         duration_seconds: None,
-                        prefer_proxy: None,
-                        proxy_only: None,
+                        proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
                     },
                 ),
             ),
@@ -3108,6 +3108,7 @@ mod tests {
                             source: synctv_core::models::EmbyPlaylistSource::Folder {
                                 item_id: "library".to_string(),
                             },
+                            proxy_mode: synctv_core::models::PlaybackProxyMode::Auto,
                         },
                     )
                 }

@@ -4,6 +4,7 @@ package synctv.provider.huya;
 
 import "proto/buf/validate/validate.proto";
 import "proto/source_config.proto";
+import "proto/providers/common.proto";
 
 enum ResourceKind {
   RESOURCE_KIND_UNSPECIFIED = 0;
@@ -19,6 +20,7 @@ enum StreamFormat {
 
 message ResolveRequest {
   string resource = 1 [(buf.validate.field).string.min_len = 1];
+  string instance_name = 2;
 }
 
 message Metadata {
@@ -52,5 +54,5 @@ message ResolveResponse {
   ResourceKind kind = 1;
   Metadata metadata = 2;
   repeated Quality qualities = 3;
-  synctv.source_config.HuyaMediaSourceConfig source_config = 4;
+  synctv.provider.common.DiscoveredSource source = 4;
 }

@@ -11,11 +11,20 @@ use synctv_proto::providers::synology::{
     LoginResponse, LogoutRequest, LogoutResponse, SynologyVideoEntryKind as ProtoKind, VideoFile,
     VideoItem, VideoLibrary,
 };
+use synctv_proto::source_config::{
+    media_source_config, playlist_source_config, synology_media_source_config,
+    synology_playlist_source_config, SynologyEpisodesPlaylistSourceConfig,
+    SynologyFileSourceConfig, SynologyFilesPlaylistSourceConfig,
+    SynologyHomeVideosPlaylistSourceConfig, SynologyLibraryItemKind as ProtoLibraryItemKind,
+    SynologyLibraryItemSourceConfig, SynologyMediaSourceConfig, SynologyMoviesPlaylistSourceConfig,
+    SynologyPlaylistSourceConfig, SynologyTvRecordingsPlaylistSourceConfig,
+    SynologyTvShowsPlaylistSourceConfig,
+};
 use synctv_realtime::fanout::RealtimeEventService;
 
 use super::{
-    provider_instance_name_for_response, publish_provider_credential_changed,
-    resolve_bound_instance_name,
+    discovered_media, discovered_playlist, provider_instance_name_for_response,
+    publish_provider_credential_changed, resolve_bound_instance_name,
 };
 
 #[derive(Clone)]
@@ -85,19 +94,29 @@ impl SynologyApiImpl {
                 req.search.as_deref(),
             )
             .await?;
-        resolve_bound_instance_name(requested_instance_name, stored_instance_name.as_deref())?;
+        let instance_name =
+            resolve_bound_instance_name(requested_instance_name, stored_instance_name.as_deref())?;
         Ok(ListFilesResponse {
             items: listing
                 .files
                 .into_iter()
-                .map(|item| FileItem {
-                    name: item.name,
-                    path: item.path,
-                    is_dir: item.isdir,
-                    size: item.additional.size,
-                    modified_at: item.additional.time.mtime,
-                    created_at: item.additional.time.crtime,
-                    file_type: item.additional.r#type,
+                .map(|item| {
+                    let source = synology_file_source(
+                        &req.server_id,
+                        &item.path,
+                        item.isdir,
+                        instance_name.as_deref(),
+                    );
+                    FileItem {
+                        name: item.name,
+                        path: item.path,
+                        is_dir: item.isdir,
+                        size: item.additional.size,
+                        modified_at: item.additional.time.mtime,
+                        created_at: item.additional.time.crtime,
+                        file_type: item.additional.r#type,
+                        source: Some(source),
+                    }
                 })
                 .collect(),
             total: listing.total,
@@ -106,6 +125,12 @@ impl SynologyApiImpl {
                 .offset
                 .saturating_add(u64::try_from(page_size).unwrap_or(u64::MAX))
                 < listing.total,
+            source: Some(synology_file_source(
+                &req.server_id,
+                &req.path,
+                true,
+                instance_name.as_deref(),
+            )),
         })
     }
 
@@ -247,6 +272,7 @@ impl SynologyApiImpl {
         search: Option<&str>,
         requested_instance_name: Option<&str>,
     ) -> Result<ListVideoItemsResponse, ProviderError> {
+        let page_source_config = source.clone();
         let (listing, stored_instance_name) = self
             .provider
             .list_video_items(
@@ -258,12 +284,20 @@ impl SynologyApiImpl {
                 search,
             )
             .await?;
-        resolve_bound_instance_name(requested_instance_name, stored_instance_name.as_deref())?;
+        let instance_name =
+            resolve_bound_instance_name(requested_instance_name, stored_instance_name.as_deref())?;
+        let page_source =
+            synology_playlist_source(server_id, &page_source_config, instance_name.as_deref());
         Ok(ListVideoItemsResponse {
-            items: listing.items.into_iter().map(video_item).collect(),
+            items: listing
+                .items
+                .into_iter()
+                .map(|item| video_item(item, server_id, instance_name.as_deref()))
+                .collect(),
             total: listing.total,
             page: u64::try_from(listing.page).unwrap_or(u64::MAX),
             has_more: listing.has_more,
+            source: Some(page_source),
         })
     }
 
@@ -353,7 +387,12 @@ fn page_size(value: u32) -> Result<usize, ProviderError> {
     })
 }
 
-fn video_item(entry: SynologyVideoEntry) -> VideoItem {
+fn video_item(
+    entry: SynologyVideoEntry,
+    server_id: &str,
+    provider_instance_name: Option<&str>,
+) -> VideoItem {
+    let source = synology_video_source(server_id, &entry, provider_instance_name);
     let metadata = entry.metadata;
     VideoItem {
         id: metadata.id,
@@ -410,5 +449,135 @@ fn video_item(entry: SynologyVideoEntry) -> VideoItem {
                 conversion_produced: file.conversion_produced,
             })
             .collect(),
+        source,
     }
+}
+
+fn synology_file_source(
+    server_id: &str,
+    path: &str,
+    playlist: bool,
+    provider_instance_name: Option<&str>,
+) -> synctv_proto::providers::common::DiscoveredSource {
+    if playlist {
+        discovered_playlist(
+            playlist_source_config::Provider::Synology(SynologyPlaylistSourceConfig {
+                server_id: server_id.to_string(),
+                proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
+                source: Some(synology_playlist_source_config::Source::Files(
+                    SynologyFilesPlaylistSourceConfig {
+                        path: path.to_string(),
+                    },
+                )),
+            }),
+            provider_instance_name,
+        )
+    } else {
+        discovered_media(
+            media_source_config::Provider::Synology(SynologyMediaSourceConfig {
+                server_id: server_id.to_string(),
+                proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
+                source: Some(synology_media_source_config::Source::File(
+                    SynologyFileSourceConfig {
+                        path: path.to_string(),
+                    },
+                )),
+            }),
+            provider_instance_name,
+        )
+    }
+}
+
+fn synology_playlist_source(
+    server_id: &str,
+    source: &SynologyPlaylistSource,
+    provider_instance_name: Option<&str>,
+) -> synctv_proto::providers::common::DiscoveredSource {
+    let source = match source {
+        SynologyPlaylistSource::Files { path } => {
+            synology_playlist_source_config::Source::Files(SynologyFilesPlaylistSourceConfig {
+                path: path.clone(),
+            })
+        }
+        SynologyPlaylistSource::Movies { library_id } => {
+            synology_playlist_source_config::Source::Movies(SynologyMoviesPlaylistSourceConfig {
+                library_id: *library_id,
+            })
+        }
+        SynologyPlaylistSource::TvShows { library_id } => {
+            synology_playlist_source_config::Source::TvShows(SynologyTvShowsPlaylistSourceConfig {
+                library_id: *library_id,
+            })
+        }
+        SynologyPlaylistSource::Episodes {
+            library_id,
+            tv_show_id,
+        } => synology_playlist_source_config::Source::Episodes(
+            SynologyEpisodesPlaylistSourceConfig {
+                library_id: *library_id,
+                tv_show_id: *tv_show_id,
+            },
+        ),
+        SynologyPlaylistSource::HomeVideos { library_id } => {
+            synology_playlist_source_config::Source::HomeVideos(
+                SynologyHomeVideosPlaylistSourceConfig {
+                    library_id: *library_id,
+                },
+            )
+        }
+        SynologyPlaylistSource::TvRecordings { library_id } => {
+            synology_playlist_source_config::Source::TvRecordings(
+                SynologyTvRecordingsPlaylistSourceConfig {
+                    library_id: *library_id,
+                },
+            )
+        }
+    };
+    discovered_playlist(
+        playlist_source_config::Provider::Synology(SynologyPlaylistSourceConfig {
+            server_id: server_id.to_string(),
+            proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
+            source: Some(source),
+        }),
+        provider_instance_name,
+    )
+}
+
+fn synology_video_source(
+    server_id: &str,
+    entry: &SynologyVideoEntry,
+    provider_instance_name: Option<&str>,
+) -> Option<synctv_proto::providers::common::DiscoveredSource> {
+    if entry.kind == SynologyVideoEntryKind::TvShow {
+        return Some(synology_playlist_source(
+            server_id,
+            &SynologyPlaylistSource::Episodes {
+                library_id: entry.metadata.library_id,
+                tv_show_id: entry.metadata.id,
+            },
+            provider_instance_name,
+        ));
+    }
+    let file_id = entry.metadata.additional.file.first()?.id;
+    let kind = match entry.kind {
+        SynologyVideoEntryKind::Movie => ProtoLibraryItemKind::Movie,
+        SynologyVideoEntryKind::Episode => ProtoLibraryItemKind::Episode,
+        SynologyVideoEntryKind::HomeVideo => ProtoLibraryItemKind::HomeVideo,
+        SynologyVideoEntryKind::TvRecording => ProtoLibraryItemKind::TvRecording,
+        SynologyVideoEntryKind::TvShow => return None,
+    };
+    Some(discovered_media(
+        media_source_config::Provider::Synology(SynologyMediaSourceConfig {
+            server_id: server_id.to_string(),
+            proxy_mode: synctv_proto::source_config::PlaybackProxyMode::Auto as i32,
+            source: Some(synology_media_source_config::Source::LibraryItem(
+                SynologyLibraryItemSourceConfig {
+                    kind: kind.into(),
+                    item_id: entry.metadata.id,
+                    file_id,
+                },
+            )),
+        }),
+        provider_instance_name,
+    ))
 }

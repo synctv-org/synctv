@@ -490,6 +490,11 @@ impl QnapProvider {
                 resource,
                 ..
             } => (credential_owner_id, server_id, resource),
+            PlaybackQnapMedia::Direct { .. } => {
+                return Err(ProviderError::InvalidConfig(
+                    "QNAP direct media cannot use the provider proxy resource endpoint".to_string(),
+                ));
+            }
         };
         let owner = owner
             .parse::<UserId>()
@@ -529,7 +534,7 @@ impl QnapProvider {
                 "QNAP cached HLS resource is invalid".to_string(),
             ));
         };
-        let (owner, server_id, resource) = qnap_resource_descriptor(provider);
+        let (owner, server_id, resource) = qnap_resource_descriptor(provider)?;
         if resource.mode != QnapPlaybackMode::Original {
             return Err(ProviderError::InvalidConfig(
                 "QNAP HLS requires an original file resource".to_string(),
@@ -573,7 +578,7 @@ impl QnapProvider {
                 "QNAP cached HLS resource is invalid".to_string(),
             ));
         };
-        let (owner, server_id, root_resource) = qnap_resource_descriptor(provider);
+        let (owner, server_id, root_resource) = qnap_resource_descriptor(provider)?;
         if root_resource.mode != QnapPlaybackMode::Original {
             return Err(ProviderError::InvalidConfig(
                 "QNAP HLS requires an original file resource".to_string(),
@@ -638,6 +643,11 @@ impl QnapProvider {
                 server_id,
                 ..
             } => (credential_owner_id, server_id),
+            PlaybackQnapMedia::Direct { .. } => {
+                return Err(ProviderError::InvalidConfig(
+                    "QNAP direct media cannot provide proxy subtitles".to_string(),
+                ));
+            }
         };
         let owner = owner
             .parse::<UserId>()
@@ -680,6 +690,11 @@ impl QnapProvider {
                 resource,
                 ..
             } => (credential_owner_id, server_id, &resource.path),
+            PlaybackQnapMedia::Direct { .. } => {
+                return Err(ProviderError::InvalidConfig(
+                    "QNAP direct media cannot provide a proxy thumbnail".to_string(),
+                ));
+            }
         };
         let owner = owner
             .parse::<UserId>()
@@ -854,6 +869,29 @@ impl MediaProvider for QnapProvider {
                 info.default_media_index = info.medias.len().checked_sub(1);
             }
         }
+        if config.proxy_mode == crate::models::PlaybackProxyMode::Prefer {
+            let original_modes = playback_infos
+                .iter()
+                .map(|(name, info)| (name.clone(), info.clone()))
+                .collect::<Vec<_>>();
+            for (mode_name, info) in original_modes {
+                let mut direct = info;
+                for media in &mut direct.medias {
+                    let PlaybackMediaProvider::Qnap(PlaybackQnapMedia::Refresh {
+                        resource, ..
+                    }) = &media.provider
+                    else {
+                        continue;
+                    };
+                    let url = playback_url(&auth.client, &auth.login.sid, resource)?;
+                    media.provider = PlaybackMediaProvider::Qnap(PlaybackQnapMedia::Direct {
+                        url,
+                        headers: QnapClient::auth_headers(),
+                    });
+                }
+                playback_infos.insert(format!("direct_{mode_name}"), direct);
+            }
+        }
         let capabilities = capabilities_from(&auth.login, &hardware);
         let result = PlaybackResult {
             playback_infos,
@@ -883,16 +921,20 @@ impl MediaProvider for QnapProvider {
         super::cached_versioned_playback_or_fill(
             Self::NAME,
             &format!(
-                "playback:{owner}:{}:room:{}:{}:profile:{}",
+                "playback:{owner}:{}:room:{}:{}:profile:{}:proxy:{}",
                 config.server_id,
                 ctx.room_id
                     .map_or_else(|| "none".to_string(), |room| room.to_string()),
                 config.path,
-                super::playback_profile_cache_token(ctx.playback_client_profile())
+                super::playback_profile_cache_token(ctx.playback_client_profile()),
+                config.proxy_mode.as_str()
             ),
             PLAYBACK_CACHE_TTL,
             ctx,
-            mark_qnap_playback_resources,
+            |result, version, expires_at| {
+                mark_qnap_playback_resources(result, version, expires_at);
+                super::apply_provider_playback_policy(result, config.proxy_mode, true);
+            },
             || async { Ok(result) },
         )
         .await
@@ -1080,6 +1122,7 @@ impl DynamicPlaylistProvider for QnapProvider {
             source_config: MediaSourceConfig::Qnap(QnapMediaSourceConfig {
                 server_id: config.server_id.clone(),
                 path,
+                proxy_mode: config.proxy_mode,
             }),
             target: target.clone(),
         }))
@@ -1249,7 +1292,9 @@ fn playback_url(
     }
 }
 
-fn qnap_resource_descriptor(provider: &PlaybackQnapMedia) -> (&str, &str, &QnapPlaybackResource) {
+fn qnap_resource_descriptor(
+    provider: &PlaybackQnapMedia,
+) -> Result<(&str, &str, &QnapPlaybackResource), ProviderError> {
     match provider {
         PlaybackQnapMedia::Refresh {
             credential_owner_id,
@@ -1261,7 +1306,10 @@ fn qnap_resource_descriptor(provider: &PlaybackQnapMedia) -> (&str, &str, &QnapP
             server_id,
             resource,
             ..
-        } => (credential_owner_id, server_id, resource),
+        } => Ok((credential_owner_id, server_id, resource)),
+        PlaybackQnapMedia::Direct { .. } => Err(ProviderError::InvalidConfig(
+            "QNAP direct media has no provider resource descriptor".to_string(),
+        )),
     }
 }
 
@@ -1325,15 +1373,31 @@ fn insert_mode(
 }
 
 fn mark_qnap_playback_resources(result: &mut PlaybackResult, version: &str, expires_at: i64) {
-    for (mode_name, info) in &mut result.playback_infos {
-        for (media_index, media) in info.medias.iter_mut().enumerate() {
-            if let PlaybackMediaProvider::Qnap(PlaybackQnapMedia::Refresh {
-                credential_owner_id,
-                server_id,
-                resource,
-            }) = &media.provider
-            {
-                media.provider = PlaybackMediaProvider::Qnap(PlaybackQnapMedia::Proxy {
+    let original_modes = result
+        .playback_infos
+        .iter()
+        .map(|(name, info)| (name.clone(), info.clone()))
+        .collect::<Vec<_>>();
+    for (mode_name, original_info) in original_modes {
+        if mode_name.starts_with("proxy_") || mode_name.starts_with("direct_") {
+            continue;
+        }
+        let mut proxy_info = original_info.clone();
+        proxy_info.medias = original_info
+            .medias
+            .iter()
+            .enumerate()
+            .filter_map(|(media_index, media)| {
+                let PlaybackMediaProvider::Qnap(PlaybackQnapMedia::Refresh {
+                    credential_owner_id,
+                    server_id,
+                    resource,
+                }) = &media.provider
+                else {
+                    return None;
+                };
+                let mut proxy = media.clone();
+                proxy.provider = PlaybackMediaProvider::Qnap(PlaybackQnapMedia::Proxy {
                     version: version.to_string(),
                     expires_at,
                     mode_name: mode_name.clone(),
@@ -1342,16 +1406,24 @@ fn mark_qnap_playback_resources(result: &mut PlaybackResult, version: &str, expi
                     server_id: server_id.clone(),
                     resource: resource.clone(),
                 });
-            }
+                Some(proxy)
+            })
+            .collect();
+        if proxy_info.medias.is_empty() {
+            continue;
         }
-        for (subtitle_index, subtitle) in info.subtitles.iter_mut().enumerate() {
+        for (subtitle_index, subtitle) in proxy_info.subtitles.iter_mut().enumerate() {
             if let PlaybackSubtitleProvider::Qnap(resource) = &mut subtitle.provider {
                 resource.version = version.to_string();
                 resource.expires_at = expires_at;
-                resource.mode_name.clone_from(mode_name);
+                resource.mode_name.clone_from(&mode_name);
                 resource.subtitle_index = subtitle_index;
             }
         }
+        result
+            .playback_infos
+            .insert(format!("proxy_{mode_name}"), proxy_info);
+        result.playback_infos.remove(&mode_name);
     }
 }
 

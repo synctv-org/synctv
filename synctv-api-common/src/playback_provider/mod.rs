@@ -2,6 +2,7 @@ pub mod acfun;
 pub mod alist;
 pub mod bilibili;
 pub mod cctv;
+pub mod cloudreve;
 pub mod common;
 pub mod direct_url;
 pub mod douyin;

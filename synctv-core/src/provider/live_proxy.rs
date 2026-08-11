@@ -50,6 +50,13 @@ impl LiveProxyProvider {
         Self { ssrf_guard }
     }
 
+    pub async fn validate_prepared_config(
+        &self,
+        config: &crate::models::LiveProxyMediaSourceConfig,
+    ) -> Result<(), ProviderError> {
+        Self::validate_external_source(&config.source, &self.ssrf_guard).await
+    }
+
     async fn validate_live_source_url(
         url: &str,
         guard: &synctv_common::ssrf::SsrfGuard,

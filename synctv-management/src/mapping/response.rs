@@ -70,6 +70,20 @@ fn source_provider_to_proto(provider: synctv_core::models::SourceProvider) -> i3
     }
 }
 
+const fn playback_proxy_mode_to_proto(mode: synctv_core::models::PlaybackProxyMode) -> i32 {
+    match mode {
+        synctv_core::models::PlaybackProxyMode::Auto => {
+            source_config_proto::PlaybackProxyMode::Auto as i32
+        }
+        synctv_core::models::PlaybackProxyMode::Prefer => {
+            source_config_proto::PlaybackProxyMode::Prefer as i32
+        }
+        synctv_core::models::PlaybackProxyMode::Only => {
+            source_config_proto::PlaybackProxyMode::Only as i32
+        }
+    }
+}
+
 fn playlist_source_config_to_proto(
     config: &synctv_core::models::PlaylistSourceConfig,
 ) -> source_config_proto::PlaylistSourceConfig {
@@ -175,6 +189,7 @@ fn playlist_source_config_to_proto(
             Provider::Bilibili(source_config_proto::BilibiliPlaylistSourceConfig {
                 source: Some(source),
                 shared: config.shared,
+                proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
             })
         }
         synctv_core::models::PlaylistSourceConfig::Alist(config) => {
@@ -182,6 +197,7 @@ fn playlist_source_config_to_proto(
                 server_id: config.server_id,
                 path: config.path,
                 password: config.password,
+                proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
             })
         }
         synctv_core::models::PlaylistSourceConfig::Emby(config) => {
@@ -238,12 +254,14 @@ fn playlist_source_config_to_proto(
             Provider::Emby(source_config_proto::EmbyPlaylistSourceConfig {
                 server_id: config.server_id,
                 source: Some(source),
+                proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
             })
         }
         synctv_core::models::PlaylistSourceConfig::Cloudreve(config) => {
             Provider::Cloudreve(source_config_proto::CloudrevePlaylistSourceConfig {
                 server_id: config.server_id,
                 path: config.path,
+                proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
             })
         }
         synctv_core::models::PlaylistSourceConfig::Twitch(config) => {
@@ -361,6 +379,7 @@ fn playlist_source_config_to_proto(
         synctv_core::models::PlaylistSourceConfig::Fnos(config) => {
             Provider::Fnos(source_config_proto::FnosPlaylistSourceConfig {
                 server_id: config.server_id,
+                proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
                 source: Some(match config.source {
                     synctv_core::models::FnosPlaylistSource::Files { path } => {
                         source_config_proto::fnos_playlist_source_config::Source::Files(
@@ -392,12 +411,14 @@ fn playlist_source_config_to_proto(
         synctv_core::models::PlaylistSourceConfig::Qnap(config) => {
             Provider::Qnap(source_config_proto::QnapPlaylistSourceConfig {
                 server_id: config.server_id,
+                proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
                 path: config.path,
             })
         }
         synctv_core::models::PlaylistSourceConfig::Synology(config) => {
             Provider::Synology(source_config_proto::SynologyPlaylistSourceConfig {
                 server_id: config.server_id,
+                proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
                 source: Some(match config.source {
                     synctv_core::models::SynologyPlaylistSource::Files { path } => {
                         source_config_proto::synology_playlist_source_config::Source::Files(
@@ -443,6 +464,7 @@ fn playlist_source_config_to_proto(
         synctv_core::models::PlaylistSourceConfig::Nextcloud(config) => {
             Provider::Nextcloud(source_config_proto::NextcloudPlaylistSourceConfig {
                 server_id: config.server_id,
+                proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
                 source: Some(match config.source {
                     synctv_core::models::NextcloudPlaylistSource::Folder { path } => {
                         source_config_proto::nextcloud_playlist_source_config::Source::Folder(
@@ -468,6 +490,7 @@ fn playlist_source_config_to_proto(
         synctv_core::models::PlaylistSourceConfig::Seafile(config) => {
             Provider::Seafile(source_config_proto::SeafilePlaylistSourceConfig {
                 server_id: config.server_id,
+                proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
                 source: Some(match config.source {
                     synctv_core::models::SeafilePlaylistSource::Folder {
                         repository_id,
@@ -498,6 +521,7 @@ fn playlist_source_config_to_proto(
         synctv_core::models::PlaylistSourceConfig::TrueNas(config) => {
             Provider::Truenas(source_config_proto::TrueNasPlaylistSourceConfig {
                 server_id: config.server_id,
+                proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
                 source: Some(match config.source {
                     synctv_core::models::TrueNasPlaylistSource::Folder { path } => {
                         source_config_proto::true_nas_playlist_source_config::Source::Folder(
@@ -549,8 +573,17 @@ fn media_source_config_to_proto(
                     }
                 }),
                 duration_seconds: config.duration_seconds,
-                prefer_proxy: config.prefer_proxy,
-                proxy_only: config.proxy_only.then_some(true),
+                proxy_mode: match config.proxy_mode {
+                    synctv_core::models::PlaybackProxyMode::Auto => {
+                        source_config_proto::PlaybackProxyMode::Auto as i32
+                    }
+                    synctv_core::models::PlaybackProxyMode::Prefer => {
+                        source_config_proto::PlaybackProxyMode::Prefer as i32
+                    }
+                    synctv_core::models::PlaybackProxyMode::Only => {
+                        source_config_proto::PlaybackProxyMode::Only as i32
+                    }
+                },
                 medias: config
                     .medias
                     .into_iter()
@@ -596,6 +629,7 @@ fn media_source_config_to_proto(
         }
         synctv_core::models::MediaSourceConfig::Bilibili(config) => {
             use source_config_proto::bilibili_media_source_config::Source;
+            let proxy_mode = config.proxy_mode();
             let source = match config {
                 synctv_core::models::BilibiliMediaSourceConfig::Video(config) => {
                     Source::Video(source_config_proto::BilibiliVideoSourceConfig {
@@ -621,6 +655,7 @@ fn media_source_config_to_proto(
             };
             Provider::Bilibili(source_config_proto::BilibiliMediaSourceConfig {
                 source: Some(source),
+                proxy_mode: playback_proxy_mode_to_proto(proxy_mode),
             })
         }
         synctv_core::models::MediaSourceConfig::Alist(config) => {
@@ -628,12 +663,14 @@ fn media_source_config_to_proto(
                 server_id: config.server_id,
                 path: config.path,
                 password: config.password,
+                proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
             })
         }
         synctv_core::models::MediaSourceConfig::Emby(config) => {
             Provider::Emby(source_config_proto::EmbyMediaSourceConfig {
                 server_id: config.server_id,
                 item_id: config.item_id,
+                proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
             })
         }
         synctv_core::models::MediaSourceConfig::Rtmp(config) => {
@@ -700,6 +737,7 @@ fn media_source_config_to_proto(
             Provider::Cloudreve(source_config_proto::CloudreveMediaSourceConfig {
                 server_id: config.server_id,
                 path: config.path,
+                proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
             })
         }
         synctv_core::models::MediaSourceConfig::Twitch(config) => {
@@ -799,6 +837,7 @@ fn media_source_config_to_proto(
         synctv_core::models::MediaSourceConfig::Fnos(config) => {
             Provider::Fnos(source_config_proto::FnosMediaSourceConfig {
                 server_id: config.server_id,
+                proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
                 source: Some(match config.source {
                     synctv_core::models::FnosMediaSource::File { path } => {
                         source_config_proto::fnos_media_source_config::Source::File(
@@ -820,12 +859,14 @@ fn media_source_config_to_proto(
         synctv_core::models::MediaSourceConfig::Qnap(config) => {
             Provider::Qnap(source_config_proto::QnapMediaSourceConfig {
                 server_id: config.server_id,
+                proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
                 path: config.path,
             })
         }
         synctv_core::models::MediaSourceConfig::Synology(config) => {
             Provider::Synology(source_config_proto::SynologyMediaSourceConfig {
                 server_id: config.server_id,
+                proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
                 source: Some(match config.source {
                     synctv_core::models::SynologyMediaSource::File { path } => {
                         source_config_proto::synology_media_source_config::Source::File(
@@ -862,6 +903,7 @@ fn media_source_config_to_proto(
         synctv_core::models::MediaSourceConfig::Nextcloud(config) => {
             Provider::Nextcloud(source_config_proto::NextcloudMediaSourceConfig {
                 server_id: config.server_id,
+                proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
                 path: config.path,
                 file_id: config.file_id,
             })
@@ -869,6 +911,7 @@ fn media_source_config_to_proto(
         synctv_core::models::MediaSourceConfig::Seafile(config) => {
             Provider::Seafile(source_config_proto::SeafileMediaSourceConfig {
                 server_id: config.server_id,
+                proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
                 repository_id: config.repository_id,
                 path: config.path,
                 object_id: config.object_id,
@@ -878,6 +921,7 @@ fn media_source_config_to_proto(
         synctv_core::models::MediaSourceConfig::TrueNas(config) => {
             Provider::Truenas(source_config_proto::TrueNasMediaSourceConfig {
                 server_id: config.server_id,
+                proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
                 path: config.path,
             })
         }

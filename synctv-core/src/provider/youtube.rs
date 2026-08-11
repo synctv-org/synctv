@@ -293,6 +293,17 @@ impl YoutubeProvider {
             .await?)
     }
 
+    pub async fn list_for_user(
+        &self,
+        user_id: UserId,
+        config: &YoutubePlaylistSourceConfig,
+        cursor: Option<&str>,
+        provider_instance_name: Option<&str>,
+    ) -> Result<YoutubeListPage, ProviderError> {
+        let session = self.stored_session(user_id, provider_instance_name).await?;
+        self.list_page(config, cursor, &session).await
+    }
+
     pub async fn get_resource(
         &self,
         store: Option<&Arc<dyn super::ProviderStore>>,

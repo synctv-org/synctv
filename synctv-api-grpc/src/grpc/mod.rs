@@ -11,6 +11,7 @@ use synctv_proto::playback_provider::acfun::ac_fun_playback_provider_service_ser
 use synctv_proto::playback_provider::alist::alist_playback_provider_service_server::AlistPlaybackProviderServiceServer;
 use synctv_proto::playback_provider::bilibili::bilibili_playback_provider_service_server::BilibiliPlaybackProviderServiceServer;
 use synctv_proto::playback_provider::cctv::cctv_playback_provider_service_server::CctvPlaybackProviderServiceServer;
+use synctv_proto::playback_provider::cloudreve::cloudreve_playback_provider_service_server::CloudrevePlaybackProviderServiceServer;
 use synctv_proto::playback_provider::direct_url::direct_url_playback_provider_service_server::DirectUrlPlaybackProviderServiceServer;
 use synctv_proto::playback_provider::douyin::douyin_playback_provider_service_server::DouyinPlaybackProviderServiceServer;
 use synctv_proto::playback_provider::douyu::douyu_playback_provider_service_server::DouyuPlaybackProviderServiceServer;
@@ -174,6 +175,7 @@ impl_grpc_service_ext!(<T> synctv_proto::playback_provider::acfun::ac_fun_playba
 impl_grpc_service_ext!(<T> synctv_proto::playback_provider::cctv::cctv_playback_provider_service_server::CctvPlaybackProviderServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proto::playback_provider::fnos::fnos_playback_provider_service_server::FnosPlaybackProviderServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proto::playback_provider::qnap::qnap_playback_provider_service_server::QnapPlaybackProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::playback_provider::cloudreve::cloudreve_playback_provider_service_server::CloudrevePlaybackProviderServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proto::playback_provider::nextcloud::nextcloud_playback_provider_service_server::NextcloudPlaybackProviderServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proto::playback_provider::seafile::seafile_playback_provider_service_server::SeafilePlaybackProviderServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proto::playback_provider::synology::synology_playback_provider_service_server::SynologyPlaybackProviderServiceServer<T>);
@@ -637,6 +639,13 @@ async fn set_registered_grpc_services_with_status(
         set_service_status!(
             health_reporter,
             true,
+            CloudrevePlaybackProviderServiceServer<
+                crate::providers::playback_provider::cloudreve::CloudrevePlaybackProviderGrpcService,
+            >
+        );
+        set_service_status!(
+            health_reporter,
+            true,
             NextcloudPlaybackProviderServiceServer<
                 crate::providers::playback_provider::nextcloud::NextcloudPlaybackProviderGrpcService,
             >
@@ -800,6 +809,8 @@ pub struct GrpcServerOptions<'a> {
         Arc<synctv_core::service::BilibiliPlaybackProviderService>,
     pub direct_url_playback_provider_service:
         Arc<synctv_core::service::DirectUrlPlaybackProviderService>,
+    pub cloudreve_playback_provider_service:
+        Arc<synctv_core::service::CloudrevePlaybackProviderService>,
     pub emby_playback_provider_service: Arc<synctv_core::service::EmbyPlaybackProviderService>,
     pub rtmp_playback_provider_service: Arc<synctv_core::service::RtmpPlaybackProviderService>,
     pub live_proxy_playback_provider_service:
@@ -910,6 +921,8 @@ struct FallbackHttpAppStateDeps {
     bilibili_playback_provider_service: Arc<synctv_core::service::BilibiliPlaybackProviderService>,
     direct_url_playback_provider_service:
         Arc<synctv_core::service::DirectUrlPlaybackProviderService>,
+    cloudreve_playback_provider_service:
+        Arc<synctv_core::service::CloudrevePlaybackProviderService>,
     emby_playback_provider_service: Arc<synctv_core::service::EmbyPlaybackProviderService>,
     rtmp_playback_provider_service: Arc<synctv_core::service::RtmpPlaybackProviderService>,
     live_proxy_playback_provider_service:
@@ -1002,6 +1015,7 @@ fn build_fallback_http_app_state(
             alist_playback_provider_service: deps.alist_playback_provider_service,
             bilibili_playback_provider_service: deps.bilibili_playback_provider_service,
             direct_url_playback_provider_service: deps.direct_url_playback_provider_service,
+            cloudreve_playback_provider_service: deps.cloudreve_playback_provider_service,
             emby_playback_provider_service: deps.emby_playback_provider_service,
             rtmp_playback_provider_service: deps.rtmp_playback_provider_service,
             live_proxy_playback_provider_service: deps.live_proxy_playback_provider_service,
@@ -1101,6 +1115,7 @@ async fn build_axum_router_with_health(
         alist_playback_provider_service,
         bilibili_playback_provider_service,
         direct_url_playback_provider_service,
+        cloudreve_playback_provider_service,
         emby_playback_provider_service,
         rtmp_playback_provider_service,
         live_proxy_playback_provider_service,
@@ -1209,6 +1224,7 @@ async fn build_axum_router_with_health(
             alist_playback_provider_service: alist_playback_provider_service.clone(),
             bilibili_playback_provider_service: bilibili_playback_provider_service.clone(),
             direct_url_playback_provider_service: direct_url_playback_provider_service.clone(),
+            cloudreve_playback_provider_service: cloudreve_playback_provider_service.clone(),
             emby_playback_provider_service: emby_playback_provider_service.clone(),
             rtmp_playback_provider_service: rtmp_playback_provider_service.clone(),
             live_proxy_playback_provider_service: live_proxy_playback_provider_service.clone(),
@@ -2008,6 +2024,18 @@ async fn build_axum_router_with_health(
                 ),
             );
             routes.add_service(
+            CloudrevePlaybackProviderServiceServer::new(
+                crate::providers::playback_provider::cloudreve::CloudrevePlaybackProviderGrpcService::new(
+                    playback_provider_state.clone(),
+                    Arc::new(runtime_settings.clone()),
+                ),
+            )
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
+        );
+            routes.add_service(
             NextcloudPlaybackProviderServiceServer::new(
                 crate::providers::playback_provider::nextcloud::NextcloudPlaybackProviderGrpcService::new(
                     playback_provider_state.clone(),
@@ -2804,6 +2832,10 @@ mod tests {
             Arc::new(synctv_core::service::DirectUrlPlaybackProviderService::new(
                 playback_provider_deps.clone(),
             ));
+        let cloudreve_playback_provider_service =
+            Arc::new(synctv_core::service::CloudrevePlaybackProviderService::new(
+                playback_provider_deps.clone(),
+            ));
         let emby_playback_provider_service = Arc::new(
             synctv_core::service::EmbyPlaybackProviderService::new(playback_provider_deps.clone()),
         );
@@ -3133,6 +3165,7 @@ mod tests {
             alist_playback_provider_service: alist_playback_provider_service.clone(),
             bilibili_playback_provider_service: bilibili_playback_provider_service.clone(),
             direct_url_playback_provider_service: direct_url_playback_provider_service.clone(),
+            cloudreve_playback_provider_service: cloudreve_playback_provider_service.clone(),
             emby_playback_provider_service: emby_playback_provider_service.clone(),
             rtmp_playback_provider_service: rtmp_playback_provider_service.clone(),
             live_proxy_playback_provider_service: live_proxy_playback_provider_service.clone(),

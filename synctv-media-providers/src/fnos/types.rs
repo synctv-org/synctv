@@ -66,6 +66,9 @@ pub(crate) struct FileListResponse {
 pub(crate) struct RawFile {
     #[serde(default)]
     pub name: String,
+    /// FNOS returns the owning user id for entries in the user's root.
+    /// It is required together with `v` to address child directories.
+    pub uid: Option<u64>,
     pub size: Option<u64>,
     pub mtim: Option<i64>,
     pub btim: Option<i64>,

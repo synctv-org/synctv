@@ -12,7 +12,7 @@ use chrono::Utc;
 use synctv_core::models::id::{RoomId, UserId};
 use synctv_realtime::sync::RealtimeEvent;
 mod integration_test_helpers;
-use integration_test_helpers::{create_node, TestRedis};
+use integration_test_helpers::{create_node, user_actor, TestRedis};
 
 #[tokio::test]
 #[ignore = "requires Docker"]
@@ -26,7 +26,7 @@ async fn test_critical_events_high_priority() {
     let user_id = UserId::expect_positive(10_000_026);
 
     let (mut room_rx, conn_id) = node_a
-        .subscribe(room_id, user_id)
+        .subscribe(room_id, user_actor(user_id))
         .await
         .expect("subscribe should succeed");
 

@@ -33,14 +33,13 @@ impl<'a> RealtimeMembershipProbe<'a> {
     pub(super) async fn guest_admission_denial_reason(
         &self,
         room_id: &RoomId,
-        user_id: &UserId,
         principal: &RealtimePrincipal,
     ) -> Result<Option<String>, RealtimeJoinError> {
         let room = self.room_service.get_room(room_id).await.map_err(|error| {
             tracing::warn!(
                 error = %error,
                 room_id = %room_id,
-                user_id = %user_id,
+                guest_id = principal.guest_identity().map(|identity| identity.guest_id.as_str()),
                 "Failed to re-validate guest room access; rejecting connection because final admission must fail closed"
             );
             RealtimeJoinError::ServiceUnavailable(
@@ -55,7 +54,7 @@ impl<'a> RealtimeMembershipProbe<'a> {
                     tracing::warn!(
                         error = %error,
                         room_id = %room_id,
-                        user_id = %user_id,
+                        guest_id = principal.guest_identity().map(|identity| identity.guest_id.as_str()),
                         "Failed to validate guest room availability"
                     );
                     Err(RealtimeJoinError::ServiceUnavailable(
@@ -81,7 +80,7 @@ impl<'a> RealtimeMembershipProbe<'a> {
                         tracing::warn!(
                             error = %error,
                             room_id = %room_id,
-                            user_id = %user_id,
+                            guest_id = principal.guest_identity().map(|identity| identity.guest_id.as_str()),
                             "Failed to validate guest policy"
                         );
                         Err(RealtimeJoinError::ServiceUnavailable(
@@ -97,7 +96,7 @@ impl<'a> RealtimeMembershipProbe<'a> {
 
         if let Some(identity) = principal.guest_identity() {
             match self
-                .guest_token_blacklist_denial_reason(room_id, user_id, &identity.token_jti)
+                .guest_token_blacklist_denial_reason(room_id, identity, &identity.token_jti)
                 .await
             {
                 Ok(Some(reason)) => return Ok(Some(reason)),
@@ -113,7 +112,7 @@ impl<'a> RealtimeMembershipProbe<'a> {
                     tracing::warn!(
                         error = %error,
                         room_id = %room_id,
-                        user_id = %user_id,
+                        guest_id = %identity.guest_id,
                         "Failed to validate guest token version"
                     );
                     RealtimeJoinError::ServiceUnavailable(
@@ -133,7 +132,7 @@ impl<'a> RealtimeMembershipProbe<'a> {
     pub async fn guest_token_blacklist_denial_reason(
         &self,
         room_id: &RoomId,
-        user_id: &UserId,
+        identity: &super::GuestRealtimeIdentity,
         token_jti: &str,
     ) -> Result<Option<String>, RealtimeJoinError> {
         let user_service = self.room_service.user_service();
@@ -149,7 +148,7 @@ impl<'a> RealtimeMembershipProbe<'a> {
                 tracing::warn!(
                     error = %error,
                     room_id = %room_id,
-                    user_id = %user_id,
+                    guest_id = %identity.guest_id,
                     "Failed to validate guest token blacklist during realtime admission check"
                 );
                 Err(RealtimeJoinError::ServiceUnavailable(

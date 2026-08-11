@@ -130,14 +130,14 @@ impl StreamMessageHandler {
         else {
             return Ok(None);
         };
-        if target.actor_id != target_actor_id {
+        if target.actor.public_id() != target_actor_id {
             return Err("WebRTC recipient does not match the target connection owner".to_string());
         }
         if target.room_id.as_ref() != Some(&self.room_id) {
             return Err("Target connection is not in this room".to_string());
         }
         Ok(Some((
-            target.actor_id,
+            target.actor.public_id().to_string(),
             target_conn_id.to_string(),
             target.voice_rtc_joined,
         )))
@@ -439,14 +439,10 @@ impl StreamMessageHandler {
         self.require_voice_chat_enabled().await?;
         let conn_id = self.connection_id.clone();
         let max_participants = self.max_voice_participants_per_room()?;
+        let actor = self.realtime_actor()?;
         match self
             .connection_service
-            .try_join_voice_rtc(
-                &self.room_id,
-                &self.user_id,
-                conn_id.as_str(),
-                max_participants,
-            )
+            .try_join_voice_rtc(&self.room_id, &actor, conn_id.as_str(), max_participants)
             .await?
         {
             VoiceRtcJoinOutcome::AlreadyJoined => return Ok(()),
@@ -476,7 +472,7 @@ impl StreamMessageHandler {
         if outcome.distributed_delivery_missed() {
             tracing::warn!(
                 room_id = %self.room_id,
-                user_id = %self.user_id,
+                actor = %self.username,
                 "WebRTC join broadcast missed the distributed fan-out path (peer may not be visible cross-replica)"
             );
         }
@@ -625,16 +621,12 @@ impl StreamMessageHandler {
                 target_user_id,
                 new_permissions,
                 ..
-            } if *target_user_id == self.user_id => (*new_permissions, true, true),
+            } if self.principal.user_id() == Some(*target_user_id) => {
+                (*new_permissions, true, true)
+            }
             RealtimeEvent::RoomSettingsChanged { settings, .. } => {
-                let permissions = if self.principal.is_guest() {
-                    self.room_service.guest_permissions_for_settings(settings)
-                } else {
-                    match self
-                        .room_service
-                        .get_member(&self.room_id, &self.user_id)
-                        .await
-                    {
+                let permissions = if let Some(user_id) = self.principal.user_id() {
+                    match self.room_service.get_member(&self.room_id, &user_id).await {
                         Ok(Some(member)) => self
                             .room_service
                             .permission_service()
@@ -643,13 +635,15 @@ impl StreamMessageHandler {
                         Err(error) => {
                             tracing::warn!(
                                 room_id = %self.room_id,
-                                user_id = %self.user_id,
+                                actor = %self.username,
                                 error = %error,
                                 "Failed to recalculate RTC permissions after room settings changed"
                             );
                             synctv_core::models::RoomPermissionSet::empty()
                         }
                     }
+                } else {
+                    self.room_service.guest_permissions_for_settings(settings)
                 };
                 (
                     permissions,
@@ -701,9 +695,10 @@ impl StreamMessageHandler {
         if !current.voice_rtc_joined {
             return Ok(());
         }
+        let actor = self.realtime_actor()?;
         if !self
             .connection_service
-            .leave_voice_rtc(&self.room_id, &self.user_id, conn_id.as_str())
+            .leave_voice_rtc(&self.room_id, &actor, conn_id.as_str())
             .await?
         {
             return Ok(());
@@ -726,7 +721,7 @@ impl StreamMessageHandler {
         if outcome.distributed_delivery_missed() {
             tracing::warn!(
                 room_id = %self.room_id,
-                user_id = %self.user_id,
+                actor = %self.username,
                 "WebRTC leave broadcast missed the distributed fan-out path (peer may remain visible cross-replica)"
             );
         }

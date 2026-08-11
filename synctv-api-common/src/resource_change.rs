@@ -150,7 +150,7 @@ pub fn resource_invalidations_for_room_event(event: &RealtimeEvent) -> Vec<Resou
 pub fn resource_invalidations_for_cache_targets(
     targets: &[CacheTarget],
     room_id: RoomId,
-    user_id: UserId,
+    user_id: Option<UserId>,
 ) -> Vec<ResourceInvalidation> {
     let refresh_all = targets
         .iter()
@@ -158,11 +158,13 @@ pub fn resource_invalidations_for_cache_targets(
     let refresh_room = targets.iter().any(
         |target| matches!(target, CacheTarget::Room { room_id: target } if *target == room_id),
     );
-    let refresh_user = targets.iter().any(|target| {
-        matches!(
-            target,
-            CacheTarget::User { user_id: target } if *target == user_id
-        )
+    let refresh_user = user_id.is_some_and(|user_id| {
+        targets.iter().any(|target| {
+            matches!(
+                target,
+                CacheTarget::User { user_id: target } if *target == user_id
+            )
+        })
     });
     let refresh_username = targets
         .iter()
@@ -471,7 +473,7 @@ mod tests {
                     CacheTarget::User { user_id: user_id() },
                 ],
                 room_id(),
-                user_id(),
+                Some(user_id()),
             ),
             vec![
                 ResourceInvalidation::PlaybackState,
@@ -489,7 +491,7 @@ mod tests {
                 room_id: RoomId::expect_positive(999)
             }],
             room_id(),
-            user_id(),
+            Some(user_id()),
         )
         .is_empty());
     }
@@ -502,7 +504,7 @@ mod tests {
                     user_id: UserId::expect_positive(999)
                 }],
                 room_id(),
-                user_id(),
+                Some(user_id()),
             ),
             vec![ResourceInvalidation::RoomMemberEvents]
         );

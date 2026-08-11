@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::{Mutex, MutexGuard};
-use synctv_core::models::{RoomId, UserId};
+use synctv_core::models::{RealtimeActor, RoomId};
 use synctv_core::service::{
     BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, RateLimiter, UserService,
 };
@@ -159,7 +159,7 @@ impl RealtimeEventService for RecordingRealtimeEventService {
     async fn subscribe_with_id(
         &self,
         _room_id: RoomId,
-        _user_id: UserId,
+        _actor: RealtimeActor,
         connection_id: ConnectionId,
     ) -> synctv_realtime::Result<(mpsc::Receiver<SharedRealtimeEvent>, ConnectionId)> {
         let (_tx, rx) = mpsc::channel(16);

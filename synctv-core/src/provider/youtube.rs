@@ -116,17 +116,13 @@ impl YoutubeProvider {
         let Some(repo) = self.credential_repo_or(ctx.credential_repo) else {
             return Ok(YoutubeSession::default());
         };
-        let owner_id = if shared {
-            ctx.credential_owner_id()
-        } else {
-            ctx.user_id()
-        };
+        let owner_id = ctx.selected_credential_user_id(shared);
         let Some(owner_id) = owner_id else {
             return Ok(YoutubeSession::default());
         };
         let server_id =
             Self::credential_server_id_for_instance(super::bound_provider_instance_name(ctx));
-        self.session_for_owner(repo, *owner_id, &server_id).await
+        self.session_for_owner(repo, owner_id, &server_id).await
     }
 
     async fn session_for_owner(
@@ -332,9 +328,13 @@ impl YoutubeProvider {
                 "YouTube cached playback resource is invalid".to_string(),
             ));
         };
-        let session = self
-            .stored_session(*credential_owner_id, provider_instance_name.as_deref())
-            .await?;
+        let session = match credential_owner_id {
+            Some(owner_id) => {
+                self.stored_session(*owner_id, provider_instance_name.as_deref())
+                    .await?
+            }
+            None => YoutubeSession::default(),
+        };
         let player = self
             .client
             .player(
@@ -393,9 +393,13 @@ impl YoutubeProvider {
                 "YouTube cached subtitle resource is invalid".to_string(),
             ));
         };
-        let session = self
-            .stored_session(*credential_owner_id, provider_instance_name.as_deref())
-            .await?;
+        let session = match credential_owner_id {
+            Some(owner_id) => {
+                self.stored_session(*owner_id, provider_instance_name.as_deref())
+                    .await?
+            }
+            None => YoutubeSession::default(),
+        };
         let player = self
             .client
             .player(
@@ -664,7 +668,7 @@ impl YoutubeProvider {
 
     fn playback_result(
         player: &YoutubePlayerResponse,
-        credential_owner_id: UserId,
+        credential_owner_id: Option<UserId>,
         provider_instance_name: Option<&str>,
     ) -> Result<PlaybackResult, ProviderError> {
         let details = player.video_details.as_ref().ok_or_else(|| {
@@ -835,7 +839,7 @@ fn playback_resource_url(
 fn youtube_subtitles(
     player: &YoutubePlayerResponse,
     video_id: &str,
-    credential_owner_id: UserId,
+    credential_owner_id: Option<UserId>,
     provider_instance_name: Option<&str>,
     p2p_enabled: bool,
 ) -> Vec<PlaybackSubtitle> {
@@ -943,7 +947,7 @@ fn playback_info(
     thumbnail: Option<String>,
     subtitles: Vec<PlaybackSubtitle>,
     video_id: &str,
-    credential_owner_id: UserId,
+    credential_owner_id: Option<UserId>,
     provider_instance_name: Option<String>,
     p2p_enabled: bool,
 ) -> PlaybackInfo {
@@ -1086,19 +1090,18 @@ impl MediaProvider for YoutubeProvider {
             .map_err(|error| ProviderError::NetworkError(error.to_string()))?;
         let config = Self::media_config(source_config)?;
         let video_id = normalize_video_id(&config.video_id)?;
-        let owner_id = if config.shared {
-            *ctx.credential_owner_id().ok_or_else(|| {
-                ProviderError::Internal("YouTube credential owner is unavailable".to_string())
-            })?
-        } else {
-            *ctx.user_id().ok_or_else(|| {
-                ProviderError::Internal("YouTube viewer is unavailable".to_string())
-            })?
-        };
+        let owner_id = ctx.selected_credential_user_id(config.shared);
+        if config.shared && owner_id.is_none() {
+            return Err(ProviderError::Internal(
+                "YouTube credential owner is unavailable".to_string(),
+            ));
+        }
         let session = self.session(ctx, config.shared).await?;
         let instance_name = super::bound_provider_instance_name(ctx).map(ToString::to_string);
         let server_id = Self::credential_server_id_for_instance(instance_name.as_deref());
-        let cache_key = format!("playback:{video_id}:{owner_id}:{server_id}");
+        let credential_partition =
+            owner_id.map_or_else(|| "anonymous".to_string(), |id| id.to_string());
+        let cache_key = format!("playback:{video_id}:{credential_partition}:{server_id}");
         Box::pin(super::cached_versioned_playback_or_fill(
             Self::NAME,
             &cache_key,
@@ -1159,14 +1162,9 @@ impl MediaProvider for YoutubeProvider {
                 Self::playlist_shared(Self::playlist_config(source)?)
             }
         };
-        let owner_id = if shared {
-            ctx.credential_owner_id()
-        } else {
-            ctx.user_id()
-        }
-        .ok_or_else(|| {
-            ProviderError::Internal("YouTube credential owner is unavailable".to_string())
-        })?;
+        let Some(owner_id) = ctx.selected_credential_user_id(shared) else {
+            return Ok(Vec::new());
+        };
         Ok(vec![ProviderCredentialDependency::optional(
             Self::NAME,
             owner_id.to_string(),
@@ -1467,7 +1465,7 @@ mod tests {
     fn playback_result_maps_formats_manifests_subtitles_and_metadata() {
         let result = YoutubeProvider::playback_result(
             &player_response(false),
-            UserId::expect_positive(1),
+            Some(UserId::expect_positive(1)),
             Some("primary"),
         )
         .expect("player response should map");
@@ -1549,7 +1547,7 @@ mod tests {
     fn live_playback_prefers_hls_and_marks_proxy_resources() {
         let mut result = YoutubeProvider::playback_result(
             &player_response(true),
-            UserId::expect_positive(1),
+            Some(UserId::expect_positive(1)),
             None,
         )
         .expect("live player response should map");

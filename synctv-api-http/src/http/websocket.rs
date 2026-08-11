@@ -138,20 +138,17 @@ fn websocket_connect_request(query: &WsQuery) -> synctv_proto::client::WebSocket
 }
 
 fn guest_principal_from_ticket(
-    room_id: RoomId,
+    _room_id: RoomId,
     guest: &ValidatedGuestTicket,
 ) -> Result<RealtimePrincipal, RealtimeJoinError> {
-    RealtimePrincipal::guest(
-        room_id,
-        GuestRealtimeIdentity {
-            guest_id: guest.guest_id.clone(),
-            display_name: guest.display_name.clone(),
-            session_id: guest.session_id.clone(),
-            token_jti: guest.token_jti.clone(),
-            room_guest_version: guest.room_guest_version,
-            permissions: guest.permissions,
-        },
-    )
+    Ok(RealtimePrincipal::guest(GuestRealtimeIdentity {
+        guest_id: guest.guest_id.clone(),
+        display_name: guest.display_name.clone(),
+        session_id: guest.session_id.clone(),
+        token_jti: guest.token_jti.clone(),
+        room_guest_version: guest.room_guest_version,
+        permissions: guest.permissions,
+    }))
 }
 
 /// Authentication method used for WebSocket connection.
@@ -170,7 +167,6 @@ struct TicketAuthCommit {
 
 #[derive(Debug, Clone)]
 struct HandshakeAuthContext {
-    user_id: UserId,
     principal: RealtimePrincipal,
     ticket_commit: Option<TicketAuthCommit>,
 }
@@ -329,12 +325,8 @@ async fn extract_handshake_auth(
                             room_guest_version: access.room_guest_version,
                             permissions: access.permissions,
                         };
-                        let principal =
-                            RealtimePrincipal::guest(*room_id, identity).map_err(|error| {
-                                synctv_api_common::impls::ApiError::Internal(error.to_string())
-                            })?;
+                        let principal = RealtimePrincipal::guest(identity);
                         Ok(HandshakeAuthContext {
-                            user_id: principal.connection_user_id(),
                             principal,
                             ticket_commit: None,
                         })
@@ -351,7 +343,6 @@ async fn extract_handshake_auth(
                 EndpointRateLimitCategory::WebSocket,
                 |_request_control, authenticated| async move {
                     Ok(HandshakeAuthContext {
-                        user_id: authenticated.user_id,
                         principal: RealtimePrincipal::user(authenticated.user_id, String::new()),
                         ticket_commit: None,
                     })
@@ -396,7 +387,6 @@ async fn extract_handshake_auth(
                 }
                 .map_err(|error| synctv_api_common::impls::ApiError::Internal(error.to_string()))?;
                 Ok(HandshakeAuthContext {
-                    user_id: principal.connection_user_id(),
                     principal,
                     ticket_commit: Some(TicketAuthCommit {
                         ticket: query.ticket.clone(),
@@ -1181,23 +1171,23 @@ impl Drop for ReservationCleanupGuard {
 #[derive(Debug, Clone)]
 struct HandshakeReservation {
     room_id: RoomId,
-    user_id: UserId,
+    actor: synctv_core::models::RealtimeActor,
 }
 
 impl HandshakeReservation {
     fn release(&self, connection_service: &dyn ConnectionRuntime) {
         connection_service.release_room_reservation(&self.room_id);
-        connection_service.release_user_reservation(&self.user_id);
+        connection_service.release_actor_reservation(&self.actor);
     }
 }
 
 fn reserve_websocket_upgrade_slots(
     connection_service: &dyn ConnectionRuntime,
     room_id: &RoomId,
-    user_id: &UserId,
+    actor: &synctv_core::models::RealtimeActor,
 ) -> Result<HandshakeReservation, AppError> {
     connection_service
-        .reserve_user_slot(user_id)
+        .reserve_actor_slot(actor)
         .map_err(synctv_api_common::runtime::RealtimeAdmissionError::from_runtime_message)
         .map_err(RealtimeJoinError::from)
         .map_err(map_websocket_pre_join_error)?;
@@ -1208,13 +1198,13 @@ fn reserve_websocket_upgrade_slots(
         .map_err(RealtimeJoinError::from)
         .map_err(map_websocket_pre_join_error)
     {
-        connection_service.release_user_reservation(user_id);
+        connection_service.release_actor_reservation(actor);
         return Err(error);
     }
 
     Ok(HandshakeReservation {
         room_id: *room_id,
-        user_id: *user_id,
+        actor: actor.clone(),
     })
 }
 
@@ -1247,7 +1237,6 @@ async fn prepare_websocket_upgrade(
 
     let mut auth =
         extract_handshake_auth(state, request_meta, query, &rid, handshake_control).await?;
-    let user_id = auth.user_id;
 
     let room = state
         .room_service
@@ -1265,21 +1254,22 @@ async fn prepare_websocket_upgrade(
         ));
     }
 
-    if !matches!(auth.principal, RealtimePrincipal::Guest { .. }) {
-        validate_websocket_room_membership(&state.room_service, &room, &user_id).await?;
-    }
-
     validate_websocket_runtime_dependencies(state)?;
-    let username = if matches!(auth.principal, RealtimePrincipal::Guest { .. }) {
-        auth.principal.username().to_string()
-    } else {
+    let username = if let Some(user_id) = auth.principal.user_id() {
+        validate_websocket_room_membership(&state.room_service, &room, &user_id).await?;
         let username = load_websocket_username(state, &user_id).await?;
         auth.principal = RealtimePrincipal::user(user_id, username.clone());
         username
+    } else {
+        auth.principal.username().to_string()
     };
+    let actor = auth
+        .principal
+        .realtime_actor(&state.shared_api_runtime.public_id_codec)
+        .map_err(AppError::bad_request)?;
     let connection_id = StreamMessageHandler::generate_connection_id();
     let reservation =
-        reserve_websocket_upgrade_slots(state.connection_manager.as_ref(), &rid, &user_id)?;
+        reserve_websocket_upgrade_slots(state.connection_manager.as_ref(), &rid, &actor)?;
 
     Ok(PreparedWebSocketUpgrade {
         room_id: rid,
@@ -1297,7 +1287,7 @@ fn build_failed_upgrade_cleanup(
     move |error| {
         warn!(
             room_id = %reservation.room_id,
-            user_id = %reservation.user_id,
+            actor = %reservation.actor,
             error = %error,
             "WebSocket upgrade failed after reserving connection capacity; releasing reservation"
         );
@@ -1327,14 +1317,14 @@ async fn handle_socket(
         connection_id,
         reservation,
     } = prepared;
-    let user_id = auth.user_id;
     let principal = auth.principal.clone();
     let mut reservation_cleanup =
         ReservationCleanupGuard::new(state.connection_manager.clone(), reservation.clone());
 
     info!(
-        "WebSocket connection established: user={}, room={}",
-        user_id, room_id
+        actor = %reservation.actor,
+        room_id = %room_id,
+        "WebSocket connection established"
     );
 
     let event_service = state.event_service.clone();
@@ -1506,8 +1496,9 @@ async fn handle_socket(
     // (RAII ensures this happens even if the above code panics)
 
     info!(
-        "WebSocket connection closed: user={}, room={}",
-        user_id, room_id
+        actor = %reservation.actor,
+        room_id = %room_id,
+        "WebSocket connection closed"
     );
 }
 

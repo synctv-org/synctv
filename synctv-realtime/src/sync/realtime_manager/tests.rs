@@ -3,6 +3,7 @@ use crate::sync::{CacheTarget, ConnectionLimits, ConnectionManager, SharedRealti
 use async_trait::async_trait;
 use std::sync::atomic::AtomicUsize;
 use synctv_cluster::NodeRegistry;
+use synctv_core::models::{RealtimeActor, UserId};
 use tokio::sync::{broadcast, mpsc};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -10,6 +11,10 @@ type TestResult = std::result::Result<(), BoxError>;
 
 fn missing(message: &'static str) -> BoxError {
     anyhow::anyhow!(message).into()
+}
+
+fn test_user_actor(user_id: UserId) -> RealtimeActor {
+    RealtimeActor::user(user_id, user_id.to_string())
 }
 
 struct NoopRealtimeEventHandler;
@@ -88,7 +93,7 @@ impl RoomMessageRuntime for FixedMetricsRoomRuntime {
     async fn subscribe(
         &self,
         _room_id: RoomId,
-        _user_id: UserId,
+        _actor: RealtimeActor,
         _connection_id: ConnectionId,
     ) -> RealtimeResult<mpsc::Receiver<SharedRealtimeEvent>> {
         let (_tx, rx) = mpsc::channel(1);
@@ -128,14 +133,14 @@ impl RoomMessageRuntime for FixedMetricsRoomRuntime {
 
     fn remove_room(&self, _room_id: &RoomId) {}
 
-    fn get_room_subscribers(&self, _room_id: &RoomId) -> Vec<(UserId, ConnectionId)> {
+    fn get_room_subscribers(&self, _room_id: &RoomId) -> Vec<(RealtimeActor, ConnectionId)> {
         Vec::new()
     }
 
     async fn get_room_subscribers_replicas_wide(
         &self,
         _room_id: &RoomId,
-    ) -> RealtimeResult<Vec<(UserId, ConnectionId)>> {
+    ) -> RealtimeResult<Vec<(RealtimeActor, ConnectionId)>> {
         Ok(Vec::new())
     }
 
@@ -173,7 +178,7 @@ async fn test_local_critical_broadcast_does_not_panic_on_current_thread_runtime(
     let mut rx = message_hub
         .subscribe(
             room_id,
-            user_id,
+            test_user_actor(user_id),
             ConnectionId::new("local-critical-current-thread"),
         )
         .await?;
@@ -480,7 +485,7 @@ async fn test_non_cluster_mode_with_event_handler() -> TestResult {
     // Verify the manager operates normally in single-node mode
     let room_id = RoomId::expect_positive(10_000_092);
     let user_id = UserId::expect_positive(10_000_010);
-    let (mut rx, conn_id) = manager.subscribe(room_id, user_id).await?;
+    let (mut rx, conn_id) = manager.subscribe(room_id, test_user_actor(user_id)).await?;
 
     // Broadcast should work locally
     let event = RealtimeEvent::ChatMessage {
@@ -548,7 +553,7 @@ async fn test_non_cluster_mode_without_event_handler() -> TestResult {
     // Verify normal operation
     let room_id = RoomId::expect_positive(10_000_094);
     let user_id = UserId::expect_positive(10_000_095);
-    let (mut rx, conn_id) = manager.subscribe(room_id, user_id).await?;
+    let (mut rx, conn_id) = manager.subscribe(room_id, test_user_actor(user_id)).await?;
 
     let event = RealtimeEvent::ChatMessage {
         event_id: synctv_common::snanoid!(16),
@@ -915,7 +920,7 @@ async fn test_shutdown_still_blocks_non_critical_events_from_redis_channels() ->
     let mut manager = RealtimeManager::new(config).await?;
     let room_id = RoomId::expect_positive(10_000_099);
     let user_id = UserId::expect_positive(10_000_098);
-    let (mut room_rx, _conn_id) = manager.subscribe(room_id, user_id).await?;
+    let (mut room_rx, _conn_id) = manager.subscribe(room_id, test_user_actor(user_id)).await?;
     let (publish_tx, mut publish_rx) = mpsc::channel::<PublishRequest>(4);
     manager.redis_publish_tx = Some(publish_tx);
     manager.shutdown_started.store(true, Ordering::Release);
@@ -1003,7 +1008,7 @@ async fn test_epoch_mismatch_enforcement() -> TestResult {
 
     let room_id = RoomId::expect_positive(10_000_100);
     let user_id = UserId::expect_positive(10_000_101);
-    let (_rx, conn_id) = manager.subscribe(room_id, user_id).await?;
+    let (_rx, conn_id) = manager.subscribe(room_id, test_user_actor(user_id)).await?;
 
     // Broadcast should work in non-quarantined state
     let event = RealtimeEvent::ChatMessage {
@@ -1049,7 +1054,11 @@ async fn test_quarantined_broadcast_is_rejected_without_poisoning_dedup() -> Tes
     let user_id = UserId::expect_positive(10_000_103);
     let mut rx = manager
         .message_hub()
-        .subscribe(room_id, user_id, ConnectionId::new("conn-quarantine"))
+        .subscribe(
+            room_id,
+            test_user_actor(user_id),
+            ConnectionId::new("conn-quarantine"),
+        )
         .await?;
 
     manager.is_quarantined.store(true, Ordering::Release);
@@ -1228,7 +1237,11 @@ async fn test_publish_only_enqueues_redis_without_rebroadcasting_locally() -> Te
     let user_id = UserId::expect_positive(10_000_108);
     let mut room_rx = manager
         .message_hub()
-        .subscribe(room_id, user_id, ConnectionId::new("publish-only-conn"))
+        .subscribe(
+            room_id,
+            test_user_actor(user_id),
+            ConnectionId::new("publish-only-conn"),
+        )
         .await?;
     let (critical_tx, mut critical_rx) = mpsc::channel::<PublishRequest>(4);
     manager.redis_critical_tx = Some(critical_tx);

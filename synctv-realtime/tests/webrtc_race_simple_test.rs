@@ -2,7 +2,7 @@
 
 #![allow(clippy::unwrap_used)]
 use std::time::Duration;
-use synctv_core::models::id::{RoomId, UserId};
+use synctv_core::models::{RealtimeActor, RoomId, UserId};
 use synctv_realtime::sync::ConnectionManager;
 
 fn stable_test_id(s: &str) -> i64 {
@@ -13,6 +13,10 @@ fn stable_test_id(s: &str) -> i64 {
 
 fn uid(s: &str) -> UserId {
     UserId::expect_positive(stable_test_id(s))
+}
+
+fn actor(user_id: UserId) -> RealtimeActor {
+    RealtimeActor::user(user_id, user_id.to_string())
 }
 
 fn rid(s: &str) -> RoomId {
@@ -41,7 +45,7 @@ async fn test_simple_rtc_state_check() {
     mgr.join_room("conn1", room).await.unwrap();
 
     // Join WebRTC
-    mgr.mark_voice_rtc_joined(&room, &user, "conn1", true);
+    mgr.mark_voice_rtc_joined(&room, &actor(user), "conn1", true);
 
     // Verify RTC state
     let conn = mgr.get_connection("conn1");
@@ -49,7 +53,7 @@ async fn test_simple_rtc_state_check() {
     assert!(conn.unwrap().voice_rtc_joined);
 
     // Leave WebRTC
-    mgr.mark_voice_rtc_joined(&room, &user, "conn1", false);
+    mgr.mark_voice_rtc_joined(&room, &actor(user), "conn1", false);
 
     // Verify RTC state cleared
     let conn = mgr.get_connection("conn1");

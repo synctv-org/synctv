@@ -4,7 +4,7 @@ use crate::{
     models::{Playlist, PlaylistId, PlaylistSourceConfig, RoomId, SourceProvider, UserId},
     provider::{
         DynamicBrowsePathSegment, DynamicListQuery, DynamicListResult, DynamicPlaylistProvider,
-        MediaProvider, NextPlayItem, ProviderContext,
+        MediaProvider, NextPlayItem, ProviderActor, ProviderContext,
     },
     Error, Result,
 };
@@ -41,7 +41,7 @@ impl PreparedDynamicPlaylist {
 impl MediaService {
     pub async fn playlist_provider_metadata(
         &self,
-        viewer_id: Option<UserId>,
+        actor: ProviderActor,
         playlist: &Playlist,
     ) -> Result<Option<crate::provider::ProviderResourceMetadata>> {
         let (provider_name, provider) = self.get_dynamic_playlist_provider(playlist).await?;
@@ -51,11 +51,7 @@ impl MediaService {
             provider_name,
             provider,
         };
-        let ctx = self.dynamic_playlist_context(
-            &prepared,
-            viewer_id.as_ref(),
-            playlist.creator_id.as_ref(),
-        );
+        let ctx = self.dynamic_playlist_context(&prepared, actor);
         let source_config = prepared
             .playlist
             .source_config
@@ -137,7 +133,7 @@ impl MediaService {
             provider_name,
             provider,
         };
-        let ctx = self.dynamic_playlist_context(&prepared, Some(&user_id), Some(&user_id));
+        let ctx = self.dynamic_playlist_context(&prepared, ProviderActor::User(user_id));
         prepared
             .provider
             .validate_source_config(
@@ -211,18 +207,16 @@ impl MediaService {
     pub(super) fn dynamic_playlist_context<'a>(
         &'a self,
         prepared: &'a PreparedDynamicPlaylist,
-        user_id: Option<&'a UserId>,
-        fallback_credential_owner_id: Option<&'a UserId>,
+        actor: ProviderActor,
     ) -> ProviderContext<'a> {
-        let credential_owner_id = prepared
-            .playlist
-            .creator_id
-            .as_ref()
-            .or(fallback_credential_owner_id);
+        let credential_owner_id = prepared.playlist.creator_id.or(match actor {
+            ProviderActor::User(user_id) => Some(user_id),
+            ProviderActor::System | ProviderActor::Guest => None,
+        });
         self.build_provider_context(
             prepared.provider_name.as_str(),
-            user_id,
-            &prepared.playlist.room_id,
+            actor,
+            prepared.playlist.room_id,
             credential_owner_id,
             prepared.playlist.provider_instance_name.as_deref(),
         )
@@ -237,8 +231,7 @@ impl MediaService {
         query: DynamicListQuery,
     ) -> Result<DynamicListResult> {
         let prepared = self.prepare_dynamic_playlist(&room_id, playlist_id).await?;
-        let ctx =
-            self.dynamic_playlist_context(&prepared, Some(&admin_user_id), Some(&admin_user_id));
+        let ctx = self.dynamic_playlist_context(&prepared, ProviderActor::User(admin_user_id));
 
         prepared
             .dynamic_playlist_provider()?
@@ -255,8 +248,7 @@ impl MediaService {
         target: Option<&crate::models::ProviderTarget>,
     ) -> Result<Vec<DynamicBrowsePathSegment>> {
         let prepared = self.prepare_dynamic_playlist(&room_id, playlist_id).await?;
-        let ctx =
-            self.dynamic_playlist_context(&prepared, Some(&admin_user_id), Some(&admin_user_id));
+        let ctx = self.dynamic_playlist_context(&prepared, ProviderActor::User(admin_user_id));
 
         prepared
             .dynamic_playlist_provider()?
@@ -282,7 +274,7 @@ impl MediaService {
             .await?;
 
         let prepared = self.prepare_dynamic_playlist(&room_id, playlist_id).await?;
-        let ctx = self.dynamic_playlist_context(&prepared, Some(&user_id), Some(&user_id));
+        let ctx = self.dynamic_playlist_context(&prepared, ProviderActor::User(user_id));
 
         prepared
             .dynamic_playlist_provider()?
@@ -299,7 +291,7 @@ impl MediaService {
         target: Option<&crate::models::ProviderTarget>,
     ) -> Result<Vec<DynamicBrowsePathSegment>> {
         let prepared = self.prepare_dynamic_playlist(&room_id, playlist_id).await?;
-        let ctx = self.dynamic_playlist_context(&prepared, Some(&user_id), Some(&user_id));
+        let ctx = self.dynamic_playlist_context(&prepared, ProviderActor::User(user_id));
 
         prepared
             .dynamic_playlist_provider()?
@@ -311,12 +303,12 @@ impl MediaService {
     pub async fn resolve_dynamic_playlist_item(
         &self,
         room_id: RoomId,
-        user_id: UserId,
+        actor: ProviderActor,
         playlist_id: &PlaylistId,
         target: &crate::models::ProviderTarget,
     ) -> Result<Option<NextPlayItem>> {
         let prepared = self.prepare_dynamic_playlist(&room_id, playlist_id).await?;
-        let ctx = self.dynamic_playlist_context(&prepared, Some(&user_id), Some(&user_id));
+        let ctx = self.dynamic_playlist_context(&prepared, actor);
 
         prepared
             .dynamic_playlist_provider()?
@@ -333,7 +325,7 @@ impl MediaService {
         play_mode: crate::models::PlayMode,
     ) -> Result<Option<NextPlayItem>> {
         let prepared = self.prepare_dynamic_playlist(room_id, playlist_id).await?;
-        let ctx = self.dynamic_playlist_context(&prepared, None, None);
+        let ctx = self.dynamic_playlist_context(&prepared, ProviderActor::System);
 
         prepared
             .dynamic_playlist_provider()?

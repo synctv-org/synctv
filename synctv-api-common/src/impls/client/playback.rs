@@ -4,7 +4,7 @@
 
 use synctv_core::models::SourceProvider;
 use synctv_core::models::{PlaybackKind, PlaylistId, RoomPlaybackState, UserId};
-use synctv_core::provider::{ExecutionControl, ProviderContext};
+use synctv_core::provider::{ExecutionControl, ProviderActor, ProviderContext};
 use synctv_core::service::{
     PlaybackSourceExpectation, PlaybackStatePatch, PlaybackStateUpdateRequest,
 };
@@ -82,12 +82,58 @@ pub struct PlaybackStateUpdateParts {
 
 struct DynamicPlaylistPlaybackRequest<'a> {
     room_id: &'a synctv_core::models::RoomId,
-    user_id: &'a UserId,
+    actor: PlaybackBuildActor<'a>,
+    proxy_authorizer_id: &'a UserId,
     playlist_id: &'a PlaylistId,
     target: &'a synctv_core::models::ProviderTarget,
     state: Option<&'a RoomPlaybackState>,
     playback_client_profile: Option<&'a synctv_core::provider::PlaybackClientProfile>,
     request_control: Option<&'a ExecutionControl>,
+}
+
+struct StaticMediaPlaybackRequest<'a> {
+    actor: PlaybackBuildActor<'a>,
+    proxy_authorizer_id: &'a UserId,
+    room_id: &'a synctv_core::models::RoomId,
+    media: synctv_core::models::Media,
+    state: Option<&'a RoomPlaybackState>,
+    playback_client_profile: Option<&'a synctv_core::provider::PlaybackClientProfile>,
+    request_control: Option<&'a ExecutionControl>,
+}
+
+#[derive(Clone, Copy)]
+enum PlaybackBuildActor<'a> {
+    User(&'a UserId),
+    Guest { guest_id: &'a str },
+}
+
+impl<'a> PlaybackBuildActor<'a> {
+    const fn user(user_id: &'a UserId) -> Self {
+        Self::User(user_id)
+    }
+
+    const fn guest(guest_id: &'a str) -> Self {
+        Self::Guest { guest_id }
+    }
+
+    const fn provider_actor(self) -> ProviderActor {
+        match self {
+            Self::User(user_id) => ProviderActor::User(*user_id),
+            Self::Guest { .. } => ProviderActor::Guest,
+        }
+    }
+
+    fn public_actor_id(
+        self,
+        public_id_codec: &synctv_adapter::PublicIdCodec,
+    ) -> Result<String, ApiError> {
+        match self {
+            Self::User(user_id) => public_id_codec.encode_user_id(*user_id).map_err(|error| {
+                ApiError::Internal(format!("Failed to encode user public id: {error}"))
+            }),
+            Self::Guest { guest_id } => Ok(guest_id.to_string()),
+        }
+    }
 }
 
 struct ProviderPlaybackResultBuildRequest {
@@ -318,7 +364,7 @@ impl ClientApiImpl {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn build_provider_context<'a>(
         &'a self,
-        user_id: &UserId,
+        actor: ProviderActor,
         credential_owner_id: Option<&UserId>,
         room_id: &synctv_core::models::RoomId,
         media_id: Option<MediaId>,
@@ -326,8 +372,7 @@ impl ClientApiImpl {
         playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
         request_control: Option<&ExecutionControl>,
     ) -> Result<ProviderContext<'a>, ApiError> {
-        let mut ctx = ProviderContext::new("synctv")
-            .with_user_id(*user_id)
+        let mut ctx = ProviderContext::new("synctv", actor)
             .with_room_id(*room_id)
             .with_playback_client_profile(playback_client_profile.cloned())
             .with_request_context(request_control.map(ExecutionControl::child));
@@ -382,13 +427,17 @@ impl ClientApiImpl {
 
     async fn build_static_media_playback_result(
         &self,
-        user_id: &UserId,
-        room_id: &synctv_core::models::RoomId,
-        media: synctv_core::models::Media,
-        state: Option<&RoomPlaybackState>,
-        playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
-        request_control: Option<&ExecutionControl>,
+        request: StaticMediaPlaybackRequest<'_>,
     ) -> Result<synctv_proto::client::Playback, ApiError> {
+        let StaticMediaPlaybackRequest {
+            actor,
+            proxy_authorizer_id,
+            room_id,
+            media,
+            state,
+            playback_client_profile,
+            request_control,
+        } = request;
         self.room_service
             .ensure_client_usable_media(&media)
             .await
@@ -405,7 +454,7 @@ impl ClientApiImpl {
 
         let mut ctx = self.attach_provider_store(
             self.build_provider_context(
-                user_id,
+                actor.provider_actor(),
                 media.creator_id.as_ref(),
                 room_id,
                 Some(media.id),
@@ -448,7 +497,7 @@ impl ClientApiImpl {
             thumbnail.as_deref(),
         );
 
-        self.sign_and_finalize_playback(&full_result, &ctx)
+        self.sign_and_finalize_playback(&full_result, &ctx, actor, proxy_authorizer_id)
     }
 
     /// Helper to encode public IDs, sign playback URLs, and set expiration.
@@ -456,15 +505,12 @@ impl ClientApiImpl {
         &self,
         full_result: &synctv_core::models::media::PlaybackResult,
         ctx: &synctv_core::provider::ProviderContext<'_>,
+        actor: PlaybackBuildActor<'_>,
+        proxy_authorizer_id: &UserId,
     ) -> Result<synctv_proto::client::Playback, ApiError> {
         let room_id = ctx.room_id().ok_or_else(|| {
             ApiError::Internal(
                 "Missing room_id in provider context for playback signing".to_string(),
-            )
-        })?;
-        let user_id = ctx.user_id().ok_or_else(|| {
-            ApiError::Internal(
-                "Missing user_id in provider context for playback signing".to_string(),
             )
         })?;
         let public_room_id = self
@@ -473,18 +519,20 @@ impl ClientApiImpl {
             .map_err(|error| {
                 ApiError::Internal(format!("Failed to encode room public id: {error}"))
             })?;
-        let public_user_id = self
+        let proxy_authorizer_id = self
             .public_id_codec
-            .encode_user_id(*user_id)
+            .encode_user_id(*proxy_authorizer_id)
             .map_err(|error| {
                 ApiError::Internal(format!("Failed to encode user public id: {error}"))
             })?;
+        let actor_id = actor.public_actor_id(&self.public_id_codec)?;
 
         let signing = PlaybackHttpSigningContext {
             signing_key: &self.signing_key,
             media_swarm_signing_key: &self.media_swarm_signing_key,
             room_id: &public_room_id,
-            user_id: &public_user_id,
+            proxy_authorizer_id: &proxy_authorizer_id,
+            actor_id: &actor_id,
         };
         let mut playback =
             try_playback_to_proto(full_result, &self.public_id_codec, Some(&signing))?;
@@ -498,7 +546,8 @@ impl ClientApiImpl {
     ) -> Result<synctv_proto::client::Playback, ApiError> {
         let DynamicPlaylistPlaybackRequest {
             room_id,
-            user_id,
+            actor,
+            proxy_authorizer_id,
             playlist_id,
             target,
             state,
@@ -520,7 +569,7 @@ impl ClientApiImpl {
         let item = self
             .room_service
             .media_service()
-            .resolve_dynamic_playlist_item(*room_id, *user_id, playlist_id, target)
+            .resolve_dynamic_playlist_item(*room_id, actor.provider_actor(), playlist_id, target)
             .await
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::NotFound("Dynamic playlist item not found".to_string()))?;
@@ -534,7 +583,7 @@ impl ClientApiImpl {
 
         let mut ctx = self.attach_provider_store(
             self.build_provider_context(
-                user_id,
+                actor.provider_actor(),
                 playlist.creator_id.as_ref(),
                 room_id,
                 None,
@@ -574,12 +623,13 @@ impl ClientApiImpl {
 
         full_result.target = Some(target.clone());
 
-        self.sign_and_finalize_playback(&full_result, &ctx)
+        self.sign_and_finalize_playback(&full_result, &ctx, actor, proxy_authorizer_id)
     }
 
     async fn build_playback_from_state(
         &self,
-        user_id: &UserId,
+        actor: PlaybackBuildActor<'_>,
+        proxy_authorizer_id: &UserId,
         room_id: &synctv_core::models::RoomId,
         state: &synctv_core::models::RoomPlaybackState,
         playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
@@ -593,14 +643,15 @@ impl ClientApiImpl {
                 .await
                 .map_err(ApiError::from)?
                 .ok_or_else(|| ApiError::NotFound("Media not found".to_string()))?;
-            self.build_static_media_playback_result(
-                user_id,
+            self.build_static_media_playback_result(StaticMediaPlaybackRequest {
+                actor,
+                proxy_authorizer_id,
                 room_id,
                 media,
-                Some(state),
+                state: Some(state),
                 playback_client_profile,
                 request_control,
-            )
+            })
             .await?
         } else if let Some(ref playlist_id) = state.playing_playlist_id {
             let target = state.target.as_ref().ok_or_else(|| {
@@ -610,7 +661,8 @@ impl ClientApiImpl {
             })?;
             self.build_dynamic_playlist_playback_result(DynamicPlaylistPlaybackRequest {
                 room_id,
-                user_id,
+                actor,
+                proxy_authorizer_id,
                 playlist_id,
                 target,
                 state: Some(state),
@@ -676,7 +728,7 @@ impl ClientApiImpl {
 
     async fn playback_credential_dependencies_from_state(
         &self,
-        user_id: &UserId,
+        actor: ProviderActor,
         room_id: &synctv_core::models::RoomId,
         state: &synctv_core::models::RoomPlaybackState,
     ) -> Result<Vec<synctv_core::provider::ProviderCredentialDependency>, ApiError> {
@@ -701,7 +753,7 @@ impl ClientApiImpl {
                 .await
                 .map_err(ApiError::from)?;
             let ctx = self.build_provider_context(
-                user_id,
+                actor,
                 media.creator_id.as_ref(),
                 room_id,
                 Some(media.id),
@@ -738,7 +790,7 @@ impl ClientApiImpl {
                 .await
                 .map_err(ApiError::from)?;
             let ctx = self.build_provider_context(
-                user_id,
+                actor,
                 playlist.creator_id.as_ref(),
                 room_id,
                 None,
@@ -1021,16 +1073,80 @@ impl ClientApiImpl {
     pub async fn get_playback_as_guest(
         &self,
         access: &GuestRoomAccess,
+        req: synctv_proto::client::GetPlaybackRequest,
+        request_control: Option<&ExecutionControl>,
     ) -> Result<synctv_proto::client::GetPlaybackResponse, ApiError> {
-        let state = self
+        let playback_client_profile =
+            playback_client_profile_from_proto(req.playback_client_profile.as_ref())?;
+        let mut state = self
             .room_service
             .get_playback_state(&access.room_id)
             .await
             .map_err(ApiError::from)?;
+        let mut playback_result = self
+            .build_playback_for_guest_state(
+                access,
+                &state,
+                playback_client_profile.as_ref(),
+                request_control,
+            )
+            .await;
+        if stale_cached_playback_reference(&state, &playback_result) {
+            state = self
+                .room_service
+                .playback_service()
+                .reload_state_from_store(&access.room_id)
+                .await
+                .map_err(ApiError::from)?;
+            playback_result = self
+                .build_playback_for_guest_state(
+                    access,
+                    &state,
+                    playback_client_profile.as_ref(),
+                    request_control,
+                )
+                .await;
+        }
+        let playback = match playback_result {
+            Ok(snapshot) => Some(snapshot),
+            Err(error) if playback_generation_error_allows_state_only(&error) => {
+                tracing::warn!(
+                    room_id = %access.room_id,
+                    guest_id = %access.guest_id,
+                    error = %error,
+                    "Transient guest playback generation failed; returning playback state only"
+                );
+                None
+            }
+            Err(error) => return Err(error),
+        };
         Ok(synctv_proto::client::GetPlaybackResponse {
             playback_state: Some(try_playback_state_to_proto(&state, &self.public_id_codec)?),
-            playback: None,
+            playback,
         })
+    }
+
+    async fn build_playback_for_guest_state(
+        &self,
+        access: &GuestRoomAccess,
+        state: &RoomPlaybackState,
+        playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<synctv_proto::client::Playback, ApiError> {
+        let room = self
+            .room_service
+            .get_room(&access.room_id)
+            .await
+            .map_err(ApiError::from)?;
+        self.build_playback_from_state(
+            PlaybackBuildActor::guest(&access.guest_id),
+            &room.created_by,
+            &access.room_id,
+            state,
+            playback_client_profile,
+            request_control,
+        )
+        .await
     }
 
     pub async fn get_playback_for_actor(
@@ -1049,7 +1165,10 @@ impl ClientApiImpl {
                 self.get_playback_internal(user_id, &room_id, req, request_control)
                     .await
             }
-            RoomActor::Guest(access) => self.get_playback_as_guest(access).await,
+            RoomActor::Guest(access) => {
+                self.get_playback_as_guest(access, req, request_control)
+                    .await
+            }
         }
     }
 
@@ -1079,6 +1198,7 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
         let mut playback_result = self
             .build_playback_from_state(
+                PlaybackBuildActor::user(&uid),
                 &uid,
                 &rid,
                 &state,
@@ -1103,6 +1223,7 @@ impl ClientApiImpl {
                 .map_err(ApiError::from)?;
             playback_result = self
                 .build_playback_from_state(
+                    PlaybackBuildActor::user(&uid),
                     &uid,
                     &rid,
                     &state,
@@ -1231,24 +1352,43 @@ impl crate::impls::playback::PlaybackService for ClientApiImpl {
             .map_err(ApiError::from)
     }
 
-    async fn get_playback(
+    async fn get_playback_for_actor(
         &self,
-        user_id: &UserId,
+        actor: &RoomActor,
         room_id: &synctv_core::models::RoomId,
         state: &synctv_core::models::RoomPlaybackState,
         playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
     ) -> Result<synctv_proto::client::Playback, ApiError> {
-        self.build_playback_from_state(user_id, room_id, state, playback_client_profile, None)
-            .await
+        match actor {
+            RoomActor::User { user_id, .. } => {
+                self.build_playback_from_state(
+                    PlaybackBuildActor::user(user_id),
+                    user_id,
+                    room_id,
+                    state,
+                    playback_client_profile,
+                    None,
+                )
+                .await
+            }
+            RoomActor::Guest(access) => {
+                self.build_playback_for_guest_state(access, state, playback_client_profile, None)
+                    .await
+            }
+        }
     }
 
     async fn playback_credential_dependencies(
         &self,
-        user_id: &UserId,
+        actor: &RoomActor,
         room_id: &synctv_core::models::RoomId,
         state: &synctv_core::models::RoomPlaybackState,
     ) -> Result<Vec<synctv_core::provider::ProviderCredentialDependency>, ApiError> {
-        self.playback_credential_dependencies_from_state(user_id, room_id, state)
+        let provider_actor = match actor {
+            RoomActor::User { user_id, .. } => ProviderActor::User(*user_id),
+            RoomActor::Guest(_) => ProviderActor::Guest,
+        };
+        self.playback_credential_dependencies_from_state(provider_actor, room_id, state)
             .await
     }
 

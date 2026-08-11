@@ -11,15 +11,22 @@ use crate::repository::UserProviderCredentialRepository;
 
 use super::{PlaybackClientProfile, ProviderAccessService};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderActor {
+    System,
+    User(UserId),
+    Guest,
+}
+
 /// Provider execution context.
 #[derive(Clone)]
 pub struct ProviderContext<'a> {
-    /// User ID requesting playback (optional)
-    pub user_id: Option<UserId>,
+    /// Identity requesting the provider operation.
+    actor: ProviderActor,
 
     /// User ID whose provider credentials should be used when provider semantics
     /// require creator-owned shared credentials.
-    pub credential_owner_id: Option<UserId>,
+    credential_owner_id: Option<UserId>,
 
     /// Room ID (optional)
     pub room_id: Option<RoomId>,
@@ -64,9 +71,9 @@ pub struct ProviderContext<'a> {
 impl<'a> ProviderContext<'a> {
     /// Create new context with defaults
     #[must_use]
-    pub fn new(key_prefix: &'a str) -> Self {
+    pub fn new(key_prefix: &'a str, actor: ProviderActor) -> Self {
         Self {
-            user_id: None,
+            actor,
             credential_owner_id: None,
             room_id: None,
             media_id: None,
@@ -82,13 +89,6 @@ impl<'a> ProviderContext<'a> {
             request_context: None,
             playback_client_profile: None,
         }
-    }
-
-    /// Set user ID
-    #[must_use]
-    pub const fn with_user_id(mut self, user_id: UserId) -> Self {
-        self.user_id = Some(user_id);
-        self
     }
 
     /// Set credential owner ID
@@ -204,7 +204,28 @@ impl<'a> ProviderContext<'a> {
 
     #[must_use]
     pub const fn user_id(&self) -> Option<&UserId> {
-        self.user_id.as_ref()
+        match &self.actor {
+            ProviderActor::User(user_id) => Some(user_id),
+            ProviderActor::System | ProviderActor::Guest => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn actor(&self) -> ProviderActor {
+        self.actor
+    }
+
+    /// Select the stored credential subject for providers whose credentials are optional.
+    #[must_use]
+    pub const fn selected_credential_user_id(&self, shared: bool) -> Option<UserId> {
+        if shared {
+            self.credential_owner_id
+        } else {
+            match self.actor {
+                ProviderActor::User(user_id) => Some(user_id),
+                ProviderActor::System | ProviderActor::Guest => None,
+            }
+        }
     }
 
     #[must_use]
@@ -245,5 +266,48 @@ impl<'a> ProviderContext<'a> {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ProviderActor, ProviderContext};
+    use crate::models::UserId;
+
+    #[test]
+    fn provider_actor_exposes_user_ids_only_for_users() {
+        let user_id = UserId::expect_positive(11);
+
+        assert_eq!(
+            ProviderContext::new("test", ProviderActor::User(user_id)).user_id(),
+            Some(&user_id)
+        );
+        assert_eq!(
+            ProviderContext::new("test", ProviderActor::Guest).user_id(),
+            None
+        );
+        assert_eq!(
+            ProviderContext::new("test", ProviderActor::System).user_id(),
+            None
+        );
+    }
+
+    #[test]
+    fn optional_credentials_follow_actor_and_sharing_semantics() {
+        let viewer_id = UserId::expect_positive(12);
+        let creator_id = UserId::expect_positive(13);
+        let user = ProviderContext::new("test", ProviderActor::User(viewer_id))
+            .with_credential_owner_id(creator_id);
+        let guest =
+            ProviderContext::new("test", ProviderActor::Guest).with_credential_owner_id(creator_id);
+        let system = ProviderContext::new("test", ProviderActor::System)
+            .with_credential_owner_id(creator_id);
+
+        assert_eq!(user.selected_credential_user_id(false), Some(viewer_id));
+        assert_eq!(user.selected_credential_user_id(true), Some(creator_id));
+        assert_eq!(guest.selected_credential_user_id(false), None);
+        assert_eq!(guest.selected_credential_user_id(true), Some(creator_id));
+        assert_eq!(system.selected_credential_user_id(false), None);
+        assert_eq!(system.selected_credential_user_id(true), Some(creator_id));
     }
 }

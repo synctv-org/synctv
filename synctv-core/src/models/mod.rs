@@ -102,6 +102,7 @@ pub mod playlist;
 pub mod provider_instance;
 pub mod provider_target;
 pub mod query;
+pub mod realtime_actor;
 pub mod realtime_event;
 pub mod review;
 pub mod room;
@@ -239,6 +240,7 @@ pub use provider_target::{
     TwitchTargetKind, YoutubeTarget,
 };
 pub use query::SortDirection;
+pub use realtime_actor::RealtimeActor;
 pub use realtime_event::{
     CacheTarget, NotificationLevel, RealtimeDeliveryRoute, RealtimeEvent, WebRTCSignalKind,
 };

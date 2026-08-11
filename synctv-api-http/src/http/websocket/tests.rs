@@ -2,7 +2,7 @@ use super::*;
 use std::sync::Arc;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
-    models::{RoomId, UserId},
+    models::{RealtimeActor, RoomId, UserId},
     service::{
         BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, RoomService, UserService,
         UserServiceRuntimeOptions, UserValidationResult, UserValidator,
@@ -680,10 +680,14 @@ async fn test_handshake_timeout_releases_reserved_capacity_without_marking_prese
     }));
     let user_id = UserId::expect_positive(130_001);
     let room_id = RoomId::expect_positive(130_002);
-    let reservation = HandshakeReservation { room_id, user_id };
+    let actor = RealtimeActor::user(user_id, "usr_handshake_timeout");
+    let reservation = HandshakeReservation {
+        room_id,
+        actor: actor.clone(),
+    };
 
     manager
-        .reserve_user_slot(&user_id)
+        .reserve_actor_slot(&actor)
         .map_err(|error| test_error(error.clone()))?;
     manager
         .reserve_room_slot(&room_id)
@@ -694,7 +698,7 @@ async fn test_handshake_timeout_releases_reserved_capacity_without_marking_prese
         "reserved handshakes must not appear as active presence"
     );
     assert!(
-        manager.reserve_user_slot(&user_id).is_err(),
+        manager.reserve_actor_slot(&actor).is_err(),
         "user handshake reservations should remain full while the reservation is active"
     );
     assert!(
@@ -717,7 +721,7 @@ async fn test_handshake_timeout_releases_reserved_capacity_without_marking_prese
     assert_eq!(err.status(), StatusCode::REQUEST_TIMEOUT);
 
     assert!(
-        manager.reserve_user_slot(&user_id).is_ok(),
+        manager.reserve_actor_slot(&actor).is_ok(),
         "timeout cleanup should free user reservation capacity"
     );
     assert!(
@@ -1035,10 +1039,14 @@ async fn test_failed_upgrade_cleanup_releases_reserved_capacity_without_presence
     }));
     let user_id = UserId::expect_positive(130_004);
     let room_id = RoomId::expect_positive(130_005);
-    let reservation = HandshakeReservation { room_id, user_id };
+    let actor = RealtimeActor::user(user_id, "usr_failed_upgrade");
+    let reservation = HandshakeReservation {
+        room_id,
+        actor: actor.clone(),
+    };
 
     manager
-        .reserve_user_slot(&user_id)
+        .reserve_actor_slot(&actor)
         .map_err(|error| test_error(error.clone()))?;
     manager
         .reserve_room_slot(&room_id)
@@ -1049,7 +1057,7 @@ async fn test_failed_upgrade_cleanup_releases_reserved_capacity_without_presence
         "failed upgrades must not leave a visible active connection"
     );
     assert!(
-        manager.reserve_user_slot(&user_id).is_err(),
+        manager.reserve_actor_slot(&actor).is_err(),
         "user handshake reservations should remain full while the upgrade reservation is active"
     );
     assert!(
@@ -1061,7 +1069,7 @@ async fn test_failed_upgrade_cleanup_releases_reserved_capacity_without_presence
     cleanup(axum::Error::new(std::io::Error::other("upgrade failed")));
 
     assert!(
-        manager.reserve_user_slot(&user_id).is_ok(),
+        manager.reserve_actor_slot(&actor).is_ok(),
         "cleanup should free user reservation capacity"
     );
     assert!(
@@ -1072,18 +1080,45 @@ async fn test_failed_upgrade_cleanup_releases_reserved_capacity_without_presence
 }
 
 #[tokio::test]
+async fn test_guest_handshake_reservation_uses_guest_actor_capacity() -> TestResult {
+    let manager = Arc::new(ConnectionManager::new(ConnectionLimits {
+        max_per_room: 1,
+        max_per_user: 1,
+        ..ConnectionLimits::default()
+    }));
+    let room_id = RoomId::expect_positive(130_015);
+    let actor = RealtimeActor::guest("gst_handshake_reservation");
+    let reservation = reserve_websocket_upgrade_slots(manager.as_ref(), &room_id, &actor)
+        .map_err(|error| test_error(format!("{error:?}")))?;
+
+    assert_eq!(actor.user_id(), None);
+    assert!(manager.reserve_actor_slot(&actor).is_err());
+    assert!(manager.reserve_room_slot(&room_id).is_err());
+
+    reservation.release(manager.as_ref());
+
+    assert!(manager.reserve_actor_slot(&actor).is_ok());
+    assert!(manager.reserve_room_slot(&room_id).is_ok());
+    Ok(())
+}
+
+#[tokio::test]
 #[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_failed_upgrade_cleanup_leaves_consumed_ticket_spent() -> TestResult {
     let state = crate::http::tests::test_app_state();
     let ws_ticket_service = state.ws_ticket_service.clone();
     let user_id = UserId::expect_positive(130_006);
     let room_id = RoomId::expect_positive(130_007);
-    let reservation = HandshakeReservation { room_id, user_id };
+    let actor = RealtimeActor::user(user_id, "usr_ticket_restore");
+    let reservation = HandshakeReservation {
+        room_id,
+        actor: actor.clone(),
+    };
 
     state
         .router_options
         .connection_manager
-        .reserve_user_slot(&user_id)
+        .reserve_actor_slot(&actor)
         .map_err(|error| test_error(error.clone()))?;
     state
         .router_options
@@ -1102,7 +1137,6 @@ async fn test_failed_upgrade_cleanup_leaves_consumed_ticket_spent() -> TestResul
     let prepared = PreparedWebSocketUpgrade {
         room_id,
         auth: HandshakeAuthContext {
-            user_id,
             principal: RealtimePrincipal::user(user_id, "ticket-user".to_string()),
             ticket_commit: Some(TicketAuthCommit {
                 ticket: ticket.clone(),
@@ -1141,11 +1175,12 @@ async fn test_commit_websocket_upgrade_releases_reservation_when_ticket_claim_fa
     let ws_ticket_service = state.ws_ticket_service.clone();
     let user_id = UserId::expect_positive(130_008);
     let room_id = RoomId::expect_positive(130_009);
+    let actor = RealtimeActor::user(user_id, "usr_ticket_claim_fail");
 
     let reservation = reserve_websocket_upgrade_slots(
         state.router_options.connection_manager.as_ref(),
         &room_id,
-        &user_id,
+        &actor,
     )
     .map_err(|error| test_error(format!("{error:?}")))?;
 
@@ -1166,7 +1201,6 @@ async fn test_commit_websocket_upgrade_releases_reservation_when_ticket_claim_fa
     let prepared = PreparedWebSocketUpgrade {
         room_id,
         auth: HandshakeAuthContext {
-            user_id,
             principal: RealtimePrincipal::user(user_id, "ticket-user".to_string()),
             ticket_commit: Some(TicketAuthCommit { ticket, pending }),
         },
@@ -1182,7 +1216,7 @@ async fn test_commit_websocket_upgrade_releases_reservation_when_ticket_claim_fa
     state
         .router_options
         .connection_manager
-        .reserve_user_slot(&user_id)
+        .reserve_actor_slot(&actor)
         .map_err(|error| test_error(error.clone()))?;
     state
         .router_options
@@ -1200,17 +1234,17 @@ async fn test_commit_websocket_upgrade_releases_reservation_when_timeout_cancels
     let timeout_state = state.clone();
     let user_id = UserId::expect_positive(130_010);
     let room_id = RoomId::expect_positive(130_011);
+    let actor = RealtimeActor::user(user_id, "usr_ticket_timeout");
     let reservation = reserve_websocket_upgrade_slots(
         state.router_options.connection_manager.as_ref(),
         &room_id,
-        &user_id,
+        &actor,
     )
     .map_err(|error| test_error(format!("{error:?}")))?;
 
     let prepared = PreparedWebSocketUpgrade {
         room_id,
         auth: HandshakeAuthContext {
-            user_id,
             principal: RealtimePrincipal::user(user_id, "ticket-user".to_string()),
             ticket_commit: None,
         },
@@ -1238,7 +1272,7 @@ async fn test_commit_websocket_upgrade_releases_reservation_when_timeout_cancels
     state
         .router_options
         .connection_manager
-        .reserve_user_slot(&user_id)
+        .reserve_actor_slot(&actor)
         .map_err(|error| test_error(error.clone()))?;
     state
         .router_options
@@ -1257,18 +1291,22 @@ async fn test_reservation_stays_full_until_connection_pre_join_succeeds() -> Tes
     }));
     let user_id = UserId::expect_positive(130_012);
     let room_id = RoomId::expect_positive(130_013);
-    let reservation = HandshakeReservation { room_id, user_id };
+    let actor = RealtimeActor::user(user_id, "usr_pre_join_transfer");
+    let reservation = HandshakeReservation {
+        room_id,
+        actor: actor.clone(),
+    };
     let connection_id = "conn-pre-join-transfer".to_string();
 
     manager
-        .reserve_user_slot(&user_id)
+        .reserve_actor_slot(&actor)
         .map_err(|error| test_error(error.clone()))?;
     manager
         .reserve_room_slot(&room_id)
         .map_err(|error| test_error(error.clone()))?;
 
     assert!(
-        manager.reserve_user_slot(&user_id).is_err(),
+        manager.reserve_actor_slot(&actor).is_err(),
         "user capacity must remain full while only the handshake reservation exists"
     );
     assert!(
@@ -1277,7 +1315,7 @@ async fn test_reservation_stays_full_until_connection_pre_join_succeeds() -> Tes
     );
 
     manager
-        .register(connection_id.clone(), user_id)
+        .register_actor(connection_id.clone(), actor.clone())
         .await
         .map_err(|error| test_error(error.clone()))?;
     manager
@@ -1286,7 +1324,7 @@ async fn test_reservation_stays_full_until_connection_pre_join_succeeds() -> Tes
         .map_err(|error| test_error(error.clone()))?;
 
     assert!(
-        manager.reserve_user_slot(&user_id).is_err(),
+        manager.reserve_actor_slot(&actor).is_err(),
         "active registration must keep user capacity full before reservation release"
     );
     assert!(
@@ -1297,7 +1335,7 @@ async fn test_reservation_stays_full_until_connection_pre_join_succeeds() -> Tes
     reservation.release(manager.as_ref());
 
     assert!(
-        manager.reserve_user_slot(&user_id).is_err(),
+        manager.reserve_actor_slot(&actor).is_err(),
         "releasing the handshake reservation must not free capacity still used by the active connection"
     );
     assert!(
@@ -1308,7 +1346,7 @@ async fn test_reservation_stays_full_until_connection_pre_join_succeeds() -> Tes
     manager.unregister(&connection_id).await;
 
     assert!(
-        manager.reserve_user_slot(&user_id).is_ok(),
+        manager.reserve_actor_slot(&actor).is_ok(),
         "capacity should reopen only after the active connection leaves"
     );
     assert!(
@@ -1429,9 +1467,10 @@ async fn test_forward_websocket_messages_disconnects_connection_on_sink_failure(
 
     let connection_id = "conn-forward-failure".to_string();
     let user_id = UserId::expect_positive(130_014);
+    let actor = RealtimeActor::user(user_id, "usr_forward_failure");
     let manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
     manager
-        .register(connection_id.clone(), user_id)
+        .register_actor(connection_id.clone(), actor)
         .await
         .map_err(|error| test_error(error.clone()))?;
 

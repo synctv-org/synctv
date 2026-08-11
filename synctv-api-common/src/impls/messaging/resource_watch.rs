@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use synctv_core::{
-    models::{RoomId, RoomPermission, UserId},
+    models::{RoomId, RoomPermission},
     service::{ChatService, OnlinePresenceService, RoomService},
 };
 use synctv_realtime::fanout::RealtimeEventService;
@@ -64,7 +64,6 @@ pub struct ResourceWatchSessionConfig {
 pub struct ResourceWatchSession {
     room_id: RoomId,
     principal: RealtimePrincipal,
-    user_id: UserId,
     connection_id: ConnectionId,
     room_service: Arc<RoomService>,
     chat_service: Option<Arc<ChatService>>,
@@ -96,11 +95,9 @@ impl ResourceWatchSession {
             playlist_items_snapshot_service,
             room_settings_snapshot_service,
         } = config;
-        let user_id = principal.connection_user_id();
         let connection_id = generate_resource_watch_connection_id();
         let observer = ResourceObserver::new(ResourceObserverParams {
             room_id,
-            user_id,
             actor: principal.room_actor(room_id),
             connection_id: connection_id.as_str().to_string(),
             room_service: Arc::clone(&room_service),
@@ -118,7 +115,6 @@ impl ResourceWatchSession {
         Self {
             room_id,
             principal,
-            user_id,
             connection_id,
             room_service,
             chat_service,
@@ -133,12 +129,12 @@ impl ResourceWatchSession {
         self,
         observe: &ObserveResource,
     ) -> Result<PreparedResourceWatchSession, RealtimeJoinError> {
+        let actor = self
+            .principal
+            .realtime_actor(&self.public_id_codec)
+            .map_err(RealtimeJoinError::from)?;
         self.connection_service
-            .register_actor(
-                self.connection_id.clone().into_string(),
-                self.user_id,
-                self.public_actor_id().map_err(RealtimeJoinError::from)?,
-            )
+            .register_actor(self.connection_id.clone().into_string(), actor.clone())
             .await
             .map_err(|error| {
                 tracing::warn!(error = %error, "Failed to register resource watch connection");
@@ -176,7 +172,7 @@ impl ResourceWatchSession {
 
         let event_rx = match self
             .event_service
-            .subscribe_with_id(self.room_id, self.user_id, self.connection_id.clone())
+            .subscribe_with_id(self.room_id, actor, self.connection_id.clone())
             .await
             .map(|(event_rx, _connection_id)| event_rx)
         {
@@ -252,10 +248,6 @@ impl ResourceWatchSession {
             event_rx,
         })
     }
-
-    fn public_actor_id(&self) -> Result<String, String> {
-        self.principal.public_actor_id(&self.public_id_codec)
-    }
 }
 
 impl PreparedResourceWatchSession {
@@ -278,9 +270,13 @@ impl PreparedResourceWatchSession {
                         let Some(event) = event else {
                             break Err("Realtime event channel closed".to_string());
                         };
-                        if watch_admin_event_matches(&event, &session.user_id, &session.room_id) {
+                        if watch_admin_event_matches(
+                            &event,
+                            session.principal.user_id(),
+                            &session.room_id,
+                        ) {
                             tracing::info!(
-                                user_id = %session.user_id,
+                                actor = ?session.principal,
                                 room_id = %session.room_id,
                                 "Resource watch terminating after room access event"
                             );
@@ -300,12 +296,12 @@ impl PreparedResourceWatchSession {
                             Ok(signal) => {
                                 if watch_disconnect_signal_matches(
                                     &signal,
-                                    &session.user_id,
+                                    session.principal.user_id(),
                                     &session.room_id,
                                     session.connection_id.as_str(),
                                 ) {
                                     tracing::info!(
-                                        user_id = %session.user_id,
+                                        actor = ?session.principal,
                                         room_id = %session.room_id,
                                         connection_id = %session.connection_id,
                                         "Resource watch terminating after disconnect signal"
@@ -316,14 +312,14 @@ impl PreparedResourceWatchSession {
                             Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                                 tracing::warn!(
                                     lagged = n,
-                                    user_id = %session.user_id,
+                                    actor = ?session.principal,
                                     room_id = %session.room_id,
                                     "Resource watch disconnect signal channel lagged, re-subscribing and verifying access"
                                 );
                                 disconnect_rx = session.connection_service.subscribe_disconnect();
                                 if let Err(reason) = session.ensure_realtime_room_access().await {
                                     tracing::info!(
-                                        user_id = %session.user_id,
+                                        actor = ?session.principal,
                                         room_id = %session.room_id,
                                         reason,
                                         "Resource watch access is no longer valid after disconnect signal lag"
@@ -354,9 +350,13 @@ impl PreparedResourceWatchSession {
                                     .await;
                             }
                             Ok(event) => {
-                                if watch_admin_event_matches(&event, &session.user_id, &session.room_id) {
+                                if watch_admin_event_matches(
+                                    &event,
+                                    session.principal.user_id(),
+                                    &session.room_id,
+                                ) {
                                     tracing::info!(
-                                        user_id = %session.user_id,
+                                        actor = ?session.principal,
                                         room_id = %session.room_id,
                                         "Resource watch terminating after admin event"
                                     );
@@ -366,14 +366,14 @@ impl PreparedResourceWatchSession {
                             Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                                 tracing::warn!(
                                     lagged = n,
-                                    user_id = %session.user_id,
+                                    actor = ?session.principal,
                                     room_id = %session.room_id,
                                     "Resource watch admin event channel lagged, re-subscribing and verifying access"
                                 );
                                 admin_rx = session.event_service.subscribe_admin_events();
                                 if let Err(reason) = session.ensure_realtime_room_access().await {
                                     tracing::info!(
-                                        user_id = %session.user_id,
+                                        actor = ?session.principal,
                                         room_id = %session.room_id,
                                         reason,
                                         "Resource watch access is no longer valid after admin event lag"
@@ -436,8 +436,12 @@ impl ResourceWatchSession {
         if self.principal.is_guest() {
             return self.ensure_guest_admission_for_action().await;
         }
+        let user_id = self
+            .principal
+            .user_id()
+            .ok_or_else(|| "Realtime user identity is missing".to_string())?;
         match RealtimeMembershipProbe::new(&self.room_service)
-            .probe_realtime_membership_access_with_room(&room, &self.user_id)
+            .probe_realtime_membership_access_with_room(&room, &user_id)
             .await
         {
             Ok(RealtimeMembershipAccess::Allowed(_)) => Ok(()),
@@ -448,7 +452,7 @@ impl ResourceWatchSession {
 
     async fn ensure_guest_admission_for_action(&self) -> Result<(), String> {
         match RealtimeMembershipProbe::new(&self.room_service)
-            .guest_admission_denial_reason(&self.room_id, &self.user_id, &self.principal)
+            .guest_admission_denial_reason(&self.room_id, &self.principal)
             .await
         {
             Ok(Some(reason)) => Err(reason),
@@ -458,7 +462,12 @@ impl ResourceWatchSession {
     }
 
     async fn check_realtime_permission(&self, permission: RoomPermission) -> Result<(), String> {
-        if self.principal.is_guest() {
+        if let Some(user_id) = self.principal.user_id() {
+            self.room_service
+                .check_permission(&self.room_id, &user_id, permission)
+                .await
+                .map_err(|error| error.to_string())
+        } else {
             let permissions = self
                 .room_service
                 .get_guest_permissions(&self.room_id)
@@ -469,11 +478,6 @@ impl ResourceWatchSession {
             } else {
                 Err("Guests do not have permission to perform this action".to_string())
             }
-        } else {
-            self.room_service
-                .check_permission(&self.room_id, &self.user_id, permission)
-                .await
-                .map_err(|error| error.to_string())
         }
     }
 
@@ -527,10 +531,8 @@ impl ResourceWatchSession {
             }
             synctv_proto::client::observe_resource::Resource::Playback(_) => {
                 if self.principal.is_guest() {
-                    Err(
-                        "Guests cannot observe playbacks because playbacks may depend on signed-in provider credentials"
-                            .to_string(),
-                    )
+                    self.ensure_guest_admission_for_action().await?;
+                    Ok(())
                 } else {
                     Ok(())
                 }

@@ -1,7 +1,12 @@
 use super::*;
 use std::time::Duration;
+use synctv_core::models::{RealtimeActor, UserId};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+fn test_user_actor(user_id: UserId) -> RealtimeActor {
+    RealtimeActor::user(user_id, user_id.to_string())
+}
 
 #[tokio::test]
 async fn test_subscribe_and_broadcast() -> TestResult {
@@ -10,7 +15,11 @@ async fn test_subscribe_and_broadcast() -> TestResult {
     let user_id = UserId::expect_positive(10_000_148);
 
     let mut rx = hub
-        .subscribe(room_id, user_id, ConnectionId::new("conn1"))
+        .subscribe(
+            room_id,
+            test_user_actor(user_id),
+            ConnectionId::new("conn1"),
+        )
         .await?;
 
     assert_eq!(hub.subscriber_count(&room_id), 1);
@@ -42,7 +51,11 @@ async fn test_unsubscribe() -> TestResult {
     let user_id = UserId::expect_positive(10_000_148);
 
     let _rx = hub
-        .subscribe(room_id, user_id, ConnectionId::new("conn1"))
+        .subscribe(
+            room_id,
+            test_user_actor(user_id),
+            ConnectionId::new("conn1"),
+        )
         .await?;
     assert_eq!(hub.subscriber_count(&room_id), 1);
 
@@ -61,10 +74,10 @@ async fn test_multiple_subscribers() -> TestResult {
     let user2 = UserId::expect_positive(10_000_095);
 
     let mut rx1 = hub
-        .subscribe(room_id, user1, ConnectionId::new("conn1"))
+        .subscribe(room_id, test_user_actor(user1), ConnectionId::new("conn1"))
         .await?;
     let mut rx2 = hub
-        .subscribe(room_id, user2, ConnectionId::new("conn2"))
+        .subscribe(room_id, test_user_actor(user2), ConnectionId::new("conn2"))
         .await?;
 
     assert_eq!(hub.subscriber_count(&room_id), 2);
@@ -119,14 +132,14 @@ async fn test_distributed_subscribers_returns_error_when_redis_snapshot_unavaila
             connection_id.clone(),
             Subscriber {
                 connection_id: connection_id.clone(),
-                user_id,
+                actor: test_user_actor(user_id),
                 sender: mpsc::channel(SUBSCRIBER_CHANNEL_CAPACITY).0,
                 consecutive_drops: Arc::new(AtomicU32::new(0)),
             },
         );
         hub.rooms.insert(room_id, room);
         hub.connections
-            .insert(connection_id.clone(), (room_id, user_id));
+            .insert(connection_id.clone(), (room_id, test_user_actor(user_id)));
     }
 
     let error = hub
@@ -155,13 +168,13 @@ async fn test_lifecycle_events_on_subscribe_unsubscribe() -> TestResult {
     let user2 = UserId::expect_positive(10_000_095);
 
     let _rx1 = hub
-        .subscribe(room_id, user1, ConnectionId::new("conn1"))
+        .subscribe(room_id, test_user_actor(user1), ConnectionId::new("conn1"))
         .await?;
     let event = lifecycle_rx.try_recv()?;
     assert!(matches!(event, RoomLifecycleEvent::RoomActivated(ref rid) if rid == &room_id));
 
     let _rx2 = hub
-        .subscribe(room_id, user2, ConnectionId::new("conn2"))
+        .subscribe(room_id, test_user_actor(user2), ConnectionId::new("conn2"))
         .await?;
     assert!(lifecycle_rx.try_recv().is_err());
 
@@ -183,7 +196,11 @@ async fn test_lifecycle_events_on_remove_room() -> TestResult {
     let user_id = UserId::expect_positive(10_000_010);
 
     let _rx = hub
-        .subscribe(room_id, user_id, ConnectionId::new("conn1"))
+        .subscribe(
+            room_id,
+            test_user_actor(user_id),
+            ConnectionId::new("conn1"),
+        )
         .await?;
     let _ = lifecycle_rx.try_recv()?;
 
@@ -201,7 +218,11 @@ async fn test_broadcast_reliably_waits_for_critical_event_queue_space() -> TestR
     let filler_user = UserId::expect_positive(10_000_160);
 
     let mut rx = hub
-        .subscribe(room_id, filler_user, ConnectionId::new("conn-critical"))
+        .subscribe(
+            room_id,
+            test_user_actor(filler_user),
+            ConnectionId::new("conn-critical"),
+        )
         .await?;
 
     for _ in 0..SUBSCRIBER_CHANNEL_CAPACITY {
@@ -278,7 +299,7 @@ async fn test_broadcast_drops_when_subscriber_queue_is_full() -> TestResult {
     let _rx = hub
         .subscribe(
             room_id,
-            user_id,
+            test_user_actor(user_id),
             ConnectionId::new("conn-critical-broadcast"),
         )
         .await?;
@@ -321,7 +342,11 @@ async fn test_broadcast_reliably_unsubscribes_connection_after_delivery_timeout(
     let room_id = RoomId::expect_positive(10_000_165);
     let user_id = UserId::expect_positive(10_000_166);
     let _rx = hub
-        .subscribe(room_id, user_id, ConnectionId::new("conn-reliable-timeout"))
+        .subscribe(
+            room_id,
+            test_user_actor(user_id),
+            ConnectionId::new("conn-reliable-timeout"),
+        )
         .await?;
 
     for _ in 0..SUBSCRIBER_CHANNEL_CAPACITY {
@@ -386,7 +411,7 @@ async fn test_broadcast_reliably_times_out_full_subscribers_concurrently() -> Te
         let rx = hub
             .subscribe(
                 room_id,
-                UserId::expect_positive(10_000_168 + index),
+                test_user_actor(UserId::expect_positive(10_000_168 + index)),
                 ConnectionId::new(format!("conn-reliable-timeout-{index}")),
             )
             .await?;
@@ -455,7 +480,11 @@ async fn test_unsubscribe_cleans_up_local_state_even_without_redis() -> TestResu
     let user_id = UserId::expect_positive(10_000_010);
 
     let _rx = hub
-        .subscribe(room_id, user_id, ConnectionId::new("conn1"))
+        .subscribe(
+            room_id,
+            test_user_actor(user_id),
+            ConnectionId::new("conn1"),
+        )
         .await?;
     assert_eq!(hub.subscriber_count(&room_id), 1);
     assert_eq!(hub.connection_count(), 1);
@@ -549,10 +578,10 @@ async fn test_remove_room_cleans_connection_tracking() -> TestResult {
     let user2 = UserId::expect_positive(10_000_095);
 
     let _rx1 = hub
-        .subscribe(room_id, user1, ConnectionId::new("conn1"))
+        .subscribe(room_id, test_user_actor(user1), ConnectionId::new("conn1"))
         .await?;
     let _rx2 = hub
-        .subscribe(room_id, user2, ConnectionId::new("conn2"))
+        .subscribe(room_id, test_user_actor(user2), ConnectionId::new("conn2"))
         .await?;
 
     assert_eq!(hub.connection_count(), 2);

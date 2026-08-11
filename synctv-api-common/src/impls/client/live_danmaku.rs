@@ -100,7 +100,7 @@ impl ClientApiImpl {
                 })?;
         let ctx = self.attach_provider_store(
             self.build_provider_context(
-                &user_id,
+                synctv_core::provider::ProviderActor::User(user_id),
                 media.creator_id.as_ref(),
                 &room_id,
                 Some(media.id),

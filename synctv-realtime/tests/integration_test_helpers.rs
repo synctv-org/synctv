@@ -8,6 +8,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 use synctv_core::cache::InvalidationMessage;
+use synctv_core::models::{RealtimeActor, UserId};
 use synctv_core::{DirectRedisConnectionRuntime, RedisConnectionRuntime, SharedStateProfile};
 use synctv_core_testing::redis::{
     redis_connection_manager, redis_multiplexed_connection, RedisContainer,
@@ -19,6 +20,10 @@ use synctv_realtime::sync::{
 
 const ROUND_TIMEOUT: Duration = Duration::from_millis(750);
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
+
+pub fn user_actor(user_id: UserId) -> RealtimeActor {
+    RealtimeActor::user(user_id, user_id.to_string())
+}
 
 /// Redis test infrastructure that manages a single Redis container.
 /// The container is automatically stopped when this struct is dropped.

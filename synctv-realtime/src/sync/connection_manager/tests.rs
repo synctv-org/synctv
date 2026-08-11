@@ -12,6 +12,10 @@ fn missing(message: &'static str) -> BoxError {
     anyhow::anyhow!(message).into()
 }
 
+fn test_user_actor(user_id: UserId) -> RealtimeActor {
+    RealtimeActor::user(user_id, user_id.to_string())
+}
+
 fn require_error<T>(
     result: std::result::Result<T, String>,
     message: &'static str,
@@ -90,7 +94,7 @@ async fn test_register_duplicate_connection_id_is_rejected_without_double_counti
     let conn = manager
         .get_connection("dup-conn")
         .ok_or_else(|| missing("original connection should remain intact"))?;
-    assert_eq!(conn.user_id, user_id);
+    assert_eq!(conn.actor.user_id(), Some(user_id));
     Ok(())
 }
 
@@ -200,7 +204,7 @@ fn test_pending_retry_queue_preserves_metadata_cleanup_operations() -> TestResul
     let cleanup_op = manager.unregister_cleanup_op(
         "conn-123",
         "token-123",
-        UserId::expect_positive(40_123_001),
+        &test_user_actor(UserId::expect_positive(40_123_001)).connection_key(),
         Some(RoomId::expect_positive(40_123_002)),
     );
 
@@ -269,7 +273,7 @@ async fn test_register_same_connection_id_concurrently_with_redis_rejects_one_at
         .get_connection("dup-race-conn")
         .ok_or_else(|| missing("winning registration should remain present"))?;
     assert!(
-        registered.user_id == user1 || registered.user_id == user2,
+        registered.actor.user_id() == Some(user1) || registered.actor.user_id() == Some(user2),
         "the surviving connection must belong to exactly one of the contenders"
     );
 
@@ -816,7 +820,7 @@ async fn test_rtc_timeout_marks_connection_left_before_disconnect() -> TestResul
 
     manager.register("conn1".to_string(), user_id).await?;
     manager.join_room("conn1", room_id).await?;
-    manager.mark_voice_rtc_joined(&room_id, &user_id, "conn1", true);
+    manager.mark_voice_rtc_joined(&room_id, &test_user_actor(user_id), "conn1", true);
 
     tokio::time::sleep(Duration::from_millis(150)).await;
 
@@ -856,7 +860,12 @@ async fn voice_rtc_capacity_is_atomic_and_leave_releases_a_slot() -> TestResult 
             );
             barrier.wait().await;
             manager
-                .try_join_voice_rtc(&room_id, &user_id, &connection_id, participant_limit)
+                .try_join_voice_rtc(
+                    &room_id,
+                    &test_user_actor(user_id),
+                    &connection_id,
+                    participant_limit,
+                )
                 .await
                 .map(|outcome| (connection_id, user_id, outcome))
         });
@@ -887,7 +896,11 @@ async fn voice_rtc_capacity_is_atomic_and_leave_releases_a_slot() -> TestResult 
         .ok_or_else(|| missing("one joined participant is required"))?;
     assert!(
         manager
-            .leave_voice_rtc(&room_id, &leaving_user, &leaving_connection)
+            .leave_voice_rtc(
+                &room_id,
+                &test_user_actor(leaving_user),
+                &leaving_connection,
+            )
             .await?
     );
     let (replacement_connection, replacement_user) = rejected
@@ -897,7 +910,7 @@ async fn voice_rtc_capacity_is_atomic_and_leave_releases_a_slot() -> TestResult 
         manager
             .try_join_voice_rtc(
                 &room_id,
-                &replacement_user,
+                &test_user_actor(replacement_user),
                 &replacement_connection,
                 participant_limit,
             )
@@ -957,7 +970,12 @@ async fn voice_rtc_capacity_is_atomic_across_replicas() -> TestResult {
             );
             barrier.wait().await;
             manager
-                .try_join_voice_rtc(&room_id, &user_id, &connection_id, participant_limit)
+                .try_join_voice_rtc(
+                    &room_id,
+                    &test_user_actor(user_id),
+                    &connection_id,
+                    participant_limit,
+                )
                 .await
                 .map(|outcome| (manager, connection_id, user_id, outcome))
         });
@@ -989,7 +1007,11 @@ async fn voice_rtc_capacity_is_atomic_across_replicas() -> TestResult {
         .ok_or_else(|| missing("one joined participant is required"))?;
     assert!(
         leaving_manager
-            .leave_voice_rtc(&room_id, &leaving_user, &leaving_connection)
+            .leave_voice_rtc(
+                &room_id,
+                &test_user_actor(leaving_user),
+                &leaving_connection,
+            )
             .await?
     );
     let (replacement_manager, replacement_connection, replacement_user) = rejected
@@ -999,7 +1021,7 @@ async fn voice_rtc_capacity_is_atomic_across_replicas() -> TestResult {
         replacement_manager
             .try_join_voice_rtc(
                 &room_id,
-                &replacement_user,
+                &test_user_actor(replacement_user),
                 &replacement_connection,
                 participant_limit,
             )
@@ -1021,7 +1043,7 @@ async fn test_redis_recovery_reconciles_connection_counts() -> TestResult {
 
     let user_id = UserId::expect_positive(10_000_010);
     let room_id = RoomId::expect_positive(10_000_092);
-    let user_key = format!("{prefix}connections:user:{user_id}");
+    let user_key = format!("{prefix}connections:actor:user:{user_id}");
     let room_key = format!("{prefix}connections:room:{room_id}");
 
     manager.register("conn1".to_string(), user_id).await?;
@@ -1053,26 +1075,26 @@ async fn test_redis_recovery_reconciles_stale_connections() -> TestResult {
     let (_container, client, conn, prefix) = docker_redis_connection("test2:").await?;
     let manager = ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, &prefix);
 
-    // Manually inject a stale connection id into the distributed user/room indexes
+    // Manually inject a stale connection id into the distributed actor/room indexes
     // without creating a matching conn_mgr:conn:* metadata key.
     let mut redis_conn = redis::aio::ConnectionManager::new(client.clone()).await?;
-    let stale_user_index = format!("{prefix}conn_mgr:user:user_stale");
+    let stale_actor_index = format!("{prefix}conn_mgr:actor:user_stale");
     let stale_room_index = format!("{prefix}conn_mgr:room:room_stale");
     let stale_conn_key = format!("{prefix}conn_mgr:conn:stale_conn");
     let unrelated_conn_key = format!("{prefix}conn_mgr:conn:other_node_conn");
-    let user_index_directory_key = format!("{prefix}{USER_INDEX_DIRECTORY_KEY_SUFFIX}");
+    let actor_index_directory_key = format!("{prefix}{ACTOR_INDEX_DIRECTORY_KEY_SUFFIX}");
     let room_index_directory_key = format!("{prefix}{ROOM_INDEX_DIRECTORY_KEY_SUFFIX}");
 
-    let _: () = redis_conn.sadd(&stale_user_index, "stale_conn").await?;
+    let _: () = redis_conn.sadd(&stale_actor_index, "stale_conn").await?;
     let _: () = redis_conn.sadd(&stale_room_index, "stale_conn").await?;
     let _: () = redis_conn
-        .expire(&stale_user_index, CONNECTION_METADATA_TTL_SECONDS)
+        .expire(&stale_actor_index, CONNECTION_METADATA_TTL_SECONDS)
         .await?;
     let _: () = redis_conn
         .expire(&stale_room_index, CONNECTION_METADATA_TTL_SECONDS)
         .await?;
     let _: () = redis_conn
-        .sadd(&user_index_directory_key, &stale_user_index)
+        .sadd(&actor_index_directory_key, &stale_actor_index)
         .await?;
     let _: () = redis_conn
         .sadd(&room_index_directory_key, &stale_room_index)
@@ -1083,8 +1105,7 @@ async fn test_redis_recovery_reconciles_stale_connections() -> TestResult {
     let foreign_meta = ConnectionInfoPersistent {
         connection_id: "other_node_conn".to_string(),
         registration_token: "foreign-token".to_string(),
-        user_id: UserId::expect_positive(20_000_201),
-        actor_id: "usr_foreign".to_string(),
+        actor: RealtimeActor::user(UserId::expect_positive(20_000_201), "usr_foreign"),
         room_id: Some(RoomId::expect_positive(20_000_202)),
         connected_at_unix: 0,
         last_activity_unix: 0,
@@ -1096,23 +1117,23 @@ async fn test_redis_recovery_reconciles_stale_connections() -> TestResult {
         .set(&unrelated_conn_key, serde_json::to_string(&foreign_meta)?)
         .await?;
 
-    let stale_user_members: Vec<String> = redis_conn.smembers(&stale_user_index).await?;
+    let stale_actor_members: Vec<String> = redis_conn.smembers(&stale_actor_index).await?;
     let stale_room_members: Vec<String> = redis_conn.smembers(&stale_room_index).await?;
-    assert_eq!(stale_user_members, vec!["stale_conn".to_string()]);
+    assert_eq!(stale_actor_members, vec!["stale_conn".to_string()]);
     assert_eq!(stale_room_members, vec!["stale_conn".to_string()]);
 
     // Trigger reconciliation
     manager.reconcile_with_redis().await;
 
     // Stale index members should be cleaned up since the metadata key is missing.
-    let stale_user_exists: bool = redis_conn.exists(&stale_user_index).await?;
+    let stale_actor_exists: bool = redis_conn.exists(&stale_actor_index).await?;
     let stale_room_exists: bool = redis_conn.exists(&stale_room_index).await?;
     let stale_conn_exists: bool = redis_conn.exists(&stale_conn_key).await?;
     let unrelated_conn_exists: bool = redis_conn.exists(&unrelated_conn_key).await?;
 
     assert!(
-        !stale_user_exists,
-        "Empty stale user index should be removed during reconciliation"
+        !stale_actor_exists,
+        "Empty stale actor index should be removed during reconciliation"
     );
     assert!(
         !stale_room_exists,
@@ -1127,13 +1148,13 @@ async fn test_redis_recovery_reconciles_stale_connections() -> TestResult {
         "Reconciliation must not delete connection metadata that may belong to another replica"
     );
 
-    let user_directory_members: Vec<String> =
-        redis_conn.smembers(&user_index_directory_key).await?;
+    let actor_directory_members: Vec<String> =
+        redis_conn.smembers(&actor_index_directory_key).await?;
     let room_directory_members: Vec<String> =
         redis_conn.smembers(&room_index_directory_key).await?;
     assert!(
-        user_directory_members.is_empty(),
-        "stale user index directory entry should be pruned during reconciliation"
+        actor_directory_members.is_empty(),
+        "stale actor index directory entry should be pruned during reconciliation"
     );
     assert!(
         room_directory_members.is_empty(),
@@ -1151,7 +1172,7 @@ async fn test_redis_outage_during_register_eventually_consistent() -> TestResult
     let manager = ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, &prefix);
 
     let user_id = UserId::expect_positive(10_000_010);
-    let user_key = format!("{prefix}connections:user:{user_id}");
+    let user_key = format!("{prefix}connections:actor:user:{user_id}");
 
     manager.register("conn1".to_string(), user_id).await?;
 
@@ -1182,7 +1203,7 @@ async fn test_reconcile_with_redis_does_not_overwrite_other_replica_counters() -
 
     // Simulate another healthy replica already having active connections.
     let mut redis_conn = redis::aio::ConnectionManager::new(client.clone()).await?;
-    let user_key = format!("{prefix}connections:user:20000101");
+    let user_key = format!("{prefix}connections:actor:user:20000101");
     let room_key = format!("{prefix}connections:room:20000102");
     let total_key = format!("{prefix}connections:total");
 
@@ -1237,7 +1258,7 @@ async fn test_distributed_queries_prune_stale_index_members() -> TestResult {
     let valid = "conn-valid";
 
     let mut redis_conn = redis::aio::ConnectionManager::new(client.clone()).await?;
-    let user_index_key = format!("{prefix}conn_mgr:user:{user_a}");
+    let actor_index_key = format!("{prefix}conn_mgr:actor:user:{user_a}");
     let room_index_key = format!("{prefix}conn_mgr:room:{room_a}");
     let mismatch_conn_key = format!("{prefix}conn_mgr:conn:{stale_mismatch}");
     let valid_conn_key = format!("{prefix}conn_mgr:conn:{valid}");
@@ -1245,8 +1266,7 @@ async fn test_distributed_queries_prune_stale_index_members() -> TestResult {
     let mismatch_metadata = ConnectionInfoPersistent {
         connection_id: stale_mismatch.to_string(),
         registration_token: "mismatch-token".to_string(),
-        user_id: UserId::expect_positive(10_000_131),
-        actor_id: "usr_mismatch".to_string(),
+        actor: RealtimeActor::user(UserId::expect_positive(10_000_131), "usr_mismatch"),
         room_id: Some(RoomId::expect_positive(10_000_121)),
         connected_at_unix: 0,
         last_activity_unix: 0,
@@ -1257,8 +1277,7 @@ async fn test_distributed_queries_prune_stale_index_members() -> TestResult {
     let valid_metadata = ConnectionInfoPersistent {
         connection_id: valid.to_string(),
         registration_token: "valid-token".to_string(),
-        user_id: user_a,
-        actor_id: "usr_valid".to_string(),
+        actor: RealtimeActor::user(user_a, "usr_valid"),
         room_id: Some(room_a),
         connected_at_unix: 0,
         last_activity_unix: 0,
@@ -1278,11 +1297,11 @@ async fn test_distributed_queries_prune_stale_index_members() -> TestResult {
         .await?;
 
     for conn_id in [stale_missing, stale_mismatch, valid] {
-        let _: () = redis_conn.sadd(&user_index_key, conn_id).await?;
+        let _: () = redis_conn.sadd(&actor_index_key, conn_id).await?;
         let _: () = redis_conn.sadd(&room_index_key, conn_id).await?;
     }
     let _: () = redis_conn
-        .expire(&user_index_key, CONNECTION_METADATA_TTL_SECONDS)
+        .expire(&actor_index_key, CONNECTION_METADATA_TTL_SECONDS)
         .await?;
     let _: () = redis_conn
         .expire(&room_index_key, CONNECTION_METADATA_TTL_SECONDS)
@@ -1310,14 +1329,14 @@ async fn test_distributed_queries_prune_stale_index_members() -> TestResult {
         "distributed room lookup must prune missing and mismatched index members"
     );
 
-    let mut user_members: Vec<String> = redis_conn.smembers(&user_index_key).await?;
+    let mut actor_members: Vec<String> = redis_conn.smembers(&actor_index_key).await?;
     let mut room_members: Vec<String> = redis_conn.smembers(&room_index_key).await?;
-    user_members.sort();
+    actor_members.sort();
     room_members.sort();
     assert_eq!(
-        user_members,
+        actor_members,
         vec![valid.to_string()],
-        "user index should retain only valid members after lazy pruning"
+        "actor index should retain only valid members after lazy pruning"
     );
     assert_eq!(
         room_members,
@@ -1346,9 +1365,9 @@ async fn test_connection_metadata_ttl_uses_short_crash_safety_window() -> TestRe
     let mut redis_conn = redis::aio::ConnectionManager::new(client).await?;
     for key in [
         format!("{prefix}conn_mgr:conn:conn-meta-ttl"),
-        format!("{prefix}conn_mgr:user:{user_id}"),
+        format!("{prefix}conn_mgr:actor:user:{user_id}"),
         format!("{prefix}conn_mgr:room:{room_id}"),
-        format!("{prefix}{USER_INDEX_DIRECTORY_KEY_SUFFIX}"),
+        format!("{prefix}{ACTOR_INDEX_DIRECTORY_KEY_SUFFIX}"),
         format!("{prefix}{ROOM_INDEX_DIRECTORY_KEY_SUFFIX}"),
     ] {
         let ttl: i64 = redis_conn.ttl(&key).await?;
@@ -1364,7 +1383,8 @@ async fn test_connection_metadata_ttl_uses_short_crash_safety_window() -> TestRe
 
 #[tokio::test]
 #[ignore = "Requires Docker Redis"]
-async fn test_reconcile_with_redis_repairs_missing_user_and_room_index_memberships() -> TestResult {
+async fn test_reconcile_with_redis_repairs_missing_actor_and_room_index_memberships() -> TestResult
+{
     use redis::AsyncCommands;
 
     let (_container, client, conn, prefix) = docker_redis_connection("test8:").await?;
@@ -1372,19 +1392,19 @@ async fn test_reconcile_with_redis_repairs_missing_user_and_room_index_membershi
 
     let user_id = UserId::expect_positive(10_000_133);
     let room_id = RoomId::expect_positive(10_000_134);
-    let user_index_key = format!("{prefix}conn_mgr:user:{user_id}");
+    let actor_index_key = format!("{prefix}conn_mgr:actor:user:{user_id}");
     let room_index_key = format!("{prefix}conn_mgr:room:{room_id}");
-    let user_index_directory_key = format!("{prefix}{USER_INDEX_DIRECTORY_KEY_SUFFIX}");
+    let actor_index_directory_key = format!("{prefix}{ACTOR_INDEX_DIRECTORY_KEY_SUFFIX}");
     let room_index_directory_key = format!("{prefix}{ROOM_INDEX_DIRECTORY_KEY_SUFFIX}");
 
     manager.register("conn-repair".to_string(), user_id).await?;
     manager.join_room("conn-repair", room_id).await?;
 
     let mut redis_conn = redis::aio::ConnectionManager::new(client).await?;
-    let _: () = redis_conn.del(&user_index_key).await?;
+    let _: () = redis_conn.del(&actor_index_key).await?;
     let _: () = redis_conn.del(&room_index_key).await?;
     let _: () = redis_conn
-        .srem(&user_index_directory_key, &user_index_key)
+        .srem(&actor_index_directory_key, &actor_index_key)
         .await?;
     let _: () = redis_conn
         .srem(&room_index_directory_key, &room_index_key)
@@ -1405,14 +1425,14 @@ async fn test_reconcile_with_redis_repairs_missing_user_and_room_index_membershi
         "reconciliation should restore missing room index membership"
     );
 
-    let user_directory_members: Vec<String> =
-        redis_conn.smembers(&user_index_directory_key).await?;
+    let actor_directory_members: Vec<String> =
+        redis_conn.smembers(&actor_index_directory_key).await?;
     let room_directory_members: Vec<String> =
         redis_conn.smembers(&room_index_directory_key).await?;
     assert_eq!(
-        user_directory_members,
-        vec![user_index_key.clone()],
-        "reconciliation should restore the user index directory entry"
+        actor_directory_members,
+        vec![actor_index_key.clone()],
+        "reconciliation should restore the actor index directory entry"
     );
     assert_eq!(
         room_directory_members,
@@ -1437,7 +1457,7 @@ async fn test_register_user_limit_rejection_rolls_back_distributed_total_counter
     };
     let manager = ConnectionManager::new(limits).with_redis(conn, &prefix);
     let user_id = UserId::expect_positive(10_000_135);
-    let user_key = format!("{prefix}connections:user:{user_id}");
+    let user_key = format!("{prefix}connections:actor:user:{user_id}");
 
     manager.register("conn1".to_string(), user_id).await?;
 
@@ -1550,7 +1570,7 @@ async fn test_with_redis_runtime_accepts_trait_object_shared_runtime() -> TestRe
         )
         .await?;
 
-    let key = format!("{prefix}connections:user:10000139");
+    let key = format!("{prefix}connections:actor:user:10000139");
     let mut verify_conn = redis::aio::ConnectionManager::new(client).await?;
     let user_count: i64 = verify_conn.get(&key).await.unwrap_or(0);
     assert_eq!(user_count, 1);
@@ -1572,15 +1592,15 @@ async fn test_pending_retries_cleanup_metadata_and_indexes_after_recovery() -> T
     let cleanup_op = manager.unregister_cleanup_op(
         "conn-recover",
         "token-recover",
-        UserId::expect_positive(20_000_301),
+        &test_user_actor(UserId::expect_positive(20_000_301)).connection_key(),
         Some(RoomId::expect_positive(20_000_302)),
     );
     let PendingRedisOp::UnregisterCleanup {
         total_key,
-        user_key,
+        actor_key,
         room_key,
         conn_key,
-        user_index_key,
+        actor_index_key,
         room_index_key,
         ..
     } = cleanup_op.clone()
@@ -1594,8 +1614,7 @@ async fn test_pending_retries_cleanup_metadata_and_indexes_after_recovery() -> T
     let metadata = ConnectionInfoPersistent {
         connection_id: "conn-recover".to_string(),
         registration_token: "token-recover".to_string(),
-        user_id: UserId::expect_positive(20_000_301),
-        actor_id: "usr_recover".to_string(),
+        actor: RealtimeActor::user(UserId::expect_positive(20_000_301), "usr_recover"),
         room_id: Some(RoomId::expect_positive(20_000_302)),
         connected_at_unix: 0,
         last_activity_unix: 0,
@@ -1607,9 +1626,9 @@ async fn test_pending_retries_cleanup_metadata_and_indexes_after_recovery() -> T
         .set(&conn_key, serde_json::to_string(&metadata)?)
         .await?;
     let _: () = verify_conn.set(&total_key, 1i64).await?;
-    let _: () = verify_conn.set(&user_key, 1i64).await?;
+    let _: () = verify_conn.set(&actor_key, 1i64).await?;
     let _: () = verify_conn.set(&room_key, 1i64).await?;
-    let _: () = verify_conn.sadd(&user_index_key, "conn-recover").await?;
+    let _: () = verify_conn.sadd(&actor_index_key, "conn-recover").await?;
     let _: () = verify_conn.sadd(&room_index_key, "conn-recover").await?;
 
     assert!(
@@ -1621,10 +1640,10 @@ async fn test_pending_retries_cleanup_metadata_and_indexes_after_recovery() -> T
     tokio::time::sleep(Duration::from_secs(6)).await;
 
     let metadata_exists: bool = verify_conn.exists(&conn_key).await?;
-    let user_members: Vec<String> = verify_conn.smembers(&user_index_key).await?;
+    let actor_members: Vec<String> = verify_conn.smembers(&actor_index_key).await?;
     let room_members: Vec<String> = verify_conn.smembers(&room_index_key).await?;
     let total_count: i64 = verify_conn.get(&total_key).await.unwrap_or(0);
-    let user_count: i64 = verify_conn.get(&user_key).await.unwrap_or(0);
+    let actor_count: i64 = verify_conn.get(&actor_key).await.unwrap_or(0);
     let room_count: i64 = verify_conn.get(&room_key).await.unwrap_or(0);
 
     assert!(
@@ -1632,15 +1651,15 @@ async fn test_pending_retries_cleanup_metadata_and_indexes_after_recovery() -> T
         "pending retry processing must delete stale connection metadata"
     );
     assert!(
-        user_members.is_empty(),
-        "pending retry processing must remove stale user index members"
+        actor_members.is_empty(),
+        "pending retry processing must remove stale actor index members"
     );
     assert!(
         room_members.is_empty(),
         "pending retry processing must remove stale room index members"
     );
     assert_eq!(total_count, 0);
-    assert_eq!(user_count, 0);
+    assert_eq!(actor_count, 0);
     assert_eq!(room_count, 0);
 
     manager.shutdown().await;
@@ -1652,8 +1671,7 @@ fn test_connection_info_persistent_serialization() -> TestResult {
     let persistent = ConnectionInfoPersistent {
         connection_id: "conn1".to_string(),
         registration_token: "token1".to_string(),
-        user_id: UserId::expect_positive(20_000_401),
-        actor_id: "usr_20000401".to_string(),
+        actor: RealtimeActor::user(UserId::expect_positive(20_000_401), "usr_20000401"),
         room_id: Some(RoomId::expect_positive(20_000_402)),
         connected_at_unix: 1000,
         last_activity_unix: 2000,
@@ -1667,7 +1685,10 @@ fn test_connection_info_persistent_serialization() -> TestResult {
 
     assert_eq!(deserialized.connection_id, "conn1");
     assert_eq!(deserialized.registration_token, "token1");
-    assert_eq!(deserialized.user_id, UserId::expect_positive(20_000_401));
+    assert_eq!(
+        deserialized.actor,
+        RealtimeActor::user(UserId::expect_positive(20_000_401), "usr_20000401")
+    );
     assert_eq!(
         deserialized.room_id,
         Some(RoomId::expect_positive(20_000_402))
@@ -1829,15 +1850,17 @@ async fn test_release_user_reservation_removes_zero_counter_entry() {
     let uid = UserId::expect_positive(1);
 
     assert!(mgr.reserve_user_slot(&uid).is_ok());
-    assert_eq!(mgr.pending_user_reservations.len(), 1);
+    assert_eq!(mgr.pending_actor_reservations.len(), 1);
 
     mgr.release_user_reservation(&uid);
 
     assert!(
-        mgr.pending_user_reservations.get(&uid).is_none(),
+        mgr.pending_actor_reservations
+            .get(&test_user_actor(uid).connection_key())
+            .is_none(),
         "user reservation entry should be removed after the count returns to zero"
     );
-    assert_eq!(mgr.pending_user_reservations.len(), 0);
+    assert_eq!(mgr.pending_actor_reservations.len(), 0);
 }
 
 #[tokio::test]

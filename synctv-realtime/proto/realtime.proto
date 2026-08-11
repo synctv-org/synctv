@@ -31,7 +31,10 @@ message GetRoomConnectionsResponse {
 }
 
 message RoomConnection {
-  int64 user_id = 1;
+  oneof actor {
+    int64 user_id = 1;
+    string guest_id = 5;
+  }
   string node_id = 2;
   int64 connected_at = 3;
   int64 last_activity = 4;

@@ -4,8 +4,9 @@ use synctv_core::models::{RoomId, UserId};
 use tonic::{Request, Response, Status};
 
 use super::proto::{
-    realtime_presence_service_server, GetRoomConnectionsRequest, GetRoomConnectionsResponse,
-    GetUserOnlineStatusRequest, GetUserOnlineStatusResponse, RoomConnection, UserOnlineStatus,
+    realtime_presence_service_server, room_connection, GetRoomConnectionsRequest,
+    GetRoomConnectionsResponse, GetUserOnlineStatusRequest, GetUserOnlineStatusResponse,
+    RoomConnection, UserOnlineStatus,
 };
 use crate::sync::ConnectionRuntime;
 
@@ -117,7 +118,14 @@ impl realtime_presence_service_server::RealtimePresenceService for RealtimePrese
                     u64_to_i64(connection.last_activity.elapsed().as_secs());
 
                 RoomConnection {
-                    user_id: connection.user_id.as_i64(),
+                    actor: Some(match &connection.actor {
+                        synctv_core::models::RealtimeActor::User { user_id, .. } => {
+                            room_connection::Actor::UserId(user_id.as_i64())
+                        }
+                        synctv_core::models::RealtimeActor::Guest { guest_id } => {
+                            room_connection::Actor::GuestId(guest_id.clone())
+                        }
+                    }),
                     node_id: self.node_id.clone(),
                     connected_at: now_unix - connected_secs_ago,
                     last_activity: now_unix - last_activity_secs_ago,

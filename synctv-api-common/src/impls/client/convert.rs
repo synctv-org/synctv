@@ -78,7 +78,8 @@ pub struct PlaybackHttpSigningContext<'a> {
     pub signing_key: &'a crate::proxy_signature::ProxySigningKey,
     pub media_swarm_signing_key: &'a crate::proxy_signature::MediaSwarmSigningKey,
     pub room_id: &'a str,
-    pub user_id: &'a str,
+    pub proxy_authorizer_id: &'a str,
+    pub actor_id: &'a str,
 }
 
 fn proto_encode_error(kind: &str, error: &str) -> crate::impls::ApiError {
@@ -3896,7 +3897,7 @@ fn p2p_resource_delivery_to_proto(
     })?;
     let swarm_ticket = signing.media_swarm_signing_key.sign_media_swarm_ticket(
         signing.room_id,
-        signing.user_id,
+        signing.actor_id,
         &delivery.swarm_id,
     );
     Ok(synctv_proto::client::P2pResourceDelivery {
@@ -3930,7 +3931,7 @@ fn signed_provider_query(
             version: version.to_string(),
             resource,
             room_id: signing.room_id.to_string(),
-            user_id: signing.user_id.to_string(),
+            user_id: signing.proxy_authorizer_id.to_string(),
             expires_at,
             target_url: None,
         })
@@ -4957,7 +4958,8 @@ mod playback_conversion_tests {
                 .expect("test media swarm signing key should derive")
             }),
             room_id: "room-1",
-            user_id: "user-1",
+            proxy_authorizer_id: "user-1",
+            actor_id: "user-1",
         }
     }
 
@@ -5742,7 +5744,7 @@ mod playback_conversion_tests {
                 .media_swarm_signing_key
                 .verify_media_swarm_ticket(
                     signing.room_id,
-                    signing.user_id,
+                    signing.actor_id,
                     &delivery.swarm_id,
                     &delivery.swarm_ticket,
                 )

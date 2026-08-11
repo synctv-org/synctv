@@ -245,7 +245,7 @@ async fn test_register_rejects_when_distributed_total_limit_is_reached() {
         .unwrap_or(0);
     let user2 = uid("user2");
     let user2_count: i64 = verify_conn
-        .get(format!("{prefix}connections:user:{user2}"))
+        .get(format!("{prefix}connections:actor:user:{user2}"))
         .await
         .unwrap_or(0);
 

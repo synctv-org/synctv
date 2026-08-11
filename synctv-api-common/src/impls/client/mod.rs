@@ -236,6 +236,15 @@ impl RoomActor {
     }
 }
 
+const fn provider_actor_for_viewer(
+    viewer_id: Option<synctv_core::models::UserId>,
+) -> synctv_core::provider::ProviderActor {
+    match viewer_id {
+        Some(user_id) => synctv_core::provider::ProviderActor::User(user_id),
+        None => synctv_core::provider::ProviderActor::Guest,
+    }
+}
+
 /// Client API implementation
 #[derive(Clone)]
 pub struct ClientApiImpl {
@@ -798,7 +807,7 @@ impl ClientApiImpl {
                 match self
                     .room_service
                     .media_service()
-                    .media_source_cover(viewer_id, media)
+                    .media_source_cover(provider_actor_for_viewer(viewer_id), media)
                     .await
                 {
                     Ok(Some(source_cover)) => {
@@ -818,7 +827,7 @@ impl ClientApiImpl {
             async {
                 self.room_service
                     .media_service()
-                    .media_provider_metadata(viewer_id, media)
+                    .media_provider_metadata(provider_actor_for_viewer(viewer_id), media)
                     .await
                     .unwrap_or_else(|error| {
                         tracing::debug!(
@@ -878,7 +887,7 @@ impl ClientApiImpl {
                 match self
                     .room_service
                     .media_service()
-                    .playlist_source_cover(viewer_id, playlist)
+                    .playlist_source_cover(provider_actor_for_viewer(viewer_id), playlist)
                     .await
                 {
                     Ok(Some(source_cover)) => {
@@ -899,7 +908,7 @@ impl ClientApiImpl {
                 if playlist.is_dynamic() {
                     self.room_service
                         .media_service()
-                        .playlist_provider_metadata(viewer_id, playlist)
+                        .playlist_provider_metadata(provider_actor_for_viewer(viewer_id), playlist)
                         .await
                         .unwrap_or_else(|error| {
                             tracing::debug!(

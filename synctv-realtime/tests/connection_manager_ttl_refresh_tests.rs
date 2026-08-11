@@ -98,7 +98,10 @@ async fn test_ttl_refresh_moderate_connections() {
 
     // Check a few user counter keys
     for i in 0..num_users {
-        let key = format!("{prefix}connections:user:{}", uid(&format!("user_{i}")));
+        let key = format!(
+            "{prefix}connections:actor:user:{}",
+            uid(&format!("user_{i}"))
+        );
         let ttl: i64 = redis::cmd("TTL")
             .arg(&key)
             .query_async(&mut test_conn)
@@ -371,7 +374,7 @@ async fn test_reconcile_does_not_zero_counters_without_distributed_evidence() {
         .set(format!("{prefix}connections:total"), 1i64)
         .await
         .unwrap();
-    let user_key = format!("{prefix}connections:user:{user_id}");
+    let user_key = format!("{prefix}connections:actor:user:{user_id}");
     let room_key = format!("{prefix}connections:room:{room_id}");
     let _: () = redis_conn.set(&user_key, 1i64).await.unwrap();
     let _: () = redis_conn.set(&room_key, 1i64).await.unwrap();
@@ -420,7 +423,7 @@ async fn test_unregister_cleanup_is_scoped_to_reused_connection_registration() {
         .await
         .unwrap();
     let user: Option<i64> = redis_conn
-        .get(format!("{prefix}connections:user:{user_id}"))
+        .get(format!("{prefix}connections:actor:user:{user_id}"))
         .await
         .unwrap();
     let room: Option<i64> = redis_conn
@@ -453,7 +456,7 @@ async fn test_distributed_counter_ttl_is_2x_refresh_interval() {
 
     // Verify the TTL on the user counter key
     let mut test_conn = conn.clone();
-    let key = format!("{prefix}connections:user:{user_id}");
+    let key = format!("{prefix}connections:actor:user:{user_id}");
     let ttl: i64 = redis::cmd("TTL")
         .arg(key)
         .query_async(&mut test_conn)
@@ -488,7 +491,7 @@ async fn test_distributed_counter_expires_after_ttl() {
 
     // Verify counter exists and has value
     let mut test_conn = conn.clone();
-    let key = format!("{prefix}connections:user:{user_id}");
+    let key = format!("{prefix}connections:actor:user:{user_id}");
     let count: Option<i64> = test_conn.get(&key).await.unwrap();
     assert_eq!(count, Some(1), "Counter should be 1 after registration");
 
@@ -541,7 +544,7 @@ async fn test_ttl_multiplier_provides_safety_margin() {
 
     // Get initial TTL
     let mut test_conn = conn.clone();
-    let key = format!("{prefix}connections:user:{user_id}");
+    let key = format!("{prefix}connections:actor:user:{user_id}");
     let ttl: i64 = redis::cmd("TTL")
         .arg(key)
         .query_async(&mut test_conn)

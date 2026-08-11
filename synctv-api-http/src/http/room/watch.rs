@@ -207,12 +207,7 @@ pub(in crate::http::room) async fn open_resource_watch_sse(
                             room_guest_version: access.room_guest_version,
                             permissions: access.permissions,
                         };
-                        synctv_api_common::impls::messaging::RealtimePrincipal::guest(
-                            room_id, identity,
-                        )
-                        .map_err(|error| {
-                            synctv_api_common::impls::ApiError::Internal(error.to_string())
-                        })?
+                        synctv_api_common::impls::messaging::RealtimePrincipal::guest(identity)
                     }
                 })
             },

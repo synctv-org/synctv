@@ -14,7 +14,8 @@ use synctv_core_testing::redis_connection_manager;
 use synctv_realtime::sync::RealtimeEvent;
 mod integration_test_helpers;
 use integration_test_helpers::{
-    broadcast_until_all_clients_receive, create_node, wait_until, wait_until_async, TestRedis,
+    broadcast_until_all_clients_receive, create_node, user_actor, wait_until, wait_until_async,
+    TestRedis,
 };
 
 #[tokio::test]
@@ -30,11 +31,11 @@ async fn test_three_node_cluster() {
 
     // Subscribe on node A and node C
     let (rx_a, conn_a) = node_a
-        .subscribe(room_id, UserId::expect_positive(10_000_003))
+        .subscribe(room_id, user_actor(UserId::expect_positive(10_000_003)))
         .await
         .expect("subscribe should succeed");
     let (rx_c, conn_c) = node_c
-        .subscribe(room_id, UserId::expect_positive(10_000_055))
+        .subscribe(room_id, user_actor(UserId::expect_positive(10_000_055)))
         .await
         .expect("subscribe should succeed");
 

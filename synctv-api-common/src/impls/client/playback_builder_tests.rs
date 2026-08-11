@@ -1,11 +1,12 @@
 use super::{
     apply_live_stream_generation, apply_static_direct_url_thumbnail, build_playback_state_update,
-    build_start_playback_request, static_media_source_provider,
+    build_start_playback_request, static_media_source_provider, PlaybackBuildActor,
 };
 use synctv_core::models::{
     Media, MediaId, PlaybackDirectUrlMedia, PlaybackInfo, PlaybackMedia, PlaybackMediaProvider,
-    PlaybackResult, PlaylistId, ProviderTarget, RoomId, SourceProvider,
+    PlaybackResult, PlaylistId, ProviderTarget, RoomId, SourceProvider, UserId,
 };
+use synctv_core::provider::ProviderActor;
 
 const EMPTY_TARGET_HASH: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
@@ -42,6 +43,23 @@ fn live_generation(ready: bool) -> synctv_livestream::StreamGeneration {
         lease_epoch: 1,
         generation_id: "generation-live".to_string(),
     }
+}
+
+#[test]
+fn playback_build_actor_keeps_guest_and_user_identity_shapes_distinct() -> TestResult {
+    let codec = synctv_adapter::PublicIdCodec::plain();
+    let user_id = UserId::expect_positive(42);
+    let user = PlaybackBuildActor::user(&user_id);
+    let guest = PlaybackBuildActor::guest("gst_session");
+
+    assert_eq!(user.provider_actor(), ProviderActor::User(user_id));
+    assert_eq!(guest.provider_actor(), ProviderActor::Guest);
+    assert_eq!(
+        api_ok(user.public_actor_id(&codec))?,
+        codec_ok(codec.encode_user_id(user_id))?
+    );
+    assert_eq!(api_ok(guest.public_actor_id(&codec))?, "gst_session");
+    Ok(())
 }
 
 #[test]

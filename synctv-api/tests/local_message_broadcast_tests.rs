@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use synctv_core::models::{RoomId, RoomPermissionSet, UserId};
+use synctv_core::models::{RealtimeActor, RoomId, RoomPermissionSet, UserId};
 use synctv_realtime::sync::RealtimeEvent;
 use synctv_realtime::sync::{
     ConnectionLimits, ConnectionManager, RealtimeConfig, RealtimeManager, RoomMessageHub,
@@ -55,9 +55,10 @@ async fn test_local_subscribe_and_broadcast() {
 
     let room_id = RoomId::expect_positive(10_000_009);
     let user_id = UserId::expect_positive(10_000_010);
+    let actor = RealtimeActor::user(user_id, "usr_local_broadcast");
 
     let (mut rx, conn_id) = manager
-        .subscribe(room_id, user_id)
+        .subscribe(room_id, actor)
         .await
         .expect("subscribe should succeed");
 
@@ -110,8 +111,9 @@ async fn test_multiple_subscribers_receive_broadcasts() {
     let mut subscribers = Vec::new();
     for i in 0..3 {
         let user_id = UserId::expect_positive(10_000 + i);
+        let actor = RealtimeActor::user(user_id, format!("usr_subscriber_{i}"));
         let (rx, conn_id) = manager
-            .subscribe(room_id, user_id)
+            .subscribe(room_id, actor)
             .await
             .expect("subscribe should succeed");
         subscribers.push((rx, conn_id));
@@ -185,9 +187,10 @@ async fn test_local_realtime_manager_supports_room_operations() {
 
     let room_id = RoomId::expect_positive(10_000_009);
     let user_id = UserId::expect_positive(10_000_010);
+    let actor = RealtimeActor::user(user_id, "usr_local_operations");
 
     let (mut rx, conn_id) = manager
-        .subscribe(room_id, user_id)
+        .subscribe(room_id, actor)
         .await
         .expect("subscribe should succeed");
 

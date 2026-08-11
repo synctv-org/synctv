@@ -96,8 +96,7 @@ impl MediaProvider for CredentialOwnerCheckProvider {
             ));
         }
         let user_id = ctx
-            .user_id
-            .as_ref()
+            .user_id()
             .ok_or_else(|| ProviderError::Internal("missing user_id".to_string()))?;
         let credential_owner_id = ctx
             .credential_owner_id()
@@ -178,8 +177,7 @@ impl MediaProvider for AlistCredentialDependencyCheckProvider {
         };
         let server_id = config.server_id.as_str();
         let user_id = ctx
-            .user_id
-            .as_ref()
+            .user_id()
             .ok_or_else(|| ProviderError::Internal("missing user_id".to_string()))?;
 
         let optional = config.path == "optional";

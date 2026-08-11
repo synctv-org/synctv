@@ -94,7 +94,11 @@ mod tests {
 
         let mut room_rx = realtime_ok(
             event_service
-                .subscribe_with_id(room_id(), user_id(), ConnectionId::new("conn-runtime"))
+                .subscribe_with_id(
+                    room_id(),
+                    synctv_core::models::RealtimeActor::user(user_id(), "user-runtime"),
+                    ConnectionId::new("conn-runtime"),
+                )
                 .await,
         )?
         .0;

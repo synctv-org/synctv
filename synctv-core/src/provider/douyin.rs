@@ -162,17 +162,13 @@ impl DouyinProvider {
         let Some(repo) = self.credential_repo_or(ctx.credential_repo) else {
             return Ok(DouyinSession::default());
         };
-        let owner_id = if shared {
-            ctx.credential_owner_id()
-        } else {
-            ctx.user_id()
-        };
+        let owner_id = ctx.selected_credential_user_id(shared);
         let Some(owner_id) = owner_id else {
             return Ok(DouyinSession::default());
         };
         self.session_for_owner(
             repo,
-            *owner_id,
+            owner_id,
             &Self::credential_server_id_for_instance(super::bound_provider_instance_name(ctx)),
         )
         .await
@@ -420,9 +416,13 @@ impl DouyinProvider {
                             "Douyin cached playback resource is invalid".to_string(),
                         ));
                     };
-                    let stored_session = self
-                        .stored_session(*credential_owner_id, provider_instance_name.as_deref())
-                        .await?;
+                    let stored_session = match credential_owner_id {
+                        Some(owner_id) => {
+                            self.stored_session(*owner_id, provider_instance_name.as_deref())
+                                .await?
+                        }
+                        None => DouyinSession::default(),
+                    };
                     let session = self.client.effective_session(Some(&stored_session)).await?;
                     let resolved = match resource {
                         DouyinPlaybackResource::Video { aweme_id } => {
@@ -536,9 +536,13 @@ impl DouyinProvider {
                 _ => None,
             })
             .ok_or(ProviderError::NotFound)?;
-        let session = self
-            .stored_session(*credential_owner_id, provider_instance_name.as_deref())
-            .await?;
+        let session = match credential_owner_id {
+            Some(owner_id) => {
+                self.stored_session(*owner_id, provider_instance_name.as_deref())
+                    .await?
+            }
+            None => DouyinSession::default(),
+        };
         let stream = synctv_media_providers::douyin::watch_danmaku(room_id, Some(&session)).await?;
         Ok(Box::pin(stream.map(|event| {
             event
@@ -648,7 +652,7 @@ impl DouyinProvider {
     fn playback_result(
         media: DouyinMedia,
         resource: &DouyinPlaybackResource,
-        credential_owner_id: UserId,
+        credential_owner_id: Option<UserId>,
         provider_instance_name: Option<&str>,
     ) -> Result<PlaybackResult, ProviderError> {
         let mut infos = HashMap::new();
@@ -936,15 +940,12 @@ impl MediaProvider for DouyinProvider {
             .map_err(|error| ProviderError::NetworkError(error.to_string()))?;
         let config = Self::media_config(source_config)?;
         let shared = Self::media_shared(config);
-        let credential_owner_id = if shared {
-            *ctx.credential_owner_id().ok_or_else(|| {
-                ProviderError::Internal("Douyin credential owner is unavailable".to_string())
-            })?
-        } else {
-            *ctx.user_id().ok_or_else(|| {
-                ProviderError::Internal("Douyin viewer is unavailable".to_string())
-            })?
-        };
+        let credential_owner_id = ctx.selected_credential_user_id(shared);
+        if shared && credential_owner_id.is_none() {
+            return Err(ProviderError::Internal(
+                "Douyin credential owner is unavailable".to_string(),
+            ));
+        }
         let session = self.session(ctx, shared).await?;
         let provider_instance_name =
             super::bound_provider_instance_name(ctx).map(ToString::to_string);
@@ -953,7 +954,7 @@ impl MediaProvider for DouyinProvider {
             "playback:{}:{}:{}",
             serde_json::to_string(&resource)
                 .map_err(|error| ProviderError::Internal(error.to_string()))?,
-            credential_owner_id,
+            credential_owner_id.map_or_else(|| "anonymous".to_string(), |id| id.to_string()),
             Self::credential_server_id_for_instance(provider_instance_name.as_deref())
         );
         super::cached_versioned_playback_or_fill(
@@ -1038,14 +1039,9 @@ impl MediaProvider for DouyinProvider {
             SourceConfig::Media(source) => Self::media_shared(Self::media_config(source)?),
             SourceConfig::DynamicPlaylist(source) => Self::playlist_config(source)?.shared,
         };
-        let owner_id = if shared {
-            ctx.credential_owner_id()
-        } else {
-            ctx.user_id()
-        }
-        .ok_or_else(|| {
-            ProviderError::Internal("Douyin credential owner is unavailable".to_string())
-        })?;
+        let Some(owner_id) = ctx.selected_credential_user_id(shared) else {
+            return Ok(Vec::new());
+        };
         Ok(vec![ProviderCredentialDependency::optional(
             Self::NAME,
             owner_id.to_string(),
@@ -1374,7 +1370,7 @@ mod tests {
                 ),
             ),
             &video_resource,
-            UserId::expect_positive(1),
+            Some(UserId::expect_positive(1)),
             Some("primary"),
         )
         .expect("video playback should map");
@@ -1399,7 +1395,7 @@ mod tests {
         let live = DouyinProvider::playback_result(
             media(DouyinMediaKind::Live, "live-1", live_variant),
             &live_resource,
-            UserId::expect_positive(1),
+            Some(UserId::expect_positive(1)),
             Some("primary"),
         )
         .expect("live playback should map");

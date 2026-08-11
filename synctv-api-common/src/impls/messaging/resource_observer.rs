@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use synctv_core::spawn::spawn_monitored;
 use synctv_core::{
-    models::{ChatEventKind, ChatMessageSelection, RoomId, UserId},
+    models::{ChatEventKind, ChatMessageSelection, RealtimeActor, RoomId, UserId},
     service::{
         ChatService, OnlinePresenceService, RoomResourceEventPayload, RoomResourceKind, RoomService,
     },
@@ -82,17 +82,17 @@ fn chat_event_visible_to_observation(
 
 pub(super) fn room_member_event_visible_to_observer(
     event: &RealtimeEvent,
-    observer_user_id: &UserId,
+    observer_user_id: Option<UserId>,
 ) -> bool {
     match event {
         RealtimeEvent::UserJoined { user_id, .. }
         | RealtimeEvent::UserLeft { user_id, .. }
-        | RealtimeEvent::KickUserFromRoom { user_id, .. } => user_id != observer_user_id,
+        | RealtimeEvent::KickUserFromRoom { user_id, .. } => observer_user_id != Some(*user_id),
         RealtimeEvent::PermissionChanged {
             target_user_id,
             role_changed,
             ..
-        } => target_user_id != observer_user_id && *role_changed,
+        } => observer_user_id != Some(*target_user_id) && *role_changed,
         RealtimeEvent::GuestJoined { .. } | RealtimeEvent::GuestLeft { .. } => true,
         _ => false,
     }
@@ -171,9 +171,15 @@ enum ObservationEvaluationKey {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum ResourceActorScope {
+    User(UserId),
+    Guest(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct SharedObservationEvaluationKey {
     room_id: RoomId,
-    user_id: Option<UserId>,
+    actor: Option<ResourceActorScope>,
     service_id: usize,
     evaluation: ObservationEvaluationKey,
 }
@@ -516,7 +522,6 @@ impl ResourceObservation {
 
 pub(super) struct ResourceObserver {
     room_id: RoomId,
-    user_id: UserId,
     actor: RoomActor,
     connection_id: String,
     room_service: Arc<RoomService>,
@@ -536,7 +541,6 @@ pub(super) struct ResourceObserver {
 
 pub(super) struct ResourceObserverParams {
     pub(super) room_id: RoomId,
-    pub(super) user_id: UserId,
     pub(super) actor: RoomActor,
     pub(super) connection_id: String,
     pub(super) room_service: Arc<RoomService>,
@@ -554,7 +558,6 @@ impl ResourceObserver {
     pub(super) fn new(params: ResourceObserverParams) -> Self {
         let ResourceObserverParams {
             room_id,
-            user_id,
             actor,
             connection_id,
             room_service,
@@ -572,7 +575,6 @@ impl ResourceObserver {
         let room_hub = media_resource_hub(room_id, &room_service);
         Self {
             room_id,
-            user_id,
             actor,
             connection_id,
             room_service,
@@ -676,7 +678,7 @@ impl ResourceObserver {
         let service_identity = self.resource_evaluation_service_identity(&observation.resource);
         SharedObservationEvaluationKey {
             room_id: self.room_id,
-            user_id: self.resource_evaluation_user_scope(&observation.resource),
+            actor: self.resource_evaluation_actor_scope(&observation.resource),
             service_id: service_identity.id,
             evaluation: observation.evaluation_key(),
         }
@@ -1289,8 +1291,11 @@ impl MediaResourceHub {
                 self.remove_stale_subscription(&key, revision).await;
                 continue;
             };
-            let invalidations =
-                resource_invalidations_for_cache_targets(targets, self.room_id, observer.user_id);
+            let invalidations = resource_invalidations_for_cache_targets(
+                targets,
+                self.room_id,
+                observer.actor.user_id(),
+            );
             for invalidation in invalidations {
                 if ResourceObserver::observation_invalidated_by_invalidation(
                     &observation,
@@ -1365,7 +1370,7 @@ impl MediaResourceHub {
                         Err(error) => {
                             tracing::warn!(
                                 room_id = %observer.room_id,
-                                user_id = %observer.user_id,
+                                actor = ?observer.actor,
                                 observe_id = %updated_observation.observe_id,
                                 error = %error,
                                 "Failed to convert chat event for resource observer"
@@ -1425,7 +1430,7 @@ impl MediaResourceHub {
                         Err(error) => {
                             tracing::warn!(
                                 room_id = %observer.room_id,
-                                user_id = %observer.user_id,
+                                actor = ?observer.actor,
                                 observe_id = %updated_observation.observe_id,
                                 error = %error,
                                 "Failed to convert chat pin event for resource observer"
@@ -1480,7 +1485,7 @@ impl MediaResourceHub {
                             .unwrap_or_else(|error| {
                                 tracing::warn!(
                                     room_id = %self.room_id,
-                                    user_id = %observer.user_id,
+                                    actor = ?observer.actor,
                                     error = %error,
                                     "Failed to resolve playback credential dependencies"
                                 );
@@ -1602,7 +1607,7 @@ impl MediaResourceHub {
                                 let error = error.to_string();
                                 tracing::warn!(
                                     room_id = %observer.room_id,
-                                    user_id = %observer.user_id,
+                                    actor = ?observer.actor,
                                     observe_id = %updated_observation.observe_id,
                                     error = %error,
                                     "Failed to convert playback state event for resource observer"
@@ -1701,7 +1706,7 @@ impl MediaResourceHub {
                                 Err(error) => {
                                     tracing::warn!(
                                         room_id = %observer.room_id,
-                                        user_id = %observer.user_id,
+                                        actor = ?observer.actor,
                                         observe_id = %updated_observation.observe_id,
                                         error = %error,
                                         "Failed to convert chat event for resource observer"
@@ -1756,7 +1761,7 @@ impl MediaResourceHub {
                             Err(error) => {
                                 tracing::warn!(
                                     room_id = %observer.room_id,
-                                    user_id = %observer.user_id,
+                                    actor = ?observer.actor,
                                     observe_id = %updated_observation.observe_id,
                                     error = %error,
                                     "Failed to convert chat pin event for resource observer"
@@ -1811,7 +1816,7 @@ impl MediaResourceHub {
                                 });
                             continue;
                         }
-                        if !room_member_event_visible_to_observer(event, &observer.user_id) {
+                        if !room_member_event_visible_to_observer(event, observer.actor.user_id()) {
                             continue;
                         }
                         let cursor = event_cursor.clone().unwrap_or_else(|| {
@@ -1843,7 +1848,7 @@ impl MediaResourceHub {
                             Err(error) => {
                                 tracing::warn!(
                                     room_id = %observer.room_id,
-                                    user_id = %observer.user_id,
+                                    actor = ?observer.actor,
                                     observe_id = %updated_observation.observe_id,
                                     error = %error,
                                     "Failed to convert room member event for resource observer"
@@ -1897,7 +1902,7 @@ impl MediaResourceHub {
                                 Err(error) => {
                                     tracing::warn!(
                                         room_id = %observer.room_id,
-                                        user_id = %observer.user_id,
+                                        actor = ?observer.actor,
                                         observe_id = %observation.observe_id,
                                         error = %error,
                                         "Failed to convert online event for resource observer"
@@ -1948,7 +1953,7 @@ impl MediaResourceHub {
                                 .unwrap_or_else(|error| {
                                     tracing::warn!(
                                         room_id = %self.room_id,
-                                        user_id = %observer.user_id,
+                                        actor = ?observer.actor,
                                         error = %error,
                                         "Failed to resolve playback credential dependencies"
                                     );
@@ -2125,7 +2130,7 @@ impl MediaResourceHub {
                                     .await;
                                 tracing::warn!(
                                     room_id = %self.room_id,
-                                    user_id = %entry.observer.user_id,
+                                    actor = ?entry.observer.actor,
                                     observe_id = %entry.key.observe_id,
                                     error = %error,
                                     "Removed observed resource after ResourceEvent send failure"
@@ -2153,7 +2158,7 @@ impl MediaResourceHub {
                             ) {
                                 tracing::warn!(
                                     room_id = %self.room_id,
-                                    user_id = %entry.observer.user_id,
+                                    actor = ?entry.observer.actor,
                                     observe_id = %entry.key.observe_id,
                                     error = %send_error,
                                     "Failed to send ResourceObserveError after refresh failure"
@@ -2165,7 +2170,7 @@ impl MediaResourceHub {
                             }
                             tracing::warn!(
                                 room_id = %self.room_id,
-                                user_id = %entry.observer.user_id,
+                                actor = ?entry.observer.actor,
                                 observe_id = %entry.key.observe_id,
                                 error = %error,
                                 "Removed observed resource after refresh failure"
@@ -2706,7 +2711,8 @@ impl ResourceObserver {
                     continue;
                 }
                 if matches!(observation.resource, ObservedResource::RoomMemberEvents) {
-                    if !room_member_event_visible_to_observer(&realtime_event, &self.user_id) {
+                    if !room_member_event_visible_to_observer(&realtime_event, self.actor.user_id())
+                    {
                         self.replace_local_observation(observation.clone()).await;
                         self.room_hub.register_observation(self, observation).await;
                         continue;
@@ -2855,7 +2861,7 @@ impl ResourceObserver {
             .map_err(|error| error.to_string())?;
         let dependencies = self
             .playback_service
-            .playback_credential_dependencies(&self.user_id, &self.room_id, &state)
+            .playback_credential_dependencies(&self.actor, &self.room_id, &state)
             .await
             .map_err(|error| error.to_string())?;
 
@@ -2889,7 +2895,7 @@ impl ResourceObserver {
         if let Some(error) = outcome.error_for_connection(Some(&self.connection_id)) {
             tracing::warn!(
                 room_id = %self.room_id,
-                user_id = %self.user_id,
+                actor = ?self.actor,
                 changed_user_id = %changed_user_id,
                 provider,
                 server_id,
@@ -2911,7 +2917,7 @@ impl ResourceObserver {
         if let Some(error) = outcome.error_for_connection(Some(&self.connection_id)) {
             tracing::warn!(
                 room_id = %self.room_id,
-                user_id = %self.user_id,
+                actor = ?self.actor,
                 error = %error,
                 "Failed to refresh observed resources after cache invalidation"
             );
@@ -3060,7 +3066,7 @@ impl ResourceObserver {
         let service_identity = self.resource_evaluation_service_identity(resource);
         let shared_key = SharedObservationEvaluationKey {
             room_id: self.room_id,
-            user_id: self.resource_evaluation_user_scope(resource),
+            actor: self.resource_evaluation_actor_scope(resource),
             service_id: service_identity.id,
             evaluation: key,
         };
@@ -3112,7 +3118,10 @@ impl ResourceObserver {
         result
     }
 
-    fn resource_evaluation_user_scope(&self, resource: &ObservedResource) -> Option<UserId> {
+    fn resource_evaluation_actor_scope(
+        &self,
+        resource: &ObservedResource,
+    ) -> Option<ResourceActorScope> {
         match resource {
             ObservedResource::PlaybackState | ObservedResource::RoomSettings => None,
             ObservedResource::Playback { .. }
@@ -3122,10 +3131,17 @@ impl ResourceObserver {
             | ObservedResource::SelfRoomMember
             | ObservedResource::ChatEvents { .. }
             | ObservedResource::ChatPinEvents
-            | ObservedResource::OnlineEvent { .. } => Some(self.user_id),
+            | ObservedResource::OnlineEvent { .. } => Some(self.actor_scope()),
             ObservedResource::OnlineCount { roles, user_ids } => {
-                (!roles.is_empty() || !user_ids.is_empty()).then_some(self.user_id)
+                (!roles.is_empty() || !user_ids.is_empty()).then(|| self.actor_scope())
             }
+        }
+    }
+
+    fn actor_scope(&self) -> ResourceActorScope {
+        match &self.actor {
+            RoomActor::User { user_id, .. } => ResourceActorScope::User(*user_id),
+            RoomActor::Guest(access) => ResourceActorScope::Guest(access.guest_id.clone()),
         }
     }
 
@@ -3205,8 +3221,8 @@ impl ResourceObserver {
                     .await
                     .map_err(|error| error.to_string())?;
                 let playback = service
-                    .get_playback(
-                        &self.user_id,
+                    .get_playback_for_actor(
+                        &self.actor,
                         &self.room_id,
                         &state,
                         playback_client_profile.as_ref(),
@@ -3453,7 +3469,10 @@ impl ResourceObserver {
                 .map_err(|error| error.to_string())?;
             let stats = self
                 .presence_service
-                .user_room_stats(self.user_id, self.room_id)
+                .actor_connection_count_in_room(
+                    &RealtimeActor::guest(access.guest_id.clone()),
+                    self.room_id,
+                )
                 .await
                 .map_err(|error| error.to_string())?;
             return Ok(synctv_proto::common::RoomMember {
@@ -3466,12 +3485,16 @@ impl ResourceObserver {
                 role: synctv_proto::common::RoomMemberRole::Guest as i32,
                 permissions: permissions.bits(),
                 joined_at: 0,
-                is_online: stats.is_online,
-                connection_count: i32::try_from(stats.connection_count)
+                is_online: stats > 0,
+                connection_count: i32::try_from(stats)
                     .map_err(|_| "guest connection count exceeds i32 range".to_string())?,
                 ..Default::default()
             });
         }
+        let user_id = self
+            .actor
+            .user_id()
+            .ok_or_else(|| "Current room actor has no user id".to_string())?;
         let mut page = 1_u32;
         let member = loop {
             let (members, total) = self
@@ -3492,10 +3515,7 @@ impl ResourceObserver {
                 )
                 .await
                 .map_err(|error| error.to_string())?;
-            if let Some(member) = members
-                .into_iter()
-                .find(|member| member.user_id == self.user_id)
-            {
+            if let Some(member) = members.into_iter().find(|member| member.user_id == user_id) {
                 break member;
             }
             let searched = usize::try_from(page)
@@ -3522,7 +3542,7 @@ impl ResourceObserver {
                 .map_err(|error| error.to_string())?;
         let stats = self
             .presence_service
-            .user_room_stats(self.user_id, self.room_id)
+            .user_room_stats(user_id, self.room_id)
             .await
             .map_err(|error| error.to_string())?;
         proto.is_online = stats.is_online;

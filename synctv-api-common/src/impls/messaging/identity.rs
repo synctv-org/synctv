@@ -1,9 +1,6 @@
-use synctv_core::models::{RoomId, RoomPermissionSet, UserId};
+use synctv_core::models::{RealtimeActor, RoomId, RoomPermissionSet, UserId};
 
 use crate::impls::client::{GuestRoomAccess, RoomActor};
-
-pub const GUEST_INTERNAL_USER_ID_BASE: i64 = 8_000_000_000_000_000_000;
-pub const GUEST_INTERNAL_USER_ID_SPAN: u64 = 500_000_000_000_000_000;
 
 #[derive(Debug, Clone)]
 pub struct GuestRealtimeIdentity {
@@ -17,14 +14,8 @@ pub struct GuestRealtimeIdentity {
 
 #[derive(Debug, Clone)]
 pub enum RealtimePrincipal {
-    User {
-        user_id: UserId,
-        username: String,
-    },
-    Guest {
-        internal_user_id: UserId,
-        identity: GuestRealtimeIdentity,
-    },
+    User { user_id: UserId, username: String },
+    Guest { identity: GuestRealtimeIdentity },
 }
 
 impl RealtimePrincipal {
@@ -33,23 +24,15 @@ impl RealtimePrincipal {
         Self::User { user_id, username }
     }
 
-    pub fn guest(
-        room_id: RoomId,
-        identity: GuestRealtimeIdentity,
-    ) -> Result<Self, RealtimeJoinError> {
-        Ok(Self::Guest {
-            internal_user_id: internal_guest_user_id(room_id, &identity.session_id)?,
-            identity,
-        })
+    pub fn guest(identity: GuestRealtimeIdentity) -> Self {
+        Self::Guest { identity }
     }
 
     #[must_use]
-    pub fn connection_user_id(&self) -> UserId {
+    pub const fn user_id(&self) -> Option<UserId> {
         match self {
-            Self::User { user_id, .. } => *user_id,
-            Self::Guest {
-                internal_user_id, ..
-            } => *internal_user_id,
+            Self::User { user_id, .. } => Some(*user_id),
+            Self::Guest { .. } => None,
         }
     }
 
@@ -70,6 +53,19 @@ impl RealtimePrincipal {
                 .encode_user_id(*user_id)
                 .map_err(|error| format!("Failed to encode user public id: {error}")),
             Self::Guest { identity, .. } => Ok(identity.guest_id.clone()),
+        }
+    }
+
+    pub fn realtime_actor(
+        &self,
+        public_id_codec: &synctv_adapter::PublicIdCodec,
+    ) -> Result<RealtimeActor, String> {
+        match self {
+            Self::User { user_id, .. } => public_id_codec
+                .encode_user_id(*user_id)
+                .map(|public_id| RealtimeActor::user(*user_id, public_id))
+                .map_err(|error| format!("Failed to encode user public id: {error}")),
+            Self::Guest { identity } => Ok(RealtimeActor::guest(identity.guest_id.clone())),
         }
     }
 
@@ -104,26 +100,6 @@ impl RealtimePrincipal {
             Self::User { .. } => None,
         }
     }
-}
-
-pub fn internal_guest_user_id(
-    room_id: RoomId,
-    session_id: &str,
-) -> Result<UserId, RealtimeJoinError> {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    let mut hasher = DefaultHasher::new();
-    "synctv:guest:v1".hash(&mut hasher);
-    room_id.hash(&mut hasher);
-    session_id.hash(&mut hasher);
-    let offset = hasher.finish() % GUEST_INTERNAL_USER_ID_SPAN;
-    let offset = i64::try_from(offset).map_err(|_| {
-        RealtimeJoinError::Internal("Guest internal user id span exceeds i64".to_string())
-    })?;
-    UserId::try_from(GUEST_INTERNAL_USER_ID_BASE + offset).map_err(|error| {
-        RealtimeJoinError::Internal(format!("Guest internal user id is invalid: {error}"))
-    })
 }
 
 #[must_use]

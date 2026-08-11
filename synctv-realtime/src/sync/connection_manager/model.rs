@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use std::time::{Duration, Instant};
-use synctv_core::models::id::{RoomId, UserId};
+use synctv_core::models::{RealtimeActor, RoomId};
 
 type ConnectionDeadline = (Instant, String);
 
@@ -136,8 +136,7 @@ impl TimeoutIndex {
 pub struct ConnectionInfo {
     pub connection_id: String,
     pub registration_token: String,
-    pub user_id: UserId,
-    pub actor_id: String,
+    pub actor: RealtimeActor,
     pub room_id: Option<RoomId>,
     pub connected_at: Instant,
     pub last_activity: Instant,
@@ -151,8 +150,7 @@ pub struct ConnectionInfo {
 pub(super) struct ConnectionInfoPersistent {
     pub(super) connection_id: String,
     pub(super) registration_token: String,
-    pub(super) user_id: UserId,
-    pub(super) actor_id: String,
+    pub(super) actor: RealtimeActor,
     pub(super) room_id: Option<RoomId>,
     pub(super) connected_at_unix: u64,
     pub(super) last_activity_unix: u64,
@@ -211,8 +209,7 @@ impl From<&ConnectionInfo> for ConnectionInfoPersistent {
         Self {
             connection_id: info.connection_id.clone(),
             registration_token: info.registration_token.clone(),
-            user_id: info.user_id,
-            actor_id: info.actor_id.clone(),
+            actor: info.actor.clone(),
             room_id: info.room_id,
             connected_at_unix,
             last_activity_unix,
@@ -234,8 +231,7 @@ impl ConnectionInfoPersistent {
         ConnectionInfo {
             connection_id: self.connection_id,
             registration_token: self.registration_token,
-            user_id: self.user_id,
-            actor_id: self.actor_id,
+            actor: self.actor,
             room_id: self.room_id,
             connected_at: instant_from_unix(self.connected_at_unix),
             last_activity: instant_from_unix(self.last_activity_unix),
@@ -248,18 +244,12 @@ impl ConnectionInfoPersistent {
 
 impl ConnectionInfo {
     #[must_use]
-    pub fn new(connection_id: String, user_id: UserId) -> Self {
-        Self::new_with_actor_id(connection_id, user_id, user_id.to_string())
-    }
-
-    #[must_use]
-    pub fn new_with_actor_id(connection_id: String, user_id: UserId, actor_id: String) -> Self {
+    pub fn new(connection_id: String, actor: RealtimeActor) -> Self {
         let now = Instant::now();
         Self {
             connection_id,
             registration_token: synctv_common::snanoid!(16),
-            user_id,
-            actor_id,
+            actor,
             room_id: None,
             connected_at: now,
             last_activity: now,

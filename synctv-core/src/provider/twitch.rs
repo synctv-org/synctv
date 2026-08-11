@@ -123,17 +123,13 @@ impl TwitchProvider {
         let Some(repo) = self.credential_repo_or(ctx.credential_repo) else {
             return Ok(TwitchSession::default());
         };
-        let owner_id = if shared {
-            ctx.credential_owner_id()
-        } else {
-            ctx.user_id()
-        };
+        let owner_id = ctx.selected_credential_user_id(shared);
         let Some(owner_id) = owner_id else {
             return Ok(TwitchSession::default());
         };
         let server_id =
             Self::credential_server_id_for_instance(super::bound_provider_instance_name(ctx));
-        self.session_for_owner(repo, *owner_id, &server_id).await
+        self.session_for_owner(repo, owner_id, &server_id).await
     }
 
     async fn session_for_owner(
@@ -434,13 +430,18 @@ impl TwitchProvider {
                 "Twitch cached playback resource is invalid".to_string(),
             ));
         };
-        let repo = self.credential_repo.as_deref().ok_or_else(|| {
-            ProviderError::Internal("Twitch credential repository is unavailable".to_string())
-        })?;
         let server_id = Self::credential_server_id_for_instance(provider_instance_name.as_deref());
-        let session = self
-            .session_for_owner(repo, *credential_owner_id, &server_id)
-            .await?;
+        let session = match credential_owner_id {
+            Some(owner_id) => {
+                let repo = self.credential_repo.as_deref().ok_or_else(|| {
+                    ProviderError::Internal(
+                        "Twitch credential repository is unavailable".to_string(),
+                    )
+                })?;
+                self.session_for_owner(repo, *owner_id, &server_id).await?
+            }
+            None => TwitchSession::default(),
+        };
         let resource = TwitchResource {
             kind: match resource_kind {
                 TwitchPlaybackResourceKind::Channel => TwitchResourceKind::Channel,
@@ -502,13 +503,18 @@ impl TwitchProvider {
                 "Twitch chat requires a live channel resource".to_string(),
             ));
         };
-        let repo = self.credential_repo.as_deref().ok_or_else(|| {
-            ProviderError::Internal("Twitch credential repository is unavailable".to_string())
-        })?;
         let server_id = Self::credential_server_id_for_instance(provider_instance_name.as_deref());
-        let session = self
-            .session_for_owner(repo, *credential_owner_id, &server_id)
-            .await?;
+        let session = match credential_owner_id {
+            Some(owner_id) => {
+                let repo = self.credential_repo.as_deref().ok_or_else(|| {
+                    ProviderError::Internal(
+                        "Twitch credential repository is unavailable".to_string(),
+                    )
+                })?;
+                self.session_for_owner(repo, *owner_id, &server_id).await?
+            }
+            None => TwitchSession::default(),
+        };
         let stream =
             synctv_media_providers::twitch::watch_chat(resource_id, Some(&session)).await?;
         Ok(Box::pin(stream.map(|event| {
@@ -806,7 +812,7 @@ impl TwitchProvider {
     fn playback_result(
         playback: TwitchPlayback,
         metadata: TwitchMetadata,
-        credential_owner_id: UserId,
+        credential_owner_id: Option<UserId>,
         provider_instance_name: Option<&str>,
     ) -> Result<PlaybackResult, ProviderError> {
         let mut infos = HashMap::new();
@@ -1023,15 +1029,13 @@ impl MediaProvider for TwitchProvider {
             .map_err(|error| ProviderError::NetworkError(error.to_string()))?;
         let config = Self::twitch_config(source_config)?;
         let resource = Self::resource(config)?;
-        let credential_owner_id = if Self::media_shared(config) {
-            *ctx.credential_owner_id().ok_or_else(|| {
-                ProviderError::Internal("Twitch credential owner is unavailable".to_string())
-            })?
-        } else {
-            *ctx.user_id().ok_or_else(|| {
-                ProviderError::Internal("Twitch viewer is unavailable".to_string())
-            })?
-        };
+        let shared = Self::media_shared(config);
+        let credential_owner_id = ctx.selected_credential_user_id(shared);
+        if shared && credential_owner_id.is_none() {
+            return Err(ProviderError::Internal(
+                "Twitch credential owner is unavailable".to_string(),
+            ));
+        }
         let session = self.session(ctx, Self::media_shared(config)).await?;
         let provider_instance_name =
             super::bound_provider_instance_name(ctx).map(ToString::to_string);
@@ -1045,7 +1049,7 @@ impl MediaProvider for TwitchProvider {
                 TwitchResourceKind::Clip => "clip",
             },
             resource.id,
-            credential_owner_id,
+            credential_owner_id.map_or_else(|| "anonymous".to_string(), |id| id.to_string()),
             credential_server_id,
         );
         Box::pin(super::cached_versioned_playback_or_fill(
@@ -1143,14 +1147,9 @@ impl MediaProvider for TwitchProvider {
                 )
             }
         };
-        let owner_id = if shared {
-            ctx.credential_owner_id()
-        } else {
-            ctx.user_id()
-        }
-        .ok_or_else(|| {
-            ProviderError::Internal("Twitch credential owner is unavailable".to_string())
-        })?;
+        let Some(owner_id) = ctx.selected_credential_user_id(shared) else {
+            return Ok(Vec::new());
+        };
         let server_id =
             Self::credential_server_id_for_instance(super::bound_provider_instance_name(ctx));
         Ok(vec![if shared || credential_required {
@@ -1693,7 +1692,7 @@ mod tests {
                 chapters: Vec::new(),
                 storyboard_url: None,
             },
-            UserId::expect_positive(1),
+            Some(UserId::expect_positive(1)),
             None,
         )
         .expect("playback should map");

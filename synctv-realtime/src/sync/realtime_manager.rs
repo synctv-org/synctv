@@ -26,7 +26,7 @@ use super::transport::{
 use super::{RealtimeEvent, SharedRealtimeEvent};
 use crate::error::Result as RealtimeResult;
 use synctv_cluster::discovery::{ClusterNodeDirectory, HeartbeatResult};
-use synctv_core::models::id::{RoomId, UserId};
+use synctv_core::models::id::RoomId;
 
 #[cfg(not(test))]
 const HEARTBEAT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -1152,14 +1152,17 @@ impl RealtimeManager {
     pub async fn subscribe(
         &self,
         room_id: RoomId,
-        user_id: UserId,
+        actor: synctv_core::models::RealtimeActor,
     ) -> crate::Result<(
         tokio::sync::mpsc::Receiver<SharedRealtimeEvent>,
         ConnectionId,
     )> {
-        let connection_id = ConnectionId::new(format!("{user_id}_{}", synctv_common::snanoid!(8)));
-        self.subscribe_with_id(room_id, user_id, connection_id)
-            .await
+        let connection_id = ConnectionId::new(format!(
+            "{}_{id}",
+            actor.public_id(),
+            id = synctv_common::snanoid!(8)
+        ));
+        self.subscribe_with_id(room_id, actor, connection_id).await
     }
 
     /// Subscribe a client to room events using an existing connection ID.
@@ -1170,22 +1173,22 @@ impl RealtimeManager {
     pub async fn subscribe_with_id(
         &self,
         room_id: RoomId,
-        user_id: UserId,
+        actor: synctv_core::models::RealtimeActor,
         connection_id: ConnectionId,
     ) -> crate::Result<(
         tokio::sync::mpsc::Receiver<SharedRealtimeEvent>,
         ConnectionId,
     )> {
         let room_id_str = room_id.to_string();
-        let user_id_str = user_id.to_string();
+        let actor_id = actor.public_id().to_string();
         let rx = self
             .message_hub
-            .subscribe(room_id, user_id, connection_id.clone())
+            .subscribe(room_id, actor, connection_id.clone())
             .await?;
 
         info!(
             room_id = %room_id_str,
-            user_id = %user_id_str,
+            actor_id = %actor_id,
             connection_id = %connection_id,
             "Client subscribed to room"
         );
@@ -1215,7 +1218,10 @@ impl RealtimeManager {
 
     /// Get subscribers in a room
     #[must_use]
-    pub fn get_room_subscribers(&self, room_id: &RoomId) -> Vec<(UserId, ConnectionId)> {
+    pub fn get_room_subscribers(
+        &self,
+        room_id: &RoomId,
+    ) -> Vec<(synctv_core::models::RealtimeActor, ConnectionId)> {
         self.message_hub.get_room_subscribers(room_id)
     }
 

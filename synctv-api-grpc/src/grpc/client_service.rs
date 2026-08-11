@@ -311,9 +311,9 @@ impl ClientServiceImpl {
                             room_guest_version: access.room_guest_version,
                             permissions: access.permissions,
                         };
-                        RealtimePrincipal::guest(room_id, identity).map_err(|error| {
-                            synctv_api_common::impls::ApiError::Internal(error.to_string())
-                        })
+                        Ok::<_, synctv_api_common::impls::ApiError>(RealtimePrincipal::guest(
+                            identity,
+                        ))
                     },
                 )
                 .await

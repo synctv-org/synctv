@@ -19,6 +19,7 @@ impl StreamMessageHandler {
         if self.principal.is_guest() {
             return Err("Guests cannot control playback".to_string());
         }
+        let user_id = self.require_user_id()?;
         let target = crate::impls::client::build_start_playback_request(
             synctv_proto::client::StartPlaybackRequest {
                 media_id: update.media_id.clone(),
@@ -40,7 +41,7 @@ impl StreamMessageHandler {
                 )
             })?;
         let prepared_fanout = self.playback_fanout.prepare_state_changed_outbox_fanout(
-            PlaybackFanoutActor::new(self.user_id, &self.username)
+            PlaybackFanoutActor::new(user_id, &self.username)
                 .with_client_operation_id(update.client_operation_id.as_deref()),
         );
         let state = if target.media_id.is_none() && target.playlist_id.is_none() {
@@ -48,7 +49,7 @@ impl StreamMessageHandler {
                 .playback_service()
                 .reset_with_outbox(
                     self.room_id,
-                    self.user_id,
+                    user_id,
                     Some(prepared_fanout.outbox_factory_with_source_changed(true)),
                 )
                 .await
@@ -58,7 +59,7 @@ impl StreamMessageHandler {
                 .playback_service()
                 .switch_with_outbox(
                     self.room_id,
-                    self.user_id,
+                    user_id,
                     target.media_id,
                     target.playlist_id,
                     target.target,
@@ -84,6 +85,7 @@ impl StreamMessageHandler {
         if self.principal.is_guest() {
             return Err("Guests cannot control playback".to_string());
         }
+        let user_id = self.require_user_id()?;
         let update_parts = crate::impls::client::build_playback_state_update(
             update.clone(),
             &self.public_id_codec,
@@ -109,12 +111,12 @@ impl StreamMessageHandler {
         let client_time_millis = update_parts.client_time_millis;
         let playback_service = self.room_service.playback_service();
         let prepared_fanout = self.playback_fanout.prepare_state_changed_outbox_fanout(
-            PlaybackFanoutActor::new(self.user_id, &self.username)
+            PlaybackFanoutActor::new(user_id, &self.username)
                 .with_client_operation_id(client_operation_id.as_deref()),
         );
         let mut request = PlaybackStateUpdateRequest::new(
             self.room_id,
-            self.user_id,
+            user_id,
             PlaybackStatePatch::new(playing, position, speed),
         )
         .with_expected_version(version)

@@ -933,7 +933,7 @@ mod tests {
     use std::sync::Arc;
 
     fn test_context() -> ProviderContext<'static> {
-        ProviderContext::new("test").with_store(Arc::new(
+        ProviderContext::new("test", crate::provider::ProviderActor::System).with_store(Arc::new(
             super::super::store::InMemoryProviderStore::new(100),
         ))
     }

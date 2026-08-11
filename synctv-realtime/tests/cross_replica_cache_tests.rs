@@ -20,7 +20,8 @@ use synctv_realtime::sync::{
 use synctv_realtime::sync::{CacheTarget, RealtimeEvent};
 mod integration_test_helpers;
 use integration_test_helpers::{
-    broadcast_until_cache_invalidation, broadcast_until_room_event, create_node, TestRedis,
+    broadcast_until_cache_invalidation, broadcast_until_room_event, create_node, user_actor,
+    TestRedis,
 };
 
 fn shared_message_runtime(
@@ -163,7 +164,7 @@ async fn test_cross_replica_permission_changed() {
 
     // Subscribe on node A (simulating a WebSocket client on node A watching the room)
     let (mut room_rx, conn_id) = node_a
-        .subscribe(room_id, user_id)
+        .subscribe(room_id, user_actor(user_id))
         .await
         .expect("subscribe should succeed");
 

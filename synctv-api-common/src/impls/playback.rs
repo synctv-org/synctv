@@ -1,16 +1,17 @@
 use async_trait::async_trait;
-use synctv_core::models::{PlaybackKind, RoomId, RoomPlaybackState, UserId};
+use synctv_core::models::{PlaybackKind, RoomId, RoomPlaybackState};
 use synctv_core::provider::ProviderCredentialDependency;
 
+use crate::impls::client::RoomActor;
 use crate::impls::ApiError;
 
 #[async_trait]
 pub trait PlaybackService: Send + Sync {
     async fn room_playback_state(&self, room_id: &RoomId) -> Result<RoomPlaybackState, ApiError>;
 
-    async fn get_playback(
+    async fn get_playback_for_actor(
         &self,
-        user_id: &UserId,
+        actor: &RoomActor,
         room_id: &RoomId,
         state: &RoomPlaybackState,
         playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
@@ -18,7 +19,7 @@ pub trait PlaybackService: Send + Sync {
 
     async fn playback_credential_dependencies(
         &self,
-        _user_id: &UserId,
+        _actor: &RoomActor,
         _room_id: &RoomId,
         _state: &RoomPlaybackState,
     ) -> Result<Vec<ProviderCredentialDependency>, ApiError> {

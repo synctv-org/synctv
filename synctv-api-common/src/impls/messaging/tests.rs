@@ -13,7 +13,7 @@ use std::time::Duration;
 use synctv_core::models::notification::{Notification, NotificationData, NotificationType};
 use synctv_core::models::{
     ChatAttachment, ChatEventKind, ChatMessage, ChatMessageEvent, ChatMessageStatus,
-    ChatMessageType, ChatMessageWithAttachments, MediaId, Playlist, PlaylistId,
+    ChatMessageType, ChatMessageWithAttachments, MediaId, Playlist, PlaylistId, RealtimeActor,
     RoomAdminPermissionBits, RoomId, RoomMember, RoomMemberPermissionBits, RoomPermission,
     RoomPermissionSet, RoomPlaybackState, RoomRole, RoomSettings, SendChatMessage, UserId,
 };
@@ -54,9 +54,9 @@ impl PlaybackService for UnconfiguredPlaybackService {
         ))
     }
 
-    async fn get_playback(
+    async fn get_playback_for_actor(
         &self,
-        _user_id: &UserId,
+        _actor: &crate::impls::client::RoomActor,
         _room_id: &RoomId,
         _state: &RoomPlaybackState,
         _playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
@@ -68,7 +68,7 @@ impl PlaybackService for UnconfiguredPlaybackService {
 
     async fn playback_credential_dependencies(
         &self,
-        _user_id: &UserId,
+        _actor: &crate::impls::client::RoomActor,
         _room_id: &RoomId,
         _state: &RoomPlaybackState,
     ) -> Result<Vec<synctv_core::provider::ProviderCredentialDependency>, crate::impls::ApiError>
@@ -128,6 +128,17 @@ fn room_id() -> RoomId {
 fn user_id() -> UserId {
     UserId::expect_positive(1)
 }
+
+trait TestHandlerIdentity {
+    fn test_user_id(&self) -> UserId;
+}
+
+impl TestHandlerIdentity for StreamMessageHandler {
+    fn test_user_id(&self) -> UserId {
+        self.require_user_id()
+            .checked("test handler should have a signed-in user")
+    }
+}
 fn media_id() -> MediaId {
     MediaId::expect_positive(1)
 }
@@ -161,7 +172,7 @@ impl RealtimeEventService for LocalRuntimeRealtimeEventService {
     async fn subscribe_with_id(
         &self,
         _room_id: RoomId,
-        _user_id: UserId,
+        _actor: RealtimeActor,
         connection_id: ConnectionId,
     ) -> synctv_realtime::Result<(
         tokio::sync::mpsc::Receiver<SharedRealtimeEvent>,
@@ -292,24 +303,16 @@ fn test_resource_watch_runtime_fields() -> ResourceWatchRuntimeFields {
 }
 
 #[test]
-fn internal_guest_user_id_is_deterministic_and_reserved() {
-    let first = internal_guest_user_id(room_id(), "session-a")
-        .checked("guest internal user id should build");
-    let same = internal_guest_user_id(room_id(), "session-a")
-        .checked("guest internal user id should build");
-    let second = internal_guest_user_id(room_id(), "session-b")
-        .checked("guest internal user id should build");
-    let lower_bound = super::GUEST_INTERNAL_USER_ID_BASE;
-    let upper_bound = super::GUEST_INTERNAL_USER_ID_BASE
-        + i64::try_from(super::GUEST_INTERNAL_USER_ID_SPAN)
-            .checked("guest internal user id span fits in i64");
+fn guest_principal_has_no_user_id() {
+    let principal = test_guest_principal_with_permissions(RoomPermissionSet::default_guest());
 
-    assert_eq!(first, same);
-    assert_ne!(first, second);
-    assert!(first.as_i64() >= lower_bound);
-    assert!(first.as_i64() < upper_bound);
-    assert!(second.as_i64() >= lower_bound);
-    assert!(second.as_i64() < upper_bound);
+    assert_eq!(principal.user_id(), None);
+    assert!(matches!(
+        principal
+            .realtime_actor(&synctv_adapter::PublicIdCodec::plain())
+            .checked("guest actor should build"),
+        synctv_core::models::RealtimeActor::Guest { .. }
+    ));
 }
 
 #[test]
@@ -1414,7 +1417,7 @@ impl synctv_realtime::sync::RoomMessageRuntime for FailingRoomMessageRuntime {
     async fn subscribe(
         &self,
         _room_id: RoomId,
-        _user_id: UserId,
+        _actor: RealtimeActor,
         _connection_id: ConnectionId,
     ) -> synctv_realtime::Result<mpsc::Receiver<SharedRealtimeEvent>> {
         Err(synctv_realtime::Error::Internal(anyhow::anyhow!(
@@ -1455,14 +1458,14 @@ impl synctv_realtime::sync::RoomMessageRuntime for FailingRoomMessageRuntime {
 
     fn remove_room(&self, _room_id: &RoomId) {}
 
-    fn get_room_subscribers(&self, _room_id: &RoomId) -> Vec<(UserId, ConnectionId)> {
+    fn get_room_subscribers(&self, _room_id: &RoomId) -> Vec<(RealtimeActor, ConnectionId)> {
         Vec::new()
     }
 
     async fn get_room_subscribers_replicas_wide(
         &self,
         _room_id: &RoomId,
-    ) -> synctv_realtime::Result<Vec<(UserId, ConnectionId)>> {
+    ) -> synctv_realtime::Result<Vec<(RealtimeActor, ConnectionId)>> {
         Ok(Vec::new())
     }
 
@@ -1542,9 +1545,9 @@ impl crate::impls::playback::PlaybackService for StaticPlaybackService {
         Ok(RoomPlaybackState::new(*room_id))
     }
 
-    async fn get_playback(
+    async fn get_playback_for_actor(
         &self,
-        _user_id: &UserId,
+        _actor: &crate::impls::client::RoomActor,
         _room_id: &RoomId,
         _state: &RoomPlaybackState,
         _playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
@@ -1614,9 +1617,9 @@ impl crate::impls::playback::PlaybackService for MutablePlaybackService {
             .unwrap_or_else(|| RoomPlaybackState::new(*room_id)))
     }
 
-    async fn get_playback(
+    async fn get_playback_for_actor(
         &self,
-        _user_id: &UserId,
+        _actor: &crate::impls::client::RoomActor,
         _room_id: &RoomId,
         _state: &RoomPlaybackState,
         _playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
@@ -1627,7 +1630,7 @@ impl crate::impls::playback::PlaybackService for MutablePlaybackService {
 
     async fn playback_credential_dependencies(
         &self,
-        _user_id: &UserId,
+        _actor: &crate::impls::client::RoomActor,
         _room_id: &RoomId,
         _state: &RoomPlaybackState,
     ) -> Result<Vec<synctv_core::provider::ProviderCredentialDependency>, crate::impls::ApiError>
@@ -1680,9 +1683,9 @@ impl crate::impls::playback::PlaybackService for SequencedPlaybackService {
         Ok(RoomPlaybackState::new(*room_id))
     }
 
-    async fn get_playback(
+    async fn get_playback_for_actor(
         &self,
-        _user_id: &UserId,
+        _actor: &crate::impls::client::RoomActor,
         _room_id: &RoomId,
         _state: &RoomPlaybackState,
         _playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
@@ -2108,18 +2111,14 @@ fn test_message_handler_for_user_with_runtime_and_concurrency(
 
 fn test_guest_principal_with_permissions(permissions: RoomPermissionSet) -> RealtimePrincipal {
     let session_id = "guest-session-1";
-    RealtimePrincipal::guest(
-        room_id(),
-        GuestRealtimeIdentity {
-            guest_id: guest_public_id(session_id),
-            display_name: guest_display_name(session_id),
-            session_id: session_id.to_string(),
-            token_jti: "guest-token-jti".to_string(),
-            room_guest_version: 0,
-            permissions,
-        },
-    )
-    .checked("guest principal should build")
+    RealtimePrincipal::guest(GuestRealtimeIdentity {
+        guest_id: guest_public_id(session_id),
+        display_name: guest_display_name(session_id),
+        session_id: session_id.to_string(),
+        token_jti: "guest-token-jti".to_string(),
+        room_guest_version: 0,
+        permissions,
+    })
 }
 
 fn test_guest_message_handler(
@@ -2454,8 +2453,9 @@ async fn prepare_handler_for_run_after_join(
     connection_service
         .register_actor(
             handler.connection_id.clone().into_string(),
-            handler.user_id,
-            handler.public_actor_id().checked("actor id should encode"),
+            handler
+                .realtime_actor()
+                .checked("realtime actor should build"),
         )
         .await
         .checked("register should succeed");
@@ -2472,7 +2472,7 @@ async fn prepare_handler_for_run_after_join(
         InitialRealtimeJoinState {
             member: Some(RoomMember::new(
                 handler.room_id,
-                handler.user_id,
+                handler.test_user_id(),
                 synctv_core::models::RoomRole::Member,
             )),
             room_settings: Some(RoomSettings::default()),
@@ -2493,14 +2493,14 @@ async fn promote_handler_to_room_admin(
 ) -> synctv_core::models::RoomMember {
     let member_repo = RoomMemberRepository::new(fixture.pool.clone());
     let member = member_repo
-        .get(&fixture.handler.room_id, &fixture.handler.user_id)
+        .get(&fixture.handler.room_id, &fixture.handler.test_user_id())
         .await
         .checked("fixture member should load")
         .checked("fixture member should exist");
     member_repo
         .update_role(
             &fixture.handler.room_id,
-            &fixture.handler.user_id,
+            &fixture.handler.test_user_id(),
             RoomRole::Admin,
             member.version,
         )
@@ -2520,7 +2520,7 @@ async fn wait_for_start_cleanup(
         .checked("start() should cancel");
 
     let room = handler.room_id;
-    let user = handler.user_id;
+    let user = handler.test_user_id();
     let connection_id = handler.connection_id.clone();
 
     tokio::time::timeout(Duration::from_secs(1), async {
@@ -2602,7 +2602,7 @@ async fn wait_for_run_after_join_cleanup(
         loop {
             if connection_service.connection_count() == 0
                 && connection_service.room_connection_count(&handler.room_id) == 0
-                && connection_service.user_connection_count(&handler.user_id) == 0
+                && connection_service.user_connection_count(&handler.test_user_id()) == 0
                 && realtime_manager_subscriber_count(event_service, &handler.room_id) == 0
             {
                 break;
@@ -2690,7 +2690,7 @@ async fn test_start_cancels_and_cleans_up_when_admin_notification_send_fails() {
 
     event_service.broadcast(RealtimeEvent::UserNotification {
         event_id: "evt-admin-notify".to_string(),
-        user_id: handler.user_id,
+        user_id: handler.test_user_id(),
         title: "title".to_string(),
         content: "content".to_string(),
         notification_type: synctv_core::models::NotificationType::SystemAnnouncement,
@@ -2740,7 +2740,7 @@ async fn test_start_sends_termination_before_user_kick_disconnect() {
 
     event_service.broadcast(RealtimeEvent::KickUser {
         event_id: "evt-user-banned".to_string(),
-        user_id: handler.user_id,
+        user_id: handler.test_user_id(),
         reason: "user_banned".to_string(),
         timestamp: now(),
     });
@@ -2798,7 +2798,7 @@ async fn test_start_sends_one_specific_termination_when_room_shutdown_paths_race
     event_service.broadcast(RealtimeEvent::RoomDeleted {
         event_id: "evt-room-deleted".to_string(),
         room_id: handler.room_id,
-        deleted_by: handler.user_id,
+        deleted_by: handler.test_user_id(),
         timestamp: now(),
     });
     connection_service.disconnect_room(&handler.room_id, RoomDisconnectReason::Deleted);
@@ -2879,7 +2879,7 @@ async fn test_cached_room_subscription_delivers_pre_run_chat_event_after_explici
     let expected_username = handler
         .room_service
         .user_service()
-        .get_username(&handler.user_id)
+        .get_username(&handler.test_user_id())
         .await
         .checked("fixture username should load")
         .checked("fixture user should exist");
@@ -2905,10 +2905,10 @@ async fn test_cached_room_subscription_delivers_pre_run_chat_event_after_explici
     event_service.broadcast(RealtimeEvent::ChatMessageEvent {
         event_id: "evt-prejoin-window".to_string(),
         room_id: handler.room_id,
-        actor_user_id: handler.user_id,
+        actor_user_id: handler.test_user_id(),
         event: chat_event_with_content(
             handler.room_id,
-            handler.user_id,
+            handler.test_user_id(),
             "evt-prejoin-window",
             "arrived-before-run-after-join",
         ),
@@ -3499,15 +3499,15 @@ async fn test_replay_room_resource_event_without_payload_advances_cursor() {
             event_type: "playlist_items_changed".to_string(),
             event_version: 1,
             aggregate_version: Some(1),
-            actor_user_id: Some(fixture.handler.user_id.as_i64()),
+            actor_user_id: Some(fixture.handler.test_user_id().as_i64()),
             payload: None,
             summary: RoomResourceEventSummary {
                 event_type: "playlist_items_changed".to_string(),
                 room_id: Some(fixture.handler.room_id.as_i64()),
-                actor_user_id: Some(fixture.handler.user_id.as_i64()),
+                actor_user_id: Some(fixture.handler.test_user_id().as_i64()),
                 resource_type: RoomResourceKind::PlaylistItems,
                 details: RoomResourceEventSummaryDetails::PlaylistItems {
-                    user_id: Some(fixture.handler.user_id.as_i64()),
+                    user_id: Some(fixture.handler.test_user_id().as_i64()),
                     username: None,
                     media_ids: Vec::new(),
                 },
@@ -3831,7 +3831,7 @@ async fn test_observed_playback_receives_future_playback_state_updates() {
     event_service.broadcast(RealtimeEvent::PlaybackStateChanged {
         event_id: "evt-observe-playback-source-update".to_string(),
         room_id: handler.room_id,
-        user_id: handler.user_id,
+        user_id: handler.test_user_id(),
         username: handler.username.clone(),
         state: RoomPlaybackState {
             room_id: handler.room_id,
@@ -3947,7 +3947,7 @@ async fn test_observed_playback_ignores_play_pause_state_updates() {
     event_service.broadcast(RealtimeEvent::PlaybackStateChanged {
         event_id: "evt-observe-playback-state-only".to_string(),
         room_id: handler.room_id,
-        user_id: handler.user_id,
+        user_id: handler.test_user_id(),
         username: handler.username.clone(),
         state: RoomPlaybackState {
             room_id: handler.room_id,
@@ -4018,7 +4018,7 @@ async fn test_provider_credential_change_refreshes_dependent_playback() {
             id: MediaId::new(),
             playlist_id: None,
             room_id: handler.room_id,
-            creator_id: Some(handler.user_id),
+            creator_id: Some(handler.test_user_id()),
             name: "provider credential dependent media".to_string(),
             description: String::new(),
             position: 0.0,
@@ -4040,7 +4040,7 @@ async fn test_provider_credential_change_refreshes_dependent_playback() {
         .room_service
         .update_playback_state(
             handler.room_id,
-            handler.user_id,
+            handler.test_user_id(),
             |state| {
                 state.playing_media_id = Some(media.id);
             },
@@ -4072,7 +4072,7 @@ async fn test_provider_credential_change_refreshes_dependent_playback() {
     playback_service.replace_dependencies(vec![
         synctv_core::provider::ProviderCredentialDependency::new(
             "bilibili",
-            handler.user_id.to_string(),
+            handler.test_user_id().to_string(),
             "bilibili",
         ),
     ]);
@@ -4113,7 +4113,7 @@ async fn test_provider_credential_change_refreshes_dependent_playback() {
 
     event_service.broadcast(RealtimeEvent::ProviderCredentialChanged {
         event_id: "evt-provider-credential-dependent".to_string(),
-        user_id: handler.user_id,
+        user_id: handler.test_user_id(),
         provider: "bilibili".to_string(),
         server_id: "bilibili".to_string(),
         timestamp: now(),
@@ -4156,7 +4156,7 @@ async fn test_provider_credential_change_does_not_refresh_unrelated_playback() {
             id: MediaId::new(),
             playlist_id: None,
             room_id: handler.room_id,
-            creator_id: Some(handler.user_id),
+            creator_id: Some(handler.test_user_id()),
             name: "provider credential unrelated media".to_string(),
             description: String::new(),
             position: 0.0,
@@ -4178,7 +4178,7 @@ async fn test_provider_credential_change_does_not_refresh_unrelated_playback() {
         .room_service
         .update_playback_state(
             handler.room_id,
-            handler.user_id,
+            handler.test_user_id(),
             |state| {
                 state.playing_media_id = Some(media.id);
             },
@@ -4210,7 +4210,7 @@ async fn test_provider_credential_change_does_not_refresh_unrelated_playback() {
     playback_service.replace_dependencies(vec![
         synctv_core::provider::ProviderCredentialDependency::new(
             "bilibili",
-            handler.user_id.to_string(),
+            handler.test_user_id().to_string(),
             "bilibili",
         ),
     ]);
@@ -4230,7 +4230,7 @@ async fn test_provider_credential_change_does_not_refresh_unrelated_playback() {
 
     event_service.broadcast(RealtimeEvent::ProviderCredentialChanged {
         event_id: "evt-provider-credential-unrelated".to_string(),
-        user_id: UserId::expect_positive(handler.user_id.get() + 1),
+        user_id: UserId::expect_positive(handler.test_user_id().get() + 1),
         provider: "bilibili".to_string(),
         server_id: "bilibili".to_string(),
         timestamp: now(),
@@ -4437,7 +4437,7 @@ async fn test_observed_playback_refreshes_when_current_media_is_updated() {
             id: MediaId::new(),
             playlist_id: None,
             room_id: handler.room_id,
-            creator_id: Some(handler.user_id),
+            creator_id: Some(handler.test_user_id()),
             name: "observe-playback-media-update".to_string(),
             description: String::new(),
             position: 0.0,
@@ -4459,7 +4459,7 @@ async fn test_observed_playback_refreshes_when_current_media_is_updated() {
         .room_service
         .update_playback_state(
             handler.room_id,
-            handler.user_id,
+            handler.test_user_id(),
             |state| {
                 state.playing_media_id = Some(media.id);
                 state.playing_playlist_id = None;
@@ -4520,7 +4520,7 @@ async fn test_observed_playback_refreshes_when_current_media_is_updated() {
         .room_service
         .edit_media(
             handler.room_id,
-            handler.user_id,
+            handler.test_user_id(),
             media.id,
             Some("observe-playback-media-update-v2".to_string()),
         )
@@ -4551,7 +4551,7 @@ async fn test_observed_playback_refreshes_when_current_media_is_updated() {
     event_service.broadcast(RealtimeEvent::MediaUpdated {
         event_id: "evt-observe-playback-media-update".to_string(),
         room_id: handler.room_id,
-        user_id: handler.user_id,
+        user_id: handler.test_user_id(),
         username: handler.username.clone(),
         media_id: media.id,
         media_title: "observe-playback-media-update-v2".to_string(),
@@ -4599,7 +4599,7 @@ async fn test_observed_playback_refreshes_when_current_playlist_is_updated() {
         .create(&synctv_core::models::Playlist {
             id: PlaylistId::new(),
             room_id: handler.room_id,
-            creator_id: Some(handler.user_id),
+            creator_id: Some(handler.test_user_id()),
             name: "observe-playback-playlist-update".to_string(),
             description: String::new(),
             cover_file_reference_id: None,
@@ -4682,7 +4682,7 @@ async fn test_observed_playback_refreshes_when_current_playlist_is_updated() {
         .playlist_service()
         .set_playlist(
             handler.room_id,
-            handler.user_id,
+            handler.test_user_id(),
             synctv_core::service::SetPlaylistRequest {
                 playlist_id: playlist.id,
                 name: Some("observe-playback-playlist-update-v2".to_string()),
@@ -4716,7 +4716,7 @@ async fn test_observed_playback_refreshes_when_current_playlist_is_updated() {
     event_service.broadcast(RealtimeEvent::PlaylistUpdated {
         event_id: "evt-observe-playback-playlist-update".to_string(),
         room_id: handler.room_id,
-        user_id: handler.user_id,
+        user_id: handler.test_user_id(),
         username: handler.username.clone(),
         playlist: updated_playlist.clone(),
         timestamp: now(),
@@ -4828,7 +4828,7 @@ async fn test_observed_playback_refreshes_when_target_changes_at_same_version() 
         .room_service
         .update_playback_state(
             handler.room_id,
-            handler.user_id,
+            handler.test_user_id(),
             |state| {
                 state.playing_media_id = None;
                 state.playing_playlist_id = None;
@@ -4845,7 +4845,7 @@ async fn test_observed_playback_refreshes_when_target_changes_at_same_version() 
     event_service.broadcast(RealtimeEvent::PlaybackStateChanged {
         event_id: "evt-observe-playback-same-version-new-content".to_string(),
         room_id: handler.room_id,
-        user_id: handler.user_id,
+        user_id: handler.test_user_id(),
         username: handler.username.clone(),
         state: updated_state,
         source_changed: true,
@@ -4930,7 +4930,7 @@ async fn test_playback_refresh_failure_removes_observation_without_closing_conne
     let refresh_event = RealtimeEvent::PlaybackStateChanged {
         event_id: "evt-observe-playback-refresh-error".to_string(),
         room_id: handler.room_id,
-        user_id: handler.user_id,
+        user_id: handler.test_user_id(),
         username: handler.username.clone(),
         state: RoomPlaybackState {
             room_id: handler.room_id,
@@ -5185,7 +5185,7 @@ async fn test_observe_playlist_items_without_cursor_sends_snapshot_immediately()
                     metadata: None,
                     position: 1.0,
                     added_at: 1,
-                    creator_id: handler.user_id.to_string(),
+                    creator_id: handler.test_user_id().to_string(),
                     provider_instance_name: String::new(),
                     source_config: None,
                     availability: synctv_proto::client::ResourceAvailability::Available as i32,
@@ -5475,7 +5475,7 @@ fn test_room_member_events_filter_self_and_permission_only_changes() {
                 joined_at: now(),
                 timestamp: now(),
             },
-            &user_id(),
+            Some(user_id()),
         )
     );
     assert!(
@@ -5490,25 +5490,25 @@ fn test_room_member_events_filter_self_and_permission_only_changes() {
                 role: synctv_proto::common::RoomMemberRole::Member as i32,
                 timestamp: now(),
             },
-            &user_id(),
+            Some(user_id()),
         )
     );
     assert!(
         !super::resource_observer::room_member_event_visible_to_observer(
             &permission_changed_event_for_target("evt-other-permission", other_user_id, false),
-            &user_id(),
+            Some(user_id()),
         )
     );
     assert!(
         !super::resource_observer::room_member_event_visible_to_observer(
             &permission_changed_event_for_target("evt-self-role", user_id(), true),
-            &user_id(),
+            Some(user_id()),
         )
     );
     assert!(
         super::resource_observer::room_member_event_visible_to_observer(
             &permission_changed_event_for_target("evt-other-role", other_user_id, true),
-            &user_id(),
+            Some(user_id()),
         )
     );
 }
@@ -6720,7 +6720,7 @@ async fn test_observed_playlist_items_receive_future_media_updates() {
             metadata: None,
             position: 2.0,
             added_at: 2,
-            creator_id: handler.user_id.to_string(),
+            creator_id: handler.test_user_id().to_string(),
             provider_instance_name: String::new(),
             source_config: None,
             availability: synctv_proto::client::ResourceAvailability::Available as i32,
@@ -6740,7 +6740,7 @@ async fn test_observed_playlist_items_receive_future_media_updates() {
     event_service.broadcast(RealtimeEvent::MediaAdded {
         event_id: "evt-observe-playlist-items-update".to_string(),
         room_id: handler.room_id,
-        user_id: handler.user_id,
+        user_id: handler.test_user_id(),
         username: handler.username.clone(),
         media_id: synctv_core::models::MediaId::expect_positive(113_003),
         media_title: "next media".to_string(),
@@ -6876,7 +6876,7 @@ async fn test_observed_room_settings_receive_future_updates() {
     event_service.broadcast(RealtimeEvent::RoomSettingsChanged {
         event_id: "evt-observe-room-settings-update".to_string(),
         room_id: handler.room_id,
-        user_id: handler.user_id,
+        user_id: handler.test_user_id(),
         username: handler.username.clone(),
         settings: synctv_core::models::RoomSettings {
             chat_enabled: synctv_core::models::room_settings::ChatEnabled(false),
@@ -6930,7 +6930,7 @@ async fn test_run_after_join_cleans_up_when_admin_notification_send_fails() {
 
     event_service.broadcast(RealtimeEvent::UserNotification {
         event_id: "evt-run-after-join-admin".to_string(),
-        user_id: handler.user_id,
+        user_id: handler.test_user_id(),
         title: "title".to_string(),
         content: "content".to_string(),
         notification_type: synctv_core::models::NotificationType::SystemAnnouncement,
@@ -6996,10 +6996,10 @@ async fn test_run_after_join_cleans_up_when_direct_notification_send_fails() {
     wait_for_run_after_join_ready(&stream_state).await;
 
     let subscriber_count = notification_service.publish_realtime_event(NotificationCreatedEvent {
-        user_id: handler.user_id,
+        user_id: handler.test_user_id(),
         notification: Notification {
             id: 1,
-            user_id: handler.user_id,
+            user_id: handler.test_user_id(),
             notification_type: NotificationType::SystemAnnouncement,
             title: "title".to_string(),
             content: "content".to_string(),
@@ -7901,11 +7901,7 @@ async fn test_guest_token_blacklist_disconnects_live_guest() {
         .checked("blacklist guest token");
 
     let reason = super::RealtimeMembershipProbe::new(&handler.room_service)
-        .guest_token_blacklist_denial_reason(
-            &handler.room_id,
-            &handler.user_id,
-            &identity.token_jti,
-        )
+        .guest_token_blacklist_denial_reason(&handler.room_id, identity, &identity.token_jti)
         .await
         .checked("blacklist check should succeed");
 
@@ -8157,7 +8153,12 @@ async fn test_webrtc_media_swarm_membership_has_an_independent_voice_lifecycle()
     ));
     let (mut room_events, observer_connection_id) = fixture
         .event_service
-        .subscribe(handler.room_id, handler.user_id)
+        .subscribe(
+            handler.room_id,
+            handler
+                .realtime_actor()
+                .checked("realtime actor should build"),
+        )
         .await
         .checked("room event observer should subscribe");
 
@@ -8299,7 +8300,7 @@ async fn test_room_capability_change_ends_active_voice_and_media_sessions() {
         .apply_rtc_access_change(&RealtimeEvent::RoomSettingsChanged {
             event_id: "evt-disable-room-capabilities".to_string(),
             room_id: fixture.handler.room_id,
-            user_id: fixture.handler.user_id,
+            user_id: fixture.handler.test_user_id(),
             username: fixture.handler.username.clone(),
             settings,
             version: 2,
@@ -8361,11 +8362,11 @@ async fn test_permission_revocation_ends_active_voice_and_media_sessions() {
         .apply_rtc_access_change(&RealtimeEvent::PermissionChanged {
             event_id: "evt-revoke-rtc-permissions".to_string(),
             room_id: fixture.handler.room_id,
-            target_user_id: fixture.handler.user_id,
+            target_user_id: fixture.handler.test_user_id(),
             target_username: fixture.handler.username.clone(),
             target_remark_name: String::new(),
             target_display_tag: String::new(),
-            changed_by: fixture.handler.user_id,
+            changed_by: fixture.handler.test_user_id(),
             changed_by_username: fixture.handler.username.clone(),
             role_changed: false,
             new_permissions: RoomPermissionSet::empty(),
@@ -8420,7 +8421,7 @@ async fn test_room_capability_change_serializes_with_an_in_flight_join() {
             .apply_rtc_access_change(&RealtimeEvent::RoomSettingsChanged {
                 event_id: "evt-room-capability-join-race".to_string(),
                 room_id: event_handler.room_id,
-                user_id: event_handler.user_id,
+                user_id: event_handler.test_user_id(),
                 username: event_handler.username.clone(),
                 settings,
                 version: 2,
@@ -8493,10 +8494,9 @@ async fn test_guest_self_room_member_snapshot_exposes_effective_permissions() {
         .connection_service
         .register_actor(
             guest.connection_id.clone().into_string(),
-            guest.user_id,
             guest
-                .public_actor_id()
-                .checked("guest public actor id should encode"),
+                .realtime_actor()
+                .checked("guest realtime actor should build"),
         )
         .await
         .checked("guest connection should register");
@@ -8538,7 +8538,7 @@ async fn test_voice_and_p2p_media_permissions_are_independent() {
     let voice_member = voice_member_repo
         .get(
             &voice_fixture.handler.room_id,
-            &voice_fixture.handler.user_id,
+            &voice_fixture.handler.test_user_id(),
         )
         .await
         .checked("voice-only member should load")
@@ -8596,7 +8596,7 @@ async fn test_voice_and_p2p_media_permissions_are_independent() {
     let media_member = media_member_repo
         .get(
             &media_fixture.handler.room_id,
-            &media_fixture.handler.user_id,
+            &media_fixture.handler.test_user_id(),
         )
         .await
         .checked("media-only member should load")
@@ -8733,8 +8733,9 @@ async fn test_media_signaling_requires_both_connections_in_the_same_swarm() {
         .connection_service
         .register_actor(
             target_connection_id.to_string(),
-            handler.user_id,
-            actor_id.clone(),
+            handler
+                .realtime_actor()
+                .checked("realtime actor should build"),
         )
         .await
         .checked("target connection should register");
@@ -8817,7 +8818,12 @@ async fn test_webrtc_signaling_to_a_disconnected_target_is_a_successful_noop() {
 
     let (mut room_events, observer_connection_id) = fixture
         .event_service
-        .subscribe(handler.room_id, handler.user_id)
+        .subscribe(
+            handler.room_id,
+            handler
+                .realtime_actor()
+                .checked("realtime actor should build"),
+        )
         .await
         .checked("room event observer should subscribe");
     let target = format!(
@@ -9015,10 +9021,12 @@ async fn test_guest_cleanup_broadcasts_guest_left() {
         RoomPermissionSet::default_guest(),
     );
     let connection_id = handler.connection_id().to_string();
-    let guest_user_id = handler.user_id;
+    let guest_actor = handler
+        .realtime_actor()
+        .checked("guest realtime actor should build");
 
     connection_service
-        .register(connection_id.clone(), guest_user_id)
+        .register_actor(connection_id.clone(), guest_actor.clone())
         .await
         .checked("register guest connection");
     connection_service
@@ -9028,7 +9036,7 @@ async fn test_guest_cleanup_broadcasts_guest_left() {
     let (mut rx, _) = event_service
         .subscribe_with_id(
             handler.room_id,
-            guest_user_id,
+            guest_actor,
             ConnectionId::new(connection_id.clone()),
         )
         .await
@@ -9081,10 +9089,9 @@ async fn test_guest_webrtc_recipient_validation_uses_public_guest_actor_id() {
     connection_service
         .register_actor(
             connection_id.clone(),
-            handler.user_id,
             handler
-                .public_actor_id()
-                .checked("guest public actor id should encode"),
+                .realtime_actor()
+                .checked("guest realtime actor should build"),
         )
         .await
         .checked("register guest connection");
@@ -9094,7 +9101,9 @@ async fn test_guest_webrtc_recipient_validation_uses_public_guest_actor_id() {
         .checked("join room");
     connection_service.mark_voice_rtc_joined(
         &handler.room_id,
-        &handler.user_id,
+        &handler
+            .realtime_actor()
+            .checked("guest realtime actor should build"),
         &connection_id,
         true,
     );
@@ -9111,18 +9120,11 @@ async fn test_guest_webrtc_recipient_validation_uses_public_guest_actor_id() {
         .await
         .checked("gst_* recipient should match the active guest connection");
 
-    let internal_user_target = format!(
-        "{}:{}",
-        handler
-            .public_id_codec
-            .encode_user_id(handler.user_id)
-            .checked("encode internal synthetic user id"),
-        connection_id
-    );
+    let other_actor_target = format!("usr_other:{connection_id}");
     let error = handler
-        .validate_webrtc_voice_recipient(&internal_user_target)
+        .validate_webrtc_voice_recipient(&other_actor_target)
         .await
-        .expect_err("the internal synthetic user id must not address a guest connection");
+        .expect_err("another actor id must not address the guest connection");
     assert!(error.contains("does not match"));
 
     shutdown_test_runtime_resources(event_service, connection_service).await;
@@ -9221,7 +9223,10 @@ async fn test_pre_join_after_registration_fails_closed_when_membership_revalidat
     );
 
     connection_service
-        .register(handler.connection_id.clone().into_string(), handler.user_id)
+        .register(
+            handler.connection_id.clone().into_string(),
+            handler.test_user_id(),
+        )
         .await
         .checked("register should succeed before final admission");
 
@@ -9245,7 +9250,7 @@ async fn test_pre_join_after_registration_fails_closed_when_membership_revalidat
         "failed final admission must not leave room membership behind"
     );
     assert_eq!(
-        connection_service.user_connection_count(&handler.user_id),
+        connection_service.user_connection_count(&handler.test_user_id()),
         0,
         "failed final admission must not consume per-user capacity"
     );
@@ -9297,7 +9302,10 @@ async fn test_pre_join_after_registration_rejects_closed_room_on_final_revalidat
     });
 
     connection_service
-        .register(handler.connection_id.clone().into_string(), handler.user_id)
+        .register(
+            handler.connection_id.clone().into_string(),
+            handler.test_user_id(),
+        )
         .await
         .checked("register should succeed before final admission");
 
@@ -9378,7 +9386,10 @@ async fn test_pre_join_after_registration_rejects_room_with_inactive_creator() {
     });
 
     connection_service
-        .register(handler.connection_id.clone().into_string(), handler.user_id)
+        .register(
+            handler.connection_id.clone().into_string(),
+            handler.test_user_id(),
+        )
         .await
         .checked("register should succeed before final admission");
 
@@ -9458,7 +9469,10 @@ async fn test_pre_join_after_registration_rejects_banned_user_on_final_revalidat
     });
 
     connection_service
-        .register(handler.connection_id.clone().into_string(), handler.user_id)
+        .register(
+            handler.connection_id.clone().into_string(),
+            handler.test_user_id(),
+        )
         .await
         .checked("register should succeed before final admission");
 
@@ -9540,7 +9554,10 @@ async fn test_pre_join_after_registration_rolls_back_when_room_event_subscriptio
     });
 
     connection_service
-        .register(handler.connection_id.clone().into_string(), handler.user_id)
+        .register(
+            handler.connection_id.clone().into_string(),
+            handler.test_user_id(),
+        )
         .await
         .checked("register should succeed before subscription caching");
 
@@ -9591,13 +9608,13 @@ fn test_disconnect_signal_requires_skip_cleanup_only_for_room_scoped_or_redundan
 
     assert!(super::disconnect_signal_requires_skip_cleanup(
         &synctv_realtime::sync::DisconnectSignal::Connection(connection_id.to_string()),
-        &uid,
+        Some(uid),
         &rid,
         connection_id,
     ));
     assert!(!super::disconnect_signal_requires_skip_cleanup(
         &synctv_realtime::sync::DisconnectSignal::User(uid),
-        &uid,
+        Some(uid),
         &rid,
         connection_id,
     ));
@@ -9606,7 +9623,7 @@ fn test_disconnect_signal_requires_skip_cleanup_only_for_room_scoped_or_redundan
             room_id: rid,
             reason: synctv_realtime::sync::RoomDisconnectReason::AccessRevoked,
         },
-        &uid,
+        Some(uid),
         &rid,
         connection_id,
     ));
@@ -9615,7 +9632,7 @@ fn test_disconnect_signal_requires_skip_cleanup_only_for_room_scoped_or_redundan
             user_id: uid,
             room_id: rid,
         },
-        &uid,
+        Some(uid),
         &rid,
         connection_id,
     ));
@@ -9634,7 +9651,7 @@ fn test_admin_event_requires_skip_cleanup_only_for_room_scoped_or_redundant_exit
             reason: "ban".to_string(),
             timestamp: now,
         },
-        &uid,
+        Some(uid),
         &rid,
     ));
     assert!(super::admin_event_requires_skip_cleanup(
@@ -9645,7 +9662,7 @@ fn test_admin_event_requires_skip_cleanup_only_for_room_scoped_or_redundant_exit
             reason: "kick".to_string(),
             timestamp: now,
         },
-        &uid,
+        Some(uid),
         &rid,
     ));
     assert!(super::admin_event_requires_skip_cleanup(
@@ -9659,7 +9676,7 @@ fn test_admin_event_requires_skip_cleanup_only_for_room_scoped_or_redundant_exit
             role: synctv_proto::common::RoomMemberRole::Member as i32,
             timestamp: now,
         },
-        &uid,
+        Some(uid),
         &rid,
     ));
     assert!(super::admin_event_requires_skip_cleanup(
@@ -9669,7 +9686,7 @@ fn test_admin_event_requires_skip_cleanup_only_for_room_scoped_or_redundant_exit
             banned_by: uid,
             timestamp: now,
         },
-        &uid,
+        Some(uid),
         &rid,
     ));
 }
@@ -9684,13 +9701,13 @@ fn test_watch_disconnect_signal_matches_revocation_targets() {
 
     assert!(super::watch_disconnect_signal_matches(
         &synctv_realtime::sync::DisconnectSignal::Connection(connection_id.to_string()),
-        &uid,
+        Some(uid),
         &rid,
         connection_id,
     ));
     assert!(super::watch_disconnect_signal_matches(
         &synctv_realtime::sync::DisconnectSignal::User(uid),
-        &uid,
+        Some(uid),
         &rid,
         connection_id,
     ));
@@ -9699,7 +9716,7 @@ fn test_watch_disconnect_signal_matches_revocation_targets() {
             room_id: rid,
             reason: synctv_realtime::sync::RoomDisconnectReason::AccessRevoked,
         },
-        &uid,
+        Some(uid),
         &rid,
         connection_id,
     ));
@@ -9708,13 +9725,13 @@ fn test_watch_disconnect_signal_matches_revocation_targets() {
             user_id: uid,
             room_id: rid,
         },
-        &uid,
+        Some(uid),
         &rid,
         connection_id,
     ));
     assert!(!super::watch_disconnect_signal_matches(
         &synctv_realtime::sync::DisconnectSignal::User(other_uid),
-        &uid,
+        Some(uid),
         &rid,
         connection_id,
     ));
@@ -9723,7 +9740,7 @@ fn test_watch_disconnect_signal_matches_revocation_targets() {
             user_id: uid,
             room_id: other_rid,
         },
-        &uid,
+        Some(uid),
         &rid,
         connection_id,
     ));
@@ -9744,7 +9761,7 @@ fn test_watch_admin_event_matches_access_revocation_events() {
             reason: "ban".to_string(),
             timestamp: now,
         },
-        &uid,
+        Some(uid),
         &rid,
     ));
     assert!(super::watch_admin_event_matches(
@@ -9755,7 +9772,7 @@ fn test_watch_admin_event_matches_access_revocation_events() {
             reason: "kick".to_string(),
             timestamp: now,
         },
-        &uid,
+        Some(uid),
         &rid,
     ));
     assert!(super::watch_admin_event_matches(
@@ -9769,7 +9786,7 @@ fn test_watch_admin_event_matches_access_revocation_events() {
             role: synctv_proto::common::RoomMemberRole::Member as i32,
             timestamp: now,
         },
-        &uid,
+        Some(uid),
         &rid,
     ));
     assert!(super::watch_admin_event_matches(
@@ -9779,7 +9796,7 @@ fn test_watch_admin_event_matches_access_revocation_events() {
             deleted_by: uid,
             timestamp: now,
         },
-        &uid,
+        Some(uid),
         &rid,
     ));
     assert!(super::watch_admin_event_matches(
@@ -9789,7 +9806,7 @@ fn test_watch_admin_event_matches_access_revocation_events() {
             banned_by: uid,
             timestamp: now,
         },
-        &uid,
+        Some(uid),
         &rid,
     ));
     assert!(super::watch_admin_event_matches(
@@ -9800,7 +9817,7 @@ fn test_watch_admin_event_matches_access_revocation_events() {
             triggered_by: uid,
             timestamp: now,
         },
-        &uid,
+        Some(uid),
         &rid,
     ));
     assert!(!super::watch_admin_event_matches(
@@ -9810,7 +9827,7 @@ fn test_watch_admin_event_matches_access_revocation_events() {
             reason: "ban".to_string(),
             timestamp: now,
         },
-        &uid,
+        Some(uid),
         &rid,
     ));
     assert!(!super::watch_admin_event_matches(
@@ -9820,7 +9837,7 @@ fn test_watch_admin_event_matches_access_revocation_events() {
             banned_by: uid,
             timestamp: now,
         },
-        &uid,
+        Some(uid),
         &rid,
     ));
 }

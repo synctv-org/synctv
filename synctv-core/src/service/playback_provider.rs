@@ -1937,14 +1937,16 @@ impl PlaybackProviderRuntime {
                     )
                 })?;
         let credential_owner_id = media.creator_id.unwrap_or(request.actor_user_id);
-        let mut ctx = ProviderContext::new("playback-provider")
-            .with_user_id(request.actor_user_id)
-            .with_credential_owner_id(credential_owner_id)
-            .with_room_id(media.room_id)
-            .with_media_id(media.id)
-            .with_provider_access_service(self.provider_access_service.clone())
-            .with_store(self.provider_stores.load(BilibiliProvider::NAME))
-            .with_request_context(request.request_control.map(ExecutionControl::child));
+        let mut ctx = ProviderContext::new(
+            "playback-provider",
+            crate::provider::ProviderActor::User(request.actor_user_id),
+        )
+        .with_credential_owner_id(credential_owner_id)
+        .with_room_id(media.room_id)
+        .with_media_id(media.id)
+        .with_provider_access_service(self.provider_access_service.clone())
+        .with_store(self.provider_stores.load(BilibiliProvider::NAME))
+        .with_request_context(request.request_control.map(ExecutionControl::child));
         if let Some(provider_instance_name) = media.provider_instance_name.as_deref() {
             ctx = ctx.with_provider_instance_name(provider_instance_name);
         }

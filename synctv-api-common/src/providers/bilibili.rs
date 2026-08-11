@@ -821,11 +821,13 @@ impl BilibiliApiImpl {
                 })?,
             }
         };
-        let mut provider_context = ProviderContext::new("synctv:provider-discovery")
-            .with_user_id(*caller_user_id)
-            .with_credential_owner_id(*caller_user_id)
-            .with_provider_access_service(self.access_service.clone())
-            .with_request_context(request_context.cloned());
+        let mut provider_context = ProviderContext::new(
+            "synctv:provider-discovery",
+            synctv_core::provider::ProviderActor::User(*caller_user_id),
+        )
+        .with_credential_owner_id(*caller_user_id)
+        .with_provider_access_service(self.access_service.clone())
+        .with_request_context(request_context.cloned());
         if let Some(instance_name) = effective_instance_name.as_deref() {
             provider_context = provider_context.with_provider_instance_name(instance_name);
         }

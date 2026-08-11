@@ -1044,7 +1044,8 @@ pub enum PlaybackTwitchMedia {
         resource_kind: TwitchPlaybackResourceKind,
         resource_id: String,
         quality_name: String,
-        credential_owner_id: UserId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credential_owner_id: Option<UserId>,
         provider_instance_name: Option<String>,
     },
     Proxy {
@@ -1065,7 +1066,8 @@ pub enum PlaybackYoutubeMedia {
     Refresh {
         video_id: String,
         resource: YoutubePlaybackResource,
-        credential_owner_id: UserId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credential_owner_id: Option<UserId>,
         provider_instance_name: Option<String>,
     },
     Proxy {
@@ -1087,7 +1089,8 @@ pub enum PlaybackDouyinMedia {
         resource: DouyinPlaybackResource,
         variant_key: String,
         root_url: String,
-        credential_owner_id: UserId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credential_owner_id: Option<UserId>,
         provider_instance_name: Option<String>,
     },
     Proxy {
@@ -1109,7 +1112,8 @@ pub enum PlaybackTikTokMedia {
         resource: TikTokPlaybackResource,
         variant_key: String,
         root_url: String,
-        credential_owner_id: UserId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credential_owner_id: Option<UserId>,
         provider_instance_name: Option<String>,
     },
     Proxy {
@@ -1428,7 +1432,8 @@ pub enum PlaybackYoutubeSubtitle {
         video_id: String,
         track_id: String,
         target_language_code: Option<String>,
-        credential_owner_id: UserId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credential_owner_id: Option<UserId>,
         provider_instance_name: Option<String>,
     },
     Proxy {
@@ -1450,7 +1455,8 @@ pub enum PlaybackTikTokSubtitle {
         resource: TikTokPlaybackResource,
         language: String,
         format: String,
-        credential_owner_id: UserId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credential_owner_id: Option<UserId>,
         provider_instance_name: Option<String>,
     },
     Proxy {

@@ -142,17 +142,13 @@ impl TikTokProvider {
         let Some(repo) = self.credential_repo_or(ctx.credential_repo) else {
             return Ok(TikTokSession::default());
         };
-        let owner_id = if shared {
-            ctx.credential_owner_id()
-        } else {
-            ctx.user_id()
-        };
+        let owner_id = ctx.selected_credential_user_id(shared);
         let Some(owner_id) = owner_id else {
             return Ok(TikTokSession::default());
         };
         self.session_for_owner(
             repo,
-            *owner_id,
+            owner_id,
             &Self::credential_server_id_for_instance(super::bound_provider_instance_name(ctx)),
         )
         .await
@@ -407,9 +403,13 @@ impl TikTokProvider {
                             "TikTok cached playback resource is invalid".to_string(),
                         ));
                     };
-                    let session = self
-                        .stored_session(*credential_owner_id, provider_instance_name.as_deref())
-                        .await?;
+                    let session = match credential_owner_id {
+                        Some(owner_id) => {
+                            self.stored_session(*owner_id, provider_instance_name.as_deref())
+                                .await?
+                        }
+                        None => TikTokSession::default(),
+                    };
                     let resolved = match resource {
                         TikTokPlaybackResource::Video { video_id } => {
                             self.client.video(video_id, Some(&session)).await?
@@ -512,9 +512,13 @@ impl TikTokProvider {
                 "TikTok cached subtitle resource is invalid".to_string(),
             ));
         };
-        let session = self
-            .stored_session(*credential_owner_id, provider_instance_name.as_deref())
-            .await?;
+        let session = match credential_owner_id {
+            Some(owner_id) => {
+                self.stored_session(*owner_id, provider_instance_name.as_deref())
+                    .await?
+            }
+            None => TikTokSession::default(),
+        };
         let media = match resource {
             TikTokPlaybackResource::Video { video_id } => {
                 self.client.video(video_id, Some(&session)).await?
@@ -620,7 +624,7 @@ impl TikTokProvider {
     fn playback_result(
         media: TikTokMedia,
         resource: &TikTokPlaybackResource,
-        credential_owner_id: UserId,
+        credential_owner_id: Option<UserId>,
         provider_instance_name: Option<&str>,
     ) -> Result<PlaybackResult, ProviderError> {
         let mut infos = HashMap::new();
@@ -955,15 +959,12 @@ impl MediaProvider for TikTokProvider {
             .map_err(|error| ProviderError::NetworkError(error.to_string()))?;
         let config = Self::media_config(source_config)?;
         let shared = Self::media_shared(config);
-        let credential_owner_id = if shared {
-            *ctx.credential_owner_id().ok_or_else(|| {
-                ProviderError::Internal("TikTok credential owner is unavailable".to_string())
-            })?
-        } else {
-            *ctx.user_id().ok_or_else(|| {
-                ProviderError::Internal("TikTok viewer is unavailable".to_string())
-            })?
-        };
+        let credential_owner_id = ctx.selected_credential_user_id(shared);
+        if shared && credential_owner_id.is_none() {
+            return Err(ProviderError::Internal(
+                "TikTok credential owner is unavailable".to_string(),
+            ));
+        }
         let session = self.session(ctx, shared).await?;
         let provider_instance_name =
             super::bound_provider_instance_name(ctx).map(ToString::to_string);
@@ -972,7 +973,7 @@ impl MediaProvider for TikTokProvider {
             "playback:{}:{}:{}",
             serde_json::to_string(&resource)
                 .map_err(|error| ProviderError::Internal(error.to_string()))?,
-            credential_owner_id,
+            credential_owner_id.map_or_else(|| "anonymous".to_string(), |id| id.to_string()),
             Self::credential_server_id_for_instance(provider_instance_name.as_deref())
         );
         super::cached_versioned_playback_or_fill(
@@ -1057,14 +1058,9 @@ impl MediaProvider for TikTokProvider {
             SourceConfig::Media(source) => Self::media_shared(Self::media_config(source)?),
             SourceConfig::DynamicPlaylist(source) => Self::playlist_config(source)?.shared,
         };
-        let owner_id = if shared {
-            ctx.credential_owner_id()
-        } else {
-            ctx.user_id()
-        }
-        .ok_or_else(|| {
-            ProviderError::Internal("TikTok credential owner is unavailable".to_string())
-        })?;
+        let Some(owner_id) = ctx.selected_credential_user_id(shared) else {
+            return Ok(Vec::new());
+        };
         Ok(vec![ProviderCredentialDependency::optional(
             Self::NAME,
             owner_id.to_string(),
@@ -1430,7 +1426,7 @@ mod tests {
                 variant("https://cdn.test/video.mp4", "1080p", 1920, 1080, 4_000_000),
             ),
             &video_resource,
-            UserId::expect_positive(1),
+            Some(UserId::expect_positive(1)),
             Some("primary"),
         )
         .expect("video playback should map");
@@ -1458,7 +1454,7 @@ mod tests {
         let live = TikTokProvider::playback_result(
             media(TikTokMediaKind::Live, "live-1", live_variant),
             &live_resource,
-            UserId::expect_positive(1),
+            Some(UserId::expect_positive(1)),
             Some("primary"),
         )
         .expect("live playback should map");

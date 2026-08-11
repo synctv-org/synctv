@@ -11,7 +11,7 @@
 
 #![allow(clippy::unwrap_used)]
 use std::time::Duration;
-use synctv_core::models::id::{RoomId, UserId};
+use synctv_core::models::{RealtimeActor, RoomId, UserId};
 use synctv_realtime::sync::ConnectionManager;
 
 const SHORT_WEBRTC_TIMEOUT: Duration = Duration::from_millis(60);
@@ -25,6 +25,10 @@ fn stable_test_id(s: &str) -> i64 {
 
 fn uid(s: &str) -> UserId {
     UserId::expect_positive(stable_test_id(s))
+}
+
+fn actor(user_id: UserId) -> RealtimeActor {
+    RealtimeActor::user(user_id, user_id.to_string())
 }
 
 fn rid(s: &str) -> RoomId {
@@ -56,7 +60,7 @@ async fn test_timeout_clears_rtc_state() {
     mgr.join_room("conn1", room).await.unwrap();
 
     // Join WebRTC session
-    mgr.mark_voice_rtc_joined(&room, &user, "conn1", true);
+    mgr.mark_voice_rtc_joined(&room, &actor(user), "conn1", true);
 
     // Verify the connection is RTC-joined
     let rtc_connections = mgr.get_voice_rtc_connections(&room);
@@ -128,7 +132,7 @@ async fn test_multiple_parallel_timeouts() {
         let conn_id = format!("conn{i}");
         mgr.register(conn_id.clone(), user).await.unwrap();
         mgr.join_room(&conn_id, room).await.unwrap();
-        mgr.mark_voice_rtc_joined(&room, &user, &conn_id, true);
+        mgr.mark_voice_rtc_joined(&room, &actor(user), &conn_id, true);
     }
 
     // Verify all connections are RTC-joined
@@ -192,7 +196,7 @@ async fn test_timeout_does_not_affect_active_sessions() {
     mgr.join_room("conn1", room).await.unwrap();
 
     // Join WebRTC session
-    mgr.mark_voice_rtc_joined(&room, &user, "conn1", true);
+    mgr.mark_voice_rtc_joined(&room, &actor(user), "conn1", true);
 
     // Immediately check for timeouts (before timeout expires)
     let stale = mgr.check_timeouts();
@@ -245,7 +249,7 @@ async fn test_explicit_leave_after_timeout_is_idempotent() {
     mgr.join_room("conn1", room).await.unwrap();
 
     // Join WebRTC session
-    mgr.mark_voice_rtc_joined(&room, &user, "conn1", true);
+    mgr.mark_voice_rtc_joined(&room, &actor(user), "conn1", true);
 
     tokio::time::sleep(timeout + WEBRTC_TIMEOUT_BUFFER).await;
 
@@ -263,7 +267,7 @@ async fn test_explicit_leave_after_timeout_is_idempotent() {
 
     // Now call mark_voice_rtc_joined(false) again (simulating explicit leave)
     // This should be idempotent - calling it twice should not cause issues
-    mgr.mark_voice_rtc_joined(&room, &user, "conn1", false);
+    mgr.mark_voice_rtc_joined(&room, &actor(user), "conn1", false);
 
     // Verify still not RTC-joined
     let rtc_connections = mgr.get_voice_rtc_connections(&room);
@@ -307,7 +311,7 @@ async fn test_connection_info_accurate_after_timeout() {
     mgr.join_room("conn1", room).await.unwrap();
 
     // Join WebRTC session
-    mgr.mark_voice_rtc_joined(&room, &user, "conn1", true);
+    mgr.mark_voice_rtc_joined(&room, &actor(user), "conn1", true);
 
     // Get connection info and verify RTC state
     let conn = mgr.get_connection("conn1");

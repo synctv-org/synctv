@@ -4090,7 +4090,7 @@ mod websocket_e2e {
             .connection_manager
             .get_room_connections(&room)
             .into_iter()
-            .filter(|conn| conn.user_id == user_id && conn.voice_rtc_joined)
+            .filter(|conn| conn.actor.user_id() == Some(user_id) && conn.voice_rtc_joined)
             .collect();
 
         assert_eq!(

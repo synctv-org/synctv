@@ -325,7 +325,7 @@ async fn test_settings_write_uses_redis_allocated_version() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_settings_reserve_rejects_stale_snapshot_without_advancing_fence() {
+async fn test_settings_reserve_repairs_stale_committed_fence() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = ok(
@@ -372,18 +372,22 @@ async fn test_settings_reserve_rejects_stale_snapshot_without_advancing_fence() 
         "concurrent writer should advance fence",
     );
 
-    let result = service.begin_write(&room.id, stale_observed_version).await;
-    assert!(
-        matches!(result, Err(Error::OptimisticLockConflict)),
-        "stale settings snapshots must retry before reserving a fence version; got {result:?}"
-    );
+    let reservation = ok(
+        service.begin_write(&room.id, stale_observed_version).await,
+        "stale committed fence without a pending writer should be repaired",
+    )
+    .expect("authoritative fence should reserve a version");
+    assert_eq!(reservation.version, stale_observed_version + 1);
+    let state = ok(
+        fence.current_state(&domain).await,
+        "fence should be readable",
+    )
+    .expect("fence state should exist");
+    assert_eq!(state.committed_version, stale_observed_version);
+    assert_eq!(state.pending_version, Some(stale_observed_version + 1));
     assert_eq!(
-        ok(
-            fence.current_version(&domain).await,
-            "fence should be readable"
-        ),
-        Some(stale_observed_version + 1),
-        "failed reservations must not burn additional fence versions"
+        state.pending_token.as_deref(),
+        Some(reservation.token.as_str())
     );
 }
 

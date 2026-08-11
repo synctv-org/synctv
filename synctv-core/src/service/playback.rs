@@ -655,7 +655,14 @@ impl PlaybackService {
         let new_version = reservation
             .as_ref()
             .map_or(state.version + 1, |reservation| reservation.version);
-        let mut tx = self.playback_repo.pool().begin().await?;
+        let mut tx = match self.playback_repo.pool().begin().await {
+            Ok(tx) => tx,
+            Err(error) => {
+                self.abort_playback_write(&state.room_id, reservation.as_ref())
+                    .await;
+                return Err(error.into());
+            }
+        };
         let result = async {
             if let Some(position) = previous_progress_position {
                 self.history_repo
@@ -912,7 +919,14 @@ impl PlaybackService {
         let new_version = reservation
             .as_ref()
             .map_or(previous.version + 1, |reservation| reservation.version);
-        let mut tx = self.playback_repo.pool().begin().await?;
+        let mut tx = match self.playback_repo.pool().begin().await {
+            Ok(tx) => tx,
+            Err(error) => {
+                self.abort_playback_write(&state.room_id, reservation.as_ref())
+                    .await;
+                return Err(error.into());
+            }
+        };
         let result = async {
             self.history_repo
                 .save_cursor_position_on_conn(&state.room_id, previous.computed_position(), &mut tx)
@@ -978,7 +992,11 @@ impl PlaybackService {
         .await;
         let (updated, chat_event) = match result {
             Ok(result) => {
-                tx.commit().await?;
+                if let Err(error) = tx.commit().await {
+                    self.abort_playback_write(&state.room_id, reservation.as_ref())
+                        .await;
+                    return Err(error.into());
+                }
                 result
             }
             Err(error) => {

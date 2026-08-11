@@ -327,9 +327,12 @@ impl SettingsService {
                 }
             };
             let domain = Self::runtime_setting_domain(key);
-            self.consistency
-                .repair_after_db_read(&domain, i64::from(database_version.unwrap_or(0)))
-                .await;
+            if database_version.is_none() {
+                // An absent setting has database version zero. Keep the
+                // insertion path aligned with that version when an old fence
+                // remains from a previously removed key.
+                self.consistency.repair_after_db_read(&domain, 0).await;
+            }
             let observed_fence_version = if let Some(version) = database_version {
                 i64::from(version)
             } else {

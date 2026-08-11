@@ -1139,7 +1139,40 @@ impl ConsistencyCoordinator {
 
         let result = self.fence_store.begin_write(domain, observed_version).await;
         Self::record_result(domain, "begin_write", &result);
-        result.map(Some)
+        match result {
+            Ok(reservation) => Ok(Some(reservation)),
+            Err(error @ Error::OptimisticLockConflict) => {
+                // A committed fence can remain ahead of the database after an
+                // interrupted reservation finalization. Repair that state only
+                // when there is no active pending writer and use a CAS so a
+                // concurrent writer keeps ownership of the fence.
+                let Ok(Some(state)) = self.fence_store.current_state(domain).await else {
+                    return Err(error);
+                };
+                if state.pending_version.is_some() || state.committed_version <= observed_version {
+                    return Err(error);
+                }
+
+                let replaced = self
+                    .fence_store
+                    .replace_version_if_no_pending(
+                        domain,
+                        state.committed_version,
+                        observed_version,
+                    )
+                    .await;
+                match replaced {
+                    Ok(true) => {
+                        Self::record_success(domain, "begin_repair");
+                        let retry = self.fence_store.begin_write(domain, observed_version).await;
+                        Self::record_result(domain, "begin_write_retry", &retry);
+                        retry.map(Some)
+                    }
+                    Ok(false) | Err(_) => Err(error),
+                }
+            }
+            Err(error) => Err(error),
+        }
     }
 
     pub async fn commit_observed_write(&self, domain: &CacheDomain, version: i64) -> Result<i64> {
@@ -2188,6 +2221,33 @@ mod tests {
         assert_eq!(state.committed_version, 5);
         assert_eq!(state.pending_version, Some(6));
         assert_eq!(state.pending_token.as_deref(), Some(first.token.as_str()));
+    }
+
+    #[tokio::test]
+    async fn begin_repairs_committed_fence_left_ahead_without_pending_writer() {
+        let store = Arc::new(LocalVersionFenceStore::new());
+        let coordinator = ConsistencyCoordinator::new(store.clone());
+        let domain = room_settings_domain(1);
+
+        store
+            .set_version_at_least(&domain, 7)
+            .await
+            .checked("operation should succeed");
+
+        let reservation = coordinator
+            .begin_observed_write(&domain, 3)
+            .await
+            .checked("stale committed fence should be repaired")
+            .checked("authoritative local fence should reserve");
+        assert_eq!(reservation.version, 4);
+
+        let state = coordinator
+            .current_state(&domain)
+            .await
+            .checked("operation should succeed")
+            .checked("operation should succeed");
+        assert_eq!(state.committed_version, 3);
+        assert_eq!(state.pending_version, Some(4));
     }
 
     #[tokio::test]

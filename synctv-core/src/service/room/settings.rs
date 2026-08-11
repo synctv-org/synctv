@@ -211,10 +211,18 @@ impl RoomService {
                             )
                             .await?
                     };
-                    let outbox_event = outbox_event_factory
+                    let outbox_event = match outbox_event_factory
                         .as_ref()
                         .map(|factory| factory(settings, new_version))
-                        .transpose()?;
+                        .transpose()
+                    {
+                        Ok(event) => event,
+                        Err(error) => {
+                            self.abort_room_settings_write(&domain, reservation.as_ref())
+                                .await;
+                            return Err(error);
+                        }
+                    };
                     if let Err(error) = self
                         .insert_realtime_outbox_tx(&mut tx, outbox_event.as_ref())
                         .await
@@ -325,10 +333,18 @@ impl RoomService {
                                 )
                                 .await?
                         };
-                        let outbox_event = outbox_event_factory
+                        let outbox_event = match outbox_event_factory
                             .as_ref()
                             .map(|factory| factory(&updated_settings, new_version))
-                            .transpose()?;
+                            .transpose()
+                        {
+                            Ok(event) => event,
+                            Err(error) => {
+                                self.abort_room_settings_write(&domain, reservation.as_ref())
+                                    .await;
+                                return Err(error);
+                            }
+                        };
                         if let Err(error) = self
                             .insert_realtime_outbox_tx(&mut tx, outbox_event.as_ref())
                             .await
@@ -456,10 +472,18 @@ impl RoomService {
                             )
                             .await?
                     };
-                    let outbox_event = outbox_event_factory
+                    let outbox_event = match outbox_event_factory
                         .as_ref()
                         .map(|factory| factory(&default_settings, new_version))
-                        .transpose()?;
+                        .transpose()
+                    {
+                        Ok(event) => event,
+                        Err(error) => {
+                            self.abort_room_settings_write(&domain, reservation.as_ref())
+                                .await;
+                            return Err(error);
+                        }
+                    };
                     if let Err(error) = self
                         .insert_realtime_outbox_tx(&mut tx, outbox_event.as_ref())
                         .await

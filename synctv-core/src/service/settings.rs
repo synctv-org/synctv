@@ -177,6 +177,12 @@ impl SettingsService {
                 "Loaded setting '{}.{}' = '{}'",
                 setting.group_name, setting.key, setting.value
             );
+            self.consistency
+                .repair_after_db_read(
+                    &Self::runtime_setting_domain(&setting.key),
+                    i64::from(setting.version),
+                )
+                .await;
             self.cache.insert(setting.key.clone(), setting);
         }
 
@@ -321,6 +327,9 @@ impl SettingsService {
                 }
             };
             let domain = Self::runtime_setting_domain(key);
+            self.consistency
+                .repair_after_db_read(&domain, i64::from(database_version.unwrap_or(0)))
+                .await;
             let observed_fence_version = if let Some(version) = database_version {
                 i64::from(version)
             } else {
@@ -419,6 +428,8 @@ impl SettingsService {
                         warn!(%rollback_error, "Failed to roll back conflicting runtime settings batch");
                     }
                     self.abort_reserved_settings_writes(&fences).await;
+                    self.repair_aborted_settings_fences(repository, &fences)
+                        .await;
                     return Err(Error::OptimisticLockConflict);
                 }
                 Err(error) => {
@@ -727,6 +738,30 @@ impl SettingsService {
         for fence in fences {
             self.consistency
                 .abort_reserved_write(&fence.domain, fence.reservation.as_ref())
+                .await;
+        }
+    }
+
+    async fn repair_aborted_settings_fences(
+        &self,
+        repository: &SettingsRepository,
+        fences: &[RuntimeSettingWriteFence],
+    ) {
+        for fence in fences {
+            let database_version = match repository.current_version_optional(&fence.key).await {
+                Ok(Some(version)) => i64::from(version),
+                Ok(None) => 0,
+                Err(error) => {
+                    warn!(
+                        key = %fence.key,
+                        error = %error,
+                        "Failed to read runtime setting version after an aborted write"
+                    );
+                    continue;
+                }
+            };
+            self.consistency
+                .repair_after_db_read(&fence.domain, database_version)
                 .await;
         }
     }

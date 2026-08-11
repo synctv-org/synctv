@@ -184,6 +184,21 @@ pub trait VersionFenceStore: Send + Sync {
 
     async fn set_version_at_least(&self, domain: &CacheDomain, version: i64) -> Result<i64>;
 
+    /// Replace a committed fence version when the fence is still at the
+    /// expected value and no write reservation is pending.
+    ///
+    /// Implementations use an atomic compare-and-set operation. Returning
+    /// `false` means a concurrent writer changed the fence before the repair
+    /// could be applied.
+    async fn replace_version_if_no_pending(
+        &self,
+        _domain: &CacheDomain,
+        _expected_version: i64,
+        _version: i64,
+    ) -> Result<bool> {
+        Ok(false)
+    }
+
     async fn reserve_next_after_observed_version(
         &self,
         domain: &CacheDomain,
@@ -271,6 +286,7 @@ pub enum FenceRepairDecision {
     FinalizePending,
     ExpirePending,
     AdvanceCommitted,
+    ResetCommitted,
     Noop,
 }
 
@@ -355,6 +371,26 @@ impl VersionFenceStore for LocalVersionFenceStore {
         }
 
         Ok(committed)
+    }
+
+    async fn replace_version_if_no_pending(
+        &self,
+        domain: &CacheDomain,
+        expected_version: i64,
+        version: i64,
+    ) -> Result<bool> {
+        let mut state = self.state.lock();
+        if state.pending.contains_key(domain) {
+            return Ok(false);
+        }
+        let Some(current) = state.versions.get_mut(domain) else {
+            return Ok(expected_version == 0 && version == 0);
+        };
+        if *current != expected_version {
+            return Ok(false);
+        }
+        *current = version;
+        Ok(true)
     }
 
     async fn reserve_next_after_observed_version(
@@ -452,6 +488,19 @@ impl VersionFenceStore for LocalVersionFenceStore {
             .is_some_and(|current| current == reservation)
         {
             state.pending.remove(domain);
+            // A local reservation advances the committed value while the
+            // database transaction is in flight. Roll that reservation back
+            // when the transaction is aborted so the fence remains aligned
+            // with the last committed database version.
+            if state
+                .versions
+                .get(domain)
+                .is_some_and(|current| *current == reservation.version)
+            {
+                state
+                    .versions
+                    .insert(domain.clone(), reservation.version.saturating_sub(1));
+            }
         }
         Ok(())
     }
@@ -676,6 +725,54 @@ impl VersionFenceStore for RedisVersionFenceStore {
         .map_err(Error::from)
     }
 
+    async fn replace_version_if_no_pending(
+        &self,
+        domain: &CacheDomain,
+        expected_version: i64,
+        version: i64,
+    ) -> Result<bool> {
+        static REPLACE_IF_NO_PENDING: std::sync::LazyLock<redis::Script> =
+            std::sync::LazyLock::new(|| {
+                redis::Script::new(
+                    r"
+                        local pending_version = redis.call('HGET', KEYS[2], 'version')
+                        if pending_version ~= false then
+                            return 0
+                        end
+
+                        local raw_current = redis.call('GET', KEYS[1])
+                        local current = tonumber(raw_current or '0')
+                        local expected = tonumber(ARGV[1])
+                        local replacement = tonumber(ARGV[2])
+                        if not expected or not replacement or current ~= expected then
+                            return 0
+                        end
+
+                        redis.call('SET', KEYS[1], replacement)
+                        return 1
+                        ",
+                )
+            });
+
+        let key = self.key(domain);
+        let pending_key = format!("{key}:pending");
+        let mut conn = self.conn("replace cache version fence").await?;
+        let replaced = tokio::time::timeout(
+            self.timeout(),
+            REPLACE_IF_NO_PENDING
+                .key(key)
+                .key(pending_key)
+                .arg(expected_version)
+                .arg(version)
+                .invoke_async::<i64>(&mut conn),
+        )
+        .await
+        .map_err(|_| Error::Timeout("Redis timeout: replace cache version fence".to_string()))?
+        .map_err(Error::from)?;
+
+        Ok(replaced == 1)
+    }
+
     async fn reserve_next_after_observed_version(
         &self,
         domain: &CacheDomain,
@@ -875,6 +972,11 @@ impl VersionFenceStore for RedisVersionFenceStore {
                     local pending_version = tonumber(pending_version_raw)
                     if pending_version == requested_version and pending_token == requested_token then
                         redis.call('DEL', KEYS[1])
+                        local committed_raw = redis.call('GET', KEYS[2])
+                        local committed = tonumber(committed_raw or '0')
+                        if committed == requested_version then
+                            redis.call('SET', KEYS[2], requested_version - 1)
+                        end
                         return 1
                     end
 
@@ -890,6 +992,7 @@ impl VersionFenceStore for RedisVersionFenceStore {
             self.timeout(),
             ABORT_WRITE
                 .key(pending_key)
+                .key(key)
                 .arg(reservation.version)
                 .arg(&reservation.token)
                 .invoke_async::<i64>(&mut conn),
@@ -1216,6 +1319,21 @@ impl ConsistencyCoordinator {
                             Err(error) => Self::record_repair_error(domain, &error),
                         }
                     }
+                    FenceRepairDecision::ResetCommitted => {
+                        match self
+                            .fence_store
+                            .replace_version_if_no_pending(
+                                domain,
+                                state.committed_version,
+                                db_version,
+                            )
+                            .await
+                        {
+                            Ok(true) => Self::record_repair(domain, "reset_committed"),
+                            Ok(false) => Self::record_repair(domain, "reset_skipped"),
+                            Err(error) => Self::record_repair_error(domain, &error),
+                        }
+                    }
                     FenceRepairDecision::KeepPending => {
                         Self::record_repair(domain, "pending_still_ahead");
                     }
@@ -1298,6 +1416,9 @@ impl ConsistencyCoordinator {
 
         if state.committed_version < db_version {
             return FenceRepairDecision::AdvanceCommitted;
+        }
+        if state.committed_version > db_version {
+            return FenceRepairDecision::ResetCommitted;
         }
 
         FenceRepairDecision::Noop
@@ -1697,6 +1818,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn local_version_fence_abort_restores_reserved_version() {
+        let store = LocalVersionFenceStore::new();
+        let domain = room_settings_domain(1);
+        store
+            .set_version_at_least(&domain, 7)
+            .await
+            .checked("seed version should succeed");
+
+        let reservation = store
+            .begin_write(&domain, 7)
+            .await
+            .checked("reservation should succeed");
+        assert_eq!(reservation.version, 8);
+        assert_eq!(
+            store
+                .current_version(&domain)
+                .await
+                .checked("version read should succeed"),
+            Some(7)
+        );
+
+        store
+            .abort_write(&domain, &reservation)
+            .await
+            .checked("abort should succeed");
+
+        assert_eq!(
+            store
+                .current_version(&domain)
+                .await
+                .checked("version read should succeed"),
+            Some(7)
+        );
+        assert_eq!(
+            store
+                .current_state(&domain)
+                .await
+                .checked("state read should succeed")
+                .checked("state should exist")
+                .pending_version,
+            None
+        );
+    }
+
+    #[tokio::test]
     async fn coordinator_hides_cache_fence_while_local_write_is_pending() {
         let store = Arc::new(LocalVersionFenceStore::new());
         let coordinator = ConsistencyCoordinator::new(store.clone());
@@ -1896,6 +2062,35 @@ mod tests {
             state.pending_version,
             Some(1),
             "an unexpired pending reservation must keep strong reads on the DB fallback path"
+        );
+    }
+
+    #[tokio::test]
+    async fn coordinator_repair_resets_stale_committed_fence_to_database_version() {
+        let store = Arc::new(LocalVersionFenceStore::new());
+        let coordinator = ConsistencyCoordinator::new(store.clone());
+        let domain = room_settings_domain(1);
+
+        store
+            .set_version_at_least(&domain, 2)
+            .await
+            .checked("stale fence should be seeded");
+        coordinator.repair_after_db_read(&domain, 0).await;
+
+        let state = coordinator
+            .current_state(&domain)
+            .await
+            .checked("operation should succeed")
+            .checked("operation should succeed");
+        assert_eq!(state.committed_version, 0);
+        assert_eq!(state.pending_version, None);
+        assert_eq!(
+            coordinator
+                .begin_observed_write(&domain, 0)
+                .await
+                .checked("a repaired fence should allow the next write")
+                .map(|reservation| reservation.version),
+            Some(1)
         );
     }
 

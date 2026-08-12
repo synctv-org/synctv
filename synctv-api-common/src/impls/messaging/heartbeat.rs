@@ -1,6 +1,6 @@
 use rand::RngExt;
 use std::time::Duration;
-use synctv_core::models::UserId;
+use synctv_core::models::{RealtimeActor, UserId};
 
 /// Default TTL for membership cache entries (30 seconds).
 ///
@@ -62,6 +62,20 @@ impl HeartbeatSchedule {
             0
         } else {
             user_id.as_i64().unsigned_abs() % (self.max_jitter_secs + 1)
+        };
+        self.base_interval + Duration::from_secs(jitter_secs)
+    }
+
+    #[must_use]
+    pub fn period_for_actor(self, actor: &RealtimeActor) -> Duration {
+        use std::hash::{Hash, Hasher};
+
+        let jitter_secs = if self.max_jitter_secs == 0 {
+            0
+        } else {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            actor.connection_key().hash(&mut hasher);
+            hasher.finish() % (self.max_jitter_secs + 1)
         };
         self.base_interval + Duration::from_secs(jitter_secs)
     }

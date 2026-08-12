@@ -50,7 +50,7 @@ impl SeafileProviderService for SeafileProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Auth,
                 move |auth| async move {
-                    api.login(auth.user_id, req, instance.as_deref())
+                    api.login(auth.user_id(), req, instance.as_deref())
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },
@@ -73,7 +73,7 @@ impl SeafileProviderService for SeafileProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Write,
                 move |auth| async move {
-                    api.unlock_library(auth.user_id, req, instance.as_deref())
+                    api.unlock_library(auth.user_id(), req, instance.as_deref())
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },
@@ -96,7 +96,7 @@ impl SeafileProviderService for SeafileProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Read,
                 move |auth| async move {
-                    api.list_repositories(auth.user_id, req, instance.as_deref())
+                    api.list_repositories(auth.user_id(), req, instance.as_deref())
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },
@@ -116,7 +116,7 @@ impl SeafileProviderService for SeafileProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Read,
                 move |auth| async move {
-                    api.list(auth.user_id, req, instance.as_deref())
+                    api.list(auth.user_id(), req, instance.as_deref())
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },
@@ -139,7 +139,7 @@ impl SeafileProviderService for SeafileProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Read,
                 move |auth| async move {
-                    api.list_starred(auth.user_id, req, instance.as_deref())
+                    api.list_starred(auth.user_id(), req, instance.as_deref())
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },
@@ -161,7 +161,7 @@ impl SeafileProviderService for SeafileProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Write,
                 move |auth| async move {
-                    api.logout(auth.user_id, req)
+                    api.logout(auth.user_id(), req)
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },
@@ -184,7 +184,7 @@ impl SeafileProviderService for SeafileProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Read,
                 move |auth| async move {
-                    api.binds(auth.user_id, instance.as_deref())
+                    api.binds(auth.user_id(), instance.as_deref())
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },

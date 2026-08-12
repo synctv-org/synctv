@@ -387,12 +387,14 @@ fn playlist_source_config_to_proto(
                         )
                     }
                     synctv_core::models::FnosPlaylistSource::MediaLibrary {
-                        ancestor_guid,
+                        library_guid,
                         media_types,
+                        parent_guid,
                     } => source_config_proto::fnos_playlist_source_config::Source::MediaLibrary(
                         source_config_proto::FnosMediaLibraryPlaylistSourceConfig {
-                            ancestor_guid,
+                            library_guid,
                             media_types,
+                            parent_guid,
                         },
                     ),
                     synctv_core::models::FnosPlaylistSource::Favorites { media_types } => {

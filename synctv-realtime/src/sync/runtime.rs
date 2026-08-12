@@ -6,13 +6,14 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use super::connection_manager::{
-    ConnectionInfo, ConnectionLimits, ConnectionManager, ConnectionMetrics, DisconnectSignal,
-    RoomDisconnectReason, ShutdownReport, VoiceRtcJoinOutcome,
+    ConnectionInfo, ConnectionLimits, ConnectionManager, ConnectionMetrics,
+    ConnectionReservationError, DisconnectSignal, RoomDisconnectReason, ShutdownReport,
+    VoiceRtcJoinOutcome,
 };
 use super::room_hub::{ConnectionId, RoomLifecycleEvent, RoomMessageHub};
 use super::{RealtimeEvent, SharedRealtimeEvent};
 use crate::error::{Error, Result};
-use synctv_core::models::id::{RoomId, UserId};
+use synctv_core::models::{RealtimeActor, RoomId, UserId};
 use synctv_core::{service::OnlinePresenceService, SharedStateMode, SharedStateProfile};
 
 pub fn build_connection_manager(
@@ -92,7 +93,7 @@ pub trait RoomMessageRuntime: Send + Sync {
     async fn subscribe(
         &self,
         room_id: RoomId,
-        user_id: UserId,
+        actor: RealtimeActor,
         connection_id: ConnectionId,
     ) -> Result<mpsc::Receiver<SharedRealtimeEvent>>;
 
@@ -121,12 +122,12 @@ pub trait RoomMessageRuntime: Send + Sync {
 
     fn remove_room(&self, room_id: &RoomId);
 
-    fn get_room_subscribers(&self, room_id: &RoomId) -> Vec<(UserId, ConnectionId)>;
+    fn get_room_subscribers(&self, room_id: &RoomId) -> Vec<(RealtimeActor, ConnectionId)>;
 
     async fn get_room_subscribers_replicas_wide(
         &self,
         room_id: &RoomId,
-    ) -> Result<Vec<(UserId, ConnectionId)>>;
+    ) -> Result<Vec<(RealtimeActor, ConnectionId)>>;
 
     async fn audit_shared_subscriptions(&self) -> std::result::Result<usize, String>;
 
@@ -147,8 +148,7 @@ pub trait ConnectionRuntime: Send + Sync {
     async fn register_actor(
         &self,
         connection_id: String,
-        user_id: UserId,
-        actor_id: String,
+        actor: RealtimeActor,
     ) -> std::result::Result<(), String>;
 
     async fn join_room(
@@ -161,13 +161,26 @@ pub trait ConnectionRuntime: Send + Sync {
 
     fn record_message(&self, connection_id: &str);
 
-    fn reserve_room_slot(&self, room_id: &RoomId) -> std::result::Result<(), String>;
+    fn reserve_room_slot(
+        &self,
+        room_id: &RoomId,
+    ) -> std::result::Result<(), ConnectionReservationError>;
 
-    fn reserve_user_slot(&self, user_id: &UserId) -> std::result::Result<(), String>;
+    fn reserve_user_slot(
+        &self,
+        user_id: &UserId,
+    ) -> std::result::Result<(), ConnectionReservationError>;
+
+    fn reserve_actor_slot(
+        &self,
+        actor: &RealtimeActor,
+    ) -> std::result::Result<(), ConnectionReservationError>;
 
     fn release_room_reservation(&self, room_id: &RoomId);
 
     fn release_user_reservation(&self, user_id: &UserId);
+
+    fn release_actor_reservation(&self, actor: &RealtimeActor);
 
     fn subscribe_disconnect(&self) -> broadcast::Receiver<DisconnectSignal>;
 
@@ -188,6 +201,8 @@ pub trait ConnectionRuntime: Send + Sync {
 
     fn get_user_connections(&self, user_id: &UserId) -> Vec<ConnectionInfo>;
 
+    fn get_actor_connections(&self, actor: &RealtimeActor) -> Vec<ConnectionInfo>;
+
     fn get_room_connections(&self, room_id: &RoomId) -> Vec<ConnectionInfo>;
 
     fn get_connection_id(&self, room_id: &RoomId, user_id: &UserId) -> Option<String>;
@@ -195,7 +210,7 @@ pub trait ConnectionRuntime: Send + Sync {
     async fn try_join_voice_rtc(
         &self,
         room_id: &RoomId,
-        user_id: &UserId,
+        actor: &RealtimeActor,
         conn_id: &str,
         max_participants: usize,
     ) -> std::result::Result<VoiceRtcJoinOutcome, String>;
@@ -203,14 +218,14 @@ pub trait ConnectionRuntime: Send + Sync {
     async fn leave_voice_rtc(
         &self,
         room_id: &RoomId,
-        user_id: &UserId,
+        actor: &RealtimeActor,
         conn_id: &str,
     ) -> std::result::Result<bool, String>;
 
     fn mark_voice_rtc_joined(
         &self,
         room_id: &RoomId,
-        user_id: &UserId,
+        actor: &RealtimeActor,
         conn_id: &str,
         joined: bool,
     );
@@ -262,10 +277,9 @@ impl ConnectionRuntime for ConnectionManager {
     async fn register_actor(
         &self,
         connection_id: String,
-        user_id: UserId,
-        actor_id: String,
+        actor: RealtimeActor,
     ) -> std::result::Result<(), String> {
-        ConnectionManager::register_actor(self, connection_id, user_id, actor_id).await
+        ConnectionManager::register_actor(self, connection_id, actor).await
     }
 
     async fn join_room(
@@ -284,12 +298,25 @@ impl ConnectionRuntime for ConnectionManager {
         ConnectionManager::record_message(self, connection_id);
     }
 
-    fn reserve_room_slot(&self, room_id: &RoomId) -> std::result::Result<(), String> {
+    fn reserve_room_slot(
+        &self,
+        room_id: &RoomId,
+    ) -> std::result::Result<(), ConnectionReservationError> {
         ConnectionManager::reserve_room_slot(self, room_id)
     }
 
-    fn reserve_user_slot(&self, user_id: &UserId) -> std::result::Result<(), String> {
+    fn reserve_user_slot(
+        &self,
+        user_id: &UserId,
+    ) -> std::result::Result<(), ConnectionReservationError> {
         ConnectionManager::reserve_user_slot(self, user_id)
+    }
+
+    fn reserve_actor_slot(
+        &self,
+        actor: &RealtimeActor,
+    ) -> std::result::Result<(), ConnectionReservationError> {
+        ConnectionManager::reserve_actor_slot(self, actor)
     }
 
     fn release_room_reservation(&self, room_id: &RoomId) {
@@ -298,6 +325,10 @@ impl ConnectionRuntime for ConnectionManager {
 
     fn release_user_reservation(&self, user_id: &UserId) {
         ConnectionManager::release_user_reservation(self, user_id);
+    }
+
+    fn release_actor_reservation(&self, actor: &RealtimeActor) {
+        ConnectionManager::release_actor_reservation(self, actor);
     }
 
     fn subscribe_disconnect(&self) -> broadcast::Receiver<DisconnectSignal> {
@@ -335,6 +366,10 @@ impl ConnectionRuntime for ConnectionManager {
         ConnectionManager::get_user_connections(self, user_id)
     }
 
+    fn get_actor_connections(&self, actor: &RealtimeActor) -> Vec<ConnectionInfo> {
+        ConnectionManager::get_actor_connections(self, actor)
+    }
+
     fn get_room_connections(&self, room_id: &RoomId) -> Vec<ConnectionInfo> {
         ConnectionManager::get_room_connections(self, room_id)
     }
@@ -346,31 +381,30 @@ impl ConnectionRuntime for ConnectionManager {
     async fn try_join_voice_rtc(
         &self,
         room_id: &RoomId,
-        user_id: &UserId,
+        actor: &RealtimeActor,
         conn_id: &str,
         max_participants: usize,
     ) -> std::result::Result<VoiceRtcJoinOutcome, String> {
-        ConnectionManager::try_join_voice_rtc(self, room_id, user_id, conn_id, max_participants)
-            .await
+        ConnectionManager::try_join_voice_rtc(self, room_id, actor, conn_id, max_participants).await
     }
 
     async fn leave_voice_rtc(
         &self,
         room_id: &RoomId,
-        user_id: &UserId,
+        actor: &RealtimeActor,
         conn_id: &str,
     ) -> std::result::Result<bool, String> {
-        ConnectionManager::leave_voice_rtc(self, room_id, user_id, conn_id).await
+        ConnectionManager::leave_voice_rtc(self, room_id, actor, conn_id).await
     }
 
     fn mark_voice_rtc_joined(
         &self,
         room_id: &RoomId,
-        user_id: &UserId,
+        actor: &RealtimeActor,
         conn_id: &str,
         joined: bool,
     ) {
-        ConnectionManager::mark_voice_rtc_joined(self, room_id, user_id, conn_id, joined);
+        ConnectionManager::mark_voice_rtc_joined(self, room_id, actor, conn_id, joined);
     }
 
     async fn sync_connection_metadata_distributed(

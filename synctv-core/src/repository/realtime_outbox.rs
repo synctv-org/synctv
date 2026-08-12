@@ -963,7 +963,7 @@ fn resource_summary_details(event: &NewRealtimeOutboxEvent) -> Result<Option<Res
                 member: RoomMemberResourceSummary::User {
                     user_id: user_id.as_i64(),
                     username: Some(username.clone()),
-                    role: Some(i64::from(*role)),
+                    role: Some(i64::from(i32::from(*role))),
                     permissions: Some(permission_bits(*permissions)),
                     added_permissions: Some(permission_bits(*added_permissions)),
                     removed_permissions: Some(permission_bits(*removed_permissions)),
@@ -987,7 +987,7 @@ fn resource_summary_details(event: &NewRealtimeOutboxEvent) -> Result<Option<Res
                 member: RoomMemberResourceSummary::Guest {
                     guest_id: guest_id.clone(),
                     username: Some(username.clone()),
-                    role: Some(i64::from(*role)),
+                    role: Some(i64::from(i32::from(*role))),
                     permissions: Some(permission_bits(*permissions)),
                     joined_at: Some(*joined_at),
                 },
@@ -1040,7 +1040,7 @@ fn resource_summary_details(event: &NewRealtimeOutboxEvent) -> Result<Option<Res
                     changed_by: Some(changed_by.as_i64()),
                     changed_by_username: Some(changed_by_username.clone()),
                     role_changed: *role_changed,
-                    role: Some(i64::from(*role)),
+                    role: Some(i64::from(i32::from(*role))),
                     new_permissions: Some(permission_bits(*new_permissions)),
                     added_permissions: Some(permission_bits(*added_permissions)),
                     removed_permissions: Some(permission_bits(*removed_permissions)),

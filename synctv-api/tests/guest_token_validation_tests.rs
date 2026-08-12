@@ -28,7 +28,10 @@ async fn test_shared_validation_rejects_blacklisted_guest_token() {
 
     // Extract JTI and blacklist it (simulating guest kick)
     let claims = jwt.verify_guest_token(&token).unwrap();
-    validator.blacklist_token(&claims.jti, 3600).await.unwrap();
+    validator
+        .blacklist_token(claims.token_id(), 3600)
+        .await
+        .unwrap();
 
     let result = validator.validate_async(&token).await;
     assert!(
@@ -81,7 +84,10 @@ async fn test_blacklist_and_guest_version_checks_are_both_applied() {
     let result = validator.validate_with_version_async(&token, 3).await;
     assert!(result.is_ok(), "Token should pass when both checks succeed");
 
-    validator.blacklist_token(&claims.jti, 3600).await.unwrap();
+    validator
+        .blacklist_token(claims.token_id(), 3600)
+        .await
+        .unwrap();
     let result = validator.validate_with_version_async(&token, 3).await;
     assert!(
         result.is_err(),
@@ -132,8 +138,8 @@ async fn test_valid_guest_token_passes_validation() {
     assert!(result.is_ok(), "Valid guest token should pass validation");
 
     let claims = result.unwrap();
-    assert_eq!(claims.room_id().unwrap(), room_id);
-    assert!(claims.is_guest());
+    assert_eq!(claims.room_id(), room_id);
+    assert!(!claims.session_id().is_empty());
 }
 
 /// Test that a blacklisted guest token is rejected.
@@ -153,7 +159,10 @@ async fn test_blacklisted_guest_token_is_rejected() {
     let claims = validator.validate_async(&token).await.unwrap();
 
     // Blacklist the token (simulating what happens when a guest is kicked)
-    validator.blacklist_token(&claims.jti, 3600).await.unwrap();
+    validator
+        .blacklist_token(claims.token_id(), 3600)
+        .await
+        .unwrap();
 
     // Now validation should fail
     let result = validator.validate_async(&token).await;
@@ -279,7 +288,10 @@ async fn test_combined_blacklist_and_version_check() {
     );
 
     // Test 3: Blacklist check fails (version OK)
-    validator.blacklist_token(&claims.jti, 3600).await.unwrap();
+    validator
+        .blacklist_token(claims.token_id(), 3600)
+        .await
+        .unwrap();
     let result = validator.validate_with_version_async(&token, 3).await;
     assert!(
         result.is_err(),

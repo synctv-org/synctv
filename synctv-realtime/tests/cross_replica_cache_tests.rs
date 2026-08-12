@@ -12,6 +12,7 @@ use std::time::Duration;
 use chrono::Utc;
 use synctv_core::cache::{CacheInvalidationRuntime, CacheInvalidationService, InvalidationMessage};
 use synctv_core::models::id::{RoomId, UserId};
+use synctv_core::models::RoomRole;
 use synctv_core::{DirectRedisConnectionRuntime, RedisConnectionRuntime, SharedStateProfile};
 use synctv_core_testing::redis_connection_manager;
 use synctv_realtime::sync::{
@@ -20,7 +21,8 @@ use synctv_realtime::sync::{
 use synctv_realtime::sync::{CacheTarget, RealtimeEvent};
 mod integration_test_helpers;
 use integration_test_helpers::{
-    broadcast_until_cache_invalidation, broadcast_until_room_event, create_node, TestRedis,
+    broadcast_until_cache_invalidation, broadcast_until_room_event, create_node, user_actor,
+    TestRedis,
 };
 
 fn shared_message_runtime(
@@ -163,7 +165,7 @@ async fn test_cross_replica_permission_changed() {
 
     // Subscribe on node A (simulating a WebSocket client on node A watching the room)
     let (mut room_rx, conn_id) = node_a
-        .subscribe(room_id, user_id)
+        .subscribe(room_id, user_actor(user_id))
         .await
         .expect("subscribe should succeed");
 
@@ -182,7 +184,7 @@ async fn test_cross_replica_permission_changed() {
                 synctv_core::models::RoomPermissionSet::default_member().0
                     | synctv_core::models::RoomAdminPermissionBits::REMOVE_MEMBERS,
             ),
-            role: 3,
+            role: RoomRole::Member,
             added_permissions: synctv_core::models::RoomPermissionSet(
                 synctv_core::models::RoomAdminPermissionBits::REMOVE_MEMBERS,
             ),

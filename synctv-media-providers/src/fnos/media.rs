@@ -61,7 +61,7 @@ impl FnosMediaClient {
             .header(header::USER_AGENT, PROVIDER_USER_AGENT);
         if let Some(token) = token.filter(|value| !value.is_empty()) {
             request = request
-                .bearer_auth(token)
+                .header(header::AUTHORIZATION, token)
                 .header(header::COOKIE, format!("Trim-MC-token={token}"));
         }
         if let Some(body) = body {
@@ -140,6 +140,29 @@ impl FnosMediaClient {
         .await
     }
 
+    pub async fn all_items(
+        &self,
+        token: &str,
+        request: &FnosMediaListRequest,
+    ) -> Result<Vec<super::media_types::FnosMediaItem>, ProviderClientError> {
+        let mut request = request.clone();
+        request.page = 1;
+        request.page_size = 200;
+        let mut items = Vec::new();
+        loop {
+            let response = self.items(token, &request).await?;
+            let total = response.total;
+            let page_items = response.list.unwrap_or_default();
+            let page_len = page_items.len();
+            items.extend(page_items);
+            if page_len == 0 || u64::try_from(items.len()).unwrap_or(u64::MAX) >= total {
+                break;
+            }
+            request.page = request.page.saturating_add(1);
+        }
+        Ok(items)
+    }
+
     pub async fn favorites(
         &self,
         token: &str,
@@ -185,7 +208,7 @@ impl FnosMediaClient {
             .request(Method::GET, self.endpoint(path))
             .header("Authx", authx_data(path, canonical_query.as_bytes()))
             .header(header::USER_AGENT, PROVIDER_USER_AGENT)
-            .bearer_auth(token)
+            .header(header::AUTHORIZATION, token)
             .header(header::COOKIE, format!("Trim-MC-token={token}"))
             .query(&[("q", query)]);
         Self::unwrap(request, "media search").await
@@ -366,7 +389,7 @@ impl FnosMediaClient {
     #[must_use]
     pub fn auth_headers(token: &str) -> std::collections::HashMap<String, String> {
         std::collections::HashMap::from([
-            ("Authorization".to_string(), format!("Bearer {token}")),
+            ("Authorization".to_string(), token.to_string()),
             ("Cookie".to_string(), format!("Trim-MC-token={token}")),
         ])
     }
@@ -454,6 +477,63 @@ mod tests {
     }
 
     #[test]
+    fn media_auth_headers_use_the_native_token_format() {
+        let headers = FnosMediaClient::auth_headers("media-token");
+        assert_eq!(headers["Authorization"], "media-token");
+        assert_eq!(headers["Cookie"], "Trim-MC-token=media-token");
+    }
+
+    #[tokio::test]
+    #[cfg(any(
+        feature = "tls-aws-lc",
+        feature = "tls-ring",
+        feature = "tls-webpki-roots",
+        feature = "tls-native-roots"
+    ))]
+    async fn lists_direct_children_with_library_and_parent_guids() {
+        crate::install_process_crypto_provider();
+        let server = MockServer::start().await;
+        let request = FnosMediaListRequest {
+            ancestor_guid: Some("library".to_string()),
+            parent_guid: Some("folder".to_string()),
+            exclude_grouped_video: 1,
+            sort_type: "ASC".to_string(),
+            sort_column: "title".to_string(),
+            page_size: 50,
+            page: 1,
+            tags: crate::fnos::media_types::FnosMediaTags::default(),
+        };
+        Mock::given(method("POST"))
+            .and(path("/v/api/v1/item/list"))
+            .and(header("authorization", "media-token"))
+            .and(header("cookie", "Trim-MC-token=media-token"))
+            .and(body_json(&request))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "code": 0,
+                "data": {
+                    "total": 1,
+                    "list": [{
+                        "guid": "video",
+                        "title": "Nested video",
+                        "type": "Video",
+                        "parent_guid": "folder",
+                        "ancestor_guid": "library"
+                    }]
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = FnosMediaClient::with_http_client(&server.uri(), Client::new())
+            .expect("test operation should succeed");
+        let response = client
+            .items("media-token", &request)
+            .await
+            .expect("test operation should succeed");
+        assert_eq!(response.list.unwrap_or_default()[0].guid, "video");
+    }
+
+    #[test]
     #[cfg(any(
         feature = "tls-aws-lc",
         feature = "tls-ring",
@@ -497,7 +577,7 @@ mod tests {
         };
         Mock::given(method("POST"))
             .and(path("/v/api/v1/play/play"))
-            .and(header("authorization", "Bearer media-token"))
+            .and(header("authorization", "media-token"))
             .and(header("cookie", "Trim-MC-token=media-token"))
             .and(header_exists("authx"))
             .and(body_json(&request))
@@ -536,7 +616,7 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/v/api/v1/search/list"))
             .and(query_param("q", "星际穿越"))
-            .and(header("authorization", "Bearer media-token"))
+            .and(header("authorization", "media-token"))
             .and(header("cookie", "Trim-MC-token=media-token"))
             .and(header_exists("authx"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -581,7 +661,7 @@ mod tests {
         ] {
             Mock::given(method(method_name))
                 .and(path(endpoint))
-                .and(header("authorization", "Bearer media-token"))
+                .and(header("authorization", "media-token"))
                 .and(header_exists("authx"))
                 .and(body_json(serde_json::json!({"guid": "item"})))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -616,6 +696,7 @@ mod tests {
         let server = MockServer::start().await;
         let request = FnosMediaListRequest {
             ancestor_guid: None,
+            parent_guid: None,
             exclude_grouped_video: 1,
             sort_type: "DESC".to_string(),
             sort_column: "create_time".to_string(),
@@ -694,7 +775,7 @@ mod tests {
         };
         Mock::given(method("POST"))
             .and(path("/v/api/v1/play/record"))
-            .and(header("authorization", "Bearer media-token"))
+            .and(header("authorization", "media-token"))
             .and(header("cookie", "Trim-MC-token=media-token"))
             .and(header_exists("authx"))
             .and(body_json(&request))
@@ -730,7 +811,7 @@ mod tests {
         };
         Mock::given(method("POST"))
             .and(path("/v/api/v1/media/p"))
-            .and(header("authorization", "Bearer media-token"))
+            .and(header("authorization", "media-token"))
             .and(header_exists("authx"))
             .and(body_json(&request))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({

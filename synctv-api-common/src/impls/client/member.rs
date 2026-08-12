@@ -125,7 +125,7 @@ fn room_join_review_row_to_proto(
             .encode_user_id(row.user_id)
             .map_err(ApiError::InvalidInput)?,
         username: row.username.clone(),
-        requested_role: row.requested_role,
+        requested_role: i32::from(row.requested_role),
         status: i32::from(i16::from(row.status)),
         requested_at: row.requested_at.timestamp(),
         reviewed_at: row.reviewed_at.map_or(0, |timestamp| timestamp.timestamp()),

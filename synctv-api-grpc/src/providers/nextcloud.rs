@@ -48,7 +48,7 @@ impl NextcloudProviderService for NextcloudProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Auth,
                 move |auth| async move {
-                    api.login(auth.user_id, req, instance.as_deref())
+                    api.login(auth.user_id(), req, instance.as_deref())
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },
@@ -91,7 +91,7 @@ impl NextcloudProviderService for NextcloudProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Auth,
                 move |auth| async move {
-                    api.poll_login_flow(auth.user_id, req, instance.as_deref())
+                    api.poll_login_flow(auth.user_id(), req, instance.as_deref())
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },
@@ -110,7 +110,7 @@ impl NextcloudProviderService for NextcloudProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Read,
                 move |auth| async move {
-                    api.list(auth.user_id, req, instance.as_deref())
+                    api.list(auth.user_id(), req, instance.as_deref())
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },
@@ -132,7 +132,7 @@ impl NextcloudProviderService for NextcloudProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Read,
                 move |auth| async move {
-                    api.list_favorites(auth.user_id, req, instance.as_deref())
+                    api.list_favorites(auth.user_id(), req, instance.as_deref())
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },
@@ -153,7 +153,7 @@ impl NextcloudProviderService for NextcloudProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Write,
                 move |auth| async move {
-                    api.logout(auth.user_id, req)
+                    api.logout(auth.user_id(), req)
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },
@@ -175,7 +175,7 @@ impl NextcloudProviderService for NextcloudProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Read,
                 move |auth| async move {
-                    api.binds(auth.user_id, instance.as_deref())
+                    api.binds(auth.user_id(), instance.as_deref())
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },

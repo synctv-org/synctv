@@ -227,7 +227,7 @@ impl BilibiliPlaybackProviderService for BilibiliPlaybackProviderGrpcService {
                                     .shared_api_runtime
                                     .bilibili_playback_provider_service,
                                 identity_runtime: super::playback_provider_identity_runtime(&state),
-                                actor_user_id: authenticated.user_id,
+                                actor_user_id: authenticated.user_id(),
                                 request_control: Some(&request_control),
                             },
                             req,

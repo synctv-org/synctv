@@ -49,7 +49,7 @@ impl QnapProviderService for QnapProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Auth,
                 move |auth| async move {
-                    api.login(auth.user_id, req, instance.as_deref())
+                    api.login(auth.user_id(), req, instance.as_deref())
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },
@@ -69,7 +69,7 @@ impl QnapProviderService for QnapProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Read,
                 move |auth| async move {
-                    api.list(auth.user_id, req, instance.as_deref())
+                    api.list(auth.user_id(), req, instance.as_deref())
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },
@@ -92,7 +92,7 @@ impl QnapProviderService for QnapProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Read,
                 move |auth| async move {
-                    api.capabilities(auth.user_id, req, instance.as_deref())
+                    api.capabilities(auth.user_id(), req, instance.as_deref())
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },
@@ -114,7 +114,7 @@ impl QnapProviderService for QnapProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Write,
                 move |auth| async move {
-                    api.logout(auth.user_id, req)
+                    api.logout(auth.user_id(), req)
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },
@@ -137,7 +137,7 @@ impl QnapProviderService for QnapProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Read,
                 move |auth| async move {
-                    api.binds(auth.user_id, instance.as_deref())
+                    api.binds(auth.user_id(), instance.as_deref())
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },

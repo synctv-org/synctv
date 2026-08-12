@@ -81,6 +81,12 @@ struct FnosTranscodeActionRequest<'a> {
     range_header: Option<&'a str>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FnosThumbnailCredentialKind {
+    WebDav,
+    Media,
+}
+
 impl FnosProvider {
     pub const NAME: &'static str = "fnos";
 
@@ -368,6 +374,22 @@ impl FnosProvider {
         Ok((client.items(&token, request).await?, instance_name))
     }
 
+    pub async fn all_media_items(
+        &self,
+        user_id: UserId,
+        server_id: &str,
+        request: &FnosMediaListRequest,
+    ) -> Result<
+        (
+            Vec<synctv_media_providers::fnos::FnosMediaItem>,
+            Option<String>,
+        ),
+        ProviderError,
+    > {
+        let (client, token, instance_name) = self.media_credential(user_id, server_id).await?;
+        Ok((client.all_items(&token, request).await?, instance_name))
+    }
+
     pub async fn favorite_media_items(
         &self,
         user_id: UserId,
@@ -539,11 +561,19 @@ impl FnosProvider {
             .and_then(|info| info.medias.get(media_index))
             .ok_or(ProviderError::NotFound)?;
         match &media.provider {
-            PlaybackMediaProvider::Fnos(PlaybackFnosMedia::FileRefresh {
-                credential_owner_id,
-                server_id,
-                path,
-            }) => {
+            PlaybackMediaProvider::Fnos(
+                PlaybackFnosMedia::FileRefresh {
+                    credential_owner_id,
+                    server_id,
+                    path,
+                }
+                | PlaybackFnosMedia::MediaOriginalRefresh {
+                    credential_owner_id,
+                    server_id,
+                    path,
+                    ..
+                },
+            ) => {
                 self.file_resource_action(credential_owner_id, server_id, path, range_header)
                     .await
             }
@@ -584,7 +614,8 @@ impl FnosProvider {
                 resource,
                 ..
             }) => match resource {
-                FnosProxyResource::File { path } => {
+                FnosProxyResource::File { path }
+                | FnosProxyResource::MediaOriginal { path, .. } => {
                     self.file_resource_action(credential_owner_id, server_id, path, range_header)
                         .await
                 }
@@ -658,6 +689,11 @@ impl FnosProvider {
                 server_id,
                 ..
             }
+            | PlaybackFnosMedia::MediaOriginalRefresh {
+                credential_owner_id,
+                server_id,
+                ..
+            }
             | PlaybackFnosMedia::TranscodeRefresh {
                 credential_owner_id,
                 server_id,
@@ -682,7 +718,9 @@ impl FnosProvider {
                     let (_, credential, _) = self.credential(user_id, server_id).await?;
                     webdav_headers(&credential)
                 }
-                FnosProxyResource::Media { .. } | FnosProxyResource::Transcode { .. } => {
+                FnosProxyResource::Media { .. }
+                | FnosProxyResource::MediaOriginal { .. }
+                | FnosProxyResource::Transcode { .. } => {
                     let user_id = credential_owner_id
                         .parse::<UserId>()
                         .map_err(ProviderError::InvalidConfig)?;
@@ -716,7 +754,7 @@ impl FnosProvider {
         let (endpoints, credential, _) = self.credential(user_id, server_id).await?;
         let webdav = self.client.webdav_config(&endpoints, &credential).await?;
         let url = FnosClient::webdav_file_url(&webdav, path)?;
-        super::playback_transport::transport_action_for_target_url(
+        super::playback_transport::stream_action_for_target_url(
             url,
             webdav_headers(&credential),
             range_header,
@@ -990,26 +1028,17 @@ impl FnosProvider {
                 _ => None,
             })
             .ok_or(ProviderError::NotFound)?;
-        let PlaybackFnosMedia::Proxy {
-            credential_owner_id,
-            server_id,
-            resource,
-            ..
-        } = provider
-        else {
-            return Err(ProviderError::InvalidConfig(
-                "FNOS thumbnail requires a versioned proxy resource".to_string(),
-            ));
-        };
+        let (credential_owner_id, server_id, credential_kind) =
+            fnos_thumbnail_credentials(provider)?;
         let user_id = credential_owner_id
             .parse::<UserId>()
             .map_err(ProviderError::InvalidConfig)?;
-        let headers = match resource {
-            FnosProxyResource::File { .. } => {
+        let headers = match credential_kind {
+            FnosThumbnailCredentialKind::WebDav => {
                 let (_, credential, _) = self.credential(user_id, server_id).await?;
                 webdav_headers(&credential)
             }
-            FnosProxyResource::Media { .. } | FnosProxyResource::Transcode { .. } => {
+            FnosThumbnailCredentialKind::Media => {
                 let (_, token, _) = self.media_credential(user_id, server_id).await?;
                 FnosMediaClient::auth_headers(&token)
             }
@@ -1237,10 +1266,9 @@ impl FnosProvider {
         base: &FnosPlaylistSourceConfig,
         item: &DynamicPlaylistItem,
     ) -> Result<NextPlayItem, ProviderError> {
-        let (item_guid, media_guid) =
-            decode_media_target(Some(&item.target))?.ok_or_else(|| {
-                ProviderError::InvalidConfig("FNOS media target is required".to_string())
-            })?;
+        let target = decode_media_target(Some(&item.target))?.ok_or_else(|| {
+            ProviderError::InvalidConfig("FNOS media target is required".to_string())
+        })?;
         Ok(NextPlayItem {
             name: item.name.clone(),
             item_type: item.item_type,
@@ -1248,8 +1276,8 @@ impl FnosProvider {
                 server_id: base.server_id.clone(),
                 proxy_mode: base.proxy_mode,
                 source: FnosMediaSource::LibraryItem {
-                    item_guid,
-                    media_guid,
+                    item_guid: target.item_guid,
+                    media_guid: target.media_guid,
                 },
             }),
             target: item.target.clone(),
@@ -1307,6 +1335,59 @@ fn webdav_headers(credential: &FnosCredential) -> HashMap<String, String> {
     let value = base64::engine::general_purpose::STANDARD
         .encode(format!("{}:{}", credential.username, credential.password));
     HashMap::from([("Authorization".to_string(), format!("Basic {value}"))])
+}
+
+fn fnos_thumbnail_credentials(
+    provider: &PlaybackFnosMedia,
+) -> Result<(&str, &str, FnosThumbnailCredentialKind), ProviderError> {
+    match provider {
+        PlaybackFnosMedia::FileRefresh {
+            credential_owner_id,
+            server_id,
+            ..
+        } => Ok((
+            credential_owner_id,
+            server_id,
+            FnosThumbnailCredentialKind::WebDav,
+        )),
+        PlaybackFnosMedia::MediaRefresh {
+            credential_owner_id,
+            server_id,
+            ..
+        }
+        | PlaybackFnosMedia::MediaOriginalRefresh {
+            credential_owner_id,
+            server_id,
+            ..
+        }
+        | PlaybackFnosMedia::TranscodeRefresh {
+            credential_owner_id,
+            server_id,
+            ..
+        } => Ok((
+            credential_owner_id,
+            server_id,
+            FnosThumbnailCredentialKind::Media,
+        )),
+        PlaybackFnosMedia::Proxy {
+            credential_owner_id,
+            server_id,
+            resource,
+            ..
+        } => Ok((
+            credential_owner_id,
+            server_id,
+            match resource {
+                FnosProxyResource::File { .. } => FnosThumbnailCredentialKind::WebDav,
+                FnosProxyResource::Media { .. }
+                | FnosProxyResource::MediaOriginal { .. }
+                | FnosProxyResource::Transcode { .. } => FnosThumbnailCredentialKind::Media,
+            },
+        )),
+        PlaybackFnosMedia::Direct { .. } => Err(ProviderError::InvalidConfig(
+            "FNOS thumbnail requires credential-backed media context".to_string(),
+        )),
+    }
 }
 
 fn validate_path(path: &str) -> Result<(), ProviderError> {
@@ -1387,9 +1468,15 @@ fn decode_file_target(target: Option<&ProviderTarget>) -> Result<Option<String>,
     Ok(Some(relative_path.clone()))
 }
 
+struct FnosMediaTarget {
+    item_guid: String,
+    media_guid: Option<String>,
+    library_guid: Option<String>,
+}
+
 fn decode_media_target(
     target: Option<&ProviderTarget>,
-) -> Result<Option<(String, Option<String>)>, ProviderError> {
+) -> Result<Option<FnosMediaTarget>, ProviderError> {
     let Some(target) = target else {
         return Ok(None);
     };
@@ -1401,13 +1488,18 @@ fn decode_media_target(
     let FnosTargetKind::MediaItem {
         item_guid,
         media_guid,
+        library_guid,
     } = &target.target
     else {
         return Err(ProviderError::InvalidConfig(
             "FNOS target must identify a media item".to_string(),
         ));
     };
-    Ok(Some((item_guid.clone(), media_guid.clone())))
+    Ok(Some(FnosMediaTarget {
+        item_guid: item_guid.clone(),
+        media_guid: media_guid.clone(),
+        library_guid: library_guid.clone(),
+    }))
 }
 
 fn file_playlist_path(config: &FnosPlaylistSourceConfig) -> Result<&str, ProviderError> {
@@ -1490,7 +1582,7 @@ fn map_media_item(
     Ok(DynamicPlaylistItem {
         name,
         item_type,
-        target: ProviderTarget::fnos_media(item.guid, item.media_guid),
+        target: ProviderTarget::fnos_media(item.guid, item.media_guid, item.ancestor_guid),
         size: None,
         thumbnail,
         description: item.overview,
@@ -1555,6 +1647,19 @@ fn mark_fnos_playback_resources(result: &mut PlaybackResult, version: &str, expi
                         FnosProxyResource::Media {
                             media_guid: media_guid.clone(),
                             quality_index: *quality_index,
+                        },
+                    ),
+                    PlaybackMediaProvider::Fnos(PlaybackFnosMedia::MediaOriginalRefresh {
+                        credential_owner_id,
+                        server_id,
+                        media_guid,
+                        path,
+                    }) => (
+                        credential_owner_id.clone(),
+                        server_id.clone(),
+                        FnosProxyResource::MediaOriginal {
+                            media_guid: media_guid.clone(),
+                            path: path.clone(),
                         },
                     ),
                     PlaybackMediaProvider::Fnos(PlaybackFnosMedia::TranscodeRefresh {
@@ -1699,7 +1804,7 @@ impl MediaProvider for FnosProvider {
                         },
                     )]),
                     default_mode: "direct".to_string(),
-                    provider: Self::NAME.to_string(),
+                    provider: crate::models::SourceProvider::Fnos,
                     provider_instance_name: instance_name,
                     duration_seconds: None,
                     playback_kind: Some(crate::models::PlaybackKind::Regular),
@@ -1778,6 +1883,25 @@ impl MediaProvider for FnosProvider {
                         .and_then(|video| video.guid.as_deref())
                         .unwrap_or_default()
                 );
+                let original_provider = stream
+                    .file_stream
+                    .as_ref()
+                    .and_then(|file| file.path.as_deref())
+                    .and_then(non_empty_string)
+                    .map_or_else(
+                        || PlaybackFnosMedia::MediaRefresh {
+                            credential_owner_id: owner.to_string(),
+                            server_id: config.server_id.clone(),
+                            media_guid: play.media_guid.clone(),
+                            quality_index: None,
+                        },
+                        |path| PlaybackFnosMedia::MediaOriginalRefresh {
+                            credential_owner_id: owner.to_string(),
+                            server_id: config.server_id.clone(),
+                            media_guid: play.media_guid.clone(),
+                            path,
+                        },
+                    );
                 let mut medias = vec![PlaybackMedia {
                     name: "Original".to_string(),
                     format: stream
@@ -1794,12 +1918,7 @@ impl MediaProvider for FnosProvider {
                         &config.server_id,
                         &format!("media:{}{media_revision}:quality:original", play.media_guid),
                     )),
-                    provider: PlaybackMediaProvider::Fnos(PlaybackFnosMedia::MediaRefresh {
-                        credential_owner_id: owner.to_string(),
-                        server_id: config.server_id.clone(),
-                        media_guid: play.media_guid.clone(),
-                        quality_index: None,
-                    }),
+                    provider: PlaybackMediaProvider::Fnos(original_provider),
                 }];
                 medias.extend(stream.direct_link_qualities.iter().enumerate().map(
                     |(quality_index, quality)| {
@@ -2028,7 +2147,7 @@ impl MediaProvider for FnosProvider {
                         },
                     )]),
                     default_mode: "direct".to_string(),
-                    provider: Self::NAME.to_string(),
+                    provider: crate::models::SourceProvider::Fnos,
                     provider_instance_name: instance_name,
                     duration_seconds: duration,
                     playback_kind: Some(crate::models::PlaybackKind::Regular),
@@ -2116,6 +2235,18 @@ impl MediaProvider for FnosProvider {
                     ))),
                 };
                 if config.proxy_mode == crate::models::PlaybackProxyMode::Prefer {
+                    let webdav = match self
+                        .credential_with_repo(repo, owner, &config.server_id)
+                        .await
+                    {
+                        Ok((endpoints, credential, _)) => self
+                            .client
+                            .webdav_config(&endpoints, &credential)
+                            .await
+                            .ok()
+                            .map(|config| (config, credential)),
+                        Err(_) => None,
+                    };
                     let direct_medias =
                         result
                             .playback_infos
@@ -2125,20 +2256,34 @@ impl MediaProvider for FnosProvider {
                                 let medias = std::mem::take(&mut info.medias)
                                     .into_iter()
                                     .filter_map(|mut media| {
-                                        let PlaybackMediaProvider::Fnos(
-                                            PlaybackFnosMedia::MediaRefresh {
-                                                media_guid,
-                                                quality_index,
-                                                ..
-                                            },
-                                        ) = &media.provider
-                                        else {
-                                            return None;
-                                        };
+                                        let direct = match &media.provider {
+                                            PlaybackMediaProvider::Fnos(
+                                                PlaybackFnosMedia::MediaOriginalRefresh {
+                                                    path,
+                                                    ..
+                                                },
+                                            ) => {
+                                                let (config, credential) = webdav.as_ref()?;
+                                                let url = FnosClient::webdav_file_url(config, path)
+                                                    .ok()?;
+                                                Some((url, webdav_headers(credential)))
+                                            }
+                                            PlaybackMediaProvider::Fnos(
+                                                PlaybackFnosMedia::MediaRefresh {
+                                                    media_guid,
+                                                    quality_index,
+                                                    ..
+                                                },
+                                            ) => Some((
+                                                client.media_url(media_guid, *quality_index),
+                                                FnosMediaClient::auth_headers(&token),
+                                            )),
+                                            _ => None,
+                                        }?;
                                         media.provider = PlaybackMediaProvider::Fnos(
                                             PlaybackFnosMedia::Direct {
-                                                url: client.media_url(media_guid, *quality_index),
-                                                headers: FnosMediaClient::auth_headers(&token),
+                                                url: direct.0,
+                                                headers: direct.1,
                                             },
                                         );
                                         Some(media)
@@ -2280,17 +2425,17 @@ impl MediaProvider for FnosProvider {
             SourceConfig::DynamicPlaylist(config) => match &Self::playlist_config(config)?.source {
                 FnosPlaylistSource::Files { .. } => None,
                 FnosPlaylistSource::MediaLibrary {
-                    ancestor_guid,
+                    library_guid,
                     media_types,
+                    parent_guid,
                 } => {
                     let (client, token, _) = self
                         .media_credential_with_repo(repo, owner, &server_id)
                         .await?;
                     let libraries = client.libraries(&token).await?;
-                    let library_cover = ancestor_guid.as_deref().map_or_else(
-                        || libraries.first(),
-                        |guid| libraries.iter().find(|library| library.guid == guid),
-                    );
+                    let library_cover = libraries
+                        .iter()
+                        .find(|library| library.guid == *library_guid);
                     if let Some(library) = library_cover {
                         library
                             .poster
@@ -2298,10 +2443,11 @@ impl MediaProvider for FnosProvider {
                             .or_else(|| library.posters.first().cloned())
                     } else {
                         client
-                            .items(
+                            .all_items(
                                 &token,
                                 &FnosMediaListRequest {
-                                    ancestor_guid: ancestor_guid.clone(),
+                                    ancestor_guid: Some(library_guid.clone()),
+                                    parent_guid: parent_guid.clone(),
                                     exclude_grouped_video: 1,
                                     sort_type: "ASC".to_string(),
                                     sort_column: "title".to_string(),
@@ -2313,8 +2459,13 @@ impl MediaProvider for FnosProvider {
                                 },
                             )
                             .await?
-                            .list
                             .into_iter()
+                            .filter(|item| {
+                                parent_guid.as_deref().map_or_else(
+                                    || item.parent_guid.as_deref().is_none_or(str::is_empty),
+                                    |parent| item.parent_guid.as_deref() == Some(parent),
+                                )
+                            })
                             .find_map(|item| item.poster)
                     }
                 }
@@ -2327,6 +2478,7 @@ impl MediaProvider for FnosProvider {
                             &token,
                             &FnosMediaListRequest {
                                 ancestor_guid: None,
+                                parent_guid: None,
                                 exclude_grouped_video: 1,
                                 sort_type: "DESC".to_string(),
                                 sort_column: "create_time".to_string(),
@@ -2339,6 +2491,7 @@ impl MediaProvider for FnosProvider {
                         )
                         .await?
                         .list
+                        .unwrap_or_default()
                         .into_iter()
                         .find_map(|item| item.poster)
                 }
@@ -2381,8 +2534,8 @@ impl MediaProvider for FnosProvider {
             .credential_owner_or_user_id()
             .ok_or(ProviderError::CredentialRequired)?;
         Ok(vec![ProviderCredentialDependency::new(
-            Self::NAME,
-            user_id.to_string(),
+            crate::models::SourceProvider::Fnos,
+            *user_id,
             server_id.to_string(),
         )])
     }
@@ -2640,14 +2793,15 @@ impl DynamicPlaylistProvider for FnosProvider {
                 )
             }
             FnosPlaylistSource::MediaLibrary {
-                ancestor_guid,
+                library_guid,
                 media_types,
+                parent_guid,
             } => {
                 let target = decode_media_target(target)?;
-                let ancestor_guid = target
+                let current_parent_guid = target
                     .as_ref()
-                    .map(|(guid, _)| guid.clone())
-                    .or_else(|| ancestor_guid.clone());
+                    .map(|target| target.item_guid.clone())
+                    .or_else(|| parent_guid.clone());
                 let (client, token, _) = self
                     .media_credential_with_repo(repo, owner, &base.server_id)
                     .await?;
@@ -2659,15 +2813,16 @@ impl DynamicPlaylistProvider for FnosProvider {
                 {
                     let mut matches = client.search(&token, search).await?;
                     matches.retain(|item| {
-                        let in_source = ancestor_guid.as_deref().is_none_or(|ancestor| {
-                            item.parent_guid.as_deref() == Some(ancestor)
-                                || item.ancestor_guid.as_deref() == Some(ancestor)
-                        });
+                        let in_library = item.ancestor_guid.as_deref() == Some(library_guid);
+                        let in_parent = current_parent_guid.as_deref().map_or_else(
+                            || item.parent_guid.as_deref().is_none_or(str::is_empty),
+                            |parent| item.parent_guid.as_deref() == Some(parent),
+                        );
                         let has_type = media_types.is_empty()
                             || media_types
                                 .iter()
                                 .any(|kind| item.item_type.eq_ignore_ascii_case(kind));
-                        in_source && has_type
+                        in_library && in_parent && has_type
                     });
                     let start = page.saturating_sub(1).saturating_mul(page_size);
                     let has_more = start.saturating_add(page_size) < matches.len();
@@ -2683,36 +2838,42 @@ impl DynamicPlaylistProvider for FnosProvider {
                         has_more,
                     });
                 }
-                let response = client
-                    .items(
+                let mut items = client
+                    .all_items(
                         &token,
                         &FnosMediaListRequest {
-                            ancestor_guid,
+                            ancestor_guid: Some(library_guid.clone()),
+                            parent_guid: current_parent_guid.clone(),
                             exclude_grouped_video: 1,
                             sort_type: "ASC".to_string(),
                             sort_column: "title".to_string(),
-                            page_size: u32::try_from(page_size).unwrap_or(u32::MAX),
-                            page: u32::try_from(page).unwrap_or(u32::MAX),
+                            page_size: 200,
+                            page: 1,
                             tags: FnosMediaTags {
-                                media_types: media_types.clone(),
+                                media_types: Vec::new(),
                             },
                         },
                     )
                     .await?;
-                let items = response
-                    .list
-                    .into_iter()
-                    .filter_map(|item| map_media_item(item, owner, &base.server_id).ok())
-                    .collect::<Vec<_>>();
-                let consumed = page.saturating_mul(page_size);
-                (
-                    items,
-                    u64::try_from(consumed).unwrap_or(u64::MAX) < response.total,
-                )
+                items.retain(|item| {
+                    let in_parent = current_parent_guid.as_deref().map_or_else(
+                        || item.parent_guid.as_deref().is_none_or(str::is_empty),
+                        |parent| item.parent_guid.as_deref() == Some(parent),
+                    );
+                    let has_type = media_types.is_empty()
+                        || media_types
+                            .iter()
+                            .any(|kind| item.item_type.eq_ignore_ascii_case(kind));
+                    in_parent && has_type
+                });
+                paginate_media_items(items, owner, &base.server_id, page, page_size)
             }
             FnosPlaylistSource::Favorites { media_types } => {
                 let target = decode_media_target(target)?;
-                let ancestor_guid = target.as_ref().map(|(guid, _)| guid.clone());
+                let parent_guid = target.as_ref().map(|target| target.item_guid.clone());
+                let library_guid = target
+                    .as_ref()
+                    .and_then(|target| target.library_guid.clone());
                 let (client, token, _) = self
                     .media_credential_with_repo(repo, owner, &base.server_id)
                     .await?;
@@ -2724,49 +2885,53 @@ impl DynamicPlaylistProvider for FnosProvider {
                 {
                     let mut matches = client.search(&token, search).await?;
                     matches.retain(|item| {
-                        let in_folder = ancestor_guid.as_deref().is_none_or(|ancestor| {
-                            item.parent_guid.as_deref() == Some(ancestor)
-                                || item.ancestor_guid.as_deref() == Some(ancestor)
-                        });
+                        let in_library = library_guid
+                            .as_deref()
+                            .is_none_or(|library| item.ancestor_guid.as_deref() == Some(library));
+                        let in_folder = parent_guid
+                            .as_deref()
+                            .is_none_or(|parent| item.parent_guid.as_deref() == Some(parent));
                         let has_type = media_types.is_empty()
                             || media_types
                                 .iter()
                                 .any(|kind| item.item_type.eq_ignore_ascii_case(kind));
-                        item.is_favorite != 0 && in_folder && has_type
+                        item.is_favorite != 0 && in_library && in_folder && has_type
                     });
                     paginate_media_items(matches, owner, &base.server_id, page, page_size)
-                } else if ancestor_guid.is_some() {
-                    let response = client
-                        .items(
+                } else if let Some(library_guid) = library_guid {
+                    let mut items = client
+                        .all_items(
                             &token,
                             &FnosMediaListRequest {
-                                ancestor_guid,
+                                ancestor_guid: Some(library_guid),
+                                parent_guid: parent_guid.clone(),
                                 exclude_grouped_video: 1,
                                 sort_type: "ASC".to_string(),
                                 sort_column: "title".to_string(),
-                                page_size: u32::try_from(page_size).unwrap_or(u32::MAX),
-                                page: u32::try_from(page).unwrap_or(u32::MAX),
+                                page_size: 200,
+                                page: 1,
                                 tags: FnosMediaTags {
-                                    media_types: media_types.clone(),
+                                    media_types: Vec::new(),
                                 },
                             },
                         )
                         .await?;
-                    let consumed = page.saturating_mul(page_size);
-                    (
-                        response
-                            .list
-                            .into_iter()
-                            .filter_map(|item| map_media_item(item, owner, &base.server_id).ok())
-                            .collect(),
-                        u64::try_from(consumed).unwrap_or(u64::MAX) < response.total,
-                    )
+                    items.retain(|item| {
+                        let in_parent = item.parent_guid.as_deref() == parent_guid.as_deref();
+                        let has_type = media_types.is_empty()
+                            || media_types
+                                .iter()
+                                .any(|kind| item.item_type.eq_ignore_ascii_case(kind));
+                        in_parent && has_type
+                    });
+                    paginate_media_items(items, owner, &base.server_id, page, page_size)
                 } else {
                     let response = client
                         .favorites(
                             &token,
                             &FnosMediaListRequest {
                                 ancestor_guid: None,
+                                parent_guid: None,
                                 exclude_grouped_video: 1,
                                 sort_type: "DESC".to_string(),
                                 sort_column: "create_time".to_string(),
@@ -2782,6 +2947,7 @@ impl DynamicPlaylistProvider for FnosProvider {
                     (
                         response
                             .list
+                            .unwrap_or_default()
                             .into_iter()
                             .filter_map(|item| map_media_item(item, owner, &base.server_id).ok())
                             .collect(),
@@ -2853,8 +3019,7 @@ impl DynamicPlaylistProvider for FnosProvider {
             FnosPlaylistSource::MediaLibrary { .. }
             | FnosPlaylistSource::Favorites { .. }
             | FnosPlaylistSource::History => {
-                let (item_guid, media_guid) =
-                    decode_media_target(Some(target))?.ok_or(ProviderError::NotFound)?;
+                let target = decode_media_target(Some(target))?.ok_or(ProviderError::NotFound)?;
                 let owner = *ctx
                     .credential_owner_or_user_id()
                     .ok_or(ProviderError::CredentialRequired)?;
@@ -2863,7 +3028,7 @@ impl DynamicPlaylistProvider for FnosProvider {
                     .media_credential_with_repo(repo, owner, &base.server_id)
                     .await?;
                 let play = client
-                    .play_info(&token, &item_guid, media_guid.as_deref())
+                    .play_info(&token, &target.item_guid, target.media_guid.as_deref())
                     .await?;
                 let item = DynamicPlaylistItem {
                     name: play
@@ -2872,7 +3037,11 @@ impl DynamicPlaylistProvider for FnosProvider {
                         .or(play.item.tv_title)
                         .unwrap_or_else(|| "FNOS media".to_string()),
                     item_type: ItemType::Media,
-                    target: ProviderTarget::fnos_media(item_guid, Some(play.media_guid)),
+                    target: ProviderTarget::fnos_media(
+                        target.item_guid,
+                        Some(play.media_guid),
+                        target.library_guid,
+                    ),
                     size: None,
                     thumbnail: None,
                     description: play.item.overview,
@@ -2911,8 +3080,7 @@ impl DynamicPlaylistProvider for FnosProvider {
                 )
             }
             FnosPlaylistSource::MediaLibrary { .. } => {
-                let (item_guid, media_guid) =
-                    decode_media_target(Some(target))?.ok_or(ProviderError::NotFound)?;
+                let target = decode_media_target(Some(target))?.ok_or(ProviderError::NotFound)?;
                 let owner = *ctx
                     .credential_owner_or_user_id()
                     .ok_or(ProviderError::CredentialRequired)?;
@@ -2921,13 +3089,15 @@ impl DynamicPlaylistProvider for FnosProvider {
                     .media_credential_with_repo(repo, owner, &base.server_id)
                     .await?;
                 let play = client
-                    .play_info(&token, &item_guid, media_guid.as_deref())
+                    .play_info(&token, &target.item_guid, target.media_guid.as_deref())
                     .await?;
                 (
                     play.item
                         .parent_guid
                         .filter(|value| !value.is_empty())
-                        .map(|parent| ProviderTarget::fnos_media(parent, None)),
+                        .map(|parent| {
+                            ProviderTarget::fnos_media(parent, None, target.library_guid.clone())
+                        }),
                     200,
                 )
             }
@@ -2946,7 +3116,7 @@ impl DynamicPlaylistProvider for FnosProvider {
         if matches!(&base.source, FnosPlaylistSource::Favorites { .. })
             && !media.iter().any(|item| &item.target == target)
         {
-            let (item_guid, media_guid) =
+            let decoded_target =
                 decode_media_target(Some(target))?.ok_or(ProviderError::NotFound)?;
             let owner = *ctx
                 .credential_owner_or_user_id()
@@ -2956,13 +3126,19 @@ impl DynamicPlaylistProvider for FnosProvider {
                 .media_credential_with_repo(repo, owner, &base.server_id)
                 .await?;
             let play = client
-                .play_info(&token, &item_guid, media_guid.as_deref())
+                .play_info(
+                    &token,
+                    &decoded_target.item_guid,
+                    decoded_target.media_guid.as_deref(),
+                )
                 .await?;
-            let nested_parent = play
-                .item
-                .parent_guid
-                .filter(|value| !value.is_empty())
-                .map(|parent| ProviderTarget::fnos_media(parent, None));
+            let nested_parent =
+                play.item
+                    .parent_guid
+                    .filter(|value| !value.is_empty())
+                    .map(|parent| {
+                        ProviderTarget::fnos_media(parent, None, decoded_target.library_guid)
+                    });
             if let Some(nested_parent) = nested_parent.as_ref() {
                 media = self
                     .scan_playlist_media(ctx, playlist, Some(nested_parent), target, 200, play_mode)
@@ -3033,12 +3209,12 @@ impl DynamicPlaylistProvider for FnosProvider {
             FnosPlaylistSource::MediaLibrary { .. }
             | FnosPlaylistSource::Favorites { .. }
             | FnosPlaylistSource::History => {
-                let Some((item_guid, _)) = decode_media_target(target)? else {
+                let Some(target) = decode_media_target(target)? else {
                     return Ok(Vec::new());
                 };
                 Ok(vec![DynamicBrowsePathSegment {
-                    name: item_guid.clone(),
-                    target: ProviderTarget::fnos_media(item_guid, None),
+                    name: target.item_guid.clone(),
+                    target: ProviderTarget::fnos_media(target.item_guid, None, target.library_guid),
                 }])
             }
         }
@@ -3087,6 +3263,82 @@ mod tests {
     }
 
     #[test]
+    fn thumbnail_credentials_follow_fnos_resource_kind() {
+        let media = PlaybackFnosMedia::MediaOriginalRefresh {
+            credential_owner_id: "42".to_string(),
+            server_id: "server".to_string(),
+            media_guid: "media".to_string(),
+            path: "vol1/1000/Media/Episode.mkv".to_string(),
+        };
+        let file = PlaybackFnosMedia::FileRefresh {
+            credential_owner_id: "42".to_string(),
+            server_id: "server".to_string(),
+            path: "vol1/1000/Media/Episode.mkv".to_string(),
+        };
+
+        assert_eq!(
+            fnos_thumbnail_credentials(&media)
+                .expect("media thumbnail credentials should resolve")
+                .2,
+            FnosThumbnailCredentialKind::Media
+        );
+        assert_eq!(
+            fnos_thumbnail_credentials(&file)
+                .expect("file thumbnail credentials should resolve")
+                .2,
+            FnosThumbnailCredentialKind::WebDav
+        );
+    }
+
+    #[test]
+    fn versioning_uses_webdav_for_media_original_and_media_auth_for_metadata() {
+        let mut result = PlaybackResult {
+            playback_infos: HashMap::from([(
+                "direct".to_string(),
+                PlaybackInfo {
+                    thumbnail: Some("https://nas.example/media/poster.webp".to_string()),
+                    medias: vec![PlaybackMedia {
+                        name: "Original".to_string(),
+                        format: "mkv".to_string(),
+                        expire_at: None,
+                        metadata: None,
+                        p2p_swarm_id: None,
+                        provider: PlaybackMediaProvider::Fnos(
+                            PlaybackFnosMedia::MediaOriginalRefresh {
+                                credential_owner_id: "42".to_string(),
+                                server_id: "server".to_string(),
+                                media_guid: "media".to_string(),
+                                path: "vol1/1000/Media/Episode.mkv".to_string(),
+                            },
+                        ),
+                    }],
+                    default_media_index: Some(0),
+                    subtitles: Vec::new(),
+                    default_subtitle_index: None,
+                    danmakus: Vec::new(),
+                    default_danmaku_index: None,
+                },
+            )]),
+            default_mode: "direct".to_string(),
+            provider: crate::models::SourceProvider::Fnos,
+            provider_instance_name: None,
+            duration_seconds: None,
+            playback_kind: Some(crate::models::PlaybackKind::Regular),
+            metadata: None,
+        };
+
+        mark_fnos_playback_resources(&mut result, "version", 123);
+
+        assert!(matches!(
+            &result.playback_infos["proxy_direct"].medias[0].provider,
+            PlaybackMediaProvider::Fnos(PlaybackFnosMedia::Proxy {
+                resource: FnosProxyResource::MediaOriginal { media_guid, path },
+                ..
+            }) if media_guid == "media" && path == "vol1/1000/Media/Episode.mkv"
+        ));
+    }
+
+    #[test]
     fn versioning_preserves_fnos_credentials_and_proxies_subtitles() {
         let mut result = PlaybackResult {
             playback_infos: HashMap::from([(
@@ -3127,7 +3379,7 @@ mod tests {
                 },
             )]),
             default_mode: "direct".to_string(),
-            provider: FnosProvider::NAME.to_string(),
+            provider: crate::models::SourceProvider::Fnos,
             provider_instance_name: None,
             duration_seconds: None,
             playback_kind: Some(crate::models::PlaybackKind::Regular),

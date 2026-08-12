@@ -12,8 +12,8 @@ use url::Url;
 use super::{
     DynamicListQuery, DynamicListResult, DynamicPagination, DynamicPlaylistItem,
     DynamicPlaylistItemThumbnail, DynamicPlaylistProvider, ItemType, MediaProvider, NextPlayItem,
-    PlaybackInfo, PlaybackResult, ProviderContext, ProviderCredentialDependency, ProviderError,
-    SourceConfig, SourceCover,
+    PlaybackInfo, PlaybackResult, ProviderContext, ProviderCredentialDependency,
+    ProviderCredentialPolicy, ProviderError, SourceConfig, SourceCover,
 };
 use crate::cache::{SingleFlight, SingleFlightError};
 use crate::models::{
@@ -137,22 +137,18 @@ impl TikTokProvider {
     async fn session(
         &self,
         ctx: &ProviderContext<'_>,
-        shared: bool,
+        credential_policy: ProviderCredentialPolicy,
     ) -> Result<TikTokSession, ProviderError> {
         let Some(repo) = self.credential_repo_or(ctx.credential_repo) else {
             return Ok(TikTokSession::default());
         };
-        let owner_id = if shared {
-            ctx.credential_owner_id()
-        } else {
-            ctx.user_id()
-        };
+        let owner_id = ctx.selected_credential_user_id(credential_policy);
         let Some(owner_id) = owner_id else {
             return Ok(TikTokSession::default());
         };
         self.session_for_owner(
             repo,
-            *owner_id,
+            owner_id,
             &Self::credential_server_id_for_instance(super::bound_provider_instance_name(ctx)),
         )
         .await
@@ -407,9 +403,13 @@ impl TikTokProvider {
                             "TikTok cached playback resource is invalid".to_string(),
                         ));
                     };
-                    let session = self
-                        .stored_session(*credential_owner_id, provider_instance_name.as_deref())
-                        .await?;
+                    let session = match credential_owner_id {
+                        Some(owner_id) => {
+                            self.stored_session(*owner_id, provider_instance_name.as_deref())
+                                .await?
+                        }
+                        None => TikTokSession::default(),
+                    };
                     let resolved = match resource {
                         TikTokPlaybackResource::Video { video_id } => {
                             self.client.video(video_id, Some(&session)).await?
@@ -512,9 +512,13 @@ impl TikTokProvider {
                 "TikTok cached subtitle resource is invalid".to_string(),
             ));
         };
-        let session = self
-            .stored_session(*credential_owner_id, provider_instance_name.as_deref())
-            .await?;
+        let session = match credential_owner_id {
+            Some(owner_id) => {
+                self.stored_session(*owner_id, provider_instance_name.as_deref())
+                    .await?
+            }
+            None => TikTokSession::default(),
+        };
         let media = match resource {
             TikTokPlaybackResource::Video { video_id } => {
                 self.client.video(video_id, Some(&session)).await?
@@ -554,11 +558,17 @@ impl TikTokProvider {
         }
     }
 
-    const fn media_shared(config: &TikTokMediaSourceConfig) -> bool {
-        match config {
+    const fn media_credential_policy(config: &TikTokMediaSourceConfig) -> ProviderCredentialPolicy {
+        ProviderCredentialPolicy::from_shared(match config {
             TikTokMediaSourceConfig::Video { shared, .. }
             | TikTokMediaSourceConfig::Live { shared, .. } => *shared,
-        }
+        })
+    }
+
+    const fn playlist_credential_policy(
+        config: &TikTokPlaylistSourceConfig,
+    ) -> ProviderCredentialPolicy {
+        ProviderCredentialPolicy::from_shared(config.shared)
     }
 
     fn resource(config: &TikTokMediaSourceConfig) -> TikTokPlaybackResource {
@@ -620,7 +630,7 @@ impl TikTokProvider {
     fn playback_result(
         media: TikTokMedia,
         resource: &TikTokPlaybackResource,
-        credential_owner_id: UserId,
+        credential_owner_id: Option<UserId>,
         provider_instance_name: Option<&str>,
     ) -> Result<PlaybackResult, ProviderError> {
         let mut infos = HashMap::new();
@@ -751,7 +761,7 @@ impl TikTokProvider {
         Ok(PlaybackResult {
             playback_infos: infos,
             default_mode,
-            provider: Self::NAME.to_string(),
+            provider: crate::models::SourceProvider::TikTok,
             provider_instance_name: None,
             duration_seconds,
             playback_kind: Some(playback_kind),
@@ -954,17 +964,14 @@ impl MediaProvider for TikTokProvider {
         ctx.check_active()
             .map_err(|error| ProviderError::NetworkError(error.to_string()))?;
         let config = Self::media_config(source_config)?;
-        let shared = Self::media_shared(config);
-        let credential_owner_id = if shared {
-            *ctx.credential_owner_id().ok_or_else(|| {
-                ProviderError::Internal("TikTok credential owner is unavailable".to_string())
-            })?
-        } else {
-            *ctx.user_id().ok_or_else(|| {
-                ProviderError::Internal("TikTok viewer is unavailable".to_string())
-            })?
-        };
-        let session = self.session(ctx, shared).await?;
+        let credential_policy = Self::media_credential_policy(config);
+        let credential_owner_id = ctx.selected_credential_user_id(credential_policy);
+        if credential_policy.uses_resource_owner() && credential_owner_id.is_none() {
+            return Err(ProviderError::Internal(
+                "TikTok credential owner is unavailable".to_string(),
+            ));
+        }
+        let session = self.session(ctx, credential_policy).await?;
         let provider_instance_name =
             super::bound_provider_instance_name(ctx).map(ToString::to_string);
         let resource = Self::resource(config);
@@ -972,7 +979,7 @@ impl MediaProvider for TikTokProvider {
             "playback:{}:{}:{}",
             serde_json::to_string(&resource)
                 .map_err(|error| ProviderError::Internal(error.to_string()))?,
-            credential_owner_id,
+            credential_owner_id.map_or_else(|| "anonymous".to_string(), |id| id.to_string()),
             Self::credential_server_id_for_instance(provider_instance_name.as_deref())
         );
         super::cached_versioned_playback_or_fill(
@@ -1004,14 +1011,14 @@ impl MediaProvider for TikTokProvider {
         let config = Self::media_config(source_config)?;
         let cache_key = serde_json::to_string(source_config)
             .map_err(|error| ProviderError::Internal(error.to_string()))?;
-        let shared = Self::media_shared(config);
+        let credential_policy = Self::media_credential_policy(config);
         super::cached_provider_metadata_or_fill(
             Self::NAME,
             &cache_key,
             Duration::from_secs(15),
             ctx,
             || async {
-                let session = self.session(ctx, shared).await?;
+                let session = self.session(ctx, credential_policy).await?;
                 let media = self.resolve_media(config, &session).await?;
                 Ok(Some(PlaybackMetadata::TikTok(Self::metadata_model(
                     media.metadata,
@@ -1034,12 +1041,16 @@ impl MediaProvider for TikTokProvider {
         match source_config {
             SourceConfig::Media(source) => {
                 let config = Self::media_config(source)?;
-                let session = self.session(ctx, Self::media_shared(config)).await?;
+                let session = self
+                    .session(ctx, Self::media_credential_policy(config))
+                    .await?;
                 self.resolve_media(config, &session).await?;
             }
             SourceConfig::DynamicPlaylist(source) => {
                 let config = Self::playlist_config(source)?;
-                let session = self.session(ctx, config.shared).await?;
+                let session = self
+                    .session(ctx, Self::playlist_credential_policy(config))
+                    .await?;
                 self.client
                     .user_posts(&config.sec_uid, None, 1, Some(&session))
                     .await?;
@@ -1053,21 +1064,20 @@ impl MediaProvider for TikTokProvider {
         ctx: &ProviderContext<'_>,
         source_config: SourceConfig<'_>,
     ) -> Result<Vec<ProviderCredentialDependency>, ProviderError> {
-        let shared = match source_config {
-            SourceConfig::Media(source) => Self::media_shared(Self::media_config(source)?),
-            SourceConfig::DynamicPlaylist(source) => Self::playlist_config(source)?.shared,
+        let credential_policy = match source_config {
+            SourceConfig::Media(source) => {
+                Self::media_credential_policy(Self::media_config(source)?)
+            }
+            SourceConfig::DynamicPlaylist(source) => {
+                Self::playlist_credential_policy(Self::playlist_config(source)?)
+            }
         };
-        let owner_id = if shared {
-            ctx.credential_owner_id()
-        } else {
-            ctx.user_id()
-        }
-        .ok_or_else(|| {
-            ProviderError::Internal("TikTok credential owner is unavailable".to_string())
-        })?;
+        let Some(owner_id) = ctx.selected_credential_user_id(credential_policy) else {
+            return Ok(Vec::new());
+        };
         Ok(vec![ProviderCredentialDependency::optional(
-            Self::NAME,
-            owner_id.to_string(),
+            crate::models::SourceProvider::TikTok,
+            owner_id,
             Self::credential_server_id_for_instance(super::bound_provider_instance_name(ctx)),
         )])
     }
@@ -1080,12 +1090,16 @@ impl MediaProvider for TikTokProvider {
         let cover = match source_config {
             SourceConfig::Media(source) => {
                 let config = Self::media_config(source)?;
-                let session = self.session(ctx, Self::media_shared(config)).await?;
+                let session = self
+                    .session(ctx, Self::media_credential_policy(config))
+                    .await?;
                 self.resolve_media(config, &session).await?.metadata.cover
             }
             SourceConfig::DynamicPlaylist(source) => {
                 let config = Self::playlist_config(source)?;
-                let session = self.session(ctx, config.shared).await?;
+                let session = self
+                    .session(ctx, Self::playlist_credential_policy(config))
+                    .await?;
                 self.client
                     .user_posts(&config.sec_uid, None, 1, Some(&session))
                     .await?
@@ -1137,7 +1151,9 @@ impl DynamicPlaylistProvider for TikTokProvider {
         let count = u32::try_from(query.page_size.clamp(1, 50)).map_err(|_| {
             ProviderError::InvalidConfig("TikTok page size exceeds u32::MAX".to_string())
         })?;
-        let session = self.session(ctx, config.shared).await?;
+        let session = self
+            .session(ctx, Self::playlist_credential_policy(config))
+            .await?;
         let page = self
             .client
             .user_posts(&config.sec_uid, cursor, count, Some(&session))
@@ -1430,7 +1446,7 @@ mod tests {
                 variant("https://cdn.test/video.mp4", "1080p", 1920, 1080, 4_000_000),
             ),
             &video_resource,
-            UserId::expect_positive(1),
+            Some(UserId::expect_positive(1)),
             Some("primary"),
         )
         .expect("video playback should map");
@@ -1458,7 +1474,7 @@ mod tests {
         let live = TikTokProvider::playback_result(
             media(TikTokMediaKind::Live, "live-1", live_variant),
             &live_resource,
-            UserId::expect_positive(1),
+            Some(UserId::expect_positive(1)),
             Some("primary"),
         )
         .expect("live playback should map");

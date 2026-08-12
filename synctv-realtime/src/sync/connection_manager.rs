@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use synctv_core::{
-    models::id::{RoomId, UserId},
+    models::{RealtimeActor, RoomId, UserId},
     service::OnlinePresenceService,
     RedisConnectionRuntime,
 };
@@ -30,8 +30,8 @@ mod redis_maintenance;
 mod redis_state;
 use redis_state::{
     run_unregister_cleanup_script, spawn_pending_retries_task, PendingRedisOp,
-    UnregisterCleanupScriptArgs, CONNECTION_METADATA_TTL_SECONDS, ROOM_INDEX_DIRECTORY_KEY_SUFFIX,
-    USER_INDEX_DIRECTORY_KEY_SUFFIX,
+    UnregisterCleanupScriptArgs, ACTOR_INDEX_DIRECTORY_KEY_SUFFIX, CONNECTION_METADATA_TTL_SECONDS,
+    ROOM_INDEX_DIRECTORY_KEY_SUFFIX,
 };
 
 #[cfg(test)]
@@ -70,6 +70,14 @@ pub enum VoiceRtcJoinOutcome {
     RoomAtCapacity,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ConnectionReservationError {
+    #[error("Room at capacity ({current} connections, max: {max})")]
+    RoomAtCapacity { current: usize, max: usize },
+    #[error("Actor at capacity ({current} connections, max: {max})")]
+    ActorAtCapacity { current: usize, max: usize },
+}
+
 struct ConnectionIdClaim<'a> {
     manager: &'a ConnectionManager,
     connection_id: String,
@@ -103,8 +111,8 @@ pub struct ConnectionManager {
     /// could both pass an existence check before either inserts the connection.
     claimed_connection_ids: Arc<std::sync::Mutex<HashSet<String>>>,
 
-    /// Connections by `user_id`
-    user_connections: Arc<DashMap<UserId, Vec<String>>>,
+    /// Connections by typed realtime actor key.
+    actor_connections: Arc<DashMap<String, Vec<String>>>,
 
     /// Connections by `room_id`
     room_connections: Arc<DashMap<RoomId, Vec<String>>>,
@@ -139,9 +147,9 @@ pub struct ConnectionManager {
     /// Used to prevent TOCTOU race conditions on connection limits.
     pending_room_reservations: Arc<DashMap<RoomId, AtomicUsize>>,
 
-    /// Pending user slot reservations (pre-upgrade).
-    /// Counts how many WebSocket upgrades are in-flight for each user.
-    pending_user_reservations: Arc<DashMap<UserId, AtomicUsize>>,
+    /// Pending actor slot reservations (pre-upgrade).
+    /// Counts how many WebSocket upgrades are in-flight for each actor.
+    pending_actor_reservations: Arc<DashMap<String, AtomicUsize>>,
 
     /// Optional Redis connection handle for distributed connection counting.
     /// When present, per-user and per-room limits are enforced across all replicas.
@@ -204,6 +212,10 @@ const PENDING_RETRY_QUEUE_CAPACITY: usize = 10_000;
 const CONNECTION_LIFECYCLE_LOCK_STRIPES: usize = 256;
 
 impl ConnectionManager {
+    fn user_actor_key(user_id: &UserId) -> String {
+        format!("user:{user_id}")
+    }
+
     fn redis_key(&self, namespace: &str, id: impl std::fmt::Display) -> String {
         format!("{}{namespace}:{id}", self.redis_key_prefix)
     }
@@ -216,8 +228,8 @@ impl ConnectionManager {
         self.redis_key("conn_mgr:conn", connection_id)
     }
 
-    fn user_index_key(&self, user_id: impl std::fmt::Display) -> String {
-        self.redis_key("conn_mgr:user", user_id)
+    fn actor_index_key(&self, actor_key: impl std::fmt::Display) -> String {
+        self.redis_key("conn_mgr:actor", actor_key)
     }
 
     fn room_index_key(&self, room_id: impl std::fmt::Display) -> String {
@@ -228,18 +240,18 @@ impl ConnectionManager {
         self.redis_key_no_id("connections:total")
     }
 
-    fn user_counter_key(&self, user_id: impl std::fmt::Display) -> String {
-        self.redis_key("connections:user", user_id)
+    fn actor_counter_key(&self, actor_key: impl std::fmt::Display) -> String {
+        self.redis_key("connections:actor", actor_key)
     }
 
     fn room_counter_key(&self, room_id: impl std::fmt::Display) -> String {
         self.redis_key("connections:room", room_id)
     }
 
-    fn user_index_directory_key(&self) -> String {
+    fn actor_index_directory_key(&self) -> String {
         format!(
             "{}{}",
-            self.redis_key_prefix, USER_INDEX_DIRECTORY_KEY_SUFFIX
+            self.redis_key_prefix, ACTOR_INDEX_DIRECTORY_KEY_SUFFIX
         )
     }
 
@@ -284,7 +296,7 @@ impl ConnectionManager {
         Self {
             connections: Arc::new(DashMap::new()),
             claimed_connection_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
-            user_connections: Arc::new(DashMap::new()),
+            actor_connections: Arc::new(DashMap::new()),
             room_connections: Arc::new(DashMap::new()),
             presence_service: Arc::new(OnlinePresenceService::local()),
             node_id: Arc::from("local"),
@@ -299,7 +311,7 @@ impl ConnectionManager {
             users_online_metric_decrements: Arc::new(AtomicUsize::new(0)),
             disconnect_tx: Arc::new(disconnect_tx),
             pending_room_reservations: Arc::new(DashMap::new()),
-            pending_user_reservations: Arc::new(DashMap::new()),
+            pending_actor_reservations: Arc::new(DashMap::new()),
             redis_conn: None,
             redis_key_prefix: String::new(),
             ttl_refresh_cancel: Arc::new(tokio_util::sync::CancellationToken::new()),
@@ -608,7 +620,7 @@ impl ConnectionManager {
         &self,
         connection_id: &str,
         registration_token: &str,
-        user_id: UserId,
+        actor_key: &str,
         room_id: Option<RoomId>,
     ) -> PendingRedisOp {
         let no_room_key = format!(
@@ -621,13 +633,13 @@ impl ConnectionManager {
                 self.redis_key_prefix
             ),
             total_key: self.total_counter_key(),
-            user_key: self.user_counter_key(user_id),
+            actor_key: self.actor_counter_key(actor_key),
             room_key: room_id.map_or_else(
                 || no_room_key.clone(),
                 |room_id| self.room_counter_key(room_id),
             ),
             conn_key: self.conn_metadata_key(connection_id),
-            user_index_key: self.user_index_key(user_id),
+            actor_index_key: self.actor_index_key(actor_key),
             room_index_key: room_id
                 .map(|room_id| self.room_index_key(room_id))
                 .unwrap_or(no_room_key),
@@ -641,10 +653,10 @@ impl ConnectionManager {
         let PendingRedisOp::UnregisterCleanup {
             cleanup_key,
             total_key,
-            user_key,
+            actor_key,
             room_key,
             conn_key,
-            user_index_key,
+            actor_index_key,
             room_index_key,
             connection_id,
             registration_token,
@@ -665,10 +677,10 @@ impl ConnectionManager {
                 UnregisterCleanupScriptArgs {
                     cleanup_key,
                     total_key,
-                    user_key,
+                    actor_key,
                     room_key,
                     conn_key,
-                    user_index_key,
+                    actor_index_key,
                     room_index_key,
                     connection_id,
                     registration_token,
@@ -683,7 +695,7 @@ impl ConnectionManager {
     async fn persist_registration_metadata_best_effort(
         &self,
         connection_id: &str,
-        user_id: &UserId,
+        actor_key: &str,
     ) {
         let Some(conn_info) = self.get_connection(connection_id) else {
             return;
@@ -694,8 +706,8 @@ impl ConnectionManager {
         };
 
         let conn_key = self.conn_metadata_key(connection_id);
-        let user_index_key = self.user_index_key(user_id);
-        let user_index_directory_key = self.user_index_directory_key();
+        let actor_index_key = self.actor_index_key(actor_key);
+        let actor_index_directory_key = self.actor_index_directory_key();
 
         let persistent = ConnectionInfoPersistent::from(&conn_info);
         match serde_json::to_string(&persistent) {
@@ -722,29 +734,29 @@ impl ConnectionManager {
 
         if let Err(e) = self
             .redis_op(
-                "add connection to user index",
-                conn.sadd::<_, _, ()>(&user_index_key, connection_id),
+                "add connection to actor index",
+                conn.sadd::<_, _, ()>(&actor_index_key, connection_id),
             )
             .await
         {
-            warn!("Failed to add connection to user index: {e}");
+            warn!("Failed to add connection to actor index: {e}");
         }
         let _: Result<(), _> = self
             .redis_op(
-                "add user index to directory",
-                conn.sadd(&user_index_directory_key, &user_index_key),
+                "add actor index to directory",
+                conn.sadd(&actor_index_directory_key, &actor_index_key),
             )
             .await;
         let _: Result<(), _> = self
             .redis_op(
-                "refresh user index directory TTL",
-                conn.expire(&user_index_directory_key, CONNECTION_METADATA_TTL_SECONDS),
+                "refresh actor index directory TTL",
+                conn.expire(&actor_index_directory_key, CONNECTION_METADATA_TTL_SECONDS),
             )
             .await;
         let _: Result<(), _> = self
             .redis_op(
-                "refresh user index TTL",
-                conn.expire(&user_index_key, CONNECTION_METADATA_TTL_SECONDS),
+                "refresh actor index TTL",
+                conn.expire(&actor_index_key, CONNECTION_METADATA_TTL_SECONDS),
             )
             .await;
     }
@@ -852,13 +864,19 @@ impl ConnectionManager {
     ///
     /// Returns Ok(()) if the user can accept a connection, or Err with reason if at limit.
     pub fn can_accept_user_connection(&self, user_id: &UserId) -> Result<(), String> {
-        // Check local user connection limit
-        let user_entry = self.user_connections.get(user_id);
-        let current_count = user_entry.as_ref().map_or(0, |v| v.len());
+        let actor_key = Self::user_actor_key(user_id);
+        self.can_accept_actor_connection(&actor_key)
+    }
+
+    fn can_accept_actor_connection(&self, actor_key: &str) -> Result<(), String> {
+        let actor_entry = self.actor_connections.get(actor_key);
+        let current_count = actor_entry
+            .as_ref()
+            .map_or(0, |connections| connections.len());
 
         if current_count >= self.limits.max_per_user {
             return Err(format!(
-                "User at capacity ({} connections, max: {})",
+                "Actor at capacity ({} connections, max: {})",
                 current_count, self.limits.max_per_user
             ));
         }
@@ -897,7 +915,7 @@ impl ConnectionManager {
     /// (success or failure) or if the WebSocket upgrade fails.
     ///
     /// Returns Ok(()) if the slot was reserved, or Err if the room is at capacity.
-    pub fn reserve_room_slot(&self, room_id: &RoomId) -> Result<(), String> {
+    pub fn reserve_room_slot(&self, room_id: &RoomId) -> Result<(), ConnectionReservationError> {
         let counter = self
             .pending_room_reservations
             .entry(*room_id)
@@ -910,10 +928,10 @@ impl ConnectionManager {
             let effective = registered + pending;
 
             if effective >= self.limits.max_per_room {
-                return Err(format!(
-                    "Room at capacity ({effective} connections, max: {})",
-                    self.limits.max_per_room
-                ));
+                return Err(ConnectionReservationError::RoomAtCapacity {
+                    current: effective,
+                    max: self.limits.max_per_room,
+                });
             }
 
             // Try to atomically increment the pending count
@@ -965,22 +983,36 @@ impl ConnectionManager {
     /// Same semantics as `reserve_room_slot` but for per-user limits.
     /// The caller MUST call `release_user_reservation` after registration
     /// completes or on failure.
-    pub fn reserve_user_slot(&self, user_id: &UserId) -> Result<(), String> {
+    pub fn reserve_user_slot(&self, user_id: &UserId) -> Result<(), ConnectionReservationError> {
+        self.reserve_actor_key_slot(&Self::user_actor_key(user_id))
+    }
+
+    pub fn reserve_actor_slot(
+        &self,
+        actor: &RealtimeActor,
+    ) -> Result<(), ConnectionReservationError> {
+        self.reserve_actor_key_slot(&actor.connection_key())
+    }
+
+    fn reserve_actor_key_slot(&self, actor_key: &str) -> Result<(), ConnectionReservationError> {
         let counter = self
-            .pending_user_reservations
-            .entry(*user_id)
+            .pending_actor_reservations
+            .entry(actor_key.to_string())
             .or_insert_with(|| AtomicUsize::new(0));
 
         loop {
             let pending = counter.load(Ordering::Acquire);
-            let registered = self.user_connections.get(user_id).map_or(0, |v| v.len());
+            let registered = self
+                .actor_connections
+                .get(actor_key)
+                .map_or(0, |connections| connections.len());
             let effective = registered + pending;
 
             if effective >= self.limits.max_per_user {
-                return Err(format!(
-                    "User at capacity ({effective} connections, max: {})",
-                    self.limits.max_per_user
-                ));
+                return Err(ConnectionReservationError::ActorAtCapacity {
+                    current: effective,
+                    max: self.limits.max_per_user,
+                });
             }
 
             if counter
@@ -994,8 +1026,16 @@ impl ConnectionManager {
 
     /// Release a user connection slot reservation.
     pub fn release_user_reservation(&self, user_id: &UserId) {
+        self.release_actor_key_reservation(&Self::user_actor_key(user_id));
+    }
+
+    pub fn release_actor_reservation(&self, actor: &RealtimeActor) {
+        self.release_actor_key_reservation(&actor.connection_key());
+    }
+
+    fn release_actor_key_reservation(&self, actor_key: &str) {
         let mut should_remove_entry = false;
-        if let Some(counter) = self.pending_user_reservations.get(user_id) {
+        if let Some(counter) = self.pending_actor_reservations.get(actor_key) {
             let result = counter.try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 if current > 0 {
                     Some(current - 1)
@@ -1009,16 +1049,16 @@ impl ConnectionManager {
                 }
                 Err(_) => {
                     warn!(
-                        user_id = %user_id,
-                        "release_user_reservation called but counter is already 0 (double-release?)"
+                        actor_key,
+                        "release_actor_reservation called with an empty counter"
                     );
                 }
             }
         }
 
         if should_remove_entry {
-            self.pending_user_reservations
-                .remove_if(user_id, |_, counter| counter.load(Ordering::Acquire) == 0);
+            self.pending_actor_reservations
+                .remove_if(actor_key, |_, counter| counter.load(Ordering::Acquire) == 0);
         }
     }
 
@@ -1033,16 +1073,19 @@ impl ConnectionManager {
     /// limits. In distributed mode, allowing local-only admission would let replicas
     /// oversubscribe the same user concurrently.
     pub async fn register(&self, connection_id: String, user_id: UserId) -> Result<(), String> {
-        self.register_actor(connection_id, user_id, user_id.to_string())
-            .await
+        self.register_actor(
+            connection_id,
+            RealtimeActor::user(user_id, user_id.to_string()),
+        )
+        .await
     }
 
     pub async fn register_actor(
         &self,
         connection_id: String,
-        user_id: UserId,
-        actor_id: String,
+        actor: RealtimeActor,
     ) -> Result<(), String> {
+        let actor_key = actor.connection_key();
         let claim = self.try_claim_connection_id(&connection_id)?;
         let lifecycle_lock = self.connection_lifecycle_lock(&connection_id);
         let lifecycle_guard = lifecycle_lock.lock().await;
@@ -1107,7 +1150,7 @@ impl ConnectionManager {
         // so a Redis error here means distributed state is unavailable and we
         // must fail closed instead of weakening enforcement.
         if self.redis_enabled() {
-            let redis_key = self.user_counter_key(user_id);
+            let redis_key = self.actor_counter_key(&actor_key);
             match self
                 .redis_incr_and_check(&redis_key, self.limits.max_per_user)
                 .await
@@ -1122,16 +1165,16 @@ impl ConnectionManager {
                     self.rollback_distributed_counter(total_key.clone()).await;
                     self.rollback_distributed_counter(redis_key.clone()).await;
                     return Err(format!(
-                        "Too many connections for this user across all replicas (max {})",
+                        "Too many connections for this actor across all replicas (max {})",
                         self.limits.max_per_user
                     ));
                 }
                 Err(e) => {
                     self.total_connections.fetch_sub(1, Ordering::AcqRel);
                     self.rollback_distributed_counter(total_key.clone()).await;
-                    warn!("Distributed user connection check failed; rejecting connection: {e}");
+                    warn!("Distributed actor connection check failed; rejecting connection: {e}");
                     return Err(
-                        "Distributed user connection check unavailable; refusing new connection while cluster Redis is degraded"
+                        "Distributed actor connection check unavailable; refusing new connection while cluster Redis is degraded"
                             .to_string(),
                     );
                 }
@@ -1142,23 +1185,23 @@ impl ConnectionManager {
         // cleanup) under the same shard lock that enforces the local per-user
         // limit. Without Redis, this closes the TOCTOU race where concurrent
         // registrations could both observe the old count before either inserts.
-        let is_first_connection_for_user = {
-            let mut user_entry = self.user_connections.entry(user_id).or_default();
-            if !self.redis_enabled() && user_entry.len() >= self.limits.max_per_user {
+        let is_first_connection_for_actor = {
+            let mut actor_entry = self.actor_connections.entry(actor_key.clone()).or_default();
+            if !self.redis_enabled() && actor_entry.len() >= self.limits.max_per_user {
                 self.total_connections.fetch_sub(1, Ordering::AcqRel);
                 return Err(format!(
-                    "Too many connections for this user (max {})",
+                    "Too many connections for this actor (max {})",
                     self.limits.max_per_user
                 ));
             }
 
-            let is_first = user_entry.is_empty();
-            user_entry.push(connection_id.clone());
+            let is_first = actor_entry.is_empty();
+            actor_entry.push(connection_id.clone());
             is_first
         };
 
         // Create and register connection info
-        let conn_info = ConnectionInfo::new_with_actor_id(connection_id.clone(), user_id, actor_id);
+        let conn_info = ConnectionInfo::new(connection_id.clone(), actor.clone());
         self.connections
             .insert(connection_id.clone(), conn_info.clone());
         self.schedule_idle_timeout(&connection_id, conn_info.last_activity);
@@ -1166,21 +1209,20 @@ impl ConnectionManager {
         drop(lifecycle_guard);
 
         // Persist connection metadata to Redis (best-effort)
-        self.persist_registration_metadata_best_effort(&connection_id, &user_id)
+        self.persist_registration_metadata_best_effort(&connection_id, &actor_key)
             .await;
         if let Err(error) = self
             .presence_service
             .register_connection(
                 connection_id.clone(),
                 self.node_id.to_string(),
-                user_id,
-                conn_info.actor_id.clone(),
+                actor.clone(),
             )
             .await
         {
             warn!(
                 connection_id = %connection_id,
-                user_id = %user_id,
+                actor = %actor,
                 error = %error,
                 "Failed to register core presence"
             );
@@ -1189,7 +1231,7 @@ impl ConnectionManager {
         // Update metrics
         self.total_connections_ever.fetch_add(1, Ordering::Relaxed);
         synctv_core::metrics::ACTIVE_CONNECTIONS.inc();
-        if is_first_connection_for_user {
+        if is_first_connection_for_actor {
             synctv_core::metrics::application::USERS_ONLINE.inc();
             #[cfg(test)]
             self.users_online_metric_increments
@@ -1201,7 +1243,7 @@ impl ConnectionManager {
 
         info!(
             connection_id = %connection_id,
-            user_id = %user_id,
+            actor = %actor,
             total_connections = self.total_connections.load(Ordering::Relaxed),
             "Connection registered"
         );
@@ -1407,15 +1449,15 @@ impl ConnectionManager {
             self.remove_timeout_tracking(connection_id);
             // Decrement the atomic total connection count
             self.total_connections.fetch_sub(1, Ordering::AcqRel);
-            let mut user_went_offline = false;
+            let mut actor_went_offline = false;
+            let actor_key = conn_info.actor.connection_key();
 
-            // Remove from user connections
-            if let Some(mut user_conns) = self.user_connections.get_mut(&conn_info.user_id) {
-                user_conns.retain(|id| id != connection_id);
-                if user_conns.is_empty() {
-                    user_went_offline = true;
-                    drop(user_conns);
-                    self.user_connections.remove(&conn_info.user_id);
+            if let Some(mut actor_connections) = self.actor_connections.get_mut(&actor_key) {
+                actor_connections.retain(|id| id != connection_id);
+                if actor_connections.is_empty() {
+                    actor_went_offline = true;
+                    drop(actor_connections);
+                    self.actor_connections.remove(&actor_key);
                 }
             }
 
@@ -1441,7 +1483,7 @@ impl ConnectionManager {
                 let cleanup_op = self.unregister_cleanup_op(
                     connection_id,
                     &conn_info.registration_token,
-                    conn_info.user_id,
+                    &actor_key,
                     conn_info.room_id,
                 );
                 let cleanup_result = tokio::time::timeout(
@@ -1470,15 +1512,15 @@ impl ConnectionManager {
                 }
             }
             self.release_connection_id_claim(connection_id);
-            Some((conn_info, user_went_offline))
+            Some((conn_info, actor_went_offline))
         } else {
             None
         };
         drop(lifecycle_guard);
 
-        if let Some((conn_info, user_went_offline)) = removed {
+        if let Some((conn_info, actor_went_offline)) = removed {
             synctv_core::metrics::ACTIVE_CONNECTIONS.dec();
-            if user_went_offline {
+            if actor_went_offline {
                 synctv_core::metrics::application::USERS_ONLINE.dec();
                 #[cfg(test)]
                 self.users_online_metric_decrements
@@ -1503,7 +1545,7 @@ impl ConnectionManager {
 
             info!(
                 connection_id = %connection_id,
-                user_id = %conn_info.user_id,
+                actor = %conn_info.actor,
                 duration = ?conn_info.duration(),
                 message_count = conn_info.message_count,
                 "Connection unregistered"
@@ -1531,7 +1573,7 @@ impl ConnectionManager {
         due_connections.extend(due_rtc);
 
         let mut to_disconnect = Vec::new();
-        let mut rtc_timeouts: Vec<(RoomId, UserId, String)> = Vec::new();
+        let mut rtc_timeouts: Vec<(RoomId, RealtimeActor, String)> = Vec::new();
         for connection_id in due_connections {
             let Some(conn) = self.connections.get(&connection_id) else {
                 continue;
@@ -1566,14 +1608,18 @@ impl ConnectionManager {
                     if rtc_duration > self.limits.webrtc_session_timeout {
                         warn!(
                             connection_id = %conn.connection_id,
-                            user_id = %conn.user_id,
+                            actor = %conn.actor,
                             room_id = ?conn.room_id,
                             voice_rtc_session_duration = ?rtc_duration,
                             webrtc_session_timeout = ?self.limits.webrtc_session_timeout,
                             "WebRTC session timeout"
                         );
                         if let Some(room_id) = &conn.room_id {
-                            rtc_timeouts.push((*room_id, conn.user_id, conn.connection_id.clone()));
+                            rtc_timeouts.push((
+                                *room_id,
+                                conn.actor.clone(),
+                                conn.connection_id.clone(),
+                            ));
                         }
                         // Add to disconnect list to force reconnection
                         to_disconnect.push(conn.connection_id.clone());
@@ -1583,8 +1629,8 @@ impl ConnectionManager {
         }
 
         // Now apply RTC state mutations outside the DashMap iteration
-        for (room_id, user_id, conn_id) in rtc_timeouts {
-            self.mark_voice_rtc_joined(&room_id, &user_id, &conn_id, false);
+        for (room_id, actor, conn_id) in rtc_timeouts {
+            self.mark_voice_rtc_joined(&room_id, &actor, &conn_id, false);
         }
 
         to_disconnect
@@ -1633,8 +1679,8 @@ impl ConnectionManager {
     /// Get connection count for a user
     #[must_use]
     pub fn user_connection_count(&self, user_id: &UserId) -> usize {
-        self.user_connections
-            .get(user_id)
+        self.actor_connections
+            .get(&Self::user_actor_key(user_id))
             .map_or(0, |conns| conns.len())
     }
 
@@ -1779,14 +1825,32 @@ impl ConnectionManager {
         // Collect IDs first, then release the index DashMap lock before accessing
         // `connections` to avoid cross-DashMap lock ordering issues.
         let conn_ids: Vec<String> = self
-            .user_connections
-            .get(user_id)
+            .actor_connections
+            .get(&Self::user_actor_key(user_id))
             .map(|ids| ids.clone())
             .unwrap_or_default();
 
         conn_ids
             .iter()
             .filter_map(|id| self.connections.get(id).map(|c| c.clone()))
+            .collect()
+    }
+
+    #[must_use]
+    pub fn get_actor_connections(&self, actor: &RealtimeActor) -> Vec<ConnectionInfo> {
+        let conn_ids = self
+            .actor_connections
+            .get(&actor.connection_key())
+            .map(|ids| ids.clone())
+            .unwrap_or_default();
+
+        conn_ids
+            .iter()
+            .filter_map(|id| {
+                self.connections
+                    .get(id)
+                    .map(|connection| connection.clone())
+            })
             .collect()
     }
 
@@ -1814,7 +1878,11 @@ impl ConnectionManager {
             active_connections: self.connection_count(),
             total_connections_ever: self.total_connections_ever(),
             total_messages: self.total_messages(),
-            active_users: self.user_connections.len(),
+            active_users: self
+                .actor_connections
+                .iter()
+                .filter(|entry| entry.key().starts_with("user:"))
+                .count(),
             active_rooms: self.room_connections.len(),
         }
     }

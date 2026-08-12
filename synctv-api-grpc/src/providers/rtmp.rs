@@ -47,7 +47,7 @@ impl RtmpProviderService for RtmpProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Media,
                 move |authenticated| async move {
-                    api.create_publish_key(&authenticated.user_id, req).await
+                    api.create_publish_key(&authenticated.user_id(), req).await
                 },
             )
             .await
@@ -69,7 +69,7 @@ impl RtmpProviderService for RtmpProviderGrpcService {
                 EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
                     api.get_stream_info(
-                        &authenticated.user_id,
+                        &authenticated.user_id(),
                         req.room_id.as_str(),
                         req.media_id.as_str(),
                     )

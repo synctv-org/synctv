@@ -488,8 +488,9 @@ message FnosFilesPlaylistSourceConfig {
 }
 
 message FnosMediaLibraryPlaylistSourceConfig {
-  optional string ancestor_guid = 1;
+  string library_guid = 1 [(buf.validate.field).string.min_len = 1];
   repeated string media_types = 2;
+  optional string parent_guid = 3;
 }
 
 message FnosFavoritesPlaylistSourceConfig {

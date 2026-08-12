@@ -70,7 +70,7 @@ macro_rules! user_post {
         pub(crate) async fn $name(request_meta: RequestMetadata, State(state): State<AppState>, Json(req): Json<$req>) -> AppResult<Json<$resp>> {
             let instance = provider_instance_name_from_request_field(&req.instance_name)?;
             let api = state.shared_api_runtime.nextcloud_api.clone();
-            execute_provider_user_endpoint_with_control(&state, request_meta, $category, move |_control, auth| { async move { api.$method(auth.user_id, req, instance.as_deref()).await }.boxed() }).await
+            execute_provider_user_endpoint_with_control(&state, request_meta, $category, move |_control, auth| { async move { api.$method(auth.user_id(), req, instance.as_deref()).await }.boxed() }).await
         }
     };
 }
@@ -135,7 +135,7 @@ pub(crate) async fn logout(
         &state,
         request_meta,
         EndpointRateLimitCategory::Write,
-        move |_control, auth| async move { api.logout(auth.user_id, req).await }.boxed(),
+        move |_control, auth| async move { api.logout(auth.user_id(), req).await }.boxed(),
     )
     .await
 }
@@ -152,7 +152,7 @@ pub(crate) async fn binds(
         &state,
         request_meta,
         EndpointRateLimitCategory::Read,
-        move |auth| async move { api.binds(auth.user_id, instance.as_deref()).await }.boxed(),
+        move |auth| async move { api.binds(auth.user_id(), instance.as_deref()).await }.boxed(),
     )
     .await
 }
@@ -193,7 +193,7 @@ pub(crate) async fn preview(
                 let public_user = state
                     .shared_api_runtime
                     .public_id_codec
-                    .encode_user_id(auth.user_id)
+                    .encode_user_id(auth.user_id())
                     .map_err(synctv_api_common::impls::ApiError::Internal)?;
                 let public_owner = requested_owner
                     .clone()
@@ -232,7 +232,7 @@ pub(crate) async fn preview(
                         .decode_room_id(&room_id)
                         .map_err(synctv_api_common::impls::ApiError::InvalidInput)?;
                     super::playback_provider::playback_provider_api_runtime(&state)
-                        .validate_fresh_access(&room_id, &auth.user_id)
+                        .validate_fresh_access(&room_id, &auth.user_id())
                         .await?;
                 }
                 let owner = state

@@ -74,7 +74,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
                 EndpointRateLimitCategory::Read,
                 move |request_control, authenticated| async move {
                     api.parse_with_context(
-                        &authenticated.user_id,
+                        &authenticated.user_id(),
                         req,
                         instance_name.as_deref(),
                         Some(&request_control),
@@ -103,7 +103,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
                 EndpointRateLimitCategory::Read,
                 move |request_control, authenticated| async move {
                     api.list_playlist_with_context(
-                        &authenticated.user_id,
+                        &authenticated.user_id(),
                         req,
                         instance_name.as_deref(),
                         Some(&request_control),
@@ -185,7 +185,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
                 EndpointRateLimitCategory::Read,
                 move |request_control, authenticated| async move {
                     api.list_favorite_folders_with_context(
-                        &authenticated.user_id,
+                        &authenticated.user_id(),
                         req,
                         instance_name.as_deref(),
                         Some(&request_control),
@@ -214,7 +214,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
                 EndpointRateLimitCategory::Read,
                 move |request_control, authenticated| async move {
                     api.list_followed_pgc_with_context(
-                        &authenticated.user_id,
+                        &authenticated.user_id(),
                         req,
                         instance_name.as_deref(),
                         Some(&request_control),
@@ -243,7 +243,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
                 EndpointRateLimitCategory::Read,
                 move |request_control, authenticated| async move {
                     api.list_history_with_context(
-                        &authenticated.user_id,
+                        &authenticated.user_id(),
                         req,
                         instance_name.as_deref(),
                         Some(&request_control),
@@ -271,7 +271,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
                 EndpointRateLimitCategory::Read,
                 move |request_control, authenticated| async move {
                     api.list_pgc_timeline_with_context(
-                        &authenticated.user_id,
+                        &authenticated.user_id(),
                         req,
                         instance_name.as_deref(),
                         Some(&request_control),
@@ -299,7 +299,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
                 EndpointRateLimitCategory::Read,
                 move |request_control, authenticated| async move {
                     api.list_pgc_seasons_with_context(
-                        &authenticated.user_id,
+                        &authenticated.user_id(),
                         req,
                         instance_name.as_deref(),
                         Some(&request_control),
@@ -329,7 +329,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
                 EndpointRateLimitCategory::Auth,
                 move |request_control, authenticated| async move {
                     api.check_qr_with_context(
-                        &authenticated.user_id,
+                        &authenticated.user_id(),
                         req,
                         instance_name.as_deref(),
                         Some(&request_control),
@@ -416,7 +416,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
                 EndpointRateLimitCategory::Auth,
                 move |request_control, authenticated| async move {
                     api.login_sms_with_context(
-                        &authenticated.user_id,
+                        &authenticated.user_id(),
                         req,
                         None,
                         Some(&request_control),
@@ -446,7 +446,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
                 EndpointRateLimitCategory::Read,
                 move |request_control, authenticated| async move {
                     api.get_user_info_with_context(
-                        &authenticated.user_id,
+                        &authenticated.user_id(),
                         req,
                         instance_name.as_deref(),
                         Some(&request_control),
@@ -474,7 +474,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Auth,
                 move |authenticated| async move {
-                    api.logout(&authenticated.user_id, req)
+                    api.logout(&authenticated.user_id(), req)
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },
@@ -498,7 +498,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
-                    api.get_binds(&authenticated.user_id, instance_name.as_deref())
+                    api.get_binds(&authenticated.user_id(), instance_name.as_deref())
                         .await
                 },
             )

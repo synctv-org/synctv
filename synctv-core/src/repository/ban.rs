@@ -19,12 +19,22 @@ impl BanRecordTargetType {
             Self::Room => 2,
         }
     }
+
+    fn from_discriminator(value: i32) -> Result<Self> {
+        match value {
+            1 => Ok(Self::User),
+            2 => Ok(Self::Room),
+            _ => Err(crate::Error::Internal(format!(
+                "Invalid ban record target type: {value}"
+            ))),
+        }
+    }
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct BanRecordRow {
     pub id: BanRecordId,
-    pub target_type: i32,
+    pub target_type: BanRecordTargetType,
     pub user_id: Option<UserId>,
     pub username: String,
     pub room_id: Option<RoomId>,
@@ -37,6 +47,47 @@ pub struct BanRecordRow {
     pub revoked_at: Option<DateTime<Utc>>,
     pub revoked_by: Option<UserId>,
     pub is_active: bool,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct BanRecordDatabaseRow {
+    id: BanRecordId,
+    target_type: i32,
+    user_id: Option<UserId>,
+    username: String,
+    room_id: Option<RoomId>,
+    room_name: String,
+    banned_by: Option<UserId>,
+    banned_by_username: String,
+    reason: String,
+    starts_at: DateTime<Utc>,
+    ends_at: Option<DateTime<Utc>>,
+    revoked_at: Option<DateTime<Utc>>,
+    revoked_by: Option<UserId>,
+    is_active: bool,
+}
+
+impl TryFrom<BanRecordDatabaseRow> for BanRecordRow {
+    type Error = crate::Error;
+
+    fn try_from(row: BanRecordDatabaseRow) -> Result<Self> {
+        Ok(Self {
+            id: row.id,
+            target_type: BanRecordTargetType::from_discriminator(row.target_type)?,
+            user_id: row.user_id,
+            username: row.username,
+            room_id: row.room_id,
+            room_name: row.room_name,
+            banned_by: row.banned_by,
+            banned_by_username: row.banned_by_username,
+            reason: row.reason,
+            starts_at: row.starts_at,
+            ends_at: row.ends_at,
+            revoked_at: row.revoked_at,
+            revoked_by: row.revoked_by,
+            is_active: row.is_active,
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -105,7 +156,7 @@ impl BanRecordRepository {
         .await?;
 
         let rows = sqlx::query_as!(
-            BanRecordRow,
+            BanRecordDatabaseRow,
             r#"
             SELECT id AS "id!: BanRecordId",
                    target_type AS "target_type!",
@@ -156,6 +207,10 @@ impl BanRecordRepository {
         )
         .fetch_all(pool)
         .await?;
+        let rows = rows
+            .into_iter()
+            .map(BanRecordRow::try_from)
+            .collect::<Result<Vec<_>>>()?;
 
         Ok(BanRecordPage { rows, total })
     }
@@ -244,7 +299,7 @@ mod tests {
         assert_eq!(page.total, 1);
         assert_eq!(page.rows.len(), 1);
         let row = &page.rows[0];
-        assert_eq!(row.target_type, BanRecordTargetType::User.discriminator());
+        assert_eq!(row.target_type, BanRecordTargetType::User);
         assert_eq!(row.user_id, Some(target.id));
         assert_eq!(row.username, target.username);
         assert_eq!(row.banned_by, Some(admin.id));

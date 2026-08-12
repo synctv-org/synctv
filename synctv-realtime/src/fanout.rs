@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use parking_lot::Mutex;
 use std::sync::Arc;
-use synctv_core::models::{RoomId, UserId};
+use synctv_core::models::RoomId;
 use synctv_core::service::{
     NewRealtimeOutboxEvent, PermissionChangedOutboxSnapshot,
     RealtimeOutboxPermissionChangedEventFactory, RealtimeOutboxUserLeftEventFactory,
@@ -13,6 +13,7 @@ use crate::sync::{
     BroadcastResult, ConnectionId, PublishRequest, RealtimeEvent, RealtimeManager,
     SharedRealtimeEvent,
 };
+use synctv_core::models::RealtimeActor;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RealtimeMetrics {
@@ -98,7 +99,7 @@ pub trait RealtimeEventService: Send + Sync {
     async fn subscribe_with_id(
         &self,
         room_id: RoomId,
-        user_id: UserId,
+        actor: RealtimeActor,
         connection_id: ConnectionId,
     ) -> crate::Result<(mpsc::Receiver<SharedRealtimeEvent>, ConnectionId)>;
 
@@ -159,7 +160,7 @@ impl RealtimeEventService for LocalNoopRealtimeEventService {
     async fn subscribe_with_id(
         &self,
         _room_id: RoomId,
-        _user_id: UserId,
+        _actor: RealtimeActor,
         connection_id: ConnectionId,
     ) -> crate::Result<(mpsc::Receiver<SharedRealtimeEvent>, ConnectionId)> {
         let (_tx, rx) = mpsc::channel(16);
@@ -205,10 +206,10 @@ impl RealtimeEventService for RealtimeManager {
     async fn subscribe_with_id(
         &self,
         room_id: RoomId,
-        user_id: UserId,
+        actor: RealtimeActor,
         connection_id: ConnectionId,
     ) -> crate::Result<(mpsc::Receiver<SharedRealtimeEvent>, ConnectionId)> {
-        RealtimeManager::subscribe_with_id(self, room_id, user_id, connection_id).await
+        RealtimeManager::subscribe_with_id(self, room_id, actor, connection_id).await
     }
 
     fn unsubscribe(&self, connection_id: &str) {

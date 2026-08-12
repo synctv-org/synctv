@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::pin::Pin;
 
+use crate::models::{SourceProvider, UserId};
+
 /// Playback information for a single mode
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlaybackInfo {
@@ -46,7 +48,7 @@ pub struct PlaybackResult {
     pub default_mode: String,
 
     /// Provider that generated this playback result.
-    pub provider: String,
+    pub provider: SourceProvider,
 
     /// Provider instance selected for this playback result.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -103,50 +105,55 @@ pub enum BilibiliLiveDanmakuEventKind {
 /// The provider owns source-config parsing and credential policy decisions. Callers
 /// can compare this value against a credential mutation event without knowing
 /// provider-specific fields such as Bilibili's shared/non-shared flag.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProviderCredentialDependency {
-    pub provider: String,
-    pub user_id: String,
-    pub server_id: String,
-    #[serde(default = "default_required_provider_credential_dependency")]
-    pub required: bool,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialRequirement {
+    Required,
+    Optional,
 }
 
-const fn default_required_provider_credential_dependency() -> bool {
-    true
+impl CredentialRequirement {
+    #[must_use]
+    pub const fn is_required(self) -> bool {
+        matches!(self, Self::Required)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderCredentialDependency {
+    pub provider: SourceProvider,
+    pub user_id: UserId,
+    pub server_id: String,
+    pub requirement: CredentialRequirement,
 }
 
 impl ProviderCredentialDependency {
     #[must_use]
-    pub fn new(
-        provider: impl Into<String>,
-        user_id: impl Into<String>,
-        server_id: impl Into<String>,
-    ) -> Self {
+    pub fn new(provider: SourceProvider, user_id: UserId, server_id: impl Into<String>) -> Self {
         Self {
-            provider: provider.into(),
-            user_id: user_id.into(),
+            provider,
+            user_id,
             server_id: server_id.into(),
-            required: true,
+            requirement: CredentialRequirement::Required,
         }
     }
 
     #[must_use]
     pub fn optional(
-        provider: impl Into<String>,
-        user_id: impl Into<String>,
+        provider: SourceProvider,
+        user_id: UserId,
         server_id: impl Into<String>,
     ) -> Self {
         Self {
-            provider: provider.into(),
-            user_id: user_id.into(),
+            provider,
+            user_id,
             server_id: server_id.into(),
-            required: false,
+            requirement: CredentialRequirement::Optional,
         }
     }
 
     #[must_use]
-    pub fn matches(&self, provider: &str, user_id: &str, server_id: &str) -> bool {
+    pub fn matches(&self, provider: SourceProvider, user_id: UserId, server_id: &str) -> bool {
         self.provider == provider && self.user_id == user_id && self.server_id == server_id
     }
 }

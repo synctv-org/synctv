@@ -5,7 +5,10 @@ use std::time::Duration;
 
 use synctv_core::spawn::spawn_monitored;
 use synctv_core::{
-    models::{ChatEventKind, ChatMessageSelection, RoomId, UserId},
+    models::{
+        ChatEventKind, ChatMessageSelection, RealtimeActor, RoomId, RoomRole, SourceProvider,
+        UserId,
+    },
     service::{
         ChatService, OnlinePresenceService, RoomResourceEventPayload, RoomResourceKind, RoomService,
     },
@@ -30,7 +33,7 @@ use crate::resource_change::{
     provider_credential_resource_invalidation, resource_invalidations_for_cache_targets,
     resource_invalidations_for_room_event, ResourceInvalidation,
 };
-use synctv_proto::client::{ResourceDeliveryMode, ServerMessage};
+use synctv_proto::client::{OnlineEventKind, ResourceDeliveryMode, ServerMessage};
 
 const RESOURCE_EVALUATION_REUSE_WINDOW: Duration = Duration::from_secs(5);
 const MEDIA_RESOURCE_REFRESH_DEDUP_WINDOW: Duration = Duration::from_secs(5);
@@ -82,17 +85,17 @@ fn chat_event_visible_to_observation(
 
 pub(super) fn room_member_event_visible_to_observer(
     event: &RealtimeEvent,
-    observer_user_id: &UserId,
+    observer_user_id: Option<UserId>,
 ) -> bool {
     match event {
         RealtimeEvent::UserJoined { user_id, .. }
         | RealtimeEvent::UserLeft { user_id, .. }
-        | RealtimeEvent::KickUserFromRoom { user_id, .. } => user_id != observer_user_id,
+        | RealtimeEvent::KickUserFromRoom { user_id, .. } => observer_user_id != Some(*user_id),
         RealtimeEvent::PermissionChanged {
             target_user_id,
             role_changed,
             ..
-        } => target_user_id != observer_user_id && *role_changed,
+        } => observer_user_id != Some(*target_user_id) && *role_changed,
         RealtimeEvent::GuestJoined { .. } | RealtimeEvent::GuestLeft { .. } => true,
         _ => false,
     }
@@ -130,50 +133,56 @@ struct ResourceEvaluation {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum ObservationEvaluationKey {
     PlaybackState {
-        delivery_mode: i32,
+        delivery_mode: ResourceDeliveryMode,
     },
     Playback {
-        delivery_mode: i32,
+        delivery_mode: ResourceDeliveryMode,
         playback_client_profile: Option<String>,
     },
     RoomSettings {
-        delivery_mode: i32,
+        delivery_mode: ResourceDeliveryMode,
     },
     PlaylistItems {
-        delivery_mode: i32,
+        delivery_mode: ResourceDeliveryMode,
         request: Vec<u8>,
     },
     PlaybackHistory {
-        delivery_mode: i32,
+        delivery_mode: ResourceDeliveryMode,
         request: Vec<u8>,
     },
     RoomMemberEvents {
-        delivery_mode: i32,
+        delivery_mode: ResourceDeliveryMode,
     },
     SelfRoomMember {
-        delivery_mode: i32,
+        delivery_mode: ResourceDeliveryMode,
     },
     ChatEvents {
-        delivery_mode: i32,
+        delivery_mode: ResourceDeliveryMode,
         include_message_types: Vec<i32>,
     },
     ChatPinEvents {
-        delivery_mode: i32,
+        delivery_mode: ResourceDeliveryMode,
     },
     OnlineCount {
-        delivery_mode: i32,
-        roles: Vec<i32>,
+        delivery_mode: ResourceDeliveryMode,
+        roles: Vec<RoomRole>,
         user_ids: Vec<UserId>,
     },
     OnlineEvent {
-        delivery_mode: i32,
+        delivery_mode: ResourceDeliveryMode,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum ResourceActorScope {
+    User(UserId),
+    Guest(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct SharedObservationEvaluationKey {
     room_id: RoomId,
-    user_id: Option<UserId>,
+    actor: Option<ResourceActorScope>,
     service_id: usize,
     evaluation: ObservationEvaluationKey,
 }
@@ -392,12 +401,12 @@ enum ObservedResource {
     },
     ChatPinEvents,
     OnlineCount {
-        roles: Vec<i32>,
+        roles: Vec<RoomRole>,
         user_ids: Vec<UserId>,
     },
     OnlineEvent {
-        roles: Vec<i32>,
-        kinds: Vec<i32>,
+        roles: Vec<RoomRole>,
+        kinds: Vec<OnlineEventKind>,
         user_ids: Vec<UserId>,
     },
 }
@@ -449,7 +458,7 @@ impl ResourceObservation {
     }
 
     fn evaluation_key(&self) -> ObservationEvaluationKey {
-        let delivery_mode = self.delivery_mode as i32;
+        let delivery_mode = self.delivery_mode;
         match &self.resource {
             ObservedResource::PlaybackState => {
                 ObservationEvaluationKey::PlaybackState { delivery_mode }
@@ -516,7 +525,6 @@ impl ResourceObservation {
 
 pub(super) struct ResourceObserver {
     room_id: RoomId,
-    user_id: UserId,
     actor: RoomActor,
     connection_id: String,
     room_service: Arc<RoomService>,
@@ -536,7 +544,6 @@ pub(super) struct ResourceObserver {
 
 pub(super) struct ResourceObserverParams {
     pub(super) room_id: RoomId,
-    pub(super) user_id: UserId,
     pub(super) actor: RoomActor,
     pub(super) connection_id: String,
     pub(super) room_service: Arc<RoomService>,
@@ -554,7 +561,6 @@ impl ResourceObserver {
     pub(super) fn new(params: ResourceObserverParams) -> Self {
         let ResourceObserverParams {
             room_id,
-            user_id,
             actor,
             connection_id,
             room_service,
@@ -572,7 +578,6 @@ impl ResourceObserver {
         let room_hub = media_resource_hub(room_id, &room_service);
         Self {
             room_id,
-            user_id,
             actor,
             connection_id,
             room_service,
@@ -676,7 +681,7 @@ impl ResourceObserver {
         let service_identity = self.resource_evaluation_service_identity(&observation.resource);
         SharedObservationEvaluationKey {
             room_id: self.room_id,
-            user_id: self.resource_evaluation_user_scope(&observation.resource),
+            actor: self.resource_evaluation_actor_scope(&observation.resource),
             service_id: service_identity.id,
             evaluation: observation.evaluation_key(),
         }
@@ -1289,8 +1294,11 @@ impl MediaResourceHub {
                 self.remove_stale_subscription(&key, revision).await;
                 continue;
             };
-            let invalidations =
-                resource_invalidations_for_cache_targets(targets, self.room_id, observer.user_id);
+            let invalidations = resource_invalidations_for_cache_targets(
+                targets,
+                self.room_id,
+                observer.actor.user_id(),
+            );
             for invalidation in invalidations {
                 if ResourceObserver::observation_invalidated_by_invalidation(
                     &observation,
@@ -1365,7 +1373,7 @@ impl MediaResourceHub {
                         Err(error) => {
                             tracing::warn!(
                                 room_id = %observer.room_id,
-                                user_id = %observer.user_id,
+                                actor = ?observer.actor,
                                 observe_id = %updated_observation.observe_id,
                                 error = %error,
                                 "Failed to convert chat event for resource observer"
@@ -1425,7 +1433,7 @@ impl MediaResourceHub {
                         Err(error) => {
                             tracing::warn!(
                                 room_id = %observer.room_id,
-                                user_id = %observer.user_id,
+                                actor = ?observer.actor,
                                 observe_id = %updated_observation.observe_id,
                                 error = %error,
                                 "Failed to convert chat pin event for resource observer"
@@ -1474,13 +1482,13 @@ impl MediaResourceHub {
                     match &observation.resource {
                         ObservedResource::Playback { .. } => observer
                             .current_playback_depends_on_provider_credential(
-                                user_id, provider, server_id,
+                                user_id, *provider, server_id,
                             )
                             .await
                             .unwrap_or_else(|error| {
                                 tracing::warn!(
                                     room_id = %self.room_id,
-                                    user_id = %observer.user_id,
+                                    actor = ?observer.actor,
                                     error = %error,
                                     "Failed to resolve playback credential dependencies"
                                 );
@@ -1602,7 +1610,7 @@ impl MediaResourceHub {
                                 let error = error.to_string();
                                 tracing::warn!(
                                     room_id = %observer.room_id,
-                                    user_id = %observer.user_id,
+                                    actor = ?observer.actor,
                                     observe_id = %updated_observation.observe_id,
                                     error = %error,
                                     "Failed to convert playback state event for resource observer"
@@ -1701,7 +1709,7 @@ impl MediaResourceHub {
                                 Err(error) => {
                                     tracing::warn!(
                                         room_id = %observer.room_id,
-                                        user_id = %observer.user_id,
+                                        actor = ?observer.actor,
                                         observe_id = %updated_observation.observe_id,
                                         error = %error,
                                         "Failed to convert chat event for resource observer"
@@ -1756,7 +1764,7 @@ impl MediaResourceHub {
                             Err(error) => {
                                 tracing::warn!(
                                     room_id = %observer.room_id,
-                                    user_id = %observer.user_id,
+                                    actor = ?observer.actor,
                                     observe_id = %updated_observation.observe_id,
                                     error = %error,
                                     "Failed to convert chat pin event for resource observer"
@@ -1811,7 +1819,7 @@ impl MediaResourceHub {
                                 });
                             continue;
                         }
-                        if !room_member_event_visible_to_observer(event, &observer.user_id) {
+                        if !room_member_event_visible_to_observer(event, observer.actor.user_id()) {
                             continue;
                         }
                         let cursor = event_cursor.clone().unwrap_or_else(|| {
@@ -1843,7 +1851,7 @@ impl MediaResourceHub {
                             Err(error) => {
                                 tracing::warn!(
                                     room_id = %observer.room_id,
-                                    user_id = %observer.user_id,
+                                    actor = ?observer.actor,
                                     observe_id = %updated_observation.observe_id,
                                     error = %error,
                                     "Failed to convert room member event for resource observer"
@@ -1897,7 +1905,7 @@ impl MediaResourceHub {
                                 Err(error) => {
                                     tracing::warn!(
                                         room_id = %observer.room_id,
-                                        user_id = %observer.user_id,
+                                        actor = ?observer.actor,
                                         observe_id = %observation.observe_id,
                                         error = %error,
                                         "Failed to convert online event for resource observer"
@@ -1942,13 +1950,13 @@ impl MediaResourceHub {
                         let should_refresh = match &observation.resource {
                             ObservedResource::Playback { .. } => observer
                                 .current_playback_depends_on_provider_credential(
-                                    user_id, provider, server_id,
+                                    user_id, *provider, server_id,
                                 )
                                 .await
                                 .unwrap_or_else(|error| {
                                     tracing::warn!(
                                         room_id = %self.room_id,
-                                        user_id = %observer.user_id,
+                                        actor = ?observer.actor,
                                         error = %error,
                                         "Failed to resolve playback credential dependencies"
                                     );
@@ -2125,7 +2133,7 @@ impl MediaResourceHub {
                                     .await;
                                 tracing::warn!(
                                     room_id = %self.room_id,
-                                    user_id = %entry.observer.user_id,
+                                    actor = ?entry.observer.actor,
                                     observe_id = %entry.key.observe_id,
                                     error = %error,
                                     "Removed observed resource after ResourceEvent send failure"
@@ -2153,7 +2161,7 @@ impl MediaResourceHub {
                             ) {
                                 tracing::warn!(
                                     room_id = %self.room_id,
-                                    user_id = %entry.observer.user_id,
+                                    actor = ?entry.observer.actor,
                                     observe_id = %entry.key.observe_id,
                                     error = %send_error,
                                     "Failed to send ResourceObserveError after refresh failure"
@@ -2165,7 +2173,7 @@ impl MediaResourceHub {
                             }
                             tracing::warn!(
                                 room_id = %self.room_id,
-                                user_id = %entry.observer.user_id,
+                                actor = ?entry.observer.actor,
                                 observe_id = %entry.key.observe_id,
                                 error = %error,
                                 "Removed observed resource after refresh failure"
@@ -2278,6 +2286,30 @@ impl ResourceObserver {
         }
     }
 
+    fn normalize_online_roles(values: &[i32], resource: &str) -> Result<Vec<RoomRole>, String> {
+        values
+            .iter()
+            .map(|value| {
+                proto_role_filter_to_room_role(*value)
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| format!("{resource} role filter is unspecified"))
+            })
+            .collect()
+    }
+
+    fn normalize_online_event_kinds(values: &[i32]) -> Result<Vec<OnlineEventKind>, String> {
+        values
+            .iter()
+            .map(|value| match OnlineEventKind::try_from(*value) {
+                Ok(OnlineEventKind::Joined) => Ok(OnlineEventKind::Joined),
+                Ok(OnlineEventKind::Left) => Ok(OnlineEventKind::Left),
+                Ok(OnlineEventKind::Unspecified) | Err(_) => {
+                    Err("online_event kind filter is unsupported".to_string())
+                }
+            })
+            .collect()
+    }
+
     fn observation_from_request(
         &self,
         request: &synctv_proto::client::ObserveResource,
@@ -2326,7 +2358,7 @@ impl ResourceObserver {
             },
             Resource::ChatPinEvents(_) => ObservedResource::ChatPinEvents,
             Resource::OnlineCount(observe) => ObservedResource::OnlineCount {
-                roles: observe.roles.clone(),
+                roles: Self::normalize_online_roles(&observe.roles, "online_count")?,
                 user_ids: observe
                     .user_ids
                     .iter()
@@ -2340,8 +2372,8 @@ impl ResourceObserver {
                     .collect::<Result<Vec<_>, _>>()?,
             },
             Resource::OnlineEvent(observe) => ObservedResource::OnlineEvent {
-                roles: observe.roles.clone(),
-                kinds: observe.kinds.clone(),
+                roles: Self::normalize_online_roles(&observe.roles, "online_event")?,
+                kinds: Self::normalize_online_event_kinds(&observe.kinds)?,
                 user_ids: observe
                     .user_ids
                     .iter()
@@ -2706,7 +2738,8 @@ impl ResourceObserver {
                     continue;
                 }
                 if matches!(observation.resource, ObservedResource::RoomMemberEvents) {
-                    if !room_member_event_visible_to_observer(&realtime_event, &self.user_id) {
+                    if !room_member_event_visible_to_observer(&realtime_event, self.actor.user_id())
+                    {
                         self.replace_local_observation(observation.clone()).await;
                         self.room_hub.register_observation(self, observation).await;
                         continue;
@@ -2845,7 +2878,7 @@ impl ResourceObserver {
     async fn current_playback_depends_on_provider_credential(
         &self,
         changed_user_id: &synctv_core::models::UserId,
-        provider: &str,
+        provider: SourceProvider,
         server_id: &str,
     ) -> Result<bool, String> {
         let state = self
@@ -2855,21 +2888,20 @@ impl ResourceObserver {
             .map_err(|error| error.to_string())?;
         let dependencies = self
             .playback_service
-            .playback_credential_dependencies(&self.user_id, &self.room_id, &state)
+            .playback_credential_dependencies(&self.actor, &self.room_id, &state)
             .await
             .map_err(|error| error.to_string())?;
 
-        let changed_user_id_key = changed_user_id.to_string();
         Ok(dependencies
             .iter()
-            .any(|dependency| dependency.matches(provider, &changed_user_id_key, server_id)))
+            .any(|dependency| dependency.matches(provider, *changed_user_id, server_id)))
     }
 
     pub(super) async fn handle_provider_credential_changed_admin_event(
         self: &Arc<Self>,
         event_id: &str,
         changed_user_id: &synctv_core::models::UserId,
-        provider: &str,
+        provider: SourceProvider,
         server_id: &str,
     ) {
         let invalidation =
@@ -2889,9 +2921,9 @@ impl ResourceObserver {
         if let Some(error) = outcome.error_for_connection(Some(&self.connection_id)) {
             tracing::warn!(
                 room_id = %self.room_id,
-                user_id = %self.user_id,
+                actor = ?self.actor,
                 changed_user_id = %changed_user_id,
-                provider,
+                provider = ?provider,
                 server_id,
                 error = %error,
                 "Failed to refresh observed resources after provider credential change"
@@ -2911,7 +2943,7 @@ impl ResourceObserver {
         if let Some(error) = outcome.error_for_connection(Some(&self.connection_id)) {
             tracing::warn!(
                 room_id = %self.room_id,
-                user_id = %self.user_id,
+                actor = ?self.actor,
                 error = %error,
                 "Failed to refresh observed resources after cache invalidation"
             );
@@ -3007,16 +3039,12 @@ impl ResourceObserver {
         };
 
         let (user_id, role, kind) = match event {
-            RealtimeEvent::UserJoined { user_id, role, .. } => (
-                *user_id,
-                *role,
-                synctv_proto::client::OnlineEventKind::Joined as i32,
-            ),
-            RealtimeEvent::UserLeft { user_id, role, .. } => (
-                *user_id,
-                *role,
-                synctv_proto::client::OnlineEventKind::Left as i32,
-            ),
+            RealtimeEvent::UserJoined { user_id, role, .. } => {
+                (*user_id, *role, OnlineEventKind::Joined)
+            }
+            RealtimeEvent::UserLeft { user_id, role, .. } => {
+                (*user_id, *role, OnlineEventKind::Left)
+            }
             _ => return false,
         };
 
@@ -3060,7 +3088,7 @@ impl ResourceObserver {
         let service_identity = self.resource_evaluation_service_identity(resource);
         let shared_key = SharedObservationEvaluationKey {
             room_id: self.room_id,
-            user_id: self.resource_evaluation_user_scope(resource),
+            actor: self.resource_evaluation_actor_scope(resource),
             service_id: service_identity.id,
             evaluation: key,
         };
@@ -3112,7 +3140,10 @@ impl ResourceObserver {
         result
     }
 
-    fn resource_evaluation_user_scope(&self, resource: &ObservedResource) -> Option<UserId> {
+    fn resource_evaluation_actor_scope(
+        &self,
+        resource: &ObservedResource,
+    ) -> Option<ResourceActorScope> {
         match resource {
             ObservedResource::PlaybackState | ObservedResource::RoomSettings => None,
             ObservedResource::Playback { .. }
@@ -3122,10 +3153,17 @@ impl ResourceObserver {
             | ObservedResource::SelfRoomMember
             | ObservedResource::ChatEvents { .. }
             | ObservedResource::ChatPinEvents
-            | ObservedResource::OnlineEvent { .. } => Some(self.user_id),
+            | ObservedResource::OnlineEvent { .. } => Some(self.actor_scope()),
             ObservedResource::OnlineCount { roles, user_ids } => {
-                (!roles.is_empty() || !user_ids.is_empty()).then_some(self.user_id)
+                (!roles.is_empty() || !user_ids.is_empty()).then(|| self.actor_scope())
             }
+        }
+    }
+
+    fn actor_scope(&self) -> ResourceActorScope {
+        match &self.actor {
+            RoomActor::User { user_id, .. } => ResourceActorScope::User(*user_id),
+            RoomActor::Guest(access) => ResourceActorScope::Guest(access.guest_id.clone()),
         }
     }
 
@@ -3205,8 +3243,8 @@ impl ResourceObserver {
                     .await
                     .map_err(|error| error.to_string())?;
                 let playback = service
-                    .get_playback(
-                        &self.user_id,
+                    .get_playback_for_actor(
+                        &self.actor,
                         &self.room_id,
                         &state,
                         playback_client_profile.as_ref(),
@@ -3363,7 +3401,7 @@ impl ResourceObserver {
 
     async fn online_count_for_filters(
         &self,
-        roles: &[i32],
+        roles: &[RoomRole],
         user_ids: &[UserId],
     ) -> Result<usize, String> {
         if roles.is_empty() && user_ids.is_empty() {
@@ -3379,10 +3417,7 @@ impl ResourceObserver {
         if !roles.is_empty() {
             let mut role_user_ids = HashSet::new();
             for role in roles {
-                let role = proto_role_filter_to_room_role(*role)
-                    .map_err(|error| error.to_string())?
-                    .ok_or_else(|| "online_count role filter is unspecified".to_string())?;
-                role_user_ids.extend(self.user_ids_for_room_role(role).await?);
+                role_user_ids.extend(self.user_ids_for_room_role(*role).await?);
             }
 
             if filtered_user_ids.is_empty() {
@@ -3453,7 +3488,10 @@ impl ResourceObserver {
                 .map_err(|error| error.to_string())?;
             let stats = self
                 .presence_service
-                .user_room_stats(self.user_id, self.room_id)
+                .actor_connection_count_in_room(
+                    &RealtimeActor::guest(access.guest_id.clone()),
+                    self.room_id,
+                )
                 .await
                 .map_err(|error| error.to_string())?;
             return Ok(synctv_proto::common::RoomMember {
@@ -3466,12 +3504,16 @@ impl ResourceObserver {
                 role: synctv_proto::common::RoomMemberRole::Guest as i32,
                 permissions: permissions.bits(),
                 joined_at: 0,
-                is_online: stats.is_online,
-                connection_count: i32::try_from(stats.connection_count)
+                is_online: stats > 0,
+                connection_count: i32::try_from(stats)
                     .map_err(|_| "guest connection count exceeds i32 range".to_string())?,
                 ..Default::default()
             });
         }
+        let user_id = self
+            .actor
+            .user_id()
+            .ok_or_else(|| "Current room actor has no user id".to_string())?;
         let mut page = 1_u32;
         let member = loop {
             let (members, total) = self
@@ -3492,10 +3534,7 @@ impl ResourceObserver {
                 )
                 .await
                 .map_err(|error| error.to_string())?;
-            if let Some(member) = members
-                .into_iter()
-                .find(|member| member.user_id == self.user_id)
-            {
+            if let Some(member) = members.into_iter().find(|member| member.user_id == user_id) {
                 break member;
             }
             let searched = usize::try_from(page)
@@ -3522,7 +3561,7 @@ impl ResourceObserver {
                 .map_err(|error| error.to_string())?;
         let stats = self
             .presence_service
-            .user_room_stats(self.user_id, self.room_id)
+            .user_room_stats(user_id, self.room_id)
             .await
             .map_err(|error| error.to_string())?;
         proto.is_online = stats.is_online;
@@ -3667,8 +3706,8 @@ mod tests {
         let user = UserId::expect_positive(42);
         let other = UserId::expect_positive(43);
         let resource = ObservedResource::OnlineEvent {
-            roles: vec![synctv_proto::common::RoomMemberRole::Admin as i32],
-            kinds: vec![synctv_proto::client::OnlineEventKind::Joined as i32],
+            roles: vec![RoomRole::Admin],
+            kinds: vec![OnlineEventKind::Joined],
             user_ids: vec![user],
         };
         let matching = RealtimeEvent::UserJoined {
@@ -3679,7 +3718,7 @@ mod tests {
             remark_name: String::new(),
             display_tag: String::new(),
             permissions: synctv_core::models::RoomPermissionSet::default_admin(),
-            role: synctv_proto::common::RoomMemberRole::Admin as i32,
+            role: RoomRole::Admin,
             added_permissions: synctv_core::models::RoomPermissionSet(0),
             removed_permissions: synctv_core::models::RoomPermissionSet(0),
             admin_added_permissions: synctv_core::models::RoomPermissionSet(0),
@@ -3695,7 +3734,7 @@ mod tests {
             remark_name: String::new(),
             display_tag: String::new(),
             permissions: synctv_core::models::RoomPermissionSet::default_admin(),
-            role: synctv_proto::common::RoomMemberRole::Admin as i32,
+            role: RoomRole::Admin,
             added_permissions: synctv_core::models::RoomPermissionSet(0),
             removed_permissions: synctv_core::models::RoomPermissionSet(0),
             admin_added_permissions: synctv_core::models::RoomPermissionSet(0),
@@ -3710,7 +3749,7 @@ mod tests {
             username: "admin".to_string(),
             remark_name: String::new(),
             display_tag: String::new(),
-            role: synctv_proto::common::RoomMemberRole::Admin as i32,
+            role: RoomRole::Admin,
             timestamp: synctv_core::SystemClock.now(),
         };
 

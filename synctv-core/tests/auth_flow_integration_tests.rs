@@ -173,10 +173,10 @@ async fn test_complete_registration_flow() {
 
     // Verify tokens
     let access_claims = verify_access(&jwt_service, &access_token);
-    assert_eq!(access_claims.sub, fetched_user.id.to_string());
+    assert_eq!(access_claims.user_id(), fetched_user.id);
 
     let refresh_claims = verify_refresh(&jwt_service, &refresh_token);
-    assert_eq!(refresh_claims.sub, fetched_user.id.to_string());
+    assert_eq!(refresh_claims.user_id(), fetched_user.id);
 }
 
 #[tokio::test]
@@ -265,16 +265,10 @@ async fn test_token_refresh_flow() {
 
     let refresh_claims = verify_refresh(&jwt_service, &refresh_token);
 
-    let new_access_token = sign_access(
-        &jwt_service,
-        &ok(
-            refresh_claims.user_id(),
-            "refresh claims user id should parse",
-        ),
-    );
+    let new_access_token = sign_access(&jwt_service, &refresh_claims.user_id());
 
     let new_claims = verify_access(&jwt_service, &new_access_token);
-    assert_eq!(new_claims.sub, user_id.to_string());
+    assert_eq!(new_claims.user_id(), user_id);
 
     // Old and new access tokens should be different
     assert_ne!(access_token, new_access_token);
@@ -423,9 +417,7 @@ async fn test_concurrent_login_attempts() {
 
     // All should succeed with same user ID
     assert_eq!(results.len(), 10);
-    assert!(results
-        .iter()
-        .all(|claims| claims.sub == user_id.to_string()));
+    assert!(results.iter().all(|claims| claims.user_id() == user_id));
 }
 
 #[tokio::test]

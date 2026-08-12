@@ -53,7 +53,7 @@ impl TikTokApiImpl {
         publish_provider_credential_changed(
             &self.event_service,
             user_id,
-            TikTokProvider::NAME,
+            synctv_core::models::SourceProvider::TikTok,
             &server_id,
         );
         Ok(BindResponse { server_id })
@@ -96,7 +96,7 @@ impl TikTokApiImpl {
             publish_provider_credential_changed(
                 &self.event_service,
                 user_id,
-                TikTokProvider::NAME,
+                synctv_core::models::SourceProvider::TikTok,
                 &req.server_id,
             );
         }

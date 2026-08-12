@@ -1,8 +1,8 @@
 use crate::models::id::{MediaId, PlaylistId, RoomId, UserId};
 use crate::models::notification::{NotificationData, NotificationType};
 use crate::models::playback::RoomPlaybackState;
-use crate::models::RoomPermissionSet;
 use crate::models::{ChatMessageEvent, ChatPinEvent, Playlist, RoomSettings};
+use crate::models::{RoomPermissionSet, RoomRole, SourceProvider};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -113,7 +113,7 @@ pub enum RealtimeEvent {
         #[serde(default)]
         display_tag: String,
         permissions: RoomPermissionSet,
-        role: i32, // RoomMemberRole as i32 for serde compatibility
+        role: RoomRole,
         #[serde(default)]
         added_permissions: RoomPermissionSet,
         #[serde(default)]
@@ -134,7 +134,7 @@ pub enum RealtimeEvent {
         guest_id: String,
         username: String,
         permissions: RoomPermissionSet,
-        role: i32,
+        role: RoomRole,
         joined_at: DateTime<Utc>,
         timestamp: DateTime<Utc>,
     },
@@ -149,8 +149,7 @@ pub enum RealtimeEvent {
         remark_name: String,
         #[serde(default)]
         display_tag: String,
-        #[serde(default)]
-        role: i32,
+        role: RoomRole,
         timestamp: DateTime<Utc>,
     },
 
@@ -262,7 +261,7 @@ pub enum RealtimeEvent {
         #[serde(default)]
         role_changed: bool,
         new_permissions: RoomPermissionSet,
-        role: i32, // RoomMemberRole as i32 for serde compatibility
+        role: RoomRole,
         added_permissions: RoomPermissionSet,
         removed_permissions: RoomPermissionSet,
         #[serde(default)]
@@ -472,7 +471,7 @@ pub enum RealtimeEvent {
     ProviderCredentialChanged {
         event_id: String,
         user_id: UserId,
-        provider: String,
+        provider: SourceProvider,
         server_id: String,
         timestamp: DateTime<Utc>,
     },
@@ -851,7 +850,7 @@ mod tests {
         let event = RealtimeEvent::ProviderCredentialChanged {
             event_id: synctv_common::snanoid!(16),
             user_id: UserId::expect_positive(42),
-            provider: "bilibili".to_string(),
+            provider: SourceProvider::Bilibili,
             server_id: "global".to_string(),
             timestamp: crate::SystemClock.now(),
         };
@@ -964,7 +963,7 @@ mod tests {
             remark_name: String::new(),
             display_tag: String::new(),
             permissions: RoomPermissionSet(0),
-            role: 2, // Member role
+            role: RoomRole::Member,
             added_permissions: RoomPermissionSet(0),
             removed_permissions: RoomPermissionSet(0),
             admin_added_permissions: RoomPermissionSet(0),

@@ -700,6 +700,27 @@ pub async fn playback_transport_action_to_chunk_stream(
             .map_err(|error| map_proxy_execution_error(&error))?;
             Ok(axum_response_to_chunk_stream(response))
         }
+        PlaybackTransportAction::StreamAndForward {
+            url,
+            headers,
+            range_header,
+        } => {
+            let method = if head {
+                reqwest::Method::HEAD
+            } else {
+                reqwest::Method::GET
+            };
+            let response = send_playback_provider_request(
+                &deps,
+                method,
+                &url,
+                &headers,
+                range_header.as_deref(),
+            )
+            .await
+            .map_err(|error| map_proxy_execution_error(&error))?;
+            Ok(response_to_chunk_stream(response, head))
+        }
         PlaybackTransportAction::FetchAndForwardCandidates {
             urls,
             headers,
@@ -2184,6 +2205,73 @@ mod tests {
             body.extend(chunk.map_err(|error| anyhow::anyhow!("{error:?}"))?.data);
         }
         assert_eq!(body, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stream_and_forward_chunk_stream_uses_one_upstream_request() -> anyhow::Result<()> {
+        let Some(mock_server) = start_mock_server_or_skip().await? else {
+            return Ok(());
+        };
+        let body = (0_u8..=31).collect::<Vec<_>>();
+
+        Mock::given(method("GET"))
+            .and(path("/video.mkv"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(body.clone())
+                    .insert_header("Content-Length", body.len().to_string())
+                    .insert_header("Content-Type", "video/x-matroska")
+                    .insert_header("Accept-Ranges", "bytes"),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = mock_proxy_client(&mock_server)?;
+        let ssrf_guard = test_ssrf_guard();
+        let proxy_slice_cache =
+            synctv_proxy::slice_cache::SliceCache::new_with_client_and_ssrf_guard(
+                synctv_proxy::slice_cache::SliceCacheConfig {
+                    slice_size: 4,
+                    ..Default::default()
+                },
+                client.clone(),
+                ssrf_guard.clone(),
+            )?;
+        let signing_key = crate::proxy_signature::ProxySigningKey::try_derive_from(
+            b"test-secret-key-for-playback-provider-common",
+        )?;
+        let deps = PlaybackTransportExecutorDeps {
+            proxy_signing_key: &signing_key,
+            proxy_http_client: &client,
+            ssrf_guard: &ssrf_guard,
+            proxy_slice_cache: &proxy_slice_cache,
+            request_control: None,
+            hls_rewrite: None,
+        };
+        let action = PlaybackTransportAction::StreamAndForward {
+            url: mock_public_url(&mock_server, "/video.mkv"),
+            headers: HashMap::new(),
+            range_header: None,
+        };
+
+        let mut stream = playback_transport_action_to_chunk_stream(deps, action, false)
+            .await
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        let metadata = stream
+            .next()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("stream should emit metadata"))?
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        assert_eq!(metadata.status, 200);
+        assert_eq!(metadata.content_length, Some(body.len() as u64));
+
+        let mut received = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            received.extend(chunk.map_err(|error| anyhow::anyhow!("{error:?}"))?.data);
+        }
+        assert_eq!(received, body);
         Ok(())
     }
 

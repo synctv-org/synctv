@@ -163,23 +163,16 @@ fn make_user(status: UserStatus, _version: i32) -> User {
 
 fn make_claims(user_id: &UserId, pv: i32) -> Claims {
     let now = chrono::Utc::now();
-    Claims {
-        sub: user_id.to_string(),
-        typ: "access".to_string(),
-        jti: synctv_common::snanoid!(16),
-        iat: now.timestamp(),
-        exp: (now + chrono::Duration::hours(1)).timestamp(),
-        pv,
-        sid: None,
-        amr: None,
-        cbm: None,
-        opi: None,
-        ops: None,
-        eml: None,
-        wcid: None,
-        iss: None,
-        aud: None,
-    }
+    serde_json::from_value(serde_json::json!({
+        "sub": user_id.to_string(),
+        "typ": "access",
+        "jti": synctv_common::snanoid!(16),
+        "iat": now.timestamp(),
+        "exp": (now + chrono::Duration::hours(1)).timestamp(),
+        "pv": pv,
+        "cbm": "password"
+    }))
+    .expect("test access claims should deserialize")
 }
 
 async fn cache_user(user_cache: &UserCache, user: &User, status: UserStatus) {
@@ -220,7 +213,7 @@ async fn test_cache_miss_falls_through_to_db() {
     let claims = make_claims(&user.id, 0);
 
     let result = checked_user(pipeline.check(&claims).await);
-    assert_eq!(result.user_id, user.id);
+    assert_eq!(result.user_id(), user.id);
 }
 
 #[tokio::test]
@@ -577,7 +570,7 @@ async fn test_blacklisted_access_token_rejected() {
     checked_user(pipeline.check(&claims).await);
 
     // Blacklist the token (simulating logout)
-    let blacklist_key = key_builder.access_token_blacklist(&claims.jti);
+    let blacklist_key = key_builder.access_token_blacklist(claims.token_id());
     ok(
         token_blacklist.blacklist(&blacklist_key, 3600).await,
         "token should be blacklisted",
@@ -625,7 +618,7 @@ async fn test_blacklisted_access_token_rejected_via_cache_path() {
     checked_user(pipeline.check(&claims).await);
 
     // Blacklist the token (simulating logout)
-    let blacklist_key = key_builder.access_token_blacklist(&claims.jti);
+    let blacklist_key = key_builder.access_token_blacklist(claims.token_id());
     ok(
         token_blacklist.blacklist(&blacklist_key, 3600).await,
         "token should be blacklisted",
@@ -803,7 +796,7 @@ async fn test_in_memory_blacklist_store_is_blacklisted_checked_ok() {
     checked_user(pipeline.check(&claims).await);
 
     // Blacklist the token
-    let bl_key = key_builder.access_token_blacklist(&claims.jti);
+    let bl_key = key_builder.access_token_blacklist(claims.token_id());
     ok(
         store.blacklist(&bl_key, 3600).await,
         "token should be blacklisted",

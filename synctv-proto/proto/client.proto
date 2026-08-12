@@ -355,6 +355,7 @@ message FnosFileTarget {
 message FnosMediaItemTarget {
   string item_guid = 1;
   optional string media_guid = 2;
+  optional string library_guid = 3;
 }
 
 message FnosTarget {
@@ -4961,7 +4962,7 @@ message GetPublicSettingsResponse {
 
   // Room settings
   bool room_creation_approval_required = 5;
-  string room_password_policy = 6;
+  synctv.common.RoomPasswordPolicy room_password_policy = 6;
 
   // User settings
   bool enable_password_signup = 7;

@@ -6,7 +6,7 @@ use crate::sync::{
 use async_trait::async_trait;
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
-use synctv_core::models::id::UserId;
+use synctv_core::models::{RealtimeActor, UserId};
 use synctv_core::{RedisConnectionRuntime, RedisCoordinationRuntime};
 use tokio::sync::broadcast;
 use tokio::time::Duration;
@@ -14,6 +14,10 @@ use tokio::time::Duration;
 use crate::sync::stream_id::parse_stream_id;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+fn test_user_actor(user_id: UserId) -> RealtimeActor {
+    RealtimeActor::user(user_id, user_id.to_string())
+}
 
 fn u128_to_u64_saturating(value: u128) -> u64 {
     u64::try_from(value).unwrap_or(u64::MAX)
@@ -256,7 +260,11 @@ async fn test_dispatch_room_deleted_waits_for_reliable_delivery_before_cleanup()
     let room_id = RoomId::expect_positive(10_000_146);
     let user_id = UserId::expect_positive(10_000_147);
     let mut rx = message_hub
-        .subscribe(room_id, user_id, ConnectionId::new("conn-1"))
+        .subscribe(
+            room_id,
+            test_user_actor(user_id),
+            ConnectionId::new("conn-1"),
+        )
         .await?;
 
     for _ in 0..512 {
@@ -449,7 +457,11 @@ async fn test_pubsub_integration() -> TestResult {
     let room_id = RoomId::expect_positive(10_000_009);
     let user_id = UserId::expect_positive(10_000_148);
     let mut rx = message_hub
-        .subscribe(room_id, user_id, ConnectionId::new("conn1"))
+        .subscribe(
+            room_id,
+            test_user_actor(user_id),
+            ConnectionId::new("conn1"),
+        )
         .await?;
 
     // Wait for Redis room channel subscription to complete in both pubsub instances.
@@ -705,7 +717,11 @@ async fn test_pending_subscriptions_recovered_on_reconnect() -> TestResult {
     let room1_id = RoomId::expect_positive(10_000_149);
     let user1_id = UserId::expect_positive(10_000_150);
     let mut rx1 = message_hub
-        .subscribe(room1_id, user1_id, ConnectionId::new("conn1"))
+        .subscribe(
+            room1_id,
+            test_user_actor(user1_id),
+            ConnectionId::new("conn1"),
+        )
         .await?;
 
     let received = publish_until_received(
@@ -729,7 +745,11 @@ async fn test_pending_subscriptions_recovered_on_reconnect() -> TestResult {
     let room2_id = RoomId::expect_positive(10_000_151);
     let user2_id = UserId::expect_positive(10_000_152);
     let mut rx2 = message_hub
-        .subscribe(room2_id, user2_id, ConnectionId::new("conn2"))
+        .subscribe(
+            room2_id,
+            test_user_actor(user2_id),
+            ConnectionId::new("conn2"),
+        )
         .await?;
 
     let received = publish_until_received(
@@ -847,10 +867,10 @@ async fn test_dispatch_event_drops_malformed_webrtc_target() -> TestResult {
     let user1 = synctv_core::models::id::UserId::expect_positive(10_000_010);
     let user2 = synctv_core::models::id::UserId::expect_positive(10_000_095);
     let mut rx1 = message_hub
-        .subscribe(room_id, user1, ConnectionId::new("conn1"))
+        .subscribe(room_id, test_user_actor(user1), ConnectionId::new("conn1"))
         .await?;
     let mut rx2 = message_hub
-        .subscribe(room_id, user2, ConnectionId::new("conn2"))
+        .subscribe(room_id, test_user_actor(user2), ConnectionId::new("conn2"))
         .await?;
 
     pubsub
@@ -903,7 +923,11 @@ async fn test_dispatch_event_only_delivers_duplicate_once() -> TestResult {
     let room_id = RoomId::expect_positive(10_000_157);
     let user_id = synctv_core::models::id::UserId::expect_positive(10_000_158);
     let mut rx = message_hub
-        .subscribe(room_id, user_id, ConnectionId::new("dedup-conn"))
+        .subscribe(
+            room_id,
+            test_user_actor(user_id),
+            ConnectionId::new("dedup-conn"),
+        )
         .await?;
 
     let event = RealtimeEvent::ChatMessage {

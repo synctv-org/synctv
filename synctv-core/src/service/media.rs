@@ -14,8 +14,9 @@ use crate::{
         PlaylistId, RoomId, SourceProvider, UserId,
     },
     provider::{
-        provider_requires_credential_repo, PlaybackResult, ProviderAccessService, ProviderContext,
-        ProviderResourceMetadata, ProviderStoreResolver, SourceConfig, SourceCover,
+        provider_requires_credential_repo, PlaybackResult, ProviderAccessService, ProviderActor,
+        ProviderContext, ProviderResourceMetadata, ProviderStoreResolver, SourceConfig,
+        SourceCover,
     },
     repository::{realtime_outbox::NewRealtimeOutboxEvent, UserProviderCredentialRepository},
     repository::{MediaRepository, PlaylistRepository, UserRepository},
@@ -182,17 +183,14 @@ impl MediaService {
     pub(super) fn build_provider_context<'a>(
         &'a self,
         provider_name: &str,
-        user_id: Option<&'a UserId>,
-        room_id: &'a RoomId,
-        credential_owner_id: Option<&'a UserId>,
+        actor: ProviderActor,
+        room_id: RoomId,
+        credential_owner_id: Option<UserId>,
         provider_instance_name: Option<&'a str>,
     ) -> ProviderContext<'a> {
-        let mut ctx = ProviderContext::new("synctv").with_room_id(*room_id);
-        if let Some(user_id) = user_id {
-            ctx = ctx.with_user_id(*user_id);
-        }
+        let mut ctx = ProviderContext::new("synctv", actor).with_room_id(room_id);
         if let Some(credential_owner_id) = credential_owner_id {
-            ctx = ctx.with_credential_owner_id(*credential_owner_id);
+            ctx = ctx.with_credential_owner_id(credential_owner_id);
         }
         if let Some(provider_instance_name) =
             normalize_provider_instance_name(provider_instance_name)
@@ -279,9 +277,9 @@ impl MediaService {
 
         let dependency_ctx = self.build_provider_context(
             provider.name(),
-            Some(user_id),
-            room_id,
-            Some(user_id),
+            ProviderActor::User(*user_id),
+            *room_id,
+            Some(*user_id),
             explicit_provider_instance.as_deref(),
         );
 
@@ -307,9 +305,9 @@ impl MediaService {
         };
         let ctx = self.build_provider_context(
             provider.name(),
-            Some(user_id),
-            room_id,
-            Some(user_id),
+            ProviderActor::User(*user_id),
+            *room_id,
+            Some(*user_id),
             bound_provider_instance.as_deref(),
         );
 
@@ -433,7 +431,7 @@ impl MediaService {
 
     pub async fn media_source_cover(
         &self,
-        viewer_id: Option<UserId>,
+        actor: ProviderActor,
         media: &Media,
     ) -> Result<Option<SourceCover>> {
         let provider = self
@@ -444,9 +442,9 @@ impl MediaService {
             .await?;
         let ctx = self.build_provider_context(
             provider.name(),
-            viewer_id.as_ref(),
-            &media.room_id,
-            media.creator_id.as_ref(),
+            actor,
+            media.room_id,
+            media.creator_id,
             media.provider_instance_name.as_deref(),
         );
         provider
@@ -463,7 +461,7 @@ impl MediaService {
     /// visible to the caller.
     pub async fn media_provider_metadata(
         &self,
-        viewer_id: Option<UserId>,
+        actor: ProviderActor,
         media: &Media,
     ) -> Result<Option<ProviderResourceMetadata>> {
         let provider = self
@@ -474,9 +472,9 @@ impl MediaService {
             .await?;
         let ctx = self.build_provider_context(
             provider.name(),
-            viewer_id.as_ref(),
-            &media.room_id,
-            media.creator_id.as_ref(),
+            actor,
+            media.room_id,
+            media.creator_id,
             media.provider_instance_name.as_deref(),
         );
         let metadata = match tokio::time::timeout(
@@ -510,7 +508,7 @@ impl MediaService {
 
     pub async fn playlist_source_cover(
         &self,
-        viewer_id: Option<UserId>,
+        actor: ProviderActor,
         playlist: &crate::models::Playlist,
     ) -> Result<Option<SourceCover>> {
         let Some(source_provider) = playlist.source_provider else {
@@ -524,9 +522,9 @@ impl MediaService {
             .await?;
         let ctx = self.build_provider_context(
             provider.name(),
-            viewer_id.as_ref(),
-            &playlist.room_id,
-            playlist.creator_id.as_ref(),
+            actor,
+            playlist.room_id,
+            playlist.creator_id,
             playlist.provider_instance_name.as_deref(),
         );
         provider
@@ -1099,9 +1097,9 @@ impl MediaService {
                 let ctx = self
                     .build_provider_context(
                         provider.name(),
-                        None,
-                        &request.room_id,
-                        media.creator_id.as_ref(),
+                        ProviderActor::System,
+                        request.room_id,
+                        media.creator_id,
                         media.provider_instance_name.as_deref(),
                     )
                     .with_media_id(media.id);
@@ -1114,7 +1112,7 @@ impl MediaService {
                 let prepared = self
                     .prepare_dynamic_playlist(&request.room_id, &playlist_id)
                     .await?;
-                let ctx = self.dynamic_playlist_context(&prepared, None, None);
+                let ctx = self.dynamic_playlist_context(&prepared, ProviderActor::System);
                 let Some(target) = request.target else {
                     return Err(Error::InvalidInput(
                         "target is required for dynamic playlist playback".to_string(),

@@ -16,7 +16,7 @@ use synctv_core::{
     models::{
         AlistMediaSourceConfig, FromProviderParams, Media, MediaSourceConfig, PlayMode,
         PlaybackAlistMedia, Playlist, PlaylistId, ProviderInstance, ProviderTarget, RoomId,
-        SignupMethod, User, UserId, UserRole, UserStatus,
+        SignupMethod, SourceProvider, User, UserId, UserRole, UserStatus,
     },
     provider::{
         DynamicBrowsePathSegment, DynamicListQuery, DynamicListResult, DynamicPlaylistItem,
@@ -260,7 +260,7 @@ impl MediaProvider for StubDynamicProvider {
         Ok(PlaybackResult {
             playback_infos: infos,
             default_mode: "direct".to_string(),
-            provider: self.name().to_string(),
+            provider: SourceProvider::Alist,
             provider_instance_name: Some(self.instance_id.clone()),
             duration_seconds: None,
             playback_kind: Some(synctv_core::models::PlaybackKind::Regular),

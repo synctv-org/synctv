@@ -60,9 +60,9 @@ pub(super) async fn message_stream(
                             room_guest_version: access.room_guest_version,
                             permissions: access.permissions,
                         };
-                        RealtimePrincipal::guest(room_id, identity).map_err(|error| {
-                            synctv_api_common::impls::ApiError::Internal(error.to_string())
-                        })
+                        Ok::<_, synctv_api_common::impls::ApiError>(RealtimePrincipal::guest(
+                            identity,
+                        ))
                     },
                 )
                 .await
@@ -71,19 +71,15 @@ pub(super) async fn message_stream(
     } else {
         None
     };
-    let (user_id, _username, principal) = if let Some(principal) = guest_principal {
-        (
-            principal.connection_user_id(),
-            principal.username().to_string(),
-            principal,
-        )
+    let principal = if let Some(principal) = guest_principal {
+        principal
     } else {
         let user_id = executor
             .execute_user_endpoint(
                 &metadata,
                 EndpointRateLimitCategory::WebSocket,
                 move |authenticated| async move {
-                    Ok::<_, synctv_api_common::impls::ApiError>(authenticated.user_id)
+                    Ok::<_, synctv_api_common::impls::ApiError>(authenticated.user_id())
                 },
             )
             .await
@@ -104,11 +100,7 @@ pub(super) async fn message_stream(
             .await
             .map_err(map_message_stream_membership_error)?;
 
-        (
-            user_id,
-            username.clone(),
-            RealtimePrincipal::user(user_id, username),
-        )
+        RealtimePrincipal::user(user_id, username)
     };
 
     let room = service
@@ -120,8 +112,11 @@ pub(super) async fn message_stream(
         return Err(status);
     }
 
+    let realtime_actor = principal
+        .realtime_actor(&service.client_api.public_id_codec)
+        .map_err(invalid_argument_status)?;
     tracing::info!(
-        user_id = %user_id,
+        actor = %realtime_actor,
         room_id = %room_id,
         "Client establishing MessageStream connection"
     );

@@ -47,7 +47,7 @@ impl TikTokProviderService for TikTokProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Auth,
                 move |authenticated| async move {
-                    api.bind(authenticated.user_id, req, instance_name.as_deref())
+                    api.bind(authenticated.user_id(), req, instance_name.as_deref())
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },
@@ -69,7 +69,7 @@ impl TikTokProviderService for TikTokProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
-                    api.get_binds(authenticated.user_id, instance_name.as_deref())
+                    api.get_binds(authenticated.user_id(), instance_name.as_deref())
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },
@@ -91,7 +91,7 @@ impl TikTokProviderService for TikTokProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Auth,
                 move |authenticated| async move {
-                    api.unbind(authenticated.user_id, req)
+                    api.unbind(authenticated.user_id(), req)
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },
@@ -114,7 +114,7 @@ impl TikTokProviderService for TikTokProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
-                    api.resolve(authenticated.user_id, req, instance_name.as_deref())
+                    api.resolve(authenticated.user_id(), req, instance_name.as_deref())
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },
@@ -137,7 +137,7 @@ impl TikTokProviderService for TikTokProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
-                    api.list_user_posts(authenticated.user_id, req, instance_name.as_deref())
+                    api.list_user_posts(authenticated.user_id(), req, instance_name.as_deref())
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },
@@ -160,7 +160,7 @@ impl TikTokProviderService for TikTokProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
-                    api.get_user(authenticated.user_id, req, instance_name.as_deref())
+                    api.get_user(authenticated.user_id(), req, instance_name.as_deref())
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },

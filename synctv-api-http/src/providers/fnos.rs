@@ -110,7 +110,7 @@ pub(crate) async fn thumbnail(
                 let public_auth_user_id = state
                     .shared_api_runtime
                     .public_id_codec
-                    .encode_user_id(authenticated.user_id)
+                    .encode_user_id(authenticated.user_id())
                     .map_err(synctv_api_common::impls::ApiError::Internal)?;
                 let public_owner_id = requested_owner_id
                     .clone()
@@ -147,7 +147,7 @@ pub(crate) async fn thumbnail(
                         .decode_room_id(&room_id)
                         .map_err(synctv_api_common::impls::ApiError::InvalidInput)?;
                     super::playback_provider::playback_provider_api_runtime(&state)
-                        .validate_fresh_access(&room_id, &authenticated.user_id)
+                        .validate_fresh_access(&room_id, &authenticated.user_id())
                         .await?;
                 }
                 let owner_id = state
@@ -218,7 +218,7 @@ pub(crate) async fn login(
         EndpointRateLimitCategory::Auth,
         move |_control, authenticated| {
             async move {
-                api.login(authenticated.user_id, req, instance_name.as_deref())
+                api.login(authenticated.user_id(), req, instance_name.as_deref())
                     .await
             }
             .boxed()
@@ -277,7 +277,7 @@ pub(crate) async fn list(
         EndpointRateLimitCategory::Read,
         move |_control, authenticated| {
             async move {
-                api.list(authenticated.user_id, req, instance_name.as_deref())
+                api.list(authenticated.user_id(), req, instance_name.as_deref())
                     .await
             }
             .boxed()
@@ -314,7 +314,7 @@ pub(crate) async fn media_libraries(
         EndpointRateLimitCategory::Read,
         move |_control, authenticated| {
             async move {
-                api.list_media_libraries(authenticated.user_id, req, instance_name.as_deref())
+                api.list_media_libraries(authenticated.user_id(), req, instance_name.as_deref())
                     .await
             }
             .boxed()
@@ -351,7 +351,7 @@ pub(crate) async fn media_items(
         EndpointRateLimitCategory::Read,
         move |_control, authenticated| {
             async move {
-                api.list_media_items(authenticated.user_id, req, instance_name.as_deref())
+                api.list_media_items(authenticated.user_id(), req, instance_name.as_deref())
                     .await
             }
             .boxed()
@@ -388,7 +388,7 @@ pub(crate) async fn set_favorite(
         EndpointRateLimitCategory::Write,
         move |_control, authenticated| {
             async move {
-                api.set_favorite(authenticated.user_id, req, instance_name.as_deref())
+                api.set_favorite(authenticated.user_id(), req, instance_name.as_deref())
                     .await
             }
             .boxed()
@@ -425,7 +425,7 @@ pub(crate) async fn set_watched(
         EndpointRateLimitCategory::Write,
         move |_control, authenticated| {
             async move {
-                api.set_watched(authenticated.user_id, req, instance_name.as_deref())
+                api.set_watched(authenticated.user_id(), req, instance_name.as_deref())
                     .await
             }
             .boxed()
@@ -479,7 +479,7 @@ pub(crate) async fn server_info(
         EndpointRateLimitCategory::Read,
         move |_control, authenticated| {
             async move {
-                api.get_server_info(authenticated.user_id, req, instance_name.as_deref())
+                api.get_server_info(authenticated.user_id(), req, instance_name.as_deref())
                     .await
             }
             .boxed()
@@ -531,7 +531,7 @@ pub(crate) async fn logout(
         request_meta,
         EndpointRateLimitCategory::Auth,
         move |_control, authenticated| {
-            async move { api.logout(authenticated.user_id, req).await }.boxed()
+            async move { api.logout(authenticated.user_id(), req).await }.boxed()
         },
     )
     .await
@@ -578,7 +578,7 @@ pub(crate) async fn binds(
         EndpointRateLimitCategory::Read,
         move |authenticated| {
             async move {
-                api.get_binds(authenticated.user_id, instance_name.as_deref())
+                api.get_binds(authenticated.user_id(), instance_name.as_deref())
                     .await
             }
             .boxed()

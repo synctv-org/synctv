@@ -54,7 +54,7 @@ pub async fn start_room_password_login(
             move |request_control, authenticated| async move {
                 client_api
                     .start_room_password_login_with_control(
-                        &authenticated.user_id,
+                        &authenticated.user_id(),
                         req,
                         client_ip.as_deref(),
                         Some(&request_control),
@@ -106,7 +106,7 @@ pub async fn finish_room_password_login(
             EndpointRateLimitScope::RoomJoin,
             move |_request_control, authenticated| async move {
                 Box::pin(client_api.finish_room_password_login_with_control(
-                    &authenticated.user_id,
+                    &authenticated.user_id(),
                     Some(&room_id),
                     req,
                     client_ip.as_deref(),
@@ -153,7 +153,7 @@ pub async fn start_room_password_registration(
         EndpointRateLimitScope::RoomPassword,
         move |client_api, authenticated| async move {
             client_api
-                .start_room_password_registration(&authenticated.user_id, &room_id, req)
+                .start_room_password_registration(&authenticated.user_id(), &room_id, req)
                 .await
         },
     )
@@ -196,7 +196,7 @@ pub async fn finish_room_password_registration(
         EndpointRateLimitScope::RoomPassword,
         move |client_api, authenticated| async move {
             client_api
-                .finish_room_password_registration(&authenticated.user_id, &room_id, req)
+                .finish_room_password_registration(&authenticated.user_id(), &room_id, req)
                 .await
         },
     )
@@ -238,7 +238,7 @@ pub async fn clear_room_password(
         move |client_api, authenticated| async move {
             client_api
                 .clear_room_password(
-                    &authenticated.user_id,
+                    &authenticated.user_id(),
                     &room_id,
                     ClearRoomPasswordRequest {},
                 )
@@ -322,7 +322,7 @@ pub async fn update_room_settings(
         EndpointRateLimitScope::RoomSettings,
         move |client_api, authenticated| async move {
             client_api
-                .update_room_settings(&authenticated.user_id, &room_id, req)
+                .update_room_settings(&authenticated.user_id(), &room_id, req)
                 .await
         },
     )
@@ -366,7 +366,7 @@ pub async fn transfer_room_ownership(
         EndpointRateLimitScope::RoomSettings,
         move |client_api, authenticated| async move {
             client_api
-                .transfer_room_ownership(&authenticated.user_id, &room_id, req)
+                .transfer_room_ownership(&authenticated.user_id(), &room_id, req)
                 .await
         },
     )
@@ -406,7 +406,7 @@ pub async fn reset_room_settings(
         EndpointRateLimitScope::RoomSettings,
         move |client_api, authenticated| async move {
             client_api
-                .reset_room_settings(&authenticated.user_id, &room_id)
+                .reset_room_settings(&authenticated.user_id(), &room_id)
                 .await
         },
     )

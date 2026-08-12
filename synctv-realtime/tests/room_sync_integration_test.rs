@@ -11,13 +11,14 @@
 use std::time::Duration;
 
 use synctv_core::models::id::{RoomId, UserId};
+use synctv_core::models::RealtimeActor;
 use synctv_core::SharedStateProfile;
 use synctv_core_testing::redis_connection_manager;
 use synctv_realtime::sync::{
     build_room_message_runtime, ConnectionId, RoomLifecycleEvent, RoomMessageRuntime,
 };
 mod integration_test_helpers;
-use integration_test_helpers::TestRedis;
+use integration_test_helpers::{user_actor, TestRedis};
 
 /// Helper: create a `RoomMessageHub` with Redis backing using the given prefix.
 async fn create_hub(redis_url: &str, key_prefix: &str) -> std::sync::Arc<dyn RoomMessageRuntime> {
@@ -48,7 +49,7 @@ async fn test_cross_replica_subscription_visibility() {
     let (_rx, conn_id) = {
         let connection_id = ConnectionId::new("conn_a_1");
         let rx = hub_a
-            .subscribe(room_id, user_id, connection_id.clone())
+            .subscribe(room_id, user_actor(user_id), connection_id.clone())
             .await
             .expect("subscribe should succeed");
         (rx, connection_id)
@@ -67,8 +68,8 @@ async fn test_cross_replica_subscription_visibility() {
         "Hub B should see hub A's subscription via Redis, got empty list"
     );
 
-    let (sub_user_id, sub_conn_id) = &distributed_subs[0];
-    assert_eq!(*sub_user_id, user_id);
+    let (sub_actor, sub_conn_id) = &distributed_subs[0];
+    assert_eq!(*sub_actor, user_actor(user_id));
     assert_eq!(sub_conn_id, &conn_id);
 
     // Hub B's local view should be empty (no local subscribers)
@@ -98,7 +99,7 @@ async fn test_cross_replica_unsubscribe_removes_redis_state() {
     // Subscribe on hub A
     let conn_id = "conn_unsub_1".to_string();
     let _rx = hub_a
-        .subscribe(room_id, user_id, conn_id.clone().into())
+        .subscribe(room_id, user_actor(user_id), conn_id.clone().into())
         .await
         .expect("subscribe should succeed");
 
@@ -148,11 +149,19 @@ async fn test_remove_room_removes_redis_state_across_replicas() {
     let user_b = UserId::expect_positive(10_000_075);
 
     let _rx1 = hub_a
-        .subscribe(room_id, user_a, "remove_conn_1".to_string().into())
+        .subscribe(
+            room_id,
+            user_actor(user_a),
+            "remove_conn_1".to_string().into(),
+        )
         .await
         .expect("subscribe should succeed");
     let _rx2 = hub_a
-        .subscribe(room_id, user_b, "remove_conn_2".to_string().into())
+        .subscribe(
+            room_id,
+            user_actor(user_b),
+            "remove_conn_2".to_string().into(),
+        )
         .await
         .expect("subscribe should succeed");
 
@@ -199,7 +208,7 @@ async fn test_cross_replica_multiple_subscribers_distributed_count() {
     let _rx1 = hub_a
         .subscribe(
             room_id,
-            UserId::expect_positive(10_000_077),
+            user_actor(UserId::expect_positive(10_000_077)),
             "conn_a1".to_string().into(),
         )
         .await
@@ -207,7 +216,7 @@ async fn test_cross_replica_multiple_subscribers_distributed_count() {
     let _rx2 = hub_a
         .subscribe(
             room_id,
-            UserId::expect_positive(10_000_078),
+            user_actor(UserId::expect_positive(10_000_078)),
             "conn_a2".to_string().into(),
         )
         .await
@@ -217,7 +226,7 @@ async fn test_cross_replica_multiple_subscribers_distributed_count() {
     let _rx3 = hub_b
         .subscribe(
             room_id,
-            UserId::expect_positive(10_000_079),
+            user_actor(UserId::expect_positive(10_000_079)),
             "conn_b1".to_string().into(),
         )
         .await
@@ -296,7 +305,7 @@ async fn test_room_lifecycle_events_across_replicas() {
 
     // First subscriber should trigger RoomActivated
     let _rx = hub_a
-        .subscribe(room_id, user_id, "lc_conn_1".to_string().into())
+        .subscribe(room_id, user_actor(user_id), "lc_conn_1".to_string().into())
         .await
         .expect("subscribe should succeed");
 
@@ -318,7 +327,7 @@ async fn test_room_lifecycle_events_across_replicas() {
     let _rx2 = hub_a
         .subscribe(
             room_id,
-            UserId::expect_positive(10_000_082),
+            user_actor(UserId::expect_positive(10_000_082)),
             "lc_conn_2".to_string().into(),
         )
         .await
@@ -373,7 +382,7 @@ async fn test_audit_redis_subscriptions_reports_without_local_populate() {
     let _rx1 = hub_a
         .subscribe(
             room_id,
-            UserId::expect_positive(10_000_084),
+            user_actor(UserId::expect_positive(10_000_084)),
             "rec_conn_1".to_string().into(),
         )
         .await
@@ -381,7 +390,7 @@ async fn test_audit_redis_subscriptions_reports_without_local_populate() {
     let _rx2 = hub_a
         .subscribe(
             room_id,
-            UserId::expect_positive(10_000_085),
+            user_actor(UserId::expect_positive(10_000_085)),
             "rec_conn_2".to_string().into(),
         )
         .await
@@ -389,7 +398,7 @@ async fn test_audit_redis_subscriptions_reports_without_local_populate() {
     let _rx3 = hub_a
         .subscribe(
             room_id,
-            UserId::expect_positive(10_000_086),
+            user_actor(UserId::expect_positive(10_000_086)),
             "rec_conn_3".to_string().into(),
         )
         .await
@@ -447,7 +456,7 @@ async fn test_concurrent_cross_replica_subscribe_unsubscribe() {
             let _rx = hub
                 .subscribe(
                     rid,
-                    UserId::expect_positive(150_000 + i),
+                    user_actor(UserId::expect_positive(150_000 + i)),
                     format!("conn_a_{i}").into(),
                 )
                 .await
@@ -461,7 +470,7 @@ async fn test_concurrent_cross_replica_subscribe_unsubscribe() {
             let _rx = hub
                 .subscribe(
                     rid,
-                    UserId::expect_positive(160_000 + i),
+                    user_actor(UserId::expect_positive(160_000 + i)),
                     format!("conn_b_{i}").into(),
                 )
                 .await
@@ -528,17 +537,23 @@ async fn test_distributed_room_lookup_prunes_stale_hash_members() {
     let valid_conn_key = format!("{prefix}room_hub:conn:conn_valid");
     let wrong_room_conn_key = format!("{prefix}room_hub:conn:conn_wrong_room");
     let valid_user_id = UserId::expect_positive(10_000_089);
+    let valid_actor = user_actor(valid_user_id);
+    let valid_actor_json = serde_json::to_string(&valid_actor).unwrap();
 
     let _: () = conn
-        .hset(&room_key, "conn_missing", 10_000_099i64)
+        .hset(&room_key, "conn_missing", "invalid actor")
         .await
         .unwrap();
     let _: () = conn
-        .hset(&room_key, "conn_wrong_room", 10_000_098i64)
+        .hset(
+            &room_key,
+            "conn_wrong_room",
+            serde_json::to_string(&user_actor(UserId::expect_positive(10_000_098))).unwrap(),
+        )
         .await
         .unwrap();
     let _: () = conn
-        .hset(&room_key, "conn_valid", valid_user_id.get())
+        .hset(&room_key, "conn_valid", &valid_actor_json)
         .await
         .unwrap();
     let _: () = conn.set(&valid_conn_key, room_id.get()).await.unwrap();
@@ -553,14 +568,14 @@ async fn test_distributed_room_lookup_prunes_stale_hash_members() {
         .expect("distributed subscriber lookup should succeed");
     assert_eq!(
         subscribers,
-        vec![(valid_user_id, ConnectionId::new("conn_valid"))],
+        vec![(valid_actor, ConnectionId::new("conn_valid"))],
         "distributed room lookup must prune missing and wrong-room hash members"
     );
 
-    let remaining_members: Vec<(String, i64)> = conn.hgetall(&room_key).await.unwrap();
+    let remaining_members: Vec<(String, String)> = conn.hgetall(&room_key).await.unwrap();
     assert_eq!(
         remaining_members,
-        vec![("conn_valid".to_string(), valid_user_id.get())],
+        vec![("conn_valid".to_string(), valid_actor_json)],
         "room hash should retain only valid subscribers after lazy pruning"
     );
 }
@@ -582,9 +597,11 @@ async fn test_audit_redis_subscriptions_prunes_stale_room_directory_members() {
     let live_room_key = format!("{prefix}room_hub:room:{live_room_id}");
     let stale_room_key = format!("{prefix}room_hub:room:10000095");
     let room_index_directory_key = format!("{prefix}room_hub:room_index");
+    let live_actor_json =
+        serde_json::to_string(&user_actor(live_user_id)).expect("serialize realtime actor");
 
     let _: () = conn
-        .hset(&live_room_key, "conn_live", live_user_id.get())
+        .hset(&live_room_key, "conn_live", live_actor_json)
         .await
         .unwrap();
     let _: () = conn.expire(&live_room_key, 180).await.unwrap();
@@ -627,7 +644,7 @@ async fn test_room_directory_key_uses_crash_safety_ttl() {
     let user_id = UserId::expect_positive(10_000_091);
 
     let _rx = hub
-        .subscribe(room_id, user_id, "conn_ttl".to_string().into())
+        .subscribe(room_id, user_actor(user_id), "conn_ttl".to_string().into())
         .await
         .expect("subscribe should succeed");
 
@@ -640,14 +657,16 @@ async fn test_room_directory_key_uses_crash_safety_ttl() {
     let room_key = format!("{prefix}room_hub:room:{room_id}");
     let conn_key = format!("{prefix}room_hub:conn:conn_ttl");
 
-    let room_member: Option<i64> = conn
+    let room_member: Option<String> = conn
         .hget(&room_key, "conn_ttl")
         .await
         .expect("room subscriber hash entry");
+    let room_member = room_member
+        .map(|actor| serde_json::from_str::<RealtimeActor>(&actor).expect("realtime actor"));
     assert_eq!(
         room_member,
-        Some(user_id.get()),
-        "room subscriber hash should contain the connection -> user mapping"
+        Some(user_actor(user_id)),
+        "room subscriber hash should contain the connection -> actor mapping"
     );
 
     let mapped_room_id: Option<i64> = conn.get(&conn_key).await.expect("connection room mapping");

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    models::{resolve_provider_instance_binding, CredentialProviderInstanceName, UserId},
+    models::{resolve_provider_instance_binding, CredentialProviderInstanceName},
     provider::{MediaProvider, ProviderContext, SourceConfig},
     repository::UserProviderCredentialRepository,
     Error, Result,
@@ -36,19 +36,13 @@ pub(crate) async fn resolve_credential_provider_instance_binding(
 
     for dependency in dependencies
         .into_iter()
-        .filter(|dependency| dependency.provider == provider.name())
-        .filter(|dependency| dependency.required)
+        .filter(|dependency| dependency.provider.as_str() == provider.name())
+        .filter(|dependency| dependency.requirement.is_required())
     {
-        let credential_user_id = dependency.user_id.parse::<UserId>().map_err(|error| {
-            Error::InvalidInput(format!(
-                "Invalid credential dependency user_id '{}': {error}",
-                dependency.user_id
-            ))
-        })?;
         let credential = credential_repo
             .get_by_provider_and_server(
-                credential_user_id,
-                &dependency.provider,
+                dependency.user_id,
+                dependency.provider.as_str(),
                 &dependency.server_id,
             )
             .await?

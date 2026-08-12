@@ -66,7 +66,7 @@ impl SynologyApiImpl {
         publish_provider_credential_changed(
             &self.event_service,
             user_id,
-            SynologyProvider::NAME,
+            synctv_core::models::SourceProvider::Synology,
             &server_id,
         );
         Ok(LoginResponse {
@@ -314,7 +314,7 @@ impl SynologyApiImpl {
             publish_provider_credential_changed(
                 &self.event_service,
                 user_id,
-                SynologyProvider::NAME,
+                synctv_core::models::SourceProvider::Synology,
                 &req.server_id,
             );
         }

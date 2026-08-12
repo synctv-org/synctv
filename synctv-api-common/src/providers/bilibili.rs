@@ -460,10 +460,14 @@ impl BilibiliApiImpl {
             .access_service
             .bilibili_access(*caller_user_id, request_context)
             .await?;
-        Ok(access.authenticated.then_some(ResolvedBilibiliCredential {
-            cookies: access.cookies,
-            provider_instance_name: access.provider_instance_name,
-        }))
+        Ok(access
+            .into_authenticated()
+            .map(
+                |(cookies, provider_instance_name)| ResolvedBilibiliCredential {
+                    cookies,
+                    provider_instance_name,
+                },
+            ))
     }
 
     async fn publish_login_change(
@@ -481,7 +485,7 @@ impl BilibiliApiImpl {
         publish_provider_credential_changed(
             &self.event_service,
             *caller_user_id,
-            synctv_core::provider::BilibiliProvider::NAME,
+            synctv_core::models::SourceProvider::Bilibili,
             server_id,
         );
 
@@ -821,11 +825,13 @@ impl BilibiliApiImpl {
                 })?,
             }
         };
-        let mut provider_context = ProviderContext::new("synctv:provider-discovery")
-            .with_user_id(*caller_user_id)
-            .with_credential_owner_id(*caller_user_id)
-            .with_provider_access_service(self.access_service.clone())
-            .with_request_context(request_context.cloned());
+        let mut provider_context = ProviderContext::new(
+            "synctv:provider-discovery",
+            synctv_core::provider::ProviderActor::User(*caller_user_id),
+        )
+        .with_credential_owner_id(*caller_user_id)
+        .with_provider_access_service(self.access_service.clone())
+        .with_request_context(request_context.cloned());
         if let Some(instance_name) = effective_instance_name.as_deref() {
             provider_context = provider_context.with_provider_instance_name(instance_name);
         }
@@ -1528,7 +1534,7 @@ impl BilibiliApiImpl {
             publish_provider_credential_changed(
                 &self.event_service,
                 *caller_user_id,
-                synctv_core::provider::BilibiliProvider::NAME,
+                synctv_core::models::SourceProvider::Bilibili,
                 &server_id,
             );
         }

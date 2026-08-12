@@ -236,6 +236,15 @@ impl RoomActor {
     }
 }
 
+const fn provider_actor_for_viewer(
+    viewer_id: Option<synctv_core::models::UserId>,
+) -> synctv_core::provider::ProviderActor {
+    match viewer_id {
+        Some(user_id) => synctv_core::provider::ProviderActor::User(user_id),
+        None => synctv_core::provider::ProviderActor::Guest,
+    }
+}
+
 /// Client API implementation
 #[derive(Clone)]
 pub struct ClientApiImpl {
@@ -798,7 +807,7 @@ impl ClientApiImpl {
                 match self
                     .room_service
                     .media_service()
-                    .media_source_cover(viewer_id, media)
+                    .media_source_cover(provider_actor_for_viewer(viewer_id), media)
                     .await
                 {
                     Ok(Some(source_cover)) => {
@@ -818,7 +827,7 @@ impl ClientApiImpl {
             async {
                 self.room_service
                     .media_service()
-                    .media_provider_metadata(viewer_id, media)
+                    .media_provider_metadata(provider_actor_for_viewer(viewer_id), media)
                     .await
                     .unwrap_or_else(|error| {
                         tracing::debug!(
@@ -878,7 +887,7 @@ impl ClientApiImpl {
                 match self
                     .room_service
                     .media_service()
-                    .playlist_source_cover(viewer_id, playlist)
+                    .playlist_source_cover(provider_actor_for_viewer(viewer_id), playlist)
                     .await
                 {
                     Ok(Some(source_cover)) => {
@@ -899,7 +908,7 @@ impl ClientApiImpl {
                 if playlist.is_dynamic() {
                     self.room_service
                         .media_service()
-                        .playlist_provider_metadata(viewer_id, playlist)
+                        .playlist_provider_metadata(provider_actor_for_viewer(viewer_id), playlist)
                         .await
                         .unwrap_or_else(|error| {
                             tracing::debug!(
@@ -992,7 +1001,7 @@ impl ClientApiImpl {
             .validate_with_version_async(guest_token, guest_version)
             .await
             .map_err(ApiError::from)?;
-        if claims.room_id().map_err(ApiError::from)? != room_id {
+        if claims.room_id() != room_id {
             return Err(ApiError::Authentication(
                 "Guest token is not valid for this room".to_string(),
             ));
@@ -1003,10 +1012,10 @@ impl ClientApiImpl {
             .guest_permissions_for_settings(&room_settings);
         Ok(GuestRoomAccess {
             room_id,
-            guest_id: crate::impls::messaging::guest_public_id(&claims.session_id),
-            display_name: crate::impls::messaging::guest_display_name(&claims.session_id),
-            session_id: claims.session_id.clone(),
-            token_jti: claims.jti.clone(),
+            guest_id: crate::impls::messaging::guest_public_id(claims.session_id()),
+            display_name: crate::impls::messaging::guest_display_name(claims.session_id()),
+            session_id: claims.session_id().to_string(),
+            token_jti: claims.token_id().to_string(),
             permissions,
             room_guest_version: claims.gv,
         })
@@ -1065,7 +1074,7 @@ impl ClientApiImpl {
             .request_executor()
             .security_check_claims(&claims)
             .await?;
-        self.room_actor_for_user(&authenticated.user_id, public_room_id)
+        self.room_actor_for_user(&authenticated.user_id(), public_room_id)
             .await
     }
 
@@ -1500,7 +1509,7 @@ impl ClientApiImpl {
                                 async move {
                                     let actor = client_api
                                         .room_actor_for_user(
-                                            &authenticated.user_id,
+                                            &authenticated.user_id(),
                                             &public_room_id,
                                         )
                                         .await?;
@@ -1609,7 +1618,7 @@ impl ClientApiImpl {
                                 async move {
                                     let actor = client_api
                                         .room_actor_for_user(
-                                            &authenticated.user_id,
+                                            &authenticated.user_id(),
                                             &public_room_id,
                                         )
                                         .await?;

@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use synctv_core::{
-    models::id::{RoomId, UserId},
+    models::{RealtimeActor, RoomId},
     RedisConnectionRuntime,
 };
 use tokio::sync::{broadcast, mpsc};
@@ -50,11 +50,11 @@ static PERSIST_REDIS_SUBSCRIPTION_SCRIPT: LazyLock<redis::Script> = LazyLock::ne
         local conn_key = KEYS[2]
         local room_index_key = KEYS[3]
         local connection_id = ARGV[1]
-        local user_id = ARGV[2]
+        local actor = ARGV[2]
         local room_id = ARGV[3]
         local ttl_secs = tonumber(ARGV[4])
 
-        redis.call('HSET', room_key, connection_id, user_id)
+        redis.call('HSET', room_key, connection_id, actor)
         redis.call('EXPIRE', room_key, ttl_secs)
         redis.call('SADD', room_index_key, room_key)
         redis.call('EXPIRE', room_index_key, ttl_secs)
@@ -251,7 +251,7 @@ where
 #[derive(Debug)]
 pub struct Subscriber {
     pub connection_id: ConnectionId,
-    pub user_id: UserId,
+    pub actor: RealtimeActor,
     pub sender: mpsc::Sender<SharedRealtimeEvent>,
     /// Consecutive message drops due to a full channel
     consecutive_drops: Arc<AtomicU32>,
@@ -261,7 +261,7 @@ impl Clone for Subscriber {
     fn clone(&self) -> Self {
         Self {
             connection_id: self.connection_id.clone(),
-            user_id: self.user_id,
+            actor: self.actor.clone(),
             sender: self.sender.clone(),
             consecutive_drops: self.consecutive_drops.clone(),
         }
@@ -290,8 +290,8 @@ pub struct RoomMessageHub {
     /// Map of `room_id` -> subscribers indexed by connection_id (local cache)
     rooms: Arc<DashMap<RoomId, HashMap<ConnectionId, Subscriber>>>,
 
-    /// Map of `connection_id` -> (`room_id`, `user_id`) for cleanup (local cache)
-    connections: Arc<DashMap<ConnectionId, (RoomId, UserId)>>,
+    /// Map of `connection_id` -> (`room_id`, actor) for cleanup (local cache)
+    connections: Arc<DashMap<ConnectionId, (RoomId, RealtimeActor)>>,
 
     /// Broadcast sender for room lifecycle events (first join / last leave).
     /// The Redis Pub/Sub subscriber task listens on a receiver to dynamically
@@ -503,7 +503,7 @@ impl RoomMessageHub {
     async fn persist_redis_subscription(
         &self,
         room_id: &RoomId,
-        user_id: UserId,
+        actor: &RealtimeActor,
         connection_id: &ConnectionId,
     ) -> Result<(), String> {
         let Some(mut conn_clone) = self.redis_conn_clone("persist room subscription").await? else {
@@ -515,6 +515,8 @@ impl RoomMessageHub {
         let room_index_directory_key = self.room_index_directory_key();
         let ttl_secs = self.redis_key_ttl_secs;
 
+        let actor = serde_json::to_string(actor)
+            .map_err(|error| format!("Failed to serialize realtime actor: {error}"))?;
         self.redis_op(
             "persist room subscription atomically",
             PERSIST_REDIS_SUBSCRIPTION_SCRIPT
@@ -522,7 +524,7 @@ impl RoomMessageHub {
                 .key(&conn_key)
                 .key(&room_index_directory_key)
                 .arg(connection_id.as_str())
-                .arg(user_id.get())
+                .arg(actor)
                 .arg(room_id.get())
                 .arg(ttl_secs_unsigned(ttl_secs))
                 .invoke_async::<i64>(&mut conn_clone),
@@ -641,7 +643,7 @@ impl RoomMessageHub {
     pub async fn subscribe(
         &self,
         room_id: RoomId,
-        user_id: UserId,
+        actor: RealtimeActor,
         connection_id: ConnectionId,
     ) -> crate::Result<mpsc::Receiver<SharedRealtimeEvent>> {
         self.start();
@@ -649,7 +651,7 @@ impl RoomMessageHub {
 
         let subscriber = Subscriber {
             connection_id: connection_id.clone(),
-            user_id,
+            actor: actor.clone(),
             sender: tx,
             consecutive_drops: Arc::new(AtomicU32::new(0)),
         };
@@ -672,10 +674,10 @@ impl RoomMessageHub {
 
         // Track connection for cleanup
         self.connections
-            .insert(connection_id.clone(), (room_id, user_id));
+            .insert(connection_id.clone(), (room_id, actor.clone()));
 
         if let Err(e) = self
-            .persist_redis_subscription(&room_id, user_id, &connection_id)
+            .persist_redis_subscription(&room_id, &actor, &connection_id)
             .await
         {
             self.rollback_local_subscription(&room_id, &connection_id);
@@ -688,7 +690,7 @@ impl RoomMessageHub {
 
         info!(
             room_id = %room_id,
-            user_id = %user_id,
+            actor = %actor,
             connection_id = %connection_id,
             "Client subscribed to room"
         );
@@ -710,7 +712,7 @@ impl RoomMessageHub {
     ///
     /// Removes subscription from both local cache and Redis (if configured).
     pub fn unsubscribe(&self, connection_id: &str) {
-        if let Some((removed_connection_id, (room_id, user_id))) =
+        if let Some((removed_connection_id, (room_id, actor))) =
             self.connections.remove(connection_id)
         {
             let mut room_deactivated = false;
@@ -743,7 +745,7 @@ impl RoomMessageHub {
 
             info!(
                 room_id = %room_id,
-                user_id = %user_id,
+                actor = %actor,
                 connection_id = %connection_id,
                 "Client unsubscribed from room"
             );
@@ -786,7 +788,7 @@ impl RoomMessageHub {
                             sent_count += 1;
                             debug!(
                                 room_id = %room_id,
-                                user_id = %subscriber.user_id,
+                                actor = %subscriber.actor,
                                 connection_id = %subscriber.connection_id,
                                 event_type = %event.event_type(),
                                 "Event sent to client"
@@ -798,7 +800,7 @@ impl RoomMessageHub {
                             if drops >= MAX_CONSECUTIVE_DROPS {
                                 warn!(
                                     room_id = %room_id,
-                                    user_id = %subscriber.user_id,
+                                    actor = %subscriber.actor,
                                     connection_id = %subscriber.connection_id,
                                     consecutive_drops = drops,
                                     "Disconnecting persistently slow subscriber after {} consecutive drops",
@@ -808,7 +810,7 @@ impl RoomMessageHub {
                             } else {
                                 warn!(
                                     room_id = %room_id,
-                                    user_id = %subscriber.user_id,
+                                    actor = %subscriber.actor,
                                     connection_id = %subscriber.connection_id,
                                     event_type = %event.event_type(),
                                     consecutive_drops = drops,
@@ -819,7 +821,7 @@ impl RoomMessageHub {
                         Err(mpsc::error::TrySendError::Closed(_)) => {
                             warn!(
                                 room_id = %room_id,
-                                user_id = %subscriber.user_id,
+                                actor = %subscriber.actor,
                                 connection_id = %subscriber.connection_id,
                                 "Subscriber channel closed, marking for cleanup"
                             );
@@ -1128,13 +1130,13 @@ impl RoomMessageHub {
 
     /// Get all subscribers in a room (for debugging/monitoring)
     #[must_use]
-    pub fn get_room_subscribers(&self, room_id: &RoomId) -> Vec<(UserId, ConnectionId)> {
+    pub fn get_room_subscribers(&self, room_id: &RoomId) -> Vec<(RealtimeActor, ConnectionId)> {
         self.rooms
             .get(room_id)
             .map(|subscribers| {
                 subscribers
                     .values()
-                    .map(|sub| (sub.user_id, sub.connection_id.clone()))
+                    .map(|sub| (sub.actor.clone(), sub.connection_id.clone()))
                     .collect()
             })
             .unwrap_or_default()
@@ -1149,7 +1151,7 @@ impl RoomMessageHub {
     pub async fn get_room_subscribers_distributed(
         &self,
         room_id: &RoomId,
-    ) -> crate::Result<Vec<(UserId, ConnectionId)>> {
+    ) -> crate::Result<Vec<(RealtimeActor, ConnectionId)>> {
         if self.redis_conn.is_some() {
             let room_key = self.room_key(room_id);
             let room_index_directory_key = self.room_index_directory_key();
@@ -1165,7 +1167,7 @@ impl RoomMessageHub {
             match self
                 .redis_op(
                     "load distributed room subscribers",
-                    conn_clone.hgetall::<_, Vec<(String, i64)>>(&room_key),
+                    conn_clone.hgetall::<_, Vec<(String, String)>>(&room_key),
                 )
                 .await
             {
@@ -1200,11 +1202,10 @@ impl RoomMessageHub {
                     let mut subscribers = Vec::with_capacity(entries.len());
                     let mut stale_connection_ids = Vec::with_capacity(entries.len());
 
-                    for ((conn_id, user_id), mapped_room_id) in entries.into_iter().zip(conn_rooms)
-                    {
+                    for ((conn_id, actor), mapped_room_id) in entries.into_iter().zip(conn_rooms) {
                         if mapped_room_id == Some(room_id.get()) {
-                            if let Ok(user_id) = UserId::try_from(user_id) {
-                                subscribers.push((user_id, ConnectionId::new(conn_id)));
+                            if let Ok(actor) = serde_json::from_str::<RealtimeActor>(&actor) {
+                                subscribers.push((actor, ConnectionId::new(conn_id)));
                             } else {
                                 stale_connection_ids.push(conn_id);
                             }
@@ -1336,7 +1337,7 @@ impl RoomMessageHub {
             };
 
             // Fetch all subscribers for this room
-            let entries: Vec<(String, i64)> = match self
+            let entries: Vec<(String, String)> = match self
                 .redis_op("load audited room subscribers", conn_clone.hgetall(&key))
                 .await
             {
@@ -1360,11 +1361,15 @@ impl RoomMessageHub {
                 continue;
             }
 
-            recovered += entries.len();
+            let valid_subscriber_count = entries
+                .iter()
+                .filter(|(_, actor)| serde_json::from_str::<RealtimeActor>(actor).is_ok())
+                .count();
+            recovered += valid_subscriber_count;
 
             info!(
                 room_id = %room_id,
-                subscriber_count = entries.len(),
+                subscriber_count = valid_subscriber_count,
                 "Audited room subscription state from Redis (observability only)"
             );
         }
@@ -1500,10 +1505,10 @@ impl RoomMessageRuntime for RoomMessageHub {
     async fn subscribe(
         &self,
         room_id: RoomId,
-        user_id: UserId,
+        actor: RealtimeActor,
         connection_id: ConnectionId,
     ) -> crate::error::Result<mpsc::Receiver<SharedRealtimeEvent>> {
-        RoomMessageHub::subscribe(self, room_id, user_id, connection_id).await
+        RoomMessageHub::subscribe(self, room_id, actor, connection_id).await
     }
 
     fn unsubscribe(&self, connection_id: &str) {
@@ -1543,14 +1548,14 @@ impl RoomMessageRuntime for RoomMessageHub {
         RoomMessageHub::remove_room(self, room_id);
     }
 
-    fn get_room_subscribers(&self, room_id: &RoomId) -> Vec<(UserId, ConnectionId)> {
+    fn get_room_subscribers(&self, room_id: &RoomId) -> Vec<(RealtimeActor, ConnectionId)> {
         RoomMessageHub::get_room_subscribers(self, room_id)
     }
 
     async fn get_room_subscribers_replicas_wide(
         &self,
         room_id: &RoomId,
-    ) -> crate::Result<Vec<(UserId, ConnectionId)>> {
+    ) -> crate::Result<Vec<(RealtimeActor, ConnectionId)>> {
         RoomMessageHub::get_room_subscribers_distributed(self, room_id).await
     }
 

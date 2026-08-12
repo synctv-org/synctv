@@ -6,7 +6,7 @@
 #![allow(clippy::unwrap_used)]
 use std::time::Duration;
 
-use synctv_core::models::id::{RoomId, UserId};
+use synctv_core::models::{RealtimeActor, RoomId, UserId};
 use synctv_realtime::sync::ConnectionManager;
 use synctv_realtime::sync::{ConnectionLimits, DisconnectSignal, RoomDisconnectReason};
 
@@ -18,6 +18,10 @@ fn stable_test_id(s: &str) -> i64 {
 
 fn uid(s: &str) -> UserId {
     UserId::expect_positive(stable_test_id(s))
+}
+
+fn actor(user_id: UserId) -> RealtimeActor {
+    RealtimeActor::user(user_id, user_id.to_string())
 }
 
 fn rid(s: &str) -> RoomId {
@@ -40,7 +44,7 @@ async fn test_connection_register_unregister() {
     assert!(info.is_some());
     let info = info.unwrap();
     assert_eq!(info.connection_id, "conn1");
-    assert_eq!(info.user_id, uid("user1"));
+    assert_eq!(info.actor.user_id(), Some(uid("user1")));
     assert!(info.room_id.is_none());
 
     // Unregister
@@ -351,7 +355,7 @@ async fn test_rtc_state_management() {
     assert!(!conn.voice_rtc_joined);
 
     // Mark as RTC joined
-    mgr.mark_voice_rtc_joined(&room, &user, "conn1", true);
+    mgr.mark_voice_rtc_joined(&room, &actor(user), "conn1", true);
 
     let conn = mgr.get_connection("conn1").unwrap();
     assert!(conn.voice_rtc_joined);
@@ -362,7 +366,7 @@ async fn test_rtc_state_management() {
     assert_eq!(rtc_conns[0].connection_id, "conn1");
 
     // Unmark
-    mgr.mark_voice_rtc_joined(&room, &user, "conn1", false);
+    mgr.mark_voice_rtc_joined(&room, &actor(user), "conn1", false);
 
     let rtc_conns = mgr.get_voice_rtc_connections(&room);
     assert!(rtc_conns.is_empty());
@@ -413,7 +417,7 @@ async fn test_duplicate_register_is_rejected_and_preserves_original_connection()
 
     // Original connection must remain intact
     let conn = mgr.get_connection("conn1").unwrap();
-    assert_eq!(conn.user_id, uid("user1"));
+    assert_eq!(conn.actor.user_id(), Some(uid("user1")));
 }
 
 // Test 14: Unregister non-existent is safe

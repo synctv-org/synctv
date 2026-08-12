@@ -742,7 +742,7 @@ impl MediaProvider for NextcloudProvider {
         let result = PlaybackResult {
             playback_infos,
             default_mode: "original".to_string(),
-            provider: Self::NAME.to_string(),
+            provider: crate::models::SourceProvider::Nextcloud,
             provider_instance_name: auth.instance_name,
             duration_seconds,
             playback_kind: Some(crate::models::PlaybackKind::Regular),
@@ -852,8 +852,8 @@ impl MediaProvider for NextcloudProvider {
             .credential_owner_or_user_id()
             .ok_or(ProviderError::CredentialRequired)?;
         Ok(vec![ProviderCredentialDependency::new(
-            Self::NAME,
-            owner.to_string(),
+            crate::models::SourceProvider::Nextcloud,
+            *owner,
             Self::source_server_id(source_config)?.to_string(),
         )])
     }
@@ -1463,7 +1463,7 @@ mod tests {
                     },
                 )]),
                 default_mode: "proxy".to_string(),
-                provider: NextcloudProvider::NAME.to_string(),
+                provider: crate::models::SourceProvider::Nextcloud,
                 provider_instance_name: None,
                 duration_seconds: None,
                 playback_kind: Some(crate::models::PlaybackKind::Regular),

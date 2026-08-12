@@ -123,7 +123,7 @@ pub async fn get_me(
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Read,
-            |auth| async move { client_api.get_profile(&auth.user_id).await },
+            |auth| async move { client_api.get_profile(&auth.user_id()).await },
         )
         .await
         .map_err(super::error::map_api_error)?;
@@ -159,7 +159,7 @@ pub async fn get_user_preferences(
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Read,
-            |auth| async move { client_api.get_user_preferences(&auth.user_id).await },
+            |auth| async move { client_api.get_user_preferences(&auth.user_id()).await },
         )
         .await
         .map_err(super::error::map_api_error)?;
@@ -198,7 +198,11 @@ pub async fn update_user_preferences(
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Write,
-            |auth| async move { client_api.update_user_preferences(&auth.user_id, req).await },
+            |auth| async move {
+                client_api
+                    .update_user_preferences(&auth.user_id(), req)
+                    .await
+            },
         )
         .await
         .map_err(super::error::map_api_error)?;
@@ -237,7 +241,11 @@ pub async fn set_two_factor_enabled(
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Write,
-            |auth| async move { client_api.set_two_factor_enabled(&auth.user_id, req).await },
+            |auth| async move {
+                client_api
+                    .set_two_factor_enabled(&auth.user_id(), req)
+                    .await
+            },
         )
         .await
         .map_err(super::error::map_api_error)?;
@@ -277,7 +285,7 @@ pub async fn update_user(
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Write,
-            |auth| async move { client_api.set_username(&auth.user_id, req).await },
+            |auth| async move { client_api.set_username(&auth.user_id(), req).await },
         )
         .await
         .map_err(super::error::map_api_error)?;
@@ -301,7 +309,7 @@ pub async fn create_user_avatar_upload_session(
             EndpointRateLimitCategory::Write,
             |auth| async move {
                 client_api
-                    .create_user_avatar_upload_session(&auth.user_id, req)
+                    .create_user_avatar_upload_session(&auth.user_id(), req)
                     .await
             },
         )
@@ -325,7 +333,7 @@ pub async fn update_user_avatar(
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Write,
-            |auth| async move { client_api.update_user_avatar(&auth.user_id, req).await },
+            |auth| async move { client_api.update_user_avatar(&auth.user_id(), req).await },
         )
         .await
         .map_err(super::error::map_api_error)?;
@@ -346,7 +354,7 @@ pub async fn clear_user_avatar(
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Write,
-            |auth| async move { client_api.clear_user_avatar(&auth.user_id).await },
+            |auth| async move { client_api.clear_user_avatar(&auth.user_id()).await },
         )
         .await
         .map_err(super::error::map_api_error)?;
@@ -482,7 +490,7 @@ pub async fn start_email_bind(
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Write,
-            |auth| async move { client_api.start_email_bind(&auth.user_id, req).await },
+            |auth| async move { client_api.start_email_bind(&auth.user_id(), req).await },
         )
         .await
         .map_err(super::error::map_api_error)?;
@@ -521,7 +529,7 @@ pub async fn confirm_email_bind(
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Write,
-            |auth| async move { client_api.confirm_email_bind(&auth.user_id, req).await },
+            |auth| async move { client_api.confirm_email_bind(&auth.user_id(), req).await },
         )
         .await
         .map_err(super::error::map_api_error)?;
@@ -560,7 +568,7 @@ pub async fn unbind_email(
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Write,
-            |auth| async move { client_api.unbind_email(&auth.user_id, req).await },
+            |auth| async move { client_api.unbind_email(&auth.user_id(), req).await },
         )
         .await
         .map_err(super::error::map_api_error)?;
@@ -602,7 +610,7 @@ pub async fn start_sensitive_operation_verification(
             |auth| async move {
                 client_api
                     .start_sensitive_operation_verification(
-                        &auth.user_id,
+                        &auth.user_id(),
                         synctv_api_common::impls::client::token_auth_context_from_claims(
                             &auth.claims,
                         ),
@@ -650,7 +658,7 @@ pub async fn start_sensitive_operation_passkey(
             EndpointRateLimitCategory::Write,
             |auth| async move {
                 client_api
-                    .start_sensitive_operation_passkey(&auth.user_id, req)
+                    .start_sensitive_operation_passkey(&auth.user_id(), req)
                     .await
             },
         )
@@ -693,7 +701,7 @@ pub async fn request_sensitive_operation_email_code(
             EndpointRateLimitCategory::Write,
             |auth| async move {
                 client_api
-                    .request_sensitive_operation_email_code(&auth.user_id, req)
+                    .request_sensitive_operation_email_code(&auth.user_id(), req)
                     .await
             },
         )
@@ -738,7 +746,7 @@ pub async fn finish_sensitive_operation_verification(
             |request_control, auth| async move {
                 client_api
                     .finish_sensitive_operation_verification(
-                        &auth.user_id,
+                        &auth.user_id(),
                         req,
                         client_ip,
                         Some(&request_control),
@@ -785,7 +793,7 @@ pub async fn start_opaque_password_update(
             EndpointRateLimitCategory::Write,
             |auth| async move {
                 client_api
-                    .start_opaque_password_update(&auth.user_id, req)
+                    .start_opaque_password_update(&auth.user_id(), req)
                     .await
             },
         )
@@ -828,7 +836,7 @@ pub async fn finish_opaque_password_update(
             EndpointRateLimitCategory::Write,
             |auth| async move {
                 client_api
-                    .finish_opaque_password_update(&auth.user_id, req)
+                    .finish_opaque_password_update(&auth.user_id(), req)
                     .await
             },
         )
@@ -869,7 +877,7 @@ pub async fn start_passkey_bind(
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Write,
-            |auth| async move { client_api.start_passkey_bind(&auth.user_id, req).await },
+            |auth| async move { client_api.start_passkey_bind(&auth.user_id(), req).await },
         )
         .await
         .map_err(super::error::map_api_error)?;
@@ -910,7 +918,7 @@ pub async fn finish_passkey_bind(
             EndpointRateLimitCategory::Write,
             |auth| async move {
                 client_api
-                    .finish_passkey_bind_request(&auth.user_id, req)
+                    .finish_passkey_bind_request(&auth.user_id(), req)
                     .await
             },
         )
@@ -948,7 +956,7 @@ pub async fn list_passkeys(
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Read,
-            |auth| async move { client_api.list_passkeys(&auth.user_id).await },
+            |auth| async move { client_api.list_passkeys(&auth.user_id()).await },
         )
         .await
         .map_err(super::error::map_api_error)?;
@@ -992,7 +1000,7 @@ pub async fn delete_passkey(
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Write,
-            |auth| async move { client_api.delete_passkey(&auth.user_id, req).await },
+            |auth| async move { client_api.delete_passkey(&auth.user_id(), req).await },
         )
         .await
         .map_err(super::error::map_api_error)?;
@@ -1030,7 +1038,7 @@ pub async fn start_totp_setup(
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Write,
-            |auth| async move { client_api.start_totp_setup(&auth.user_id, req).await },
+            |auth| async move { client_api.start_totp_setup(&auth.user_id(), req).await },
         )
         .await
         .map_err(super::error::map_api_error)?;
@@ -1065,7 +1073,7 @@ pub async fn finish_totp_setup(
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Write,
-            |auth| async move { client_api.finish_totp_setup(&auth.user_id, req).await },
+            |auth| async move { client_api.finish_totp_setup(&auth.user_id(), req).await },
         )
         .await
         .map_err(super::error::map_api_error)?;
@@ -1103,7 +1111,7 @@ pub async fn regenerate_totp_recovery_codes(
             EndpointRateLimitCategory::Write,
             |auth| async move {
                 client_api
-                    .regenerate_totp_recovery_codes(&auth.user_id, req)
+                    .regenerate_totp_recovery_codes(&auth.user_id(), req)
                     .await
             },
         )
@@ -1141,7 +1149,7 @@ pub async fn delete_totp(
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Write,
-            |auth| async move { client_api.delete_totp(&auth.user_id, req).await },
+            |auth| async move { client_api.delete_totp(&auth.user_id(), req).await },
         )
         .await
         .map_err(super::error::map_api_error)?;
@@ -1181,7 +1189,7 @@ pub async fn list_my_rooms(
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Read,
-            |auth| async move { client_api.list_my_rooms(&auth.user_id, req).await },
+            |auth| async move { client_api.list_my_rooms(&auth.user_id(), req).await },
         )
         .await
         .map_err(super::error::map_api_error)?;
@@ -1218,7 +1226,7 @@ pub async fn discover_rooms(
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Read,
-            |auth| async move { client_api.discover_rooms(&auth.user_id, req).await },
+            |auth| async move { client_api.discover_rooms(&auth.user_id(), req).await },
         )
         .await
         .map_err(super::error::map_api_error)?;
@@ -1256,7 +1264,7 @@ pub async fn get_room_discovery(
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Read,
-            |auth| async move { client_api.get_room_discovery(&auth.user_id, req).await },
+            |auth| async move { client_api.get_room_discovery(&auth.user_id(), req).await },
         )
         .await
         .map_err(super::error::map_api_error)?;
@@ -1281,7 +1289,7 @@ pub async fn favorite_room(
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Write,
-            |auth| async move { client_api.favorite_room(&auth.user_id, req).await },
+            |auth| async move { client_api.favorite_room(&auth.user_id(), req).await },
         )
         .await
         .map_err(super::error::map_api_error)?;
@@ -1306,7 +1314,7 @@ pub async fn unfavorite_room(
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Write,
-            |auth| async move { client_api.unfavorite_room(&auth.user_id, req).await },
+            |auth| async move { client_api.unfavorite_room(&auth.user_id(), req).await },
         )
         .await
         .map_err(super::error::map_api_error)?;
@@ -1328,7 +1336,7 @@ pub async fn list_favorite_rooms(
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Read,
-            |auth| async move { client_api.list_favorite_rooms(&auth.user_id, req).await },
+            |auth| async move { client_api.list_favorite_rooms(&auth.user_id(), req).await },
         )
         .await
         .map_err(super::error::map_api_error)?;
@@ -1371,7 +1379,7 @@ pub async fn close_account(
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Write,
-            |auth| async move { client_api.close_account(&auth.user_id).await },
+            |auth| async move { client_api.close_account(&auth.user_id()).await },
         )
         .await
         .map_err(super::AppError::from)?;

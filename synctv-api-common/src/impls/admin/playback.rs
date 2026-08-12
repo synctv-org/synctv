@@ -63,11 +63,13 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        let mut ctx = synctv_core::provider::ProviderContext::new("synctv")
-            .with_user_id(*user_id)
-            .with_room_id(*room_id)
-            .with_media_id(media.id)
-            .with_playback_client_profile(playback_client_profile.cloned());
+        let mut ctx = synctv_core::provider::ProviderContext::new(
+            "synctv",
+            synctv_core::provider::ProviderActor::User(*user_id),
+        )
+        .with_room_id(*room_id)
+        .with_media_id(media.id)
+        .with_playback_client_profile(playback_client_profile.cloned());
         if let Some(creator_id) = media.creator_id.as_ref() {
             ctx = ctx.with_credential_owner_id(*creator_id);
         }
@@ -96,7 +98,7 @@ impl AdminApiImpl {
             media.position,
         )
         .id(media.id)
-        .provider(provider_result.provider.clone())
+        .provider(provider_result.provider)
         .provider_instance_name(provider_result.provider_instance_name.clone())
         .default_mode(provider_result.default_mode.clone())
         .duration_seconds(duration_seconds)
@@ -131,7 +133,8 @@ impl AdminApiImpl {
             signing_key: &self.signing_key,
             media_swarm_signing_key: &self.media_swarm_signing_key,
             room_id: &public_room_id,
-            user_id: &public_user_id,
+            proxy_authorizer_id: &public_user_id,
+            actor_id: &public_user_id,
         };
         let mut playback =
             try_playback_to_proto(&full_result, &self.public_id_codec, Some(&signing))?;
@@ -154,7 +157,12 @@ impl AdminApiImpl {
         let item = self
             .room_service
             .media_service()
-            .resolve_dynamic_playlist_item(*room_id_model, *user_id_model, playlist_id, target)
+            .resolve_dynamic_playlist_item(
+                *room_id_model,
+                synctv_core::provider::ProviderActor::User(*user_id_model),
+                playlist_id,
+                target,
+            )
             .await
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::NotFound("Dynamic playlist item not found".to_string()))?;
@@ -174,10 +182,12 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        let mut ctx = synctv_core::provider::ProviderContext::new("synctv")
-            .with_user_id(*user_id_model)
-            .with_room_id(*room_id_model)
-            .with_playback_client_profile(playback_client_profile.cloned());
+        let mut ctx = synctv_core::provider::ProviderContext::new(
+            "synctv",
+            synctv_core::provider::ProviderActor::User(*user_id_model),
+        )
+        .with_room_id(*room_id_model)
+        .with_playback_client_profile(playback_client_profile.cloned());
         if let Some(creator_id) = playlist.creator_id.as_ref() {
             ctx = ctx.with_credential_owner_id(*creator_id);
         }
@@ -206,7 +216,7 @@ impl AdminApiImpl {
             item.name.clone(),
             0.0,
         )
-        .provider(provider_result.provider.clone())
+        .provider(provider_result.provider)
         .provider_instance_name(provider_result.provider_instance_name.clone())
         .default_mode(provider_result.default_mode.clone())
         .duration_seconds(duration_seconds)
@@ -234,7 +244,8 @@ impl AdminApiImpl {
             signing_key: &self.signing_key,
             media_swarm_signing_key: &self.media_swarm_signing_key,
             room_id: &public_room_id,
-            user_id: &public_user_id,
+            proxy_authorizer_id: &public_user_id,
+            actor_id: &public_user_id,
         };
         let mut playback =
             try_playback_to_proto(&full_result, &self.public_id_codec, Some(&signing))?;

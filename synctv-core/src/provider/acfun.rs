@@ -441,7 +441,7 @@ impl AcFunProvider {
         Ok(PlaybackResult {
             playback_infos: infos,
             default_mode,
-            provider: Self::NAME.to_string(),
+            provider: crate::models::SourceProvider::AcFun,
             provider_instance_name: None,
             duration_seconds,
             playback_kind: Some(if is_live {
@@ -821,7 +821,7 @@ mod tests {
                 },
             )]),
             default_mode: "hls".to_string(),
-            provider: AcFunProvider::NAME.to_string(),
+            provider: crate::models::SourceProvider::AcFun,
             provider_instance_name: None,
             duration_seconds: None,
             playback_kind: Some(crate::models::PlaybackKind::Live),

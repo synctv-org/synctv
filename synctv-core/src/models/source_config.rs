@@ -481,10 +481,11 @@ pub enum FnosPlaylistSource {
         path: String,
     },
     MediaLibrary {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        ancestor_guid: Option<String>,
+        library_guid: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         media_types: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_guid: Option<String>,
     },
     Favorites {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]

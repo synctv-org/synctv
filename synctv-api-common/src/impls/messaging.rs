@@ -112,10 +112,6 @@ pub use identity::{
     guest_display_name, guest_public_id, GuestRealtimeIdentity, RealtimeJoinError,
     RealtimePrincipal,
 };
-#[cfg(test)]
-pub use identity::{
-    internal_guest_user_id, GUEST_INTERNAL_USER_ID_BASE, GUEST_INTERNAL_USER_ID_SPAN,
-};
 mod membership;
 #[cfg(test)]
 pub use membership::guest_policy_error_to_denial_reason;
@@ -143,7 +139,6 @@ impl CachedMembership {
 
 // Re-use the canonical role proto mapper from client::convert.
 use crate::impls::client::convert::chat_metadata_from_proto;
-use crate::impls::client::room_role_to_proto;
 
 mod transport;
 pub use transport::{MessageSender, StreamMessage};
@@ -157,7 +152,7 @@ use notifications::{system_notification_server_message, user_notification_server
 /// Per-connection stream message handler with complete logic encapsulation
 ///
 /// Each connection gets its own handler instance with:
-/// - Connection state (`room_id`, `user_id`, username)
+/// - Connection state (room, typed principal, username)
 /// - Message I/O channels
 /// - Rate limiting, content filtering, permission checking
 /// - Cluster broadcasting
@@ -168,7 +163,6 @@ use notifications::{system_notification_server_message, user_notification_server
 pub struct StreamMessageHandler {
     room_id: RoomId,
     principal: RealtimePrincipal,
-    user_id: UserId,
     username: String,
     connection_id: ConnectionId,
     room_service: Arc<RoomService>,
@@ -318,7 +312,6 @@ impl Clone for StreamMessageHandler {
         Self {
             room_id: self.room_id,
             principal: self.principal.clone(),
-            user_id: self.user_id,
             username: self.username.clone(),
             connection_id: self.connection_id.clone(),
             room_service: Arc::clone(&self.room_service),
@@ -405,7 +398,7 @@ impl StreamMessageHandler {
 
         if let Err(error) = stream.send(message) {
             tracing::debug!(
-                user_id = %self.user_id,
+                actor = %self.username,
                 room_id = %self.room_id,
                 error = %error,
                 "Failed to send realtime termination before closing stream"
@@ -485,7 +478,6 @@ impl StreamMessageHandler {
         } = config;
         let connection_id =
             connection_id.map_or_else(Self::generate_connection_id, ConnectionId::new);
-        let user_id = principal.connection_user_id();
         let username = principal.username().to_string();
         let heartbeat_schedule = runtime.heartbeat_schedule;
         let membership_cache = Arc::new(
@@ -501,7 +493,6 @@ impl StreamMessageHandler {
         let clock = runtime.clock;
         let resource_observer = Arc::new(ResourceObserver::new(ResourceObserverParams {
             room_id,
-            user_id,
             actor: room_actor,
             connection_id: connection_id.as_str().to_string(),
             room_service: Arc::clone(&room_service),
@@ -518,7 +509,6 @@ impl StreamMessageHandler {
         Self {
             room_id,
             principal,
-            user_id,
             username,
             connection_id,
             room_service,
@@ -584,6 +574,16 @@ impl StreamMessageHandler {
 
     fn public_actor_id(&self) -> Result<String, String> {
         self.principal.public_actor_id(&self.public_id_codec)
+    }
+
+    fn realtime_actor(&self) -> Result<synctv_core::models::RealtimeActor, String> {
+        self.principal.realtime_actor(&self.public_id_codec)
+    }
+
+    fn require_user_id(&self) -> Result<UserId, String> {
+        self.principal
+            .user_id()
+            .ok_or_else(|| "This realtime operation requires a signed-in user".to_string())
     }
 
     fn webrtc_event_server_message_for_current_connection(
@@ -738,9 +738,9 @@ impl StreamMessageHandler {
             ..
         } = event
         {
-            if *target_user_id == self.user_id && *role_changed {
+            if self.principal.user_id() == Some(*target_user_id) && *role_changed {
                 self.current_room_role
-                    .store(*role, std::sync::atomic::Ordering::Relaxed);
+                    .store(i32::from(*role), std::sync::atomic::Ordering::Relaxed);
             }
         }
     }
@@ -753,7 +753,11 @@ impl StreamMessageHandler {
         &self,
         permission: RoomPermission,
     ) -> Result<(), synctv_core::Error> {
-        if self.principal.is_guest() {
+        if let Some(user_id) = self.principal.user_id() {
+            self.room_service
+                .check_permission(&self.room_id, &user_id, permission)
+                .await
+        } else {
             let permissions = self.guest_permissions().await?;
             if permissions.has(permission) {
                 Ok(())
@@ -762,10 +766,6 @@ impl StreamMessageHandler {
                     "Guests do not have permission to perform this action".to_string(),
                 ))
             }
-        } else {
-            self.room_service
-                .check_permission(&self.room_id, &self.user_id, permission)
-                .await
         }
     }
 
@@ -822,10 +822,8 @@ impl StreamMessageHandler {
             }
             synctv_proto::client::observe_resource::Resource::Playback(_) => {
                 if self.principal.is_guest() {
-                    Err(
-                        "Guests cannot observe playbacks because playbacks may depend on signed-in provider credentials"
-                            .to_string(),
-                    )
+                    self.ensure_guest_admission_for_action().await?;
+                    Ok(())
                 } else {
                     Ok(())
                 }
@@ -835,8 +833,19 @@ impl StreamMessageHandler {
 
     async fn guest_admission_denial_reason(&self) -> Result<Option<String>, RealtimeJoinError> {
         self.membership_probe()
-            .guest_admission_denial_reason(&self.room_id, &self.user_id, &self.principal)
+            .guest_admission_denial_reason(&self.room_id, &self.principal)
             .await
+    }
+
+    async fn realtime_access_denial_reason(&self) -> Result<Option<String>, RealtimeJoinError> {
+        match self.principal.user_id() {
+            Some(user_id) => self
+                .membership_probe()
+                .realtime_membership_denial_reason(&self.room_id, &user_id)
+                .await
+                .map_err(|error| RealtimeJoinError::from(error.to_string())),
+            None => self.guest_admission_denial_reason().await,
+        }
     }
 
     async fn prepare_initial_realtime_join_state(
@@ -852,16 +861,20 @@ impl StreamMessageHandler {
             });
         }
 
+        let user_id = self
+            .require_user_id()
+            .map_err(RealtimeJoinError::PermissionDenied)?;
+
         let user = self
             .room_service
             .user_service()
-            .get_user(&self.user_id)
+            .get_user(&user_id)
             .await
             .map_err(|error| {
                 tracing::warn!(
                     error = %error,
                     room_id = %self.room_id,
-                    user_id = %self.user_id,
+                    actor = %self.username,
                     "Failed to re-validate user access during pre_join; rejecting connection because final admission must fail closed"
                 );
                 RealtimeJoinError::ServiceUnavailable(
@@ -882,7 +895,7 @@ impl StreamMessageHandler {
             tracing::warn!(
                 error = %error,
                 room_id = %self.room_id,
-                user_id = %self.user_id,
+                actor = %self.username,
                 "Failed to re-validate room access during pre_join; rejecting connection because final admission must fail closed"
             );
             RealtimeJoinError::ServiceUnavailable(
@@ -901,7 +914,7 @@ impl StreamMessageHandler {
 
         let membership_lookup = self
             .membership_probe()
-            .probe_realtime_membership_access_with_room(&room, &self.user_id)
+            .probe_realtime_membership_access_with_room(&room, &user_id)
             .await;
         let member = match membership_lookup {
             Ok(RealtimeMembershipAccess::Allowed(member)) => member,
@@ -911,7 +924,7 @@ impl StreamMessageHandler {
                 tracing::warn!(
                     error = %error,
                     room_id = %self.room_id,
-                    user_id = %self.user_id,
+                    actor = %self.username,
                     "Failed to re-validate membership during pre_join; rejecting connection because final admission must fail closed"
                 );
                 return Err(RealtimeJoinError::ServiceUnavailable(
@@ -925,7 +938,7 @@ impl StreamMessageHandler {
                 tracing::warn!(
                     error = %error,
                     room_id = %self.room_id,
-                    user_id = %self.user_id,
+                    actor = %self.username,
                     "Failed to load room settings during pre_join; rejecting connection because permission snapshots must fail closed"
                 );
                 RealtimeJoinError::from(crate::impls::ApiError::from(error))
@@ -945,13 +958,10 @@ impl StreamMessageHandler {
     /// inside a background task.  After a successful `pre_join`, call
     /// [`run_after_join`] to enter the message loop.
     pub async fn pre_join(&self) -> Result<(), RealtimeJoinError> {
+        let actor = self.realtime_actor().map_err(RealtimeJoinError::from)?;
         if let Err(e) = self
             .connection_service
-            .register_actor(
-                self.connection_id.clone().into_string(),
-                self.user_id,
-                self.public_actor_id()?,
-            )
+            .register_actor(self.connection_id.clone().into_string(), actor)
             .await
         {
             tracing::warn!("Failed to register connection: {}", e);
@@ -1048,9 +1058,10 @@ impl StreamMessageHandler {
             return Ok(());
         }
 
+        let actor = self.realtime_actor().map_err(RealtimeJoinError::from)?;
         let (event_rx, _connection_id) = self
             .event_service
-            .subscribe_with_id(self.room_id, self.user_id, self.connection_id.clone())
+            .subscribe_with_id(self.room_id, actor, self.connection_id.clone())
             .await
             .map_err(|e| {
                 self.skip_cleanup_user_left
@@ -1071,8 +1082,9 @@ impl StreamMessageHandler {
             return Ok(event_rx);
         }
 
+        let actor = self.realtime_actor()?;
         self.event_service
-            .subscribe_with_id(self.room_id, self.user_id, self.connection_id.clone())
+            .subscribe_with_id(self.room_id, actor, self.connection_id.clone())
             .await
             .map(|(event_rx, _connection_id)| event_rx)
             .map_err(|e| format!("Failed to subscribe to realtime events: {e}"))
@@ -1180,7 +1192,7 @@ impl StreamMessageHandler {
                             global_msg_count += 1;
                             if global_msg_count > global_msg_rate_limit {
                                 tracing::warn!(
-                                    user_id = %self.user_id,
+                                    actor = %self.username,
                                     room_id = %self.room_id,
                                     limit = global_msg_rate_limit,
                                     "Global WebSocket message rate limit exceeded, dropping message"
@@ -1193,7 +1205,7 @@ impl StreamMessageHandler {
                             let semaphore = self.concurrency_config.semaphore();
                             let Ok(permit) = semaphore.try_acquire_owned() else {
                                 tracing::warn!(
-                                    user_id = %self.user_id,
+                                    actor = %self.username,
                                     room_id = %self.room_id,
                                     "System overloaded: message processing semaphore exhausted, returning ResourceExhausted"
                                 );
@@ -1355,9 +1367,9 @@ impl StreamMessageHandler {
                             }
                         }
                         Ok(synctv_realtime::sync::DisconnectSignal::User(uid)) => {
-                            if uid == self.user_id {
+                            if self.principal.user_id() == Some(uid) {
                                 tracing::info!(
-                                    user_id = %self.user_id,
+                                    actor = %self.username,
                                     "Received disconnect signal for this user (room kick or platform ban)"
                                 );
                                 self.send_realtime_termination(
@@ -1391,9 +1403,9 @@ impl StreamMessageHandler {
                             }
                         }
                         Ok(synctv_realtime::sync::DisconnectSignal::UserFromRoom { user_id: uid, room_id: rid }) => {
-                            if uid == self.user_id && rid == self.room_id {
+                            if self.principal.user_id() == Some(uid) && rid == self.room_id {
                                 tracing::info!(
-                                    user_id = %self.user_id,
+                                    actor = %self.username,
                                     room_id = %self.room_id,
                                     "Received disconnect signal: kicked from room"
                                 );
@@ -1414,20 +1426,16 @@ impl StreamMessageHandler {
                             // then verify membership to catch any missed room kick or platform ban.
                             tracing::warn!(
                                 lagged = n,
-                                user_id = %self.user_id,
+                                actor = %self.username,
                                 room_id = %self.room_id,
                                 "Disconnect signal channel lagged, re-subscribing and verifying membership"
                             );
                             disconnect_rx = self.connection_service.subscribe_disconnect();
 
-                            match self
-                                .membership_probe()
-                                .realtime_membership_denial_reason(&self.room_id, &self.user_id)
-                                .await
-                            {
+                            match self.realtime_access_denial_reason().await {
                                 Ok(Some(reason)) => {
                                     tracing::info!(
-                                        user_id = %self.user_id,
+                                        actor = %self.username,
                                         room_id = %self.room_id,
                                         reason,
                                         "Real-time access is no longer valid (detected after disconnect signal lag), disconnecting"
@@ -1466,9 +1474,9 @@ impl StreamMessageHandler {
                             let cache_key = (self.room_id, *user_id);
                             self.membership_cache.invalidate(&cache_key);
 
-                            if *user_id == self.user_id {
+                            if self.principal.user_id() == Some(*user_id) {
                                 tracing::info!(
-                                    user_id = %self.user_id,
+                                    actor = %self.username,
                                     reason = %reason,
                                     "Received cross-replica KickUser event, disconnecting"
                                 );
@@ -1490,9 +1498,9 @@ impl StreamMessageHandler {
                             let cache_key = (*room_id, *user_id);
                             self.membership_cache.invalidate(&cache_key);
 
-                            if *user_id == self.user_id && *room_id == self.room_id {
+                            if self.principal.user_id() == Some(*user_id) && *room_id == self.room_id {
                                 tracing::info!(
-                                    user_id = %self.user_id,
+                                    actor = %self.username,
                                     room_id = %self.room_id,
                                     reason = %reason,
                                     "Received cross-replica KickUserFromRoom event, disconnecting"
@@ -1510,9 +1518,9 @@ impl StreamMessageHandler {
                             }
                         }
                         Ok(RealtimeEvent::UserLeft { ref user_id, ref room_id, .. }) => {
-                            if *user_id == self.user_id && *room_id == self.room_id {
+                            if self.principal.user_id() == Some(*user_id) && *room_id == self.room_id {
                                 tracing::info!(
-                                    user_id = %self.user_id,
+                                    actor = %self.username,
                                     room_id = %self.room_id,
                                     "Received cross-replica UserLeft event, disconnecting"
                                 );
@@ -1563,7 +1571,7 @@ impl StreamMessageHandler {
                         }
                         Ok(RealtimeEvent::UserNotification { ref user_id, ref title, ref content, ref notification_type, ref data, ref notification_id, timestamp, .. }) => {
                             // Uses the dedicated Notification variant (not ErrorMessage abuse).
-                            if *user_id == self.user_id {
+                            if self.principal.user_id() == Some(*user_id) {
                                 let msg = user_notification_server_message(
                                     notification_id.clone(),
                                     *notification_type,
@@ -1595,7 +1603,7 @@ impl StreamMessageHandler {
                             self.resource_observer.handle_provider_credential_changed_admin_event(
                                 event_id,
                                 user_id,
-                                provider,
+                                *provider,
                                 server_id,
                             )
                             .await;
@@ -1611,19 +1619,15 @@ impl StreamMessageHandler {
                             // Re-subscribe to get a fresh receiver so future events are not lost.
                             tracing::warn!(
                                 lagged = n,
-                                user_id = %self.user_id,
+                                actor = %self.username,
                                 "Admin event channel lagged, re-subscribing and verifying membership"
                             );
                             admin_rx = self.event_service.subscribe_admin_events();
 
-                            match self
-                                .membership_probe()
-                                .realtime_membership_denial_reason(&self.room_id, &self.user_id)
-                                .await
-                            {
+                            match self.realtime_access_denial_reason().await {
                                 Ok(Some(reason)) => {
                                     tracing::info!(
-                                        user_id = %self.user_id,
+                                        actor = %self.username,
                                         room_id = %self.room_id,
                                         reason,
                                         "Real-time access is no longer valid (detected after admin event lag), disconnecting"
@@ -1664,7 +1668,7 @@ impl StreamMessageHandler {
                     match result {
                         Ok(event) => {
                             // Only push if this notification targets the connected user
-                            if event.user_id == self.user_id {
+                            if self.principal.user_id() == Some(event.user_id) {
                                 let msg = ServerMessage {
                                     message: Some(synctv_proto::client::server_message::Message::Notification(
                                         synctv_proto::client::UserNotification {
@@ -1690,7 +1694,7 @@ impl StreamMessageHandler {
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                             tracing::warn!(
                                 lagged = n,
-                                user_id = %self.user_id,
+                                actor = %self.username,
                                 "Notification event channel lagged, re-subscribing"
                             );
                             notification_rx = self
@@ -1729,7 +1733,7 @@ impl StreamMessageHandler {
                             Ok(Some(reason)) => {
                                 tracing::info!(
                                     room_id = %self.room_id,
-                                    user_id = %self.user_id,
+                                    actor = %self.username,
                                     reason,
                                     "Periodic check: guest access is no longer valid, disconnecting"
                                 );
@@ -1744,7 +1748,7 @@ impl StreamMessageHandler {
                             Err(error) => {
                                 tracing::warn!(
                                     error = %error,
-                                    user_id = %self.user_id,
+                                    actor = %self.username,
                                     "Periodic guest access check failed (will retry)"
                                 );
                                 continue;
@@ -1753,11 +1757,14 @@ impl StreamMessageHandler {
                     }
 
                     // Check membership cache first to avoid unnecessary DB queries.
-                    let cache_key = (self.room_id, self.user_id);
+                    let Some(user_id) = self.principal.user_id() else {
+                        continue;
+                    };
+                    let cache_key = (self.room_id, user_id);
                     if let Some(cached) = self.membership_cache.get(&cache_key) {
                         if !cached.is_member {
                             tracing::info!(
-                                user_id = %self.user_id,
+                                actor = %self.username,
                                 room_id = %self.room_id,
                                 "Periodic check (cached): user is no longer a member, disconnecting"
                             );
@@ -1777,7 +1784,7 @@ impl StreamMessageHandler {
                     // Cache miss: query database and populate cache.
                     match self
                         .membership_probe()
-                        .probe_realtime_membership_access(&self.room_id, &self.user_id)
+                        .probe_realtime_membership_access(&self.room_id, &user_id)
                         .await
                     {
                         Ok(RealtimeMembershipAccess::Allowed(member)) => {
@@ -1788,7 +1795,7 @@ impl StreamMessageHandler {
                             let cached = CachedMembership::from_member(None);
                             self.membership_cache.insert(cache_key, cached);
                             tracing::info!(
-                                user_id = %self.user_id,
+                                actor = %self.username,
                                 room_id = %self.room_id,
                                 reason,
                                 "Periodic check: real-time access is no longer valid, disconnecting"
@@ -1808,7 +1815,7 @@ impl StreamMessageHandler {
                             // Don't cache the error -- next tick will retry.
                             tracing::warn!(
                                 error = %e,
-                                user_id = %self.user_id,
+                                actor = %self.username,
                                 "Periodic membership check failed (will retry)"
                             );
                         }
@@ -1829,19 +1836,26 @@ impl StreamMessageHandler {
         member: Option<&synctv_core::models::RoomMember>,
         room_settings: Option<&synctv_core::models::RoomSettings>,
     ) {
+        let actor = match self.realtime_actor() {
+            Ok(actor) => actor,
+            Err(error) => {
+                tracing::error!(
+                    room_id = %self.room_id,
+                    error = %error,
+                    "Skipping joined broadcast because actor encoding failed"
+                );
+                return;
+            }
+        };
         match self
             .presence_service
-            .user_has_other_connection_in_room(
-                self.user_id,
-                self.room_id,
-                self.connection_id.as_str(),
-            )
+            .actor_has_other_connection_in_room(&actor, self.room_id, self.connection_id.as_str())
             .await
         {
             Ok(true) => {
                 tracing::debug!(
                     room_id = %self.room_id,
-                    user_id = %self.user_id,
+                    actor = %self.username,
                     connection_id = %self.connection_id,
                     "Skipping UserJoined broadcast because the user is already present in the room on another connection"
                 );
@@ -1851,7 +1865,7 @@ impl StreamMessageHandler {
                 tracing::warn!(
                     error = %error,
                     room_id = %self.room_id,
-                    user_id = %self.user_id,
+                    actor = %self.username,
                     connection_id = %self.connection_id,
                     "Distributed same-user presence lookup failed during join; continuing with UserJoined broadcast to avoid missing online signal"
                 );
@@ -1860,7 +1874,7 @@ impl StreamMessageHandler {
         }
 
         let (
-            role_proto,
+            role,
             permissions,
             added_permissions,
             removed_permissions,
@@ -1868,7 +1882,7 @@ impl StreamMessageHandler {
             admin_removed_permissions,
         ) = if let Some(identity) = self.principal.guest_identity() {
             (
-                synctv_proto::common::RoomMemberRole::Guest as i32,
+                synctv_core::models::RoomRole::Guest,
                 identity.permissions,
                 synctv_core::models::RoomPermissionSet(0),
                 synctv_core::models::RoomPermissionSet(0),
@@ -1881,7 +1895,7 @@ impl StreamMessageHandler {
                     let Some(settings) = room_settings else {
                         tracing::error!(
                             room_id = %self.room_id,
-                            user_id = %self.user_id,
+                            actor = %self.username,
                             connection_id = %self.connection_id,
                             "Skipping UserJoined broadcast because room settings are missing"
                         );
@@ -1891,9 +1905,8 @@ impl StreamMessageHandler {
                         .room_service
                         .permission_service()
                         .effective_member_permissions(member, settings);
-                    let role = room_role_to_proto(member.role);
                     (
-                        role,
+                        member.role,
                         effective,
                         synctv_core::models::RoomPermissionSet(member.added_permissions),
                         synctv_core::models::RoomPermissionSet(member.removed_permissions),
@@ -1904,7 +1917,7 @@ impl StreamMessageHandler {
                 None => {
                     // Fallback: if we can't fetch membership, use Member defaults
                     (
-                        synctv_proto::common::RoomMemberRole::Member as i32,
+                        synctv_core::models::RoomRole::Member,
                         synctv_core::models::RoomPermissionSet::default_member(),
                         synctv_core::models::RoomPermissionSet(0),
                         synctv_core::models::RoomPermissionSet(0),
@@ -1915,52 +1928,39 @@ impl StreamMessageHandler {
             }
         };
 
-        let event = if self.principal.is_guest() {
-            let guest_id = match self.public_actor_id() {
-                Ok(actor_id) => actor_id,
-                Err(error) => {
-                    tracing::error!(
-                        room_id = %self.room_id,
-                        user_id = %self.user_id,
-                        error = %error,
-                        "Skipping GuestJoined broadcast because actor public id encoding failed"
-                    );
-                    return;
-                }
-            };
-            RealtimeEvent::GuestJoined {
+        let event = match actor {
+            synctv_core::models::RealtimeActor::Guest { guest_id } => RealtimeEvent::GuestJoined {
                 event_id: synctv_common::snanoid!(16),
                 room_id: self.room_id,
                 guest_id,
                 username: self.username.clone(),
                 permissions,
-                role: role_proto,
+                role,
                 joined_at: self.clock.now(),
                 timestamp: self.clock.now(),
-            }
-        } else {
-            RealtimeEvent::UserJoined {
+            },
+            synctv_core::models::RealtimeActor::User { user_id, .. } => RealtimeEvent::UserJoined {
                 event_id: synctv_common::snanoid!(16),
                 room_id: self.room_id,
-                user_id: self.user_id,
+                user_id,
                 username: self.username.clone(),
                 remark_name: String::new(),
                 display_tag: String::new(),
                 permissions,
-                role: role_proto,
+                role,
                 added_permissions,
                 removed_permissions,
                 admin_added_permissions,
                 admin_removed_permissions,
                 joined_at: self.clock.now(),
                 timestamp: self.clock.now(),
-            }
+            },
         };
         let outcome = self.event_service.broadcast_outcome(event);
         if outcome.distributed_delivery_missed() {
             tracing::warn!(
                 room_id = %self.room_id,
-                user_id = %self.user_id,
+                actor = %self.username,
                 "UserJoined broadcast missed the distributed fan-out path (non-critical: join is local-only)"
             );
         }
@@ -1970,6 +1970,17 @@ impl StreamMessageHandler {
     async fn cleanup(&self, room_id: &str) {
         self.resource_observer.clear_observations().await;
         self.leave_all_media_swarms().await;
+        let actor = match self.realtime_actor() {
+            Ok(actor) => actor,
+            Err(error) => {
+                tracing::error!(error = %error, "Realtime actor encoding failed during cleanup");
+                self.connection_service
+                    .unregister(self.connection_id.as_str())
+                    .await;
+                self.event_service.unsubscribe(self.connection_id.as_str());
+                return;
+            }
+        };
 
         // If this connection had an active WebRTC session, decrement the metric
         // and broadcast WebRTCVoicePeerLeft so other peers can clean up.
@@ -1992,7 +2003,7 @@ impl StreamMessageHandler {
         {
             let should_publish_leave = match self
                 .connection_service
-                .leave_voice_rtc(&self.room_id, &self.user_id, self.connection_id.as_str())
+                .leave_voice_rtc(&self.room_id, &actor, self.connection_id.as_str())
                 .await
             {
                 Ok(left) => left,
@@ -2001,7 +2012,7 @@ impl StreamMessageHandler {
                     // remains set after a distributed metadata synchronization failure.
                     tracing::warn!(
                         room_id = %self.room_id,
-                        user_id = %self.user_id,
+                        actor = %self.username,
                         connection_id = %self.connection_id,
                         error = %error,
                         "Voice chat leave cleanup failed; unregister will continue cleanup"
@@ -2030,7 +2041,7 @@ impl StreamMessageHandler {
                     Err(error) => {
                         tracing::error!(
                             room_id = %self.room_id,
-                            user_id = %self.user_id,
+                            actor = %self.username,
                             connection_id = %self.connection_id,
                             error = %error,
                             "Skipping WebRTC leave broadcast because actor public id encoding failed"
@@ -2078,7 +2089,7 @@ impl StreamMessageHandler {
 
         let has_other_local_connection = self
             .connection_service
-            .get_user_connections(&self.user_id)
+            .get_actor_connections(&actor)
             .into_iter()
             .any(|conn| {
                 conn.connection_id != self.connection_id.as_str()
@@ -2090,11 +2101,7 @@ impl StreamMessageHandler {
 
         let should_broadcast_left = match self
             .presence_service
-            .user_has_other_connection_in_room(
-                self.user_id,
-                self.room_id,
-                self.connection_id.as_str(),
-            )
+            .actor_has_other_connection_in_room(&actor, self.room_id, self.connection_id.as_str())
             .await
         {
             Ok(has_other_connection) => {
@@ -2117,43 +2124,30 @@ impl StreamMessageHandler {
         // while this connection is still registered, they see a consistent view.
         // Previously, unregistering first could leave the hub with a stale subscriber
         // if the broadcast was delayed or had no receivers.
-        let event = if self.principal.is_guest() {
-            let guest_id = match self.public_actor_id() {
-                Ok(actor_id) => actor_id,
-                Err(error) => {
-                    tracing::error!(
-                        room_id = %self.room_id,
-                        user_id = %self.user_id,
-                        error = %error,
-                        "Skipping GuestLeft broadcast because actor public id encoding failed"
-                    );
-                    self.connection_service
-                        .unregister(self.connection_id.as_str())
-                        .await;
-                    self.event_service.unsubscribe(self.connection_id.as_str());
-                    return;
-                }
-            };
-            RealtimeEvent::GuestLeft {
+        let event = match actor {
+            synctv_core::models::RealtimeActor::Guest { guest_id } => RealtimeEvent::GuestLeft {
                 event_id: synctv_common::snanoid!(16),
                 room_id: self.room_id,
                 guest_id,
                 username: self.username.clone(),
                 timestamp: self.clock.now(),
-            }
-        } else {
-            let role = self
-                .current_room_role
-                .load(std::sync::atomic::Ordering::Relaxed);
-            RealtimeEvent::UserLeft {
-                event_id: synctv_common::snanoid!(16),
-                room_id: self.room_id,
-                user_id: self.user_id,
-                username: self.username.clone(),
-                remark_name: String::new(),
-                display_tag: String::new(),
-                role,
-                timestamp: self.clock.now(),
+            },
+            synctv_core::models::RealtimeActor::User { user_id, .. } => {
+                let role = self
+                    .current_room_role
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                let role = synctv_core::models::RoomRole::try_from(role)
+                    .expect("current room role must contain a valid role");
+                RealtimeEvent::UserLeft {
+                    event_id: synctv_common::snanoid!(16),
+                    room_id: self.room_id,
+                    user_id,
+                    username: self.username.clone(),
+                    remark_name: String::new(),
+                    display_tag: String::new(),
+                    role,
+                    timestamp: self.clock.now(),
+                }
             }
         };
         let result = if should_broadcast_left {
@@ -2216,12 +2210,9 @@ impl StreamMessageHandler {
         String,
     > {
         // Register connection with connection manager
+        let actor = self.realtime_actor()?;
         self.connection_service
-            .register_actor(
-                self.connection_id.clone().into_string(),
-                self.user_id,
-                self.public_actor_id()?,
-            )
+            .register_actor(self.connection_id.clone().into_string(), actor)
             .await?;
 
         self.pre_join_after_registration()
@@ -2461,15 +2452,13 @@ impl StreamMessageHandler {
             let mut admin_rx = self.event_service.subscribe_admin_events();
             let disconnect_token = cancel_token.clone();
             let connection_id = self.connection_id.as_str().to_string();
-            let user_id = self.user_id;
+            let user_id = self.principal.user_id();
             let room_id = self.room_id;
-            let room_service = Arc::clone(&self.room_service);
             let event_service = Arc::clone(&self.event_service);
             let connection_service = self.connection_service.clone();
             let admin_sender = self.sender.clone();
             let admin_handler = self.clone();
             let skip_cleanup_user_left = Arc::clone(&self.skip_cleanup_user_left);
-            let is_guest = self.principal.is_guest();
 
             spawn_monitored("messaging_disconnect_monitor", async move {
                 loop {
@@ -2484,7 +2473,7 @@ impl StreamMessageHandler {
                                         RealtimeTerminationCode::ConnectionRevoked,
                                     )),
                                 Ok(synctv_realtime::sync::DisconnectSignal::User(uid))
-                                    if *uid == user_id => Some(realtime_termination_server_message(
+                                    if user_id == Some(*uid) => Some(realtime_termination_server_message(
                                         "Your account access has been revoked",
                                         RealtimeTerminationCode::UserAccessRevoked,
                                     )),
@@ -2495,7 +2484,7 @@ impl StreamMessageHandler {
                                     Some(room_disconnect_termination_server_message(*reason))
                                 }
                                 Ok(synctv_realtime::sync::DisconnectSignal::UserFromRoom { user_id: uid, room_id: rid })
-                                    if *uid == user_id && *rid == room_id => Some(realtime_termination_server_message(
+                                    if user_id == Some(*uid) && *rid == room_id => Some(realtime_termination_server_message(
                                         "Your room membership has ended",
                                         RealtimeTerminationCode::RoomMembershipRevoked,
                                     )),
@@ -2507,18 +2496,15 @@ impl StreamMessageHandler {
                             if let Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) = signal {
                                 tracing::warn!(
                                     lagged = n,
-                                    user_id = %user_id,
+                                    ?user_id,
                                     "Disconnect signal channel lagged in start(), re-subscribing and verifying"
                                 );
                                 disconnect_rx = connection_service.subscribe_disconnect();
-                                if !is_guest {
-                                    match RealtimeMembershipProbe::new(&room_service)
-                                        .realtime_membership_denial_reason(&room_id, &user_id)
-                                        .await
-                                    {
+                                {
+                                    match admin_handler.realtime_access_denial_reason().await {
                                         Ok(Some(reason)) => {
                                             tracing::info!(
-                                                user_id = %user_id,
+                                                ?user_id,
                                                 room_id = %room_id,
                                                 reason,
                                                 "start() real-time access is no longer valid after disconnect signal lag"
@@ -2539,7 +2525,7 @@ impl StreamMessageHandler {
                                         Err(error) => {
                                             tracing::warn!(
                                                 error = %error,
-                                                user_id = %user_id,
+                                                ?user_id,
                                                 room_id = %room_id,
                                                 "start() failed to verify membership after disconnect signal lag"
                                             );
@@ -2548,7 +2534,7 @@ impl StreamMessageHandler {
                                 }
                             } else if should_disconnect {
                                 if let Ok(signal) = &signal {
-                                    if disconnect_signal_requires_skip_cleanup(signal, &user_id, &room_id, &connection_id) {
+                                    if disconnect_signal_requires_skip_cleanup(signal, user_id, &room_id, &connection_id) {
                                         skip_cleanup_user_left.store(true, std::sync::atomic::Ordering::Relaxed);
                                     }
                                 }
@@ -2569,7 +2555,7 @@ impl StreamMessageHandler {
                         admin_event = admin_rx.recv() => {
                             // Uses the dedicated Notification variant (not ErrorMessage abuse).
                             if let Ok(RealtimeEvent::UserNotification { user_id: uid, title, content, notification_type, data, notification_id, timestamp, .. }) = &admin_event {
-                                if *uid == user_id {
+                                if user_id == Some(*uid) {
                                     let msg = user_notification_server_message(
                                         notification_id.clone(),
                                         *notification_type,
@@ -2611,7 +2597,7 @@ impl StreamMessageHandler {
                                     .handle_provider_credential_changed_admin_event(
                                         event_id,
                                         changed_user_id,
-                                        provider,
+                                        *provider,
                                         server_id,
                                     )
                                     .await;
@@ -2627,17 +2613,17 @@ impl StreamMessageHandler {
                             }
                             let termination = match &admin_event {
                                 Ok(RealtimeEvent::KickUser { user_id: uid, .. })
-                                    if *uid == user_id => Some(realtime_termination_server_message(
+                                    if user_id == Some(*uid) => Some(realtime_termination_server_message(
                                         "Your account access has been revoked",
                                         RealtimeTerminationCode::UserAccessRevoked,
                                     )),
                                 Ok(RealtimeEvent::KickUserFromRoom { user_id: uid, room_id: rid, .. })
-                                    if *uid == user_id && *rid == room_id => Some(realtime_termination_server_message(
+                                    if user_id == Some(*uid) && *rid == room_id => Some(realtime_termination_server_message(
                                         "Your room membership has ended",
                                         RealtimeTerminationCode::RoomMembershipRevoked,
                                     )),
                                 Ok(RealtimeEvent::UserLeft { user_id: uid, room_id: rid, .. })
-                                    if *uid == user_id && *rid == room_id => Some(realtime_termination_server_message(
+                                    if user_id == Some(*uid) && *rid == room_id => Some(realtime_termination_server_message(
                                         "Your room membership has ended",
                                         RealtimeTerminationCode::RoomMembershipRevoked,
                                     )),
@@ -2649,18 +2635,15 @@ impl StreamMessageHandler {
                             if let Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) = admin_event {
                                 tracing::warn!(
                                     lagged = n,
-                                    user_id = %user_id,
+                                    ?user_id,
                                     "Admin event channel lagged in start(), re-subscribing and verifying"
                                 );
                                 admin_rx = event_service.subscribe_admin_events();
-                                if !is_guest {
-                                    match RealtimeMembershipProbe::new(&room_service)
-                                        .realtime_membership_denial_reason(&room_id, &user_id)
-                                        .await
-                                    {
+                                {
+                                    match admin_handler.realtime_access_denial_reason().await {
                                         Ok(Some(reason)) => {
                                             tracing::info!(
-                                                user_id = %user_id,
+                                                ?user_id,
                                                 room_id = %room_id,
                                                 reason,
                                                 "start() real-time access is no longer valid after admin event lag"
@@ -2681,7 +2664,7 @@ impl StreamMessageHandler {
                                         Err(error) => {
                                             tracing::warn!(
                                                 error = %error,
-                                                user_id = %user_id,
+                                                ?user_id,
                                                 room_id = %room_id,
                                                 "start() failed to verify membership after admin event lag"
                                             );
@@ -2690,7 +2673,7 @@ impl StreamMessageHandler {
                                 }
                             } else if should_disconnect {
                                 if let Ok(event) = &admin_event {
-                                    if admin_event_requires_skip_cleanup(event, &user_id, &room_id) {
+                                    if admin_event_requires_skip_cleanup(event, user_id, &room_id) {
                                         skip_cleanup_user_left.store(true, std::sync::atomic::Ordering::Relaxed);
                                     }
                                 }
@@ -2720,16 +2703,15 @@ impl StreamMessageHandler {
         {
             let heartbeat_token = cancel_token.clone();
             let heartbeat_room_id = self.room_id;
-            let heartbeat_user_id = self.user_id;
-            let heartbeat_room_service = Arc::clone(&self.room_service);
+            let heartbeat_actor = self.realtime_actor()?;
             let heartbeat_sender = Arc::clone(&self.sender);
             let heartbeat_schedule = self.heartbeat_schedule;
             let skip_cleanup_user_left = Arc::clone(&self.skip_cleanup_user_left);
             let heartbeat_handler = self.clone();
             spawn_monitored("messaging_heartbeat", async move {
-                // Derive jitter from the user_id bytes so each connection gets a
+                // Derive jitter from the typed actor key so each connection gets a
                 // stable-but-different offset within the 25–35 s window.
-                let period = heartbeat_schedule.period_for_user(&heartbeat_user_id);
+                let period = heartbeat_schedule.period_for_actor(&heartbeat_actor);
                 let mut interval = tokio::time::interval(period);
                 interval.tick().await; // Skip the immediate first tick
                 loop {
@@ -2748,62 +2730,34 @@ impl StreamMessageHandler {
                                 break;
                             }
 
-                            if heartbeat_handler.principal.is_guest() {
-                                match heartbeat_handler.guest_admission_denial_reason().await {
-                                    Ok(Some(reason)) => {
-                                        tracing::info!(
-                                            user_id = %heartbeat_user_id,
-                                            room_id = %heartbeat_room_id,
-                                            reason,
-                                            "start() periodic check: guest access is no longer valid, disconnecting"
-                                        );
-                                        if let Err(error) = heartbeat_handler.send_server_message(
-                                            realtime_termination_server_message(
-                                                "Guest access to this room has ended",
-                                                RealtimeTerminationCode::GuestAccessRevoked,
-                                            ),
-                                        ) {
-                                            tracing::debug!(error = %error, "Failed to send realtime termination after guest access check");
-                                        }
-                                        heartbeat_token.cancel();
-                                        break;
-                                    }
-                                    Ok(None) => continue,
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            error = %e,
-                                            user_id = %heartbeat_user_id,
-                                            "start() periodic guest access check failed (will retry)"
-                                        );
-                                        continue;
-                                    }
-                                }
-                            }
-
-                            match RealtimeMembershipProbe::new(&heartbeat_room_service)
-                                .realtime_membership_denial_reason(
-                                    &heartbeat_room_id,
-                                    &heartbeat_user_id,
-                                )
-                                .await
-                            {
+                            match heartbeat_handler.realtime_access_denial_reason().await {
                                 Ok(Some(reason)) => {
                                     tracing::info!(
-                                        user_id = %heartbeat_user_id,
+                                        actor = %heartbeat_actor,
                                         room_id = %heartbeat_room_id,
                                         reason,
                                         "start() periodic check: real-time access is no longer valid, disconnecting"
                                     );
-                                    if let Err(error) = heartbeat_handler.send_server_message(
-                                        realtime_termination_server_message(
+                                    let (message, code) = if heartbeat_actor.is_guest() {
+                                        (
+                                            "Guest access to this room has ended",
+                                            RealtimeTerminationCode::GuestAccessRevoked,
+                                        )
+                                    } else {
+                                        (
                                             "Your room membership has ended",
                                             RealtimeTerminationCode::RoomMembershipRevoked,
-                                        ),
+                                        )
+                                    };
+                                    if let Err(error) = heartbeat_handler.send_server_message(
+                                        realtime_termination_server_message(message, code),
                                     ) {
-                                        tracing::debug!(error = %error, "Failed to send realtime termination after membership check");
+                                        tracing::debug!(error = %error, "Failed to send realtime termination after access check");
                                     }
-                                    skip_cleanup_user_left
-                                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                                    if !heartbeat_actor.is_guest() {
+                                        skip_cleanup_user_left
+                                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                                    }
                                     heartbeat_token.cancel();
                                     break;
                                 }
@@ -2811,8 +2765,8 @@ impl StreamMessageHandler {
                                 Err(e) => {
                                     tracing::warn!(
                                         error = %e,
-                                        user_id = %heartbeat_user_id,
-                                        "start() periodic membership check failed (will retry)"
+                                        actor = %heartbeat_actor,
+                                        "start() periodic access check failed (will retry)"
                                     );
                                 }
                             }
@@ -2939,7 +2893,7 @@ impl StreamMessageHandler {
             .send_message_event_with_control_outcome(
                 SendChatMessage {
                     room_id: self.room_id,
-                    user_id: self.user_id,
+                    user_id: self.require_user_id()?,
                     client_message_id: (!chat_msg.client_message_id.trim().is_empty())
                         .then(|| chat_msg.client_message_id.trim().to_string()),
                     content: chat_msg.content.clone(),
@@ -2999,10 +2953,10 @@ impl StreamMessageHandler {
         &self.room_id
     }
 
-    /// Get user ID
+    /// Get the signed-in user ID for user principals.
     #[must_use]
-    pub fn get_user_id(&self) -> UserId {
-        self.user_id
+    pub const fn get_user_id(&self) -> Option<UserId> {
+        self.principal.user_id()
     }
 }
 
@@ -3028,9 +2982,11 @@ impl StreamMessageHandler {
             });
         }
 
+        let user_id = self.require_user_id()?;
+
         let member_lookup = self
             .membership_probe()
-            .probe_realtime_membership_access(&self.room_id, &self.user_id)
+            .probe_realtime_membership_access(&self.room_id, &user_id)
             .await;
 
         let member = match member_lookup {
@@ -3045,7 +3001,7 @@ impl StreamMessageHandler {
                 tracing::warn!(
                     error = %error,
                     room_id = %self.room_id,
-                    user_id = %self.user_id,
+                    actor = %self.username,
                     "Failed to fetch membership during initial real-time join"
                 );
                 self.skip_cleanup_user_left
@@ -3063,7 +3019,7 @@ impl StreamMessageHandler {
                 tracing::warn!(
                     error = %error,
                     room_id = %self.room_id,
-                    user_id = %self.user_id,
+                    actor = %self.username,
                     "Failed to fetch room settings during initial real-time join"
                 );
                 error.to_string()

@@ -88,7 +88,9 @@ pub struct ProviderFnosItemsArgs {
     #[arg(long, value_enum)]
     pub collection: ProviderFnosCollection,
     #[arg(long)]
-    pub ancestor_guid: Option<String>,
+    pub library_guid: Option<String>,
+    #[arg(long)]
+    pub parent_guid: Option<String>,
     #[arg(long, default_value_t = 1)]
     pub page: u32,
     #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(u32).range(1..=200))]

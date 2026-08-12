@@ -3,7 +3,7 @@ use sqlx::{PgExecutor, PgPool};
 
 use crate::models::{
     OAuth2Provider, ReviewRequestId, ReviewStatus, RoomCategory, RoomCategoryId, RoomId, RoomLabel,
-    RoomLabelId, SignupMethod, UserId,
+    RoomLabelId, RoomRole, SignupMethod, UserId,
 };
 use crate::repository::pools::RepoPools;
 use crate::repository::query_builder::ilike_contains_pattern;
@@ -94,12 +94,50 @@ pub struct RoomJoinReviewRecord {
     pub room_name: String,
     pub user_id: UserId,
     pub username: String,
-    pub requested_role: i32,
+    pub requested_role: RoomRole,
     pub status: ReviewStatus,
     pub requested_at: DateTime<Utc>,
     pub reviewed_at: Option<DateTime<Utc>>,
     pub reviewed_by: Option<UserId>,
     pub rejection_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct RoomJoinReviewDatabaseRecord {
+    id: ReviewRequestId,
+    room_id: RoomId,
+    room_name: String,
+    user_id: UserId,
+    username: String,
+    requested_role: i32,
+    status: ReviewStatus,
+    requested_at: DateTime<Utc>,
+    reviewed_at: Option<DateTime<Utc>>,
+    reviewed_by: Option<UserId>,
+    rejection_reason: Option<String>,
+}
+
+impl TryFrom<RoomJoinReviewDatabaseRecord> for RoomJoinReviewRecord {
+    type Error = crate::Error;
+
+    fn try_from(row: RoomJoinReviewDatabaseRecord) -> Result<Self> {
+        let requested_role = RoomRole::try_from(row.requested_role).map_err(|error| {
+            crate::Error::Internal(format!("Invalid room join review role: {error}"))
+        })?;
+        Ok(Self {
+            id: row.id,
+            room_id: row.room_id,
+            room_name: row.room_name,
+            user_id: row.user_id,
+            username: row.username,
+            requested_role,
+            status: row.status,
+            requested_at: row.requested_at,
+            reviewed_at: row.reviewed_at,
+            reviewed_by: row.reviewed_by,
+            rejection_reason: row.rejection_reason,
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -633,8 +671,8 @@ impl ReviewRepository {
         &self,
         request_id: ReviewRequestId,
     ) -> Result<Option<RoomJoinReviewRecord>> {
-        sqlx::query_as!(
-            RoomJoinReviewRecord,
+        let row = sqlx::query_as!(
+            RoomJoinReviewDatabaseRecord,
             r#"
             SELECT rjr.id AS "id!: ReviewRequestId",
                    rjr.room_id AS "room_id!: RoomId",
@@ -655,8 +693,8 @@ impl ReviewRepository {
             request_id.as_i64()
         )
         .fetch_optional(self.pools.primary())
-        .await
-        .map_err(Into::into)
+        .await?;
+        row.map(RoomJoinReviewRecord::try_from).transpose()
     }
 
     pub async fn load_room_join_in_room(
@@ -664,8 +702,8 @@ impl ReviewRepository {
         request_id: ReviewRequestId,
         room_id: RoomId,
     ) -> Result<Option<RoomJoinReviewRecord>> {
-        sqlx::query_as!(
-            RoomJoinReviewRecord,
+        let row = sqlx::query_as!(
+            RoomJoinReviewDatabaseRecord,
             r#"
             SELECT rjr.id AS "id!: ReviewRequestId",
                    rjr.room_id AS "room_id!: RoomId",
@@ -687,8 +725,8 @@ impl ReviewRepository {
             room_id.as_i64()
         )
         .fetch_optional(self.pools.primary())
-        .await
-        .map_err(Into::into)
+        .await?;
+        row.map(RoomJoinReviewRecord::try_from).transpose()
     }
 
     pub async fn load_room_join_target(
@@ -840,7 +878,7 @@ impl ReviewRepository {
         let total = required_count(total_count, "room join review total")?;
 
         let rows = sqlx::query_as!(
-            RoomJoinReviewRecord,
+            RoomJoinReviewDatabaseRecord,
             r#"
             SELECT rjr.id AS "id: ReviewRequestId",
                    rjr.room_id AS "room_id: RoomId",
@@ -872,6 +910,10 @@ impl ReviewRepository {
         )
         .fetch_all(pool)
         .await?;
+        let rows = rows
+            .into_iter()
+            .map(RoomJoinReviewRecord::try_from)
+            .collect::<Result<Vec<_>>>()?;
 
         Ok(ReviewPage { rows, total })
     }

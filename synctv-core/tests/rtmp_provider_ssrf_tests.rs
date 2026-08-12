@@ -6,10 +6,12 @@ use synctv_core::provider::{
 };
 
 fn create_context() -> ProviderContext<'static> {
-    ProviderContext::new("synctv")
-        .with_user_id(UserId::expect_positive(1))
-        .with_room_id(RoomId::expect_positive(10))
-        .with_media_id(MediaId::expect_positive(100))
+    ProviderContext::new(
+        "synctv",
+        synctv_core::provider::ProviderActor::User(UserId::expect_positive(1)),
+    )
+    .with_room_id(RoomId::expect_positive(10))
+    .with_media_id(MediaId::expect_positive(100))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]

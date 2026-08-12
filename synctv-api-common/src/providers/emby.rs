@@ -128,7 +128,7 @@ impl EmbyApiImpl {
         publish_provider_credential_changed(
             &self.event_service,
             *caller_user_id,
-            synctv_core::provider::EmbyProvider::NAME,
+            synctv_core::models::SourceProvider::Emby,
             &persisted.server_id,
         );
 
@@ -282,7 +282,7 @@ impl EmbyApiImpl {
             publish_provider_credential_changed(
                 &self.event_service,
                 *caller_user_id,
-                synctv_core::provider::EmbyProvider::NAME,
+                synctv_core::models::SourceProvider::Emby,
                 &req.server_id,
             );
         }

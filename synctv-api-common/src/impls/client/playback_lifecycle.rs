@@ -38,8 +38,7 @@ pub trait ProviderPlaybackLifecycleApi: Send + Sync {
         &'a self,
         session: &'a ProviderPlaybackSessionRecord,
     ) -> ProviderContext<'a> {
-        let mut ctx = ProviderContext::new("synctv")
-            .with_user_id(session.credential_owner_id)
+        let mut ctx = ProviderContext::new("synctv", synctv_core::provider::ProviderActor::System)
             .with_credential_owner_id(session.credential_owner_id)
             .with_room_id(session.room_id)
             .with_playback_generation(session.playback_generation)

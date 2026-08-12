@@ -127,6 +127,7 @@ pub enum FnosTargetKind {
     MediaItem {
         item_guid: String,
         media_guid: Option<String>,
+        library_guid: Option<String>,
     },
 }
 
@@ -242,11 +243,16 @@ impl ProviderTarget {
     }
 
     #[must_use]
-    pub fn fnos_media(item_guid: String, media_guid: Option<String>) -> Self {
+    pub fn fnos_media(
+        item_guid: String,
+        media_guid: Option<String>,
+        library_guid: Option<String>,
+    ) -> Self {
         Self::Fnos(FnosTarget {
             target: FnosTargetKind::MediaItem {
                 item_guid,
                 media_guid,
+                library_guid,
             },
         })
     }
@@ -411,10 +417,12 @@ impl ProviderTarget {
                     FnosTargetKind::MediaItem {
                         item_guid,
                         media_guid,
+                        library_guid,
                     } => {
                         bytes.push(2);
                         push_field(&mut bytes, item_guid)?;
                         push_field(&mut bytes, media_guid.as_deref().unwrap_or_default())?;
+                        push_field(&mut bytes, library_guid.as_deref().unwrap_or_default())?;
                     }
                 }
             }

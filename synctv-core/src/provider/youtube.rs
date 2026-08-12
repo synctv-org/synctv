@@ -12,7 +12,8 @@ use super::{
     DynamicListQuery, DynamicListResult, DynamicPagination, DynamicPlaylistItem,
     DynamicPlaylistItemSourceConfig, DynamicPlaylistItemThumbnail, DynamicPlaylistProvider,
     ItemType, MediaProvider, NextPlayItem, PlaybackInfo, PlaybackResult, ProviderContext,
-    ProviderCredentialDependency, ProviderError, SourceConfig, SourceCover,
+    ProviderCredentialDependency, ProviderCredentialPolicy, ProviderError, SourceConfig,
+    SourceCover,
 };
 use crate::models::{
     MediaSourceConfig, PlayMode, PlaybackMedia, PlaybackMediaMetadata, PlaybackMediaProvider,
@@ -111,22 +112,18 @@ impl YoutubeProvider {
     async fn session(
         &self,
         ctx: &ProviderContext<'_>,
-        shared: bool,
+        credential_policy: ProviderCredentialPolicy,
     ) -> Result<YoutubeSession, ProviderError> {
         let Some(repo) = self.credential_repo_or(ctx.credential_repo) else {
             return Ok(YoutubeSession::default());
         };
-        let owner_id = if shared {
-            ctx.credential_owner_id()
-        } else {
-            ctx.user_id()
-        };
+        let owner_id = ctx.selected_credential_user_id(credential_policy);
         let Some(owner_id) = owner_id else {
             return Ok(YoutubeSession::default());
         };
         let server_id =
             Self::credential_server_id_for_instance(super::bound_provider_instance_name(ctx));
-        self.session_for_owner(repo, *owner_id, &server_id).await
+        self.session_for_owner(repo, owner_id, &server_id).await
     }
 
     async fn session_for_owner(
@@ -332,9 +329,13 @@ impl YoutubeProvider {
                 "YouTube cached playback resource is invalid".to_string(),
             ));
         };
-        let session = self
-            .stored_session(*credential_owner_id, provider_instance_name.as_deref())
-            .await?;
+        let session = match credential_owner_id {
+            Some(owner_id) => {
+                self.stored_session(*owner_id, provider_instance_name.as_deref())
+                    .await?
+            }
+            None => YoutubeSession::default(),
+        };
         let player = self
             .client
             .player(
@@ -393,9 +394,13 @@ impl YoutubeProvider {
                 "YouTube cached subtitle resource is invalid".to_string(),
             ));
         };
-        let session = self
-            .stored_session(*credential_owner_id, provider_instance_name.as_deref())
-            .await?;
+        let session = match credential_owner_id {
+            Some(owner_id) => {
+                self.stored_session(*owner_id, provider_instance_name.as_deref())
+                    .await?
+            }
+            None => YoutubeSession::default(),
+        };
         let player = self
             .client
             .player(
@@ -458,15 +463,23 @@ impl YoutubeProvider {
         }
     }
 
-    const fn playlist_shared(config: &YoutubePlaylistSourceConfig) -> bool {
-        match config {
+    const fn media_credential_policy(
+        config: &YoutubeMediaSourceConfig,
+    ) -> ProviderCredentialPolicy {
+        ProviderCredentialPolicy::from_shared(config.shared)
+    }
+
+    const fn playlist_credential_policy(
+        config: &YoutubePlaylistSourceConfig,
+    ) -> ProviderCredentialPolicy {
+        ProviderCredentialPolicy::from_shared(match config {
             YoutubePlaylistSourceConfig::Playlist { shared, .. }
             | YoutubePlaylistSourceConfig::Channel { shared, .. }
             | YoutubePlaylistSourceConfig::Search { shared, .. }
             | YoutubePlaylistSourceConfig::Subscriptions { shared }
             | YoutubePlaylistSourceConfig::LikedVideos { shared }
             | YoutubePlaylistSourceConfig::WatchLater { shared } => *shared,
-        }
+        })
     }
 
     const fn playlist_requires_cookie(config: &YoutubePlaylistSourceConfig) -> bool {
@@ -532,7 +545,10 @@ impl YoutubeProvider {
         })
     }
 
-    fn directory_item(item: YoutubeListItem, shared: bool) -> DynamicPlaylistItem {
+    fn directory_item(
+        item: YoutubeListItem,
+        credential_policy: ProviderCredentialPolicy,
+    ) -> DynamicPlaylistItem {
         let video_id = item.video_id.clone();
         let metadata = PlaybackMetadata::Youtube(YoutubePlaybackMetadata {
             video_id: video_id.clone(),
@@ -574,7 +590,10 @@ impl YoutubeProvider {
             .filter(|value| !value.is_empty()),
             modified_at: None,
             source_config: Some(DynamicPlaylistItemSourceConfig::Media(
-                MediaSourceConfig::Youtube(YoutubeMediaSourceConfig { video_id, shared }),
+                MediaSourceConfig::Youtube(YoutubeMediaSourceConfig {
+                    video_id,
+                    shared: credential_policy.uses_resource_owner(),
+                }),
             )),
             metadata: Some(metadata),
         }
@@ -600,7 +619,7 @@ impl YoutubeProvider {
             item_type: ItemType::Media,
             source_config: MediaSourceConfig::Youtube(YoutubeMediaSourceConfig {
                 video_id,
-                shared: Self::playlist_shared(base),
+                shared: Self::playlist_credential_policy(base).uses_resource_owner(),
             }),
             target: item.target.clone(),
         })
@@ -664,7 +683,7 @@ impl YoutubeProvider {
 
     fn playback_result(
         player: &YoutubePlayerResponse,
-        credential_owner_id: UserId,
+        credential_owner_id: Option<UserId>,
         provider_instance_name: Option<&str>,
     ) -> Result<PlaybackResult, ProviderError> {
         let details = player.video_details.as_ref().ok_or_else(|| {
@@ -774,7 +793,7 @@ impl YoutubeProvider {
         Ok(PlaybackResult {
             playback_infos,
             default_mode,
-            provider: Self::NAME.to_string(),
+            provider: crate::models::SourceProvider::Youtube,
             provider_instance_name: None,
             duration_seconds: details.length_seconds.parse::<f64>().ok(),
             playback_kind: Some(if details.is_live || details.is_live_content {
@@ -835,7 +854,7 @@ fn playback_resource_url(
 fn youtube_subtitles(
     player: &YoutubePlayerResponse,
     video_id: &str,
-    credential_owner_id: UserId,
+    credential_owner_id: Option<UserId>,
     provider_instance_name: Option<&str>,
     p2p_enabled: bool,
 ) -> Vec<PlaybackSubtitle> {
@@ -943,7 +962,7 @@ fn playback_info(
     thumbnail: Option<String>,
     subtitles: Vec<PlaybackSubtitle>,
     video_id: &str,
-    credential_owner_id: UserId,
+    credential_owner_id: Option<UserId>,
     provider_instance_name: Option<String>,
     p2p_enabled: bool,
 ) -> PlaybackInfo {
@@ -1059,7 +1078,9 @@ impl MediaProvider for YoutubeProvider {
             Duration::from_secs(30),
             ctx,
             || async {
-                let session = self.session(ctx, config.shared).await?;
+                let session = self
+                    .session(ctx, Self::media_credential_policy(config))
+                    .await?;
                 let player = self
                     .client
                     .player(
@@ -1086,19 +1107,19 @@ impl MediaProvider for YoutubeProvider {
             .map_err(|error| ProviderError::NetworkError(error.to_string()))?;
         let config = Self::media_config(source_config)?;
         let video_id = normalize_video_id(&config.video_id)?;
-        let owner_id = if config.shared {
-            *ctx.credential_owner_id().ok_or_else(|| {
-                ProviderError::Internal("YouTube credential owner is unavailable".to_string())
-            })?
-        } else {
-            *ctx.user_id().ok_or_else(|| {
-                ProviderError::Internal("YouTube viewer is unavailable".to_string())
-            })?
-        };
-        let session = self.session(ctx, config.shared).await?;
+        let credential_policy = Self::media_credential_policy(config);
+        let owner_id = ctx.selected_credential_user_id(credential_policy);
+        if credential_policy.uses_resource_owner() && owner_id.is_none() {
+            return Err(ProviderError::Internal(
+                "YouTube credential owner is unavailable".to_string(),
+            ));
+        }
+        let session = self.session(ctx, credential_policy).await?;
         let instance_name = super::bound_provider_instance_name(ctx).map(ToString::to_string);
         let server_id = Self::credential_server_id_for_instance(instance_name.as_deref());
-        let cache_key = format!("playback:{video_id}:{owner_id}:{server_id}");
+        let credential_partition =
+            owner_id.map_or_else(|| "anonymous".to_string(), |id| id.to_string());
+        let cache_key = format!("playback:{video_id}:{credential_partition}:{server_id}");
         Box::pin(super::cached_versioned_playback_or_fill(
             Self::NAME,
             &cache_key,
@@ -1129,7 +1150,9 @@ impl MediaProvider for YoutubeProvider {
         match source_config {
             SourceConfig::Media(source) => {
                 let config = Self::media_config(source)?;
-                let session = self.session(ctx, config.shared).await?;
+                let session = self
+                    .session(ctx, Self::media_credential_policy(config))
+                    .await?;
                 self.client
                     .player(
                         &config.video_id,
@@ -1141,7 +1164,9 @@ impl MediaProvider for YoutubeProvider {
             }
             SourceConfig::DynamicPlaylist(source) => {
                 let config = Self::playlist_config(source)?;
-                let session = self.session(ctx, Self::playlist_shared(config)).await?;
+                let session = self
+                    .session(ctx, Self::playlist_credential_policy(config))
+                    .await?;
                 self.list_page(config, None, &session).await?;
             }
         }
@@ -1153,23 +1178,20 @@ impl MediaProvider for YoutubeProvider {
         ctx: &ProviderContext<'_>,
         source_config: SourceConfig<'_>,
     ) -> Result<Vec<ProviderCredentialDependency>, ProviderError> {
-        let shared = match source_config {
-            SourceConfig::Media(source) => Self::media_config(source)?.shared,
+        let credential_policy = match source_config {
+            SourceConfig::Media(source) => {
+                Self::media_credential_policy(Self::media_config(source)?)
+            }
             SourceConfig::DynamicPlaylist(source) => {
-                Self::playlist_shared(Self::playlist_config(source)?)
+                Self::playlist_credential_policy(Self::playlist_config(source)?)
             }
         };
-        let owner_id = if shared {
-            ctx.credential_owner_id()
-        } else {
-            ctx.user_id()
-        }
-        .ok_or_else(|| {
-            ProviderError::Internal("YouTube credential owner is unavailable".to_string())
-        })?;
+        let Some(owner_id) = ctx.selected_credential_user_id(credential_policy) else {
+            return Ok(Vec::new());
+        };
         Ok(vec![ProviderCredentialDependency::optional(
-            Self::NAME,
-            owner_id.to_string(),
+            crate::models::SourceProvider::Youtube,
+            owner_id,
             Self::credential_server_id_for_instance(super::bound_provider_instance_name(ctx)),
         )])
     }
@@ -1182,7 +1204,9 @@ impl MediaProvider for YoutubeProvider {
         match source_config {
             SourceConfig::Media(source) => {
                 let config = Self::media_config(source)?;
-                let session = self.session(ctx, config.shared).await?;
+                let session = self
+                    .session(ctx, Self::media_credential_policy(config))
+                    .await?;
                 let player = self
                     .client
                     .player(
@@ -1200,7 +1224,9 @@ impl MediaProvider for YoutubeProvider {
             }
             SourceConfig::DynamicPlaylist(source) => {
                 let config = Self::playlist_config(source)?;
-                let session = self.session(ctx, Self::playlist_shared(config)).await?;
+                let session = self
+                    .session(ctx, Self::playlist_credential_policy(config))
+                    .await?;
                 Ok(self
                     .list_page(config, None, &session)
                     .await?
@@ -1240,15 +1266,15 @@ impl DynamicPlaylistProvider for YoutubeProvider {
                 ));
             }
         };
-        let session = self.session(ctx, Self::playlist_shared(config)).await?;
+        let credential_policy = Self::playlist_credential_policy(config);
+        let session = self.session(ctx, credential_policy).await?;
         let page = self.list_page(config, cursor, &session).await?;
         let has_more = page.next_cursor.is_some();
-        let shared = Self::playlist_shared(config);
         Ok(DynamicListResult {
             items: page
                 .items
                 .into_iter()
-                .map(|item| Self::directory_item(item, shared))
+                .map(|item| Self::directory_item(item, credential_policy))
                 .collect(),
             pagination: DynamicPagination::Cursor {
                 cursor: page.next_cursor,
@@ -1467,7 +1493,7 @@ mod tests {
     fn playback_result_maps_formats_manifests_subtitles_and_metadata() {
         let result = YoutubeProvider::playback_result(
             &player_response(false),
-            UserId::expect_positive(1),
+            Some(UserId::expect_positive(1)),
             Some("primary"),
         )
         .expect("player response should map");
@@ -1549,7 +1575,7 @@ mod tests {
     fn live_playback_prefers_hls_and_marks_proxy_resources() {
         let mut result = YoutubeProvider::playback_result(
             &player_response(true),
-            UserId::expect_positive(1),
+            Some(UserId::expect_positive(1)),
             None,
         )
         .expect("live player response should map");
@@ -1603,7 +1629,7 @@ mod tests {
                 title: "Example".to_string(),
                 ..YoutubeListItem::default()
             },
-            true,
+            ProviderCredentialPolicy::ResourceOwner,
         );
 
         let Some(DynamicPlaylistItemSourceConfig::Media(MediaSourceConfig::Youtube(config))) =

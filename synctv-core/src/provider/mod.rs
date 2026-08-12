@@ -57,7 +57,7 @@ pub use access::{
     AlistAccess, AlistBinding, BilibiliAccess, CachedProviderAccessService, EmbyAccess,
     ProviderAccessService, ProviderCredentialReader,
 };
-pub use context::ProviderContext;
+pub use context::{ProviderActor, ProviderContext, ProviderCredentialPolicy};
 pub use error::ProviderError;
 pub(crate) use p2p_media::provider_p2p_swarm_id;
 pub use p2p_media::{
@@ -82,8 +82,8 @@ pub use synctv_common::{ExecutionControl, ExecutionControlError};
 pub use traits::ProviderResourceMetadata;
 pub use traits::{
     BilibiliLiveDanmakuEvent, BilibiliLiveDanmakuEventKind, BilibiliLiveDanmakuProvider,
-    BilibiliLiveDanmakuStream, DynamicBrowsePathSegment, DynamicListQuery, DynamicListResult,
-    DynamicPagination, DynamicPlaylistItem, DynamicPlaylistItemSourceConfig,
+    BilibiliLiveDanmakuStream, CredentialRequirement, DynamicBrowsePathSegment, DynamicListQuery,
+    DynamicListResult, DynamicPagination, DynamicPlaylistItem, DynamicPlaylistItemSourceConfig,
     DynamicPlaylistItemThumbnail, DynamicPlaylistProvider, ItemType, MediaProvider, NextPlayItem,
     PlaybackInfo, PlaybackResult, PreparedSourceConfig, ProviderCredentialDependency,
     ProviderPlaybackSessionLifecycle, SourceConfig, SourceConfigKind, SourceCover,
@@ -680,7 +680,7 @@ fn build_live_playback_with_flv(
     PlaybackResult {
         playback_infos,
         default_mode: "hls".to_string(),
-        provider: RtmpProvider::NAME.to_string(),
+        provider: crate::models::SourceProvider::Rtmp,
         provider_instance_name: None,
         duration_seconds: None,
         playback_kind: Some(crate::models::PlaybackKind::Live),
@@ -802,13 +802,11 @@ pub(crate) fn url_expiration_timestamp(value: &str) -> Option<i64> {
 #[must_use]
 pub(crate) fn build_versioned_playback_response(
     mut result: PlaybackResult,
-    provider_name: &str,
     provider_instance_name: Option<&str>,
     version: &str,
     expires_at: i64,
     mark_provider_resources: impl FnOnce(&mut PlaybackResult, &str, i64),
 ) -> PlaybackResult {
-    result.provider = provider_name.to_string();
     result.provider_instance_name = provider_instance_name.map(str::to_string);
     mark_provider_resources(&mut result, version, expires_at);
     result
@@ -858,7 +856,6 @@ pub(crate) async fn build_cached_versioned_playback_response(
 
     Ok(build_versioned_playback_response(
         versioned.result,
-        provider_name,
         ctx.provider_instance_name(),
         &versioned.version,
         versioned.expires_at,
@@ -1257,17 +1254,21 @@ fn provider_metadata_cache_key(
     resource_key: &str,
     ctx: &ProviderContext<'_>,
 ) -> String {
-    let user_id = ctx.user_id.map(|id| id.to_string()).unwrap_or_default();
+    let actor = match ctx.actor() {
+        ProviderActor::System => "system".to_string(),
+        ProviderActor::User(user_id) => format!("user:{user_id}"),
+        ProviderActor::Guest => "guest".to_string(),
+    };
     let credential_owner_id = ctx
-        .credential_owner_id
-        .map(|id| id.to_string())
+        .credential_owner_id()
+        .map(std::string::ToString::to_string)
         .unwrap_or_default();
     let room_id = ctx.room_id.map(|id| id.to_string()).unwrap_or_default();
     let provider_instance_name = ctx.provider_instance_name.unwrap_or_default();
     let mut hasher = Sha256::new();
     for component in [
         provider_name,
-        user_id.as_str(),
+        actor.as_str(),
         credential_owner_id.as_str(),
         room_id.as_str(),
         provider_instance_name,
@@ -1436,7 +1437,7 @@ mod playback_policy_tests {
                 ("proxy_direct".to_string(), info),
             ]),
             default_mode: "direct".to_string(),
-            provider: "test".to_string(),
+            provider: crate::models::SourceProvider::DirectUrl,
             provider_instance_name: None,
             duration_seconds: None,
             playback_kind: None,
@@ -1666,7 +1667,7 @@ mod source_cover_cache_tests {
     use std::sync::Arc;
 
     fn test_context(store: Arc<dyn ProviderStore>) -> ProviderContext<'static> {
-        ProviderContext::new("source-cover-cache-test").with_store(store)
+        ProviderContext::new("source-cover-cache-test", ProviderActor::System).with_store(store)
     }
 
     #[tokio::test]
@@ -1821,9 +1822,11 @@ mod provider_metadata_cache_tests {
     #[tokio::test]
     async fn provider_metadata_cache_keeps_values_and_negative_results() {
         let store: Arc<dyn ProviderStore> = Arc::new(InMemoryProviderStore::new(16));
-        let ctx = ProviderContext::new("metadata-cache-test")
-            .with_user_id(crate::models::UserId::expect_positive(1))
-            .with_store(store);
+        let ctx = ProviderContext::new(
+            "metadata-cache-test",
+            ProviderActor::User(crate::models::UserId::expect_positive(1)),
+        )
+        .with_store(store);
         let calls = Arc::new(AtomicUsize::new(0));
 
         for (resource_key, value) in [
@@ -1868,10 +1871,10 @@ mod provider_metadata_cache_tests {
     #[tokio::test]
     async fn provider_metadata_cache_isolates_ambiguous_instance_and_resource_keys() {
         let store: Arc<dyn ProviderStore> = Arc::new(InMemoryProviderStore::new(16));
-        let first_ctx = ProviderContext::new("metadata-cache-test")
+        let first_ctx = ProviderContext::new("metadata-cache-test", ProviderActor::System)
             .with_provider_instance_name("instance:resource")
             .with_store(store.clone());
-        let second_ctx = ProviderContext::new("metadata-cache-test")
+        let second_ctx = ProviderContext::new("metadata-cache-test", ProviderActor::System)
             .with_provider_instance_name("instance")
             .with_store(store);
 
@@ -1912,7 +1915,8 @@ mod provider_metadata_cache_tests {
     #[tokio::test]
     async fn provider_metadata_cache_deduplicates_slow_concurrent_fills() {
         let store: Arc<dyn ProviderStore> = Arc::new(InMemoryProviderStore::new(16));
-        let ctx = ProviderContext::new("metadata-cache-test").with_store(store);
+        let ctx =
+            ProviderContext::new("metadata-cache-test", ProviderActor::System).with_store(store);
         let calls = Arc::new(AtomicUsize::new(0));
 
         let resolve = || {
@@ -1938,7 +1942,7 @@ mod provider_metadata_cache_tests {
 
     #[tokio::test]
     async fn provider_metadata_cache_deduplicates_without_store() {
-        let ctx = ProviderContext::new("metadata-cache-test");
+        let ctx = ProviderContext::new("metadata-cache-test", ProviderActor::System);
         let calls = Arc::new(AtomicUsize::new(0));
 
         let resolve = || {

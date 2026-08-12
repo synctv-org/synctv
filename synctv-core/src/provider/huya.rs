@@ -321,7 +321,7 @@ impl HuyaProvider {
         Ok(PlaybackResult {
             playback_infos: infos,
             default_mode,
-            provider: Self::NAME.to_string(),
+            provider: crate::models::SourceProvider::Huya,
             provider_instance_name: None,
             duration_seconds: metadata
                 .duration_seconds

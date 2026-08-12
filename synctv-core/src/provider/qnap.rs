@@ -901,7 +901,7 @@ impl MediaProvider for QnapProvider {
                 "original"
             }
             .to_string(),
-            provider: Self::NAME.to_string(),
+            provider: crate::models::SourceProvider::Qnap,
             provider_instance_name: auth.instance_name,
             duration_seconds: None,
             playback_kind: Some(crate::models::PlaybackKind::Regular),
@@ -1043,8 +1043,8 @@ impl MediaProvider for QnapProvider {
             .credential_owner_or_user_id()
             .ok_or(ProviderError::CredentialRequired)?;
         Ok(vec![ProviderCredentialDependency::new(
-            Self::NAME,
-            owner.to_string(),
+            crate::models::SourceProvider::Qnap,
+            *owner,
             Self::source_server_id(source_config)?.to_string(),
         )])
     }

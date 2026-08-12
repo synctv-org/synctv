@@ -81,8 +81,7 @@ pub(super) async fn validate_dynamic_playlist_source_with_dependencies(
     ensure_provider_credential_repo_available(provider_name, deps.credential_repo)?;
 
     // ProviderContext building is repeated because it borrows the instance name.
-    let mut ctx = ProviderContext::new("synctv")
-        .with_user_id(*user_id)
+    let mut ctx = ProviderContext::new("synctv", crate::provider::ProviderActor::User(*user_id))
         .with_room_id(*room_id)
         .with_credential_owner_id(*user_id);
     if let Some(provider_instance_name) = trimmed_instance.as_deref() {
@@ -124,8 +123,7 @@ pub(super) async fn validate_dynamic_playlist_source_with_dependencies(
         provider
     };
 
-    let mut ctx = ProviderContext::new("synctv")
-        .with_user_id(*user_id)
+    let mut ctx = ProviderContext::new("synctv", crate::provider::ProviderActor::User(*user_id))
         .with_room_id(*room_id)
         .with_credential_owner_id(*user_id);
     if let Some(provider_instance_name) = bound_instance.as_deref() {

@@ -71,7 +71,7 @@ fn bench_ttl_refresh_large_scale(c: &mut Criterion) {
 
             let mut test_conn = conn.clone();
             for i in 0..num_users {
-                let key = format!("ttl_large:connections:user:{}", i + 1);
+                let key = format!("ttl_large:connections:actor:user:{}", i + 1);
                 let _: () = redis::cmd("EXPIRE")
                     .arg(&key)
                     .arg(10)

@@ -11,7 +11,7 @@
 
 #![allow(clippy::unwrap_used)]
 use std::time::Duration;
-use synctv_core::models::id::{RoomId, UserId};
+use synctv_core::models::{RealtimeActor, RoomId, UserId};
 use synctv_realtime::sync::ConnectionManager;
 
 const SHORT_WEBRTC_TIMEOUT: Duration = Duration::from_millis(60);
@@ -26,6 +26,10 @@ fn stable_test_id(s: &str) -> i64 {
 
 fn uid(s: &str) -> UserId {
     UserId::expect_positive(stable_test_id(s))
+}
+
+fn actor(user_id: UserId) -> RealtimeActor {
+    RealtimeActor::user(user_id, user_id.to_string())
 }
 
 fn rid(s: &str) -> RoomId {
@@ -55,7 +59,7 @@ async fn test_webrtc_session_timeout_after_inactivity() {
     mgr.join_room("conn1", room).await.unwrap();
 
     // Join WebRTC session
-    mgr.mark_voice_rtc_joined(&room, &user, "conn1", true);
+    mgr.mark_voice_rtc_joined(&room, &actor(user), "conn1", true);
 
     // Verify the connection is marked as RTC-joined
     let rtc_connections = mgr.get_voice_rtc_connections(&room);
@@ -110,7 +114,7 @@ async fn test_active_webrtc_session_not_cleaned_up() {
     mgr.join_room("conn1", room).await.unwrap();
 
     // Join WebRTC session
-    mgr.mark_voice_rtc_joined(&room, &user, "conn1", true);
+    mgr.mark_voice_rtc_joined(&room, &actor(user), "conn1", true);
 
     tokio::time::sleep(ACTIVE_SESSION_CHECK_DELAY).await;
 
@@ -155,10 +159,10 @@ async fn test_webrtc_leave_clears_timeout_tracking() {
     mgr.join_room("conn1", room).await.unwrap();
 
     // Join WebRTC session
-    mgr.mark_voice_rtc_joined(&room, &user, "conn1", true);
+    mgr.mark_voice_rtc_joined(&room, &actor(user), "conn1", true);
 
     // Immediately leave WebRTC session
-    mgr.mark_voice_rtc_joined(&room, &user, "conn1", false);
+    mgr.mark_voice_rtc_joined(&room, &actor(user), "conn1", false);
 
     tokio::time::sleep(timeout + WEBRTC_TIMEOUT_BUFFER).await;
 
@@ -204,7 +208,7 @@ async fn test_multiple_webrtc_sessions_timeout() {
         let conn_id = format!("conn{i}");
         mgr.register(conn_id.clone(), user1).await.unwrap();
         mgr.join_room(&conn_id, room).await.unwrap();
-        mgr.mark_voice_rtc_joined(&room, &user1, &conn_id, true);
+        mgr.mark_voice_rtc_joined(&room, &actor(user1), &conn_id, true);
     }
 
     // Verify all connections are RTC-joined
@@ -253,7 +257,7 @@ async fn test_webrtc_session_timeout_persists_across_reconnection() {
     // Register connection and join WebRTC
     mgr.register("conn1".to_string(), user).await.unwrap();
     mgr.join_room("conn1", room).await.unwrap();
-    mgr.mark_voice_rtc_joined(&room, &user, "conn1", true);
+    mgr.mark_voice_rtc_joined(&room, &actor(user), "conn1", true);
 
     tokio::time::sleep(timeout + WEBRTC_TIMEOUT_BUFFER).await;
 
@@ -268,7 +272,7 @@ async fn test_webrtc_session_timeout_persists_across_reconnection() {
     // User reconnects with a new connection
     mgr.register("conn2".to_string(), user).await.unwrap();
     mgr.join_room("conn2", room).await.unwrap();
-    mgr.mark_voice_rtc_joined(&room, &user, "conn2", true);
+    mgr.mark_voice_rtc_joined(&room, &actor(user), "conn2", true);
 
     // Verify new connection is RTC-joined
     let rtc_connections = mgr.get_voice_rtc_connections(&room);

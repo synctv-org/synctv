@@ -13,8 +13,11 @@ use crate::{
 
 mod types;
 
-use types::UserTokenSigningKind;
 pub use types::{Claims, GuestClaims, TokenAuthContext, TokenCredentialBinding, TokenType};
+use types::{
+    GuestSubject, GuestTokenContext, TokenCredentialBindingClaims, TokenId, TokenSessionId,
+    UserSubject, UserTokenContext,
+};
 
 fn usize_to_f64(value: usize) -> Result<f64> {
     let value = u32::try_from(value)
@@ -81,7 +84,7 @@ const MIN_SHANNON_ENTROPY: f64 = 3.5;
 
 #[derive(Deserialize)]
 struct TokenTypeHint {
-    typ: String,
+    typ: TokenType,
 }
 
 /// JWT service for signing and verifying tokens
@@ -154,7 +157,7 @@ impl JwtService {
     #[must_use]
     pub fn token_type_hint(token: &str) -> Option<TokenType> {
         let hint = decode_untrusted_token_type_hint(token)?;
-        TokenType::from_claim_typ(&hint.typ)
+        Some(hint.typ)
     }
 
     /// Create a new JWT service with HS256 secret and configurable token durations
@@ -509,12 +512,12 @@ impl JwtService {
         session_id: Option<&str>,
         credential_binding: &TokenCredentialBinding,
     ) -> Result<String> {
+        let session_id = session_id.map(TokenSessionId::new).transpose()?;
         self.sign_user_token_with_auth_context_and_session(
             user_id,
-            UserTokenSigningKind::Access,
+            UserTokenContext::Access { session_id },
             password_version,
             auth_context,
-            session_id,
             credential_binding,
         )
     }
@@ -527,12 +530,12 @@ impl JwtService {
         session_id: &str,
         credential_binding: &TokenCredentialBinding,
     ) -> Result<String> {
+        let session_id = TokenSessionId::new(session_id)?;
         self.sign_user_token_with_auth_context_and_session(
             user_id,
-            UserTokenSigningKind::Refresh,
+            UserTokenContext::Refresh { session_id },
             password_version,
             auth_context,
-            Some(session_id),
             credential_binding,
         )
     }
@@ -540,74 +543,32 @@ impl JwtService {
     fn sign_user_token_with_auth_context_and_session(
         &self,
         user_id: &UserId,
-        token_kind: UserTokenSigningKind,
+        token: UserTokenContext,
         password_version: i32,
         auth_context: Option<TokenAuthContext>,
-        session_id: Option<&str>,
         credential_binding: &TokenCredentialBinding,
     ) -> Result<String> {
-        if matches!(token_kind, UserTokenSigningKind::Refresh)
-            && session_id.is_none_or(str::is_empty)
-        {
-            return Err(Error::InvalidInput(
-                "Refresh token signing requires a session id".to_string(),
-            ));
-        }
         let now = self.clock.now();
-        let duration = match token_kind {
-            UserTokenSigningKind::Access => duration_hours(
+        let duration = match &token {
+            UserTokenContext::Access { .. } => duration_hours(
                 self.access_token_duration_hours,
                 "access token duration hours",
             )?,
-            UserTokenSigningKind::Refresh => duration_days(
+            UserTokenContext::Refresh { .. } => duration_days(
                 self.refresh_token_duration_days,
                 "refresh token duration days",
             )?,
         };
-        let (cbm, opi, ops, eml, wcid) = match credential_binding {
-            TokenCredentialBinding::Password { .. } => {
-                (Some("password".to_string()), None, None, None, None)
-            }
-            TokenCredentialBinding::OAuth2 {
-                provider_instance_name,
-                provider_user_id,
-            } => (
-                Some("oauth2".to_string()),
-                Some(provider_instance_name.clone()),
-                Some(provider_user_id.clone()),
-                None,
-                None,
-            ),
-            TokenCredentialBinding::WebAuthn { credential_id } => (
-                Some("webauthn".to_string()),
-                None,
-                None,
-                None,
-                Some(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(credential_id)),
-            ),
-            TokenCredentialBinding::Email { email } => (
-                Some("email".to_string()),
-                None,
-                None,
-                Some(email.clone()),
-                None,
-            ),
-        };
 
         let claims = Claims {
-            sub: user_id.to_string(),
-            typ: token_kind.claim_typ().to_string(),
-            jti: synctv_common::snanoid!(16),
+            subject: UserSubject::new(*user_id),
+            token,
+            token_id: TokenId::new(synctv_common::snanoid!(16))?,
             iat: now.timestamp(),
             exp: (now + duration).timestamp(),
             pv: password_version,
-            sid: session_id.map(ToString::to_string),
-            amr: auth_context.map(|value| value.as_str().to_string()),
-            cbm,
-            opi,
-            ops,
-            eml,
-            wcid,
+            auth_context,
+            credential_binding: TokenCredentialBindingClaims::from(credential_binding),
             iss: self.issuer.clone(),
             aud: self.audience.clone(),
         };
@@ -651,15 +612,13 @@ impl JwtService {
             self.clock_skew_leeway_secs,
             "Token",
         )?;
-        claims.user_id()?;
-
         Ok(claims)
     }
 
     /// Verify an access token (convenience method)
     pub fn verify_access_token(&self, token: &str) -> Result<Claims> {
         let claims = self.verify_token(token)?;
-        if !claims.is_access_token() {
+        if claims.token_type() != TokenType::Access {
             return Err(Error::Authentication("Not an access token".to_string()));
         }
         Ok(claims)
@@ -668,20 +627,8 @@ impl JwtService {
     /// Verify a refresh token (convenience method)
     pub fn verify_refresh_token(&self, token: &str) -> Result<Claims> {
         let claims = self.verify_token(token)?;
-        if !claims.is_refresh_token() {
+        if claims.token_type() != TokenType::Refresh {
             return Err(Error::Authentication("Not a refresh token".to_string()));
-        }
-        // Reject tokens with empty jti: refresh token rotation relies on jti for
-        // blacklisting. A missing/empty jti would bypass the blacklist check entirely.
-        if claims.jti.is_empty() {
-            return Err(Error::Authentication(
-                "Refresh token missing jti".to_string(),
-            ));
-        }
-        if claims.sid.as_deref().is_none_or(str::is_empty) {
-            return Err(Error::Authentication(
-                "Refresh token missing session id".to_string(),
-            ));
         }
         Ok(claims)
     }
@@ -724,11 +671,9 @@ impl JwtService {
         let session_id = synctv_common::snanoid!(16); // Generate random session ID
 
         let guest_claims = GuestClaims {
-            sub: format!("guest:{room_id}:{session_id}"),
-            room_id: room_id.to_string(),
-            session_id,
-            jti: synctv_common::snanoid!(16), // Unique JWT ID for individual token revocation
-            typ: "guest".to_string(),
+            subject: GuestSubject::new(*room_id, &session_id)?,
+            token: GuestTokenContext::Guest,
+            token_id: TokenId::new(synctv_common::snanoid!(16))?,
             iat: now.timestamp(),
             exp: (now + duration).timestamp(),
             gv: room_guest_version,
@@ -779,12 +724,6 @@ impl JwtService {
             self.clock_skew_leeway_secs,
             "Guest token",
         )?;
-
-        // Verify it's actually a guest token
-        if !claims.is_guest() {
-            return Err(Error::Authentication("Not a guest token".to_string()));
-        }
-        claims.room_id()?;
 
         Ok(claims)
     }

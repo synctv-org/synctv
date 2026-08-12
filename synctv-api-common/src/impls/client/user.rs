@@ -73,11 +73,7 @@ fn masked_email_for_sensitive_challenge(
 pub fn token_auth_context_from_claims(
     claims: &synctv_core::service::Claims,
 ) -> Option<TokenAuthContext> {
-    match claims.amr.as_deref() {
-        Some("local_2fa") => Some(TokenAuthContext::LocalTwoFactor),
-        Some("oauth2") => Some(TokenAuthContext::OAuth2),
-        _ => None,
-    }
+    claims.auth_context()
 }
 
 fn sensitive_challenge_to_proto(

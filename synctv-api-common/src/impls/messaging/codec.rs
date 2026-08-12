@@ -7,16 +7,8 @@ use synctv_core::models::{
     ChatPresentationMetadata,
 };
 
+use crate::impls::client::room_role_to_proto;
 use synctv_proto::client::{ClientMessage, ServerMessage};
-
-pub(super) fn validated_room_member_role(role: i32) -> Result<i32, String> {
-    let role = synctv_proto::common::RoomMemberRole::try_from(role)
-        .map_err(|_| "Room member role is not defined".to_string())?;
-    if role == synctv_proto::common::RoomMemberRole::Unspecified {
-        return Err("Room member role is unspecified".to_string());
-    }
-    Ok(role as i32)
-}
 
 pub(super) fn required_realtime_text(
     value: &str,
@@ -91,7 +83,7 @@ pub fn room_member_event_to_proto(
                 username: validated_username,
                 remark_name: validated_remark_name,
                 display_tag: validated_display_tag,
-                role: validated_room_member_role(*role)?,
+                role: room_role_to_proto(*role),
                 permissions: permissions.0,
                 added_permissions: added_permissions.0,
                 removed_permissions: removed_permissions.0,
@@ -137,7 +129,7 @@ pub fn room_member_event_to_proto(
                 username: validated_username,
                 remark_name: String::new(),
                 display_tag: String::new(),
-                role: validated_room_member_role(*role)?,
+                role: room_role_to_proto(*role),
                 permissions: permissions.0,
                 added_permissions: 0,
                 removed_permissions: 0,
@@ -241,7 +233,7 @@ pub fn room_member_event_to_proto(
                 username: validated_username,
                 remark_name: validated_remark_name,
                 display_tag: validated_display_tag,
-                role: validated_room_member_role(*role)?,
+                role: room_role_to_proto(*role),
                 permissions: new_permissions.0,
                 added_permissions: added_permissions.0,
                 removed_permissions: removed_permissions.0,
@@ -326,7 +318,7 @@ pub fn online_event_to_proto(
             room_id: encode_room(*room_id)?,
             user_id: encode_user(*user_id)?,
             username: required_realtime_text(username, "online event username", 50)?,
-            role: validated_room_member_role(*role)?,
+            role: room_role_to_proto(*role),
             kind: OnlineEventKind::Joined as i32,
             occurred_at: timestamp.timestamp(),
         },
@@ -343,7 +335,7 @@ pub fn online_event_to_proto(
             room_id: encode_room(*room_id)?,
             user_id: encode_user(*user_id)?,
             username: required_realtime_text(username, "online event username", 50)?,
-            role: validated_room_member_role(*role)?,
+            role: room_role_to_proto(*role),
             kind: OnlineEventKind::Left as i32,
             occurred_at: timestamp.timestamp(),
         },

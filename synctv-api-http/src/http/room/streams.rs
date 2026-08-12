@@ -48,7 +48,7 @@ pub async fn list_room_streams(
         EndpointRateLimitScope::RoomMedia,
         move |client_api, authenticated| async move {
             client_api
-                .list_room_streams(&authenticated.user_id, &room_id, req)
+                .list_room_streams(&authenticated.user_id(), &room_id, req)
                 .await
         },
     )
@@ -94,7 +94,7 @@ pub async fn get_room_stream_info(
         EndpointRateLimitScope::RoomMedia,
         move |client_api, authenticated| async move {
             client_api
-                .get_room_stream_info(&authenticated.user_id, &room_id, req)
+                .get_room_stream_info(&authenticated.user_id(), &room_id, req)
                 .await
         },
     )
@@ -141,7 +141,7 @@ pub async fn kick_room_stream(
         EndpointRateLimitScope::RoomMedia,
         move |client_api, authenticated| async move {
             client_api
-                .kick_room_stream(&authenticated.user_id, &room_id, req)
+                .kick_room_stream(&authenticated.user_id(), &room_id, req)
                 .await
         },
     )

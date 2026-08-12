@@ -2251,7 +2251,7 @@ impl AlistProvider {
         PlaybackResult {
             playback_infos,
             default_mode,
-            provider: Self::NAME.to_string(),
+            provider: crate::models::SourceProvider::Alist,
             provider_instance_name,
             duration_seconds,
             playback_kind: Some(crate::models::PlaybackKind::Regular),
@@ -2390,8 +2390,8 @@ impl MediaProvider for AlistProvider {
         })?;
 
         Ok(vec![ProviderCredentialDependency::new(
-            Self::NAME,
-            credential_owner_id.to_string(),
+            crate::models::SourceProvider::Alist,
+            *credential_owner_id,
             config.server_id,
         )])
     }
@@ -3483,7 +3483,7 @@ mod tests {
                 },
             )]),
             default_mode: "direct".to_string(),
-            provider: AlistProvider::NAME.to_string(),
+            provider: crate::models::SourceProvider::Alist,
             provider_instance_name: None,
             duration_seconds: None,
             playback_kind: Some(crate::models::PlaybackKind::Regular),
@@ -3634,7 +3634,7 @@ mod tests {
                 },
             )]),
             default_mode: "transcoded".to_string(),
-            provider: AlistProvider::NAME.to_string(),
+            provider: crate::models::SourceProvider::Alist,
             provider_instance_name: None,
             duration_seconds: None,
             playback_kind: Some(crate::models::PlaybackKind::Regular),
@@ -3764,7 +3764,7 @@ mod tests {
                 },
             )]),
             default_mode: "direct".to_string(),
-            provider: AlistProvider::NAME.to_string(),
+            provider: crate::models::SourceProvider::Alist,
             provider_instance_name: None,
             duration_seconds: None,
             playback_kind: Some(crate::models::PlaybackKind::Regular),

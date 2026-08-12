@@ -82,7 +82,7 @@ pub async fn create_media_cover_upload_session(
         EndpointRateLimitScope::MediaCover,
         move |client_api, authenticated| async move {
             client_api
-                .create_media_cover_upload_session(&authenticated.user_id, &room_id, req)
+                .create_media_cover_upload_session(&authenticated.user_id(), &room_id, req)
                 .await
         },
     )
@@ -107,7 +107,7 @@ pub async fn update_media_cover(
         EndpointRateLimitScope::MediaCover,
         move |client_api, authenticated| async move {
             client_api
-                .update_media_cover(&authenticated.user_id, &room_id, req)
+                .update_media_cover(&authenticated.user_id(), &room_id, req)
                 .await
         },
     )
@@ -133,7 +133,7 @@ pub async fn clear_media_cover(
         EndpointRateLimitScope::MediaCover,
         move |client_api, authenticated| async move {
             client_api
-                .clear_media_cover(&authenticated.user_id, &room_id, req)
+                .clear_media_cover(&authenticated.user_id(), &room_id, req)
                 .await
         },
     )
@@ -158,7 +158,7 @@ pub async fn create_media_thumbnail_upload_session(
         EndpointRateLimitScope::MediaThumbnail,
         move |client_api, authenticated| async move {
             client_api
-                .create_media_thumbnail_upload_session(&authenticated.user_id, &room_id, req)
+                .create_media_thumbnail_upload_session(&authenticated.user_id(), &room_id, req)
                 .await
         },
     )
@@ -183,7 +183,7 @@ pub async fn update_media_thumbnail(
         EndpointRateLimitScope::MediaThumbnail,
         move |client_api, authenticated| async move {
             client_api
-                .update_media_thumbnail(&authenticated.user_id, &room_id, req)
+                .update_media_thumbnail(&authenticated.user_id(), &room_id, req)
                 .await
         },
     )
@@ -209,7 +209,7 @@ pub async fn clear_media_thumbnail(
         EndpointRateLimitScope::MediaThumbnail,
         move |client_api, authenticated| async move {
             client_api
-                .clear_media_thumbnail(&authenticated.user_id, &room_id, req)
+                .clear_media_thumbnail(&authenticated.user_id(), &room_id, req)
                 .await
         },
     )
@@ -232,7 +232,7 @@ pub async fn create_room_cover_upload_session(
         EndpointRateLimitScope::RoomCover,
         move |client_api, authenticated| async move {
             client_api
-                .create_room_cover_upload_session(&authenticated.user_id, &room_id, req)
+                .create_room_cover_upload_session(&authenticated.user_id(), &room_id, req)
                 .await
         },
     )
@@ -255,7 +255,7 @@ pub async fn update_room_cover(
         EndpointRateLimitScope::RoomCover,
         move |client_api, authenticated| async move {
             client_api
-                .update_room_cover(&authenticated.user_id, &room_id, req)
+                .update_room_cover(&authenticated.user_id(), &room_id, req)
                 .await
         },
     )
@@ -279,7 +279,7 @@ pub async fn clear_room_cover(
         EndpointRateLimitScope::RoomCover,
         move |client_api, authenticated| async move {
             client_api
-                .clear_room_cover(&authenticated.user_id, &room_id, req)
+                .clear_room_cover(&authenticated.user_id(), &room_id, req)
                 .await
         },
     )
@@ -307,7 +307,7 @@ pub async fn create_playlist_cover_upload_session(
         EndpointRateLimitScope::PlaylistCover,
         move |client_api, authenticated| async move {
             client_api
-                .create_playlist_cover_upload_session(&authenticated.user_id, &room_id, req)
+                .create_playlist_cover_upload_session(&authenticated.user_id(), &room_id, req)
                 .await
         },
     )
@@ -335,7 +335,7 @@ pub async fn update_playlist_cover(
         EndpointRateLimitScope::PlaylistCover,
         move |client_api, authenticated| async move {
             client_api
-                .update_playlist_cover(&authenticated.user_id, &room_id, req)
+                .update_playlist_cover(&authenticated.user_id(), &room_id, req)
                 .await
         },
     )
@@ -364,7 +364,7 @@ pub async fn clear_playlist_cover(
         EndpointRateLimitScope::PlaylistCover,
         move |client_api, authenticated| async move {
             client_api
-                .clear_playlist_cover(&authenticated.user_id, &room_id, req)
+                .clear_playlist_cover(&authenticated.user_id(), &room_id, req)
                 .await
         },
     )

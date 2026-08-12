@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use synctv_core::models::id::{MediaId, RoomId, UserId};
+use synctv_core::models::RoomRole;
 use synctv_core::{DirectRedisConnectionRuntime, RedisConnectionRuntime, SharedStateProfile};
 use synctv_core_testing::{redis_connection_manager, start_redis_client_manager, RedisContainer};
 use synctv_realtime::sync::{
@@ -16,7 +17,9 @@ use synctv_realtime::sync::{
 };
 use synctv_realtime::sync::{CacheTarget, NotificationLevel, RealtimeEvent};
 mod integration_test_helpers;
-use integration_test_helpers::{broadcast_until_admin_event, broadcast_until_room_event};
+use integration_test_helpers::{
+    broadcast_until_admin_event, broadcast_until_room_event, user_actor,
+};
 
 fn stable_test_id(s: &str) -> i64 {
     s.bytes().fold(0_i64, |acc, byte| {
@@ -122,7 +125,7 @@ async fn test_cross_node_broadcast() {
     let room = rid("room1");
     let user = uid("user1");
     let (mut rx, _conn_id) = manager1
-        .subscribe_with_id(room, user, ConnectionId::new("conn1"))
+        .subscribe_with_id(room, user_actor(user), ConnectionId::new("conn1"))
         .await
         .expect("subscribe should succeed");
     let received = broadcast_until_room_event(
@@ -253,7 +256,7 @@ async fn test_dedup_with_different_events() {
         remark_name: String::new(),
         display_tag: String::new(),
         permissions: synctv_core::models::RoomPermissionSet(0),
-        role: 2,
+        role: RoomRole::Member,
         added_permissions: synctv_core::models::RoomPermissionSet(0),
         removed_permissions: synctv_core::models::RoomPermissionSet(0),
         admin_added_permissions: synctv_core::models::RoomPermissionSet(0),
@@ -269,7 +272,7 @@ async fn test_dedup_with_different_events() {
         username: "test".to_string(),
         remark_name: String::new(),
         display_tag: String::new(),
-        role: 2,
+        role: RoomRole::Member,
         timestamp: chrono::Utc::now(),
     };
 
@@ -307,7 +310,7 @@ async fn test_pubsub_subscription_tracking() {
 
     // Subscribe
     let (_rx, conn_id) = manager
-        .subscribe_with_id(room, user, ConnectionId::new("conn1"))
+        .subscribe_with_id(room, user_actor(user), ConnectionId::new("conn1"))
         .await
         .expect("subscribe should succeed");
 
@@ -339,11 +342,11 @@ async fn test_multiple_subscriptions_same_room() {
 
     // Subscribe with multiple connections
     let (mut rx1, _) = manager
-        .subscribe_with_id(room, uid("user1"), ConnectionId::new("conn1"))
+        .subscribe_with_id(room, user_actor(uid("user1")), ConnectionId::new("conn1"))
         .await
         .expect("subscribe should succeed");
     let (mut rx2, _) = manager
-        .subscribe_with_id(room, uid("user2"), ConnectionId::new("conn2"))
+        .subscribe_with_id(room, user_actor(uid("user2")), ConnectionId::new("conn2"))
         .await
         .expect("subscribe should succeed");
 
@@ -409,7 +412,7 @@ async fn test_critical_event_delivery() {
 
     // Subscribe to room on node1
     let (mut room_rx, _) = manager1
-        .subscribe_with_id(room, user, ConnectionId::new("conn1"))
+        .subscribe_with_id(room, user_actor(user), ConnectionId::new("conn1"))
         .await
         .expect("subscribe should succeed");
 
@@ -547,7 +550,7 @@ async fn test_critical_event_classification() {
         changed_by_username: "admin".to_string(),
         role_changed: false,
         new_permissions: synctv_core::models::RoomPermissionSet(0),
-        role: 2,
+        role: RoomRole::Member,
         added_permissions: synctv_core::models::RoomPermissionSet(0),
         removed_permissions: synctv_core::models::RoomPermissionSet(0),
         admin_added_permissions: synctv_core::models::RoomPermissionSet(0),
@@ -573,7 +576,7 @@ async fn test_critical_event_classification() {
         username: "test".to_string(),
         remark_name: String::new(),
         display_tag: String::new(),
-        role: 2,
+        role: RoomRole::Member,
         timestamp: chrono::Utc::now(),
     }
     .is_critical());
@@ -742,11 +745,11 @@ async fn test_get_room_subscribers() {
     let room = rid("room1");
 
     let (_rx1, _) = manager
-        .subscribe_with_id(room, uid("user1"), ConnectionId::new("conn1"))
+        .subscribe_with_id(room, user_actor(uid("user1")), ConnectionId::new("conn1"))
         .await
         .expect("subscribe should succeed");
     let (_rx2, _) = manager
-        .subscribe_with_id(room, uid("user2"), ConnectionId::new("conn2"))
+        .subscribe_with_id(room, user_actor(uid("user2")), ConnectionId::new("conn2"))
         .await
         .expect("subscribe should succeed");
 
@@ -774,7 +777,7 @@ async fn test_cluster_metrics() {
 
     let room = rid("room1");
     let (_rx, _) = manager
-        .subscribe_with_id(room, uid("user1"), ConnectionId::new("conn1"))
+        .subscribe_with_id(room, user_actor(uid("user1")), ConnectionId::new("conn1"))
         .await
         .expect("subscribe should succeed");
 

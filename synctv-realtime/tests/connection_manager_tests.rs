@@ -5,7 +5,7 @@
 
 #![allow(clippy::unwrap_used)]
 use std::time::Duration;
-use synctv_core::models::id::{RoomId, UserId};
+use synctv_core::models::{RealtimeActor, RoomId, UserId};
 use synctv_realtime::sync::ConnectionManager;
 
 fn stable_id(s: &str) -> i64 {
@@ -17,6 +17,10 @@ fn stable_id(s: &str) -> i64 {
 
 fn uid(s: &str) -> UserId {
     UserId::expect_positive(stable_id(s))
+}
+
+fn actor(user_id: UserId) -> RealtimeActor {
+    RealtimeActor::user(user_id, user_id.to_string())
 }
 
 fn rid(s: &str) -> RoomId {
@@ -284,14 +288,14 @@ async fn test_rtc_connections_filter() {
     mgr.join_room("c2", room).await.unwrap();
 
     // Mark only c1 as RTC-joined
-    mgr.mark_voice_rtc_joined(&room, &u1, "c1", true);
+    mgr.mark_voice_rtc_joined(&room, &actor(u1), "c1", true);
 
     let rtc = mgr.get_voice_rtc_connections(&room);
     assert_eq!(rtc.len(), 1, "Only 1 connection should be RTC-joined");
     assert_eq!(rtc[0].connection_id, "c1");
 
     // Mark c1 as not RTC-joined
-    mgr.mark_voice_rtc_joined(&room, &u1, "c1", false);
+    mgr.mark_voice_rtc_joined(&room, &actor(u1), "c1", false);
     let rtc = mgr.get_voice_rtc_connections(&room);
     assert_eq!(
         rtc.len(),

@@ -29,6 +29,16 @@ pub enum PlaybackTransportAction {
         /// behavior without becoming part of the resource cache key.
         range_header: Option<String>,
     },
+    /// Stream one upstream response directly to the client without slicing it.
+    ///
+    /// Providers use this for origins where sequential range fan-out is less
+    /// reliable than one long-lived response, while preserving client Range
+    /// requests and the normal SSRF-safe proxy path.
+    StreamAndForward {
+        url: String,
+        headers: HashMap<String, String>,
+        range_header: Option<String>,
+    },
     /// Try equivalent upstream URLs in order and commit the downstream
     /// response only after the selected candidate produces its first body data.
     FetchAndForwardCandidates {
@@ -198,6 +208,22 @@ pub(crate) fn transport_action_for_target_url(
         Ok(PlaybackTransportAction::M3u8Rewrite { url, headers })
     } else {
         Ok(PlaybackTransportAction::FetchAndForward {
+            url,
+            headers,
+            range_header: range_header.map(ToString::to_string),
+        })
+    }
+}
+
+pub(crate) fn stream_action_for_target_url(
+    url: String,
+    headers: HashMap<String, String>,
+    range_header: Option<&str>,
+) -> Result<PlaybackTransportAction, ProviderError> {
+    if transport_target_is_m3u8(&url) {
+        Ok(PlaybackTransportAction::M3u8Rewrite { url, headers })
+    } else {
+        Ok(PlaybackTransportAction::StreamAndForward {
             url,
             headers,
             range_header: range_header.map(ToString::to_string),
@@ -551,6 +577,27 @@ mod tests {
     }
 
     #[test]
+    fn stream_action_preserves_range_without_slicing_semantics() {
+        let action = stream_action_for_target_url(
+            "https://media.example/video.mkv".to_string(),
+            HashMap::from([("Authorization".to_string(), "Basic test".to_string())]),
+            Some("bytes=100-199"),
+        )
+        .checked("stream action should build");
+
+        assert!(matches!(
+            action,
+            PlaybackTransportAction::StreamAndForward {
+                url,
+                headers,
+                range_header: Some(range),
+            } if url == "https://media.example/video.mkv"
+                && headers.get("Authorization").map(String::as_str) == Some("Basic test")
+                && range == "bytes=100-199"
+        ));
+    }
+
+    #[test]
     fn storage_hls_paths_stay_within_the_signed_provider_namespace() {
         let root = "/Videos/Show/master.m3u8";
         assert_eq!(
@@ -767,7 +814,7 @@ mod tests {
             result: PlaybackResult {
                 playback_infos: HashMap::new(),
                 default_mode: "direct".to_string(),
-                provider: "test".to_string(),
+                provider: crate::models::SourceProvider::DirectUrl,
                 provider_instance_name: None,
                 duration_seconds: None,
                 playback_kind: Some(crate::models::PlaybackKind::Regular),
@@ -796,7 +843,7 @@ mod tests {
             result: PlaybackResult {
                 playback_infos: HashMap::new(),
                 default_mode: "direct".to_string(),
-                provider: "test".to_string(),
+                provider: crate::models::SourceProvider::DirectUrl,
                 provider_instance_name: None,
                 duration_seconds: None,
                 playback_kind: Some(crate::models::PlaybackKind::Regular),

@@ -18,7 +18,7 @@ pub(super) async fn update_room_settings(
             EndpointRateLimitCategory::Write,
             move |authenticated| async move {
                 client_api
-                    .update_room_settings(&authenticated.user_id, room_id.as_str(), req)
+                    .update_room_settings(&authenticated.user_id(), room_id.as_str(), req)
                     .await
             },
         )
@@ -59,7 +59,7 @@ pub(super) async fn reset_room_settings(
             EndpointRateLimitCategory::Write,
             move |authenticated| async move {
                 client_api
-                    .reset_room_settings(&authenticated.user_id, room_id.as_str())
+                    .reset_room_settings(&authenticated.user_id(), room_id.as_str())
                     .await
             },
         )
@@ -82,7 +82,7 @@ pub(super) async fn transfer_room_ownership(
             EndpointRateLimitCategory::Write,
             move |authenticated| async move {
                 client_api
-                    .transfer_room_ownership(&authenticated.user_id, room_id.as_str(), req)
+                    .transfer_room_ownership(&authenticated.user_id(), room_id.as_str(), req)
                     .await
             },
         )
@@ -105,7 +105,11 @@ pub(super) async fn start_room_password_registration(
             EndpointRateLimitCategory::Write,
             move |authenticated| async move {
                 client_api
-                    .start_room_password_registration(&authenticated.user_id, room_id.as_str(), req)
+                    .start_room_password_registration(
+                        &authenticated.user_id(),
+                        room_id.as_str(),
+                        req,
+                    )
                     .await
             },
         )
@@ -129,7 +133,7 @@ pub(super) async fn finish_room_password_registration(
             move |authenticated| async move {
                 client_api
                     .finish_room_password_registration(
-                        &authenticated.user_id,
+                        &authenticated.user_id(),
                         room_id.as_str(),
                         req,
                     )
@@ -155,7 +159,7 @@ pub(super) async fn clear_room_password(
             EndpointRateLimitCategory::Write,
             move |authenticated| async move {
                 client_api
-                    .clear_room_password(&authenticated.user_id, room_id.as_str(), req)
+                    .clear_room_password(&authenticated.user_id(), room_id.as_str(), req)
                     .await
             },
         )

@@ -38,7 +38,7 @@ pub(super) async fn add_media(
             EndpointRateLimitCategory::Media,
             move |authenticated| async move {
                 client_api
-                    .add_media(&authenticated.user_id, room_id.as_str(), req)
+                    .add_media(&authenticated.user_id(), room_id.as_str(), req)
                     .await
             },
         )
@@ -81,7 +81,7 @@ pub(super) async fn create_media_cover_upload_session(
             move |authenticated| async move {
                 client_api
                     .create_media_cover_upload_session(
-                        &authenticated.user_id,
+                        &authenticated.user_id(),
                         room_id.as_str(),
                         req,
                     )
@@ -108,7 +108,7 @@ pub(super) async fn create_media_thumbnail_upload_session(
             move |authenticated| async move {
                 client_api
                     .create_media_thumbnail_upload_session(
-                        &authenticated.user_id,
+                        &authenticated.user_id(),
                         room_id.as_str(),
                         req,
                     )
@@ -134,7 +134,7 @@ pub(super) async fn create_room_cover_upload_session(
             EndpointRateLimitCategory::Write,
             move |authenticated| async move {
                 client_api
-                    .create_room_cover_upload_session(&authenticated.user_id, &room_id, req)
+                    .create_room_cover_upload_session(&authenticated.user_id(), &room_id, req)
                     .await
             },
         )
@@ -213,7 +213,7 @@ pub(super) async fn update_room_cover(
             EndpointRateLimitCategory::Write,
             move |authenticated| async move {
                 client_api
-                    .update_room_cover(&authenticated.user_id, &room_id, req)
+                    .update_room_cover(&authenticated.user_id(), &room_id, req)
                     .await
             },
         )
@@ -236,7 +236,7 @@ pub(super) async fn clear_room_cover(
             EndpointRateLimitCategory::Write,
             move |authenticated| async move {
                 client_api
-                    .clear_room_cover(&authenticated.user_id, &room_id, req)
+                    .clear_room_cover(&authenticated.user_id(), &room_id, req)
                     .await
             },
         )
@@ -316,7 +316,7 @@ pub(super) async fn update_media_cover(
             EndpointRateLimitCategory::Media,
             move |authenticated| async move {
                 client_api
-                    .update_media_cover(&authenticated.user_id, room_id.as_str(), req)
+                    .update_media_cover(&authenticated.user_id(), room_id.as_str(), req)
                     .await
             },
         )
@@ -339,7 +339,7 @@ pub(super) async fn clear_media_cover(
             EndpointRateLimitCategory::Media,
             move |authenticated| async move {
                 client_api
-                    .clear_media_cover(&authenticated.user_id, room_id.as_str(), req)
+                    .clear_media_cover(&authenticated.user_id(), room_id.as_str(), req)
                     .await
             },
         )
@@ -425,7 +425,7 @@ pub(super) async fn update_media_thumbnail(
             EndpointRateLimitCategory::Media,
             move |authenticated| async move {
                 client_api
-                    .update_media_thumbnail(&authenticated.user_id, room_id.as_str(), req)
+                    .update_media_thumbnail(&authenticated.user_id(), room_id.as_str(), req)
                     .await
             },
         )
@@ -448,7 +448,7 @@ pub(super) async fn clear_media_thumbnail(
             EndpointRateLimitCategory::Media,
             move |authenticated| async move {
                 client_api
-                    .clear_media_thumbnail(&authenticated.user_id, room_id.as_str(), req)
+                    .clear_media_thumbnail(&authenticated.user_id(), room_id.as_str(), req)
                     .await
             },
         )
@@ -471,7 +471,7 @@ pub(super) async fn create_playlist_cover_upload_session(
             EndpointRateLimitCategory::Write,
             move |authenticated| async move {
                 client_api
-                    .create_playlist_cover_upload_session(&authenticated.user_id, &room_id, req)
+                    .create_playlist_cover_upload_session(&authenticated.user_id(), &room_id, req)
                     .await
             },
         )
@@ -551,7 +551,7 @@ pub(super) async fn update_playlist_cover(
             EndpointRateLimitCategory::Write,
             move |authenticated| async move {
                 client_api
-                    .update_playlist_cover(&authenticated.user_id, &room_id, req)
+                    .update_playlist_cover(&authenticated.user_id(), &room_id, req)
                     .await
             },
         )
@@ -574,7 +574,7 @@ pub(super) async fn clear_playlist_cover(
             EndpointRateLimitCategory::Write,
             move |authenticated| async move {
                 client_api
-                    .clear_playlist_cover(&authenticated.user_id, &room_id, req)
+                    .clear_playlist_cover(&authenticated.user_id(), &room_id, req)
                     .await
             },
         )
@@ -597,7 +597,7 @@ pub(super) async fn delete_media(
             EndpointRateLimitCategory::Media,
             move |authenticated| async move {
                 client_api
-                    .delete_media(&authenticated.user_id, room_id.as_str(), req)
+                    .delete_media(&authenticated.user_id(), room_id.as_str(), req)
                     .await
             },
         )
@@ -620,7 +620,7 @@ pub(super) async fn delete_entries(
             EndpointRateLimitCategory::Media,
             move |authenticated| async move {
                 client_api
-                    .delete_entries(&authenticated.user_id, room_id.as_str(), req)
+                    .delete_entries(&authenticated.user_id(), room_id.as_str(), req)
                     .await
             },
         )
@@ -643,7 +643,7 @@ pub(super) async fn edit_media(
             EndpointRateLimitCategory::Media,
             move |authenticated| async move {
                 client_api
-                    .edit_media(&authenticated.user_id, room_id.as_str(), req)
+                    .edit_media(&authenticated.user_id(), room_id.as_str(), req)
                     .await
             },
         )
@@ -685,7 +685,7 @@ pub(super) async fn move_media(
             EndpointRateLimitCategory::Media,
             move |authenticated| async move {
                 client_api
-                    .move_media(&authenticated.user_id, room_id.as_str(), req)
+                    .move_media(&authenticated.user_id(), room_id.as_str(), req)
                     .await
             },
         )
@@ -708,7 +708,7 @@ pub(super) async fn clear_playlist(
             EndpointRateLimitCategory::Media,
             move |authenticated| async move {
                 client_api
-                    .clear_playlist(&authenticated.user_id, room_id.as_str(), req)
+                    .clear_playlist(&authenticated.user_id(), room_id.as_str(), req)
                     .await
             },
         )
@@ -731,7 +731,7 @@ pub(super) async fn add_media_batch(
             EndpointRateLimitCategory::Media,
             move |authenticated| async move {
                 client_api
-                    .add_media_batch(&authenticated.user_id, room_id.as_str(), req)
+                    .add_media_batch(&authenticated.user_id(), room_id.as_str(), req)
                     .await
             },
         )

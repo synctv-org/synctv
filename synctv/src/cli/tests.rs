@@ -5188,7 +5188,7 @@ fn settings_update_set_and_unset_build_standard_proto_json_request() {
             .room_creation
             .expect("room creation")
             .password_policy,
-        Some(synctv_proto::admin::RoomPasswordPolicy::Required as i32)
+        Some(synctv_proto::common::RoomPasswordPolicy::Required as i32)
     );
     assert_eq!(
         request.update_mask.expect("update mask").paths,
@@ -6050,7 +6050,7 @@ fn render_human_output_uses_proto_json_for_admin_settings() {
         room_creation: Some(synctv_proto::admin::RoomCreationSettings {
             enabled: true,
             approval_required: false,
-            password_policy: synctv_proto::admin::RoomPasswordPolicy::Required as i32,
+            password_policy: synctv_proto::common::RoomPasswordPolicy::Required as i32,
             max_rooms_per_user: 10,
         }),
         ..Default::default()

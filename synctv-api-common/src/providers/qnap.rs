@@ -50,7 +50,7 @@ impl QnapApiImpl {
         publish_provider_credential_changed(
             &self.event_service,
             user_id,
-            QnapProvider::NAME,
+            synctv_core::models::SourceProvider::Qnap,
             &server_id,
         );
         Ok(LoginResponse {
@@ -153,7 +153,7 @@ impl QnapApiImpl {
             publish_provider_credential_changed(
                 &self.event_service,
                 user_id,
-                QnapProvider::NAME,
+                synctv_core::models::SourceProvider::Qnap,
                 &req.server_id,
             );
         }

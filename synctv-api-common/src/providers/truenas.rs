@@ -169,7 +169,7 @@ impl TrueNasApiImpl {
         publish_provider_credential_changed(
             &self.event_service,
             user_id,
-            TrueNasProvider::NAME,
+            synctv_core::models::SourceProvider::TrueNas,
             server_id,
         );
     }

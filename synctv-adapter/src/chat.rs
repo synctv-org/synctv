@@ -711,10 +711,12 @@ pub fn provider_target_to_proto(target: &ProviderTarget) -> client_proto::Provid
                         synctv_core::models::FnosTargetKind::MediaItem {
                             item_guid,
                             media_guid,
+                            library_guid,
                         } => client_proto::fnos_target::Target::MediaItem(
                             client_proto::FnosMediaItemTarget {
                                 item_guid: item_guid.clone(),
                                 media_guid: media_guid.clone(),
+                                library_guid: library_guid.clone(),
                             },
                         ),
                     }),

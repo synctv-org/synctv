@@ -226,17 +226,10 @@ message PermissionSettings {
   uint64 guest_default_permissions = 3;
 }
 
-enum RoomPasswordPolicy {
-  ROOM_PASSWORD_POLICY_UNSPECIFIED = 0;
-  ROOM_PASSWORD_POLICY_OPTIONAL = 1;
-  ROOM_PASSWORD_POLICY_REQUIRED = 2;
-  ROOM_PASSWORD_POLICY_FORBIDDEN = 3;
-}
-
 message RoomCreationSettings {
   bool enabled = 1;
   bool approval_required = 2;
-  RoomPasswordPolicy password_policy = 3 [(buf.validate.field).enum.defined_only = true];
+  synctv.common.RoomPasswordPolicy password_policy = 3 [(buf.validate.field).enum.defined_only = true];
   int64 max_rooms_per_user = 4;
 }
 
@@ -440,7 +433,7 @@ message PermissionSettingsPatch {
 message RoomCreationSettingsPatch {
   optional bool enabled = 1;
   optional bool approval_required = 2;
-  optional RoomPasswordPolicy password_policy = 3 [(buf.validate.field).enum.defined_only = true];
+  optional synctv.common.RoomPasswordPolicy password_policy = 3 [(buf.validate.field).enum.defined_only = true];
   optional int64 max_rooms_per_user = 4;
 }
 
@@ -529,11 +522,20 @@ enum ContentReportScope {
   CONTENT_REPORT_SCOPE_TARGET_CHAT_MESSAGE = 6;
 }
 
+enum SignupMethod {
+  SIGNUP_METHOD_UNSPECIFIED = 0;
+  SIGNUP_METHOD_EMAIL = 1;
+  SIGNUP_METHOD_PASSWORD = 2;
+  SIGNUP_METHOD_OAUTH2 = 3;
+  SIGNUP_METHOD_ADMIN_CREATED = 4;
+  SIGNUP_METHOD_WEBAUTHN = 5;
+}
+
 message UserRegistrationReview {
   string id = 1;
   string username = 2;
   string email = 3;
-  int32 signup_method = 4;
+  SignupMethod signup_method = 4;
   synctv.common.ReviewStatus status = 5;
   int64 requested_at = 6;
   int64 reviewed_at = 7;

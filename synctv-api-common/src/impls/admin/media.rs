@@ -78,7 +78,7 @@ impl AdminApiImpl {
         let provider_metadata = self
             .room_service
             .media_service()
-            .media_provider_metadata(media.creator_id, media)
+            .media_provider_metadata(synctv_core::provider::ProviderActor::System, media)
             .await
             .unwrap_or_else(|error| {
                 tracing::debug!(
@@ -178,7 +178,7 @@ impl AdminApiImpl {
         let provider_metadata = if playlist.is_dynamic() {
             self.room_service
                 .media_service()
-                .playlist_provider_metadata(playlist.creator_id, playlist)
+                .playlist_provider_metadata(synctv_core::provider::ProviderActor::System, playlist)
                 .await
                 .unwrap_or_else(|error| {
                     tracing::debug!(

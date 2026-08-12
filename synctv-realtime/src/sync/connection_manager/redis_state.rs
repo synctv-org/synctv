@@ -24,14 +24,14 @@ pub(super) const TTL_REFRESH_BATCH_SIZE: usize = 1000;
 /// TTL for distributed connection metadata and index keys in Redis (seconds).
 ///
 /// These keys back cross-replica presence queries (`conn_mgr:conn:*`,
-/// `conn_mgr:user:*`, `conn_mgr:room:*`). They must expire quickly after a pod
+/// `conn_mgr:actor:*`, `conn_mgr:room:*`). They must expire quickly after a pod
 /// crash so dead connections do not remain visible for hours, but stay alive
 /// through transient missed refreshes while a pod is healthy.
 ///
 /// With a 60-second refresh interval, a 180-second TTL survives two missed
 /// refreshes while still letting crashed-pod state drain within a few minutes.
 pub(super) const CONNECTION_METADATA_TTL_SECONDS: i64 = 180;
-pub(super) const USER_INDEX_DIRECTORY_KEY_SUFFIX: &str = "conn_mgr:user_indexes";
+pub(super) const ACTOR_INDEX_DIRECTORY_KEY_SUFFIX: &str = "conn_mgr:actor_indexes";
 pub(super) const ROOM_INDEX_DIRECTORY_KEY_SUFFIX: &str = "conn_mgr:room_indexes";
 
 pub(super) static UNREGISTER_CLEANUP_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
@@ -51,8 +51,8 @@ pub(super) static UNREGISTER_CLEANUP_SCRIPT: LazyLock<redis::Script> = LazyLock:
             local total = redis.call('DECR', KEYS[2])
             if total < 0 then redis.call('DEL', KEYS[2]) end
 
-            local user_total = redis.call('DECR', KEYS[3])
-            if user_total < 0 then redis.call('DEL', KEYS[3]) end
+            local actor_total = redis.call('DECR', KEYS[3])
+            if actor_total < 0 then redis.call('DEL', KEYS[3]) end
 
             if ARGV[3] == '1' then
                 local room_total = redis.call('DECR', KEYS[4])
@@ -169,10 +169,10 @@ pub(super) enum PendingRedisOp {
     UnregisterCleanup {
         cleanup_key: String,
         total_key: String,
-        user_key: String,
+        actor_key: String,
         room_key: String,
         conn_key: String,
-        user_index_key: String,
+        actor_index_key: String,
         room_index_key: String,
         connection_id: String,
         registration_token: String,
@@ -183,10 +183,10 @@ pub(super) enum PendingRedisOp {
 pub(super) struct UnregisterCleanupScriptArgs<'a> {
     pub(super) cleanup_key: &'a str,
     pub(super) total_key: &'a str,
-    pub(super) user_key: &'a str,
+    pub(super) actor_key: &'a str,
     pub(super) room_key: &'a str,
     pub(super) conn_key: &'a str,
-    pub(super) user_index_key: &'a str,
+    pub(super) actor_index_key: &'a str,
     pub(super) room_index_key: &'a str,
     pub(super) connection_id: &'a str,
     pub(super) registration_token: &'a str,
@@ -340,10 +340,10 @@ async fn run_pending_retry_operation(
         PendingRedisOp::UnregisterCleanup {
             cleanup_key,
             total_key,
-            user_key,
+            actor_key,
             room_key,
             conn_key,
-            user_index_key,
+            actor_index_key,
             room_index_key,
             connection_id,
             registration_token,
@@ -355,10 +355,10 @@ async fn run_pending_retry_operation(
                 UnregisterCleanupScriptArgs {
                     cleanup_key,
                     total_key,
-                    user_key,
+                    actor_key,
                     room_key,
                     conn_key,
-                    user_index_key,
+                    actor_index_key,
                     room_index_key,
                     connection_id,
                     registration_token,
@@ -383,10 +383,10 @@ pub(super) async fn run_unregister_cleanup_script(
     UNREGISTER_CLEANUP_SCRIPT
         .key(args.cleanup_key)
         .key(args.total_key)
-        .key(args.user_key)
+        .key(args.actor_key)
         .key(args.room_key)
         .key(args.conn_key)
-        .key(args.user_index_key)
+        .key(args.actor_index_key)
         .key(args.room_index_key)
         .arg(DISTRIBUTED_COUNTER_TTL_SECONDS)
         .arg(args.connection_id)

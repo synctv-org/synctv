@@ -20,7 +20,7 @@ use tokio::sync::broadcast;
 mod integration_test_helpers;
 use integration_test_helpers::{
     broadcast_until_all_clients_receive, broadcast_until_room_event, create_node_with_prefix,
-    TestRedis,
+    user_actor, TestRedis,
 };
 
 async fn wait_for_stream_len(redis_url: &str, stream_key: &str, expected_min_len: usize) {
@@ -65,7 +65,7 @@ async fn test_redis_pubsub_no_message_loss() {
 
     // Subscribe on node A and establish the cross-replica subscription path first.
     let (rx, conn_id) = node_a
-        .subscribe(room_id, user_id)
+        .subscribe(room_id, user_actor(user_id))
         .await
         .expect("subscribe should succeed");
     let mut baseline_clients = vec![(rx, conn_id.clone())];
@@ -156,7 +156,11 @@ async fn test_redis_stream_catchup() {
 
     // Subscribe a user to the room in the hub
     let mut rx = message_hub
-        .subscribe(room_id, user_id, ConnectionId::new("catchup_conn"))
+        .subscribe(
+            room_id,
+            user_actor(user_id),
+            ConnectionId::new("catchup_conn"),
+        )
         .await
         .expect("subscribe should succeed");
 
@@ -327,11 +331,11 @@ async fn test_redis_failure_and_recovery() {
 
     // Subscribe on both nodes
     let (mut rx_a, conn_a) = node_a
-        .subscribe(room_id, UserId::expect_positive(10_000_063))
+        .subscribe(room_id, user_actor(UserId::expect_positive(10_000_063)))
         .await
         .expect("subscribe should succeed");
     let (mut rx_b, conn_b) = node_b
-        .subscribe(room_id, UserId::expect_positive(10_000_064))
+        .subscribe(room_id, user_actor(UserId::expect_positive(10_000_064)))
         .await
         .expect("subscribe should succeed");
 
@@ -370,7 +374,7 @@ async fn test_redis_failure_and_recovery() {
 
     // Subscribe a second client on node A
     let (mut rx_a2, conn_a2) = node_a
-        .subscribe(room_id, UserId::expect_positive(10_000_065))
+        .subscribe(room_id, user_actor(UserId::expect_positive(10_000_065)))
         .await
         .expect("subscribe should succeed");
 
@@ -484,7 +488,7 @@ async fn test_redis_reconnection_event_preservation() {
 
     // Subscribe on node B
     let (rx_b, conn_b) = node_b
-        .subscribe(room_id, UserId::expect_positive(10_000_067))
+        .subscribe(room_id, user_actor(UserId::expect_positive(10_000_067)))
         .await
         .expect("subscribe should succeed");
 
@@ -574,7 +578,7 @@ async fn test_cross_replica_deduplication() {
     let user_id = UserId::expect_positive(10_000_026);
 
     let (mut room_rx, conn_id) = node_a
-        .subscribe(room_id, user_id)
+        .subscribe(room_id, user_actor(user_id))
         .await
         .expect("subscribe should succeed");
 

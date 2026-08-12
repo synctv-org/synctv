@@ -92,7 +92,7 @@ pub fn room_event_to_realtime_event(
                 remark_name: String::new(),
                 display_tag: String::new(),
                 permissions: synctv_core::models::RoomPermissionSet::default_member(),
-                role: synctv_proto::common::RoomMemberRole::Member as i32,
+                role: synctv_core::models::RoomRole::Member,
                 added_permissions: synctv_core::models::RoomPermissionSet(0),
                 removed_permissions: synctv_core::models::RoomPermissionSet(0),
                 admin_added_permissions: synctv_core::models::RoomPermissionSet(0),
@@ -109,7 +109,7 @@ pub fn room_event_to_realtime_event(
                 username: username.clone(),
                 remark_name: String::new(),
                 display_tag: String::new(),
-                role: synctv_proto::common::RoomMemberRole::Member as i32,
+                role: synctv_core::models::RoomRole::Member,
                 timestamp,
             })
         }
@@ -283,7 +283,7 @@ mod tests {
                 assert_eq!(room_id, RoomId::expect_positive(120_013));
                 assert_eq!(user_id, UserId::expect_positive(120_014));
                 assert_eq!(username, "joiner");
-                assert_eq!(role, synctv_proto::common::RoomMemberRole::Member as i32);
+                assert_eq!(role, synctv_core::models::RoomRole::Member);
             }
             other => panic!("expected UserJoined, got {other:?}"),
         }

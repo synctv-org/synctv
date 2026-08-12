@@ -6,7 +6,7 @@
 #![allow(clippy::unwrap_used)]
 use std::time::Duration;
 
-use synctv_core::models::id::{RoomId, UserId};
+use synctv_core::models::{RealtimeActor, RoomId, UserId};
 use synctv_realtime::sync::{ConnectionId, ConnectionManager, RoomMessageHub};
 use synctv_realtime::sync::{RealtimeEvent, WebRTCSignalKind};
 
@@ -18,6 +18,10 @@ fn stable_test_id(s: &str) -> i64 {
 
 fn uid(s: &str) -> UserId {
     UserId::expect_positive(stable_test_id(s))
+}
+
+fn actor(user_id: UserId) -> RealtimeActor {
+    RealtimeActor::user(user_id, user_id.to_string())
 }
 
 fn rid(s: &str) -> RoomId {
@@ -114,11 +118,11 @@ async fn test_ice_candidate_routing() {
 
     // Both users subscribe
     let mut rx1 = hub
-        .subscribe(room, user1, ConnectionId::new("conn1"))
+        .subscribe(room, actor(user1), ConnectionId::new("conn1"))
         .await
         .expect("subscribe should succeed");
     let mut rx2 = hub
-        .subscribe(room, user2, ConnectionId::new("conn2"))
+        .subscribe(room, actor(user2), ConnectionId::new("conn2"))
         .await
         .expect("subscribe should succeed");
 
@@ -156,11 +160,11 @@ async fn test_ice_candidate_routing_uses_explicit_target_connection() {
     let user2 = uid("user2");
 
     let mut rx1 = hub
-        .subscribe(room, user1, ConnectionId::new("conn1"))
+        .subscribe(room, actor(user1), ConnectionId::new("conn1"))
         .await
         .expect("subscribe should succeed");
     let mut rx2 = hub
-        .subscribe(room, user2, ConnectionId::new("conn2"))
+        .subscribe(room, actor(user2), ConnectionId::new("conn2"))
         .await
         .expect("subscribe should succeed");
 
@@ -267,11 +271,11 @@ async fn test_sdp_offer_answer_flow() {
     let callee = uid("callee");
 
     let mut rx_caller = hub
-        .subscribe(room, caller, ConnectionId::new("conn1"))
+        .subscribe(room, actor(caller), ConnectionId::new("conn1"))
         .await
         .expect("subscribe should succeed");
     let mut rx_callee = hub
-        .subscribe(room, callee, ConnectionId::new("conn2"))
+        .subscribe(room, actor(callee), ConnectionId::new("conn2"))
         .await
         .expect("subscribe should succeed");
 
@@ -362,11 +366,11 @@ async fn test_webrtc_join_leave_broadcast() {
     let user2 = uid("user2");
 
     let mut rx1 = hub
-        .subscribe(room, user1, ConnectionId::new("conn1"))
+        .subscribe(room, actor(user1), ConnectionId::new("conn1"))
         .await
         .expect("subscribe should succeed");
     let mut rx2 = hub
-        .subscribe(room, user2, ConnectionId::new("conn2"))
+        .subscribe(room, actor(user2), ConnectionId::new("conn2"))
         .await
         .expect("subscribe should succeed");
 
@@ -423,18 +427,18 @@ async fn test_rtc_connection_tracking() {
     assert!(rtc.is_empty());
 
     // Mark conn1 as RTC joined
-    mgr.mark_voice_rtc_joined(&room, &user1, "conn1", true);
+    mgr.mark_voice_rtc_joined(&room, &actor(user1), "conn1", true);
     let rtc = mgr.get_voice_rtc_connections(&room);
     assert_eq!(rtc.len(), 1);
     assert_eq!(rtc[0].connection_id, "conn1");
 
     // Mark conn2 as RTC joined
-    mgr.mark_voice_rtc_joined(&room, &user2, "conn2", true);
+    mgr.mark_voice_rtc_joined(&room, &actor(user2), "conn2", true);
     let rtc = mgr.get_voice_rtc_connections(&room);
     assert_eq!(rtc.len(), 2);
 
     // Unmark conn1
-    mgr.mark_voice_rtc_joined(&room, &user1, "conn1", false);
+    mgr.mark_voice_rtc_joined(&room, &actor(user1), "conn1", false);
     let rtc = mgr.get_voice_rtc_connections(&room);
     assert_eq!(rtc.len(), 1);
     assert_eq!(rtc[0].connection_id, "conn2");
@@ -483,15 +487,15 @@ async fn test_multi_user_signaling() {
 
     // 3 users in same room
     let mut rx1 = hub
-        .subscribe(room, uid("user1"), ConnectionId::new("conn1"))
+        .subscribe(room, actor(uid("user1")), ConnectionId::new("conn1"))
         .await
         .expect("subscribe should succeed");
     let mut rx2 = hub
-        .subscribe(room, uid("user2"), ConnectionId::new("conn2"))
+        .subscribe(room, actor(uid("user2")), ConnectionId::new("conn2"))
         .await
         .expect("subscribe should succeed");
     let mut rx3 = hub
-        .subscribe(room, uid("user3"), ConnectionId::new("conn3"))
+        .subscribe(room, actor(uid("user3")), ConnectionId::new("conn3"))
         .await
         .expect("subscribe should succeed");
 
@@ -555,7 +559,7 @@ async fn test_connection_cleanup_on_webrtc_leave() {
 
     mgr.register("conn1".to_string(), user).await.unwrap();
     mgr.join_room("conn1", room).await.unwrap();
-    mgr.mark_voice_rtc_joined(&room, &user, "conn1", true);
+    mgr.mark_voice_rtc_joined(&room, &actor(user), "conn1", true);
 
     // RTC connection exists
     let rtc = mgr.get_voice_rtc_connections(&room);

@@ -48,7 +48,7 @@ pub async fn add_media(
         EndpointRateLimitScope::RoomMedia,
         move |client_api, authenticated| async move {
             client_api
-                .add_media(&authenticated.user_id, &room_id, req)
+                .add_media(&authenticated.user_id(), &room_id, req)
                 .await
         },
     )
@@ -96,7 +96,7 @@ pub async fn delete_media(
         EndpointRateLimitScope::RoomMedia,
         move |client_api, authenticated| async move {
             client_api
-                .delete_media(&authenticated.user_id, &room_id, proto_req)
+                .delete_media(&authenticated.user_id(), &room_id, proto_req)
                 .await
         },
     )
@@ -139,7 +139,7 @@ pub async fn delete_entries(
         EndpointRateLimitScope::RoomMedia,
         move |client_api, authenticated| async move {
             client_api
-                .delete_entries(&authenticated.user_id, &room_id, req)
+                .delete_entries(&authenticated.user_id(), &room_id, req)
                 .await
         },
     )
@@ -182,7 +182,7 @@ pub async fn move_media(
         EndpointRateLimitScope::RoomMedia,
         move |client_api, authenticated| async move {
             client_api
-                .move_media(&authenticated.user_id, &room_id, req)
+                .move_media(&authenticated.user_id(), &room_id, req)
                 .await
         },
     )
@@ -267,7 +267,7 @@ pub async fn push_media_batch(
         EndpointRateLimitScope::RoomMedia,
         move |client_api, authenticated| async move {
             client_api
-                .add_media_batch(&authenticated.user_id, &room_id, req)
+                .add_media_batch(&authenticated.user_id(), &room_id, req)
                 .await
         },
     )
@@ -312,7 +312,7 @@ pub async fn edit_media(
         EndpointRateLimitScope::RoomMedia,
         move |client_api, authenticated| async move {
             client_api
-                .edit_media(&authenticated.user_id, &room_id, req)
+                .edit_media(&authenticated.user_id(), &room_id, req)
                 .await
         },
     )
@@ -354,7 +354,7 @@ pub async fn clear_playlist(
         EndpointRateLimitScope::RoomMedia,
         move |client_api, authenticated| async move {
             client_api
-                .clear_playlist(&authenticated.user_id, &room_id, req)
+                .clear_playlist(&authenticated.user_id(), &room_id, req)
                 .await
         },
     )

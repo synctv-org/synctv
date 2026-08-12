@@ -13,7 +13,8 @@ use synctv_core::models::id::{MediaId, RoomId, UserId};
 use synctv_realtime::sync::RealtimeEvent;
 mod integration_test_helpers;
 use integration_test_helpers::{
-    broadcast_until_admin_event, broadcast_until_room_event, create_node, wait_until, TestRedis,
+    broadcast_until_admin_event, broadcast_until_room_event, create_node, user_actor, wait_until,
+    TestRedis,
 };
 
 #[tokio::test]
@@ -83,7 +84,7 @@ async fn test_cross_replica_room_event_propagation() {
 
     // User subscribes to room on node A (simulating a WebSocket connection on node A)
     let (mut room_rx, conn_id) = node_a
-        .subscribe(room_id, user_id)
+        .subscribe(room_id, user_actor(user_id))
         .await
         .expect("subscribe should succeed");
 
@@ -137,7 +138,7 @@ async fn test_cross_replica_kick_publisher() {
     let room_id = RoomId::expect_positive(10_000_043);
     let user_id = UserId::expect_positive(10_000_044);
     let (_room_rx, conn_id) = node_a
-        .subscribe(room_id, user_id)
+        .subscribe(room_id, user_actor(user_id))
         .await
         .expect("subscribe should succeed");
 
@@ -192,7 +193,7 @@ async fn test_cross_replica_room_deleted() {
 
     // Subscribe user on node A
     let (mut room_rx, _conn_id) = node_a
-        .subscribe(room_id, user_id)
+        .subscribe(room_id, user_actor(user_id))
         .await
         .expect("subscribe should succeed");
 
@@ -254,7 +255,7 @@ async fn test_cross_replica_room_settings_changed() {
 
     // Subscribe on node A
     let (mut room_rx, conn_id) = node_a
-        .subscribe(room_id, user_id)
+        .subscribe(room_id, user_actor(user_id))
         .await
         .expect("subscribe should succeed");
 
@@ -311,11 +312,11 @@ async fn test_multiple_rooms_cross_replica() {
 
     // User1 in room1 on node A, User2 in room2 on node A
     let (mut rx1, conn1) = node_a
-        .subscribe(room1, user1)
+        .subscribe(room1, user_actor(user1))
         .await
         .expect("subscribe should succeed");
     let (mut rx2, conn2) = node_a
-        .subscribe(room2, user2)
+        .subscribe(room2, user_actor(user2))
         .await
         .expect("subscribe should succeed");
 

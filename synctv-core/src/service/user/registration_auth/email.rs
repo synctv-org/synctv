@@ -66,7 +66,7 @@ impl UserService {
             .register_password(&credential_identifier, password)?;
 
         let user = User::new(username.clone(), SignupMethod::Email);
-        let user = if registration_policy.need_review {
+        let user = if registration_policy.requires_review() {
             let request_id = Self::create_registration_request_with_executor(
                 &username,
                 Some(&email),
@@ -222,7 +222,7 @@ impl UserService {
             }
         };
 
-        if registration_policy.need_review {
+        if registration_policy.requires_review() {
             return Ok(AccountRegistrationOutcome::PendingReview(
                 PendingAccountRegistration {
                     review_request_id: registration.user.id,

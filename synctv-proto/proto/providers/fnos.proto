@@ -80,12 +80,13 @@ enum MediaCollection {
 message ListMediaItemsRequest {
   string server_id = 1 [(buf.validate.field).string.min_len = 1];
   MediaCollection collection = 2 [(buf.validate.field).enum = {in: [1, 2, 3]}];
-  optional string ancestor_guid = 3;
+  optional string library_guid = 3;
   uint32 page = 4 [(buf.validate.field).uint32.gte = 1];
   uint32 page_size = 5 [(buf.validate.field).uint32 = {gte: 1, lte: 200}];
   repeated string media_types = 6;
   optional string search = 7;
   string instance_name = 8;
+  optional string parent_guid = 9;
 }
 
 message ListMediaItemsResponse {
@@ -113,6 +114,7 @@ message MediaItem {
   bool is_playable = 14;
   bool favorite = 15;
   synctv.provider.common.DiscoveredSource source = 16;
+  optional string library_guid = 17;
 }
 
 message SetFavoriteRequest {

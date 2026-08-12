@@ -21,9 +21,13 @@ async fn test_blacklisted_guest_token_rejected_by_validator() {
     let token = jwt.sign_guest_token(&room_id).unwrap();
 
     let claims = validator.validate_async(&token).await.unwrap();
-    assert!(claims.is_guest());
+    assert_eq!(claims.room_id(), room_id);
+    assert!(!claims.session_id().is_empty());
 
-    validator.blacklist_token(&claims.jti, 3600).await.unwrap();
+    validator
+        .blacklist_token(claims.token_id(), 3600)
+        .await
+        .unwrap();
 
     let result = validator.validate_async(&token).await;
     assert!(result.is_err(), "Blacklisted guest token must be rejected");

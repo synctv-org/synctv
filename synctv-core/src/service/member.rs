@@ -150,7 +150,7 @@ impl MemberService {
             room_id,
             PermissionChangedNotification {
                 user_id: &member.user_id,
-                role: i32::from(member.role),
+                role: member.role,
                 effective_permissions,
                 added_permissions: member.added_permissions,
                 removed_permissions: member.removed_permissions,

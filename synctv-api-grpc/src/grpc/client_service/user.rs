@@ -82,17 +82,16 @@ impl UserService for ClientServiceImpl {
         let metadata = self.request_metadata(&request)?;
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
-        let response =
-            executor
-                .execute_user_endpoint(
-                    &metadata,
-                    EndpointRateLimitCategory::Read,
-                    move |authenticated| async move {
-                        client_api.get_profile(&authenticated.user_id).await
-                    },
-                )
-                .await
-                .map_err(map_api_error)?;
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Read,
+                move |authenticated| async move {
+                    client_api.get_profile(&authenticated.user_id()).await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -109,7 +108,7 @@ impl UserService for ClientServiceImpl {
                 &metadata,
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
-                    client_api.set_username(&authenticated.user_id, req).await
+                    client_api.set_username(&authenticated.user_id(), req).await
                 },
             )
             .await
@@ -131,7 +130,7 @@ impl UserService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     client_api
-                        .create_user_avatar_upload_session(&authenticated.user_id, req)
+                        .create_user_avatar_upload_session(&authenticated.user_id(), req)
                         .await
                 },
             )
@@ -207,7 +206,7 @@ impl UserService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     client_api
-                        .update_user_avatar(&authenticated.user_id, req)
+                        .update_user_avatar(&authenticated.user_id(), req)
                         .await
                 },
             )
@@ -228,7 +227,7 @@ impl UserService for ClientServiceImpl {
                 &metadata,
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
-                    client_api.clear_user_avatar(&authenticated.user_id).await
+                    client_api.clear_user_avatar(&authenticated.user_id()).await
                 },
             )
             .await
@@ -250,7 +249,7 @@ impl UserService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     client_api
-                        .start_email_bind(&authenticated.user_id, req)
+                        .start_email_bind(&authenticated.user_id(), req)
                         .await
                 },
             )
@@ -273,7 +272,7 @@ impl UserService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     client_api
-                        .confirm_email_bind(&authenticated.user_id, req)
+                        .confirm_email_bind(&authenticated.user_id(), req)
                         .await
                 },
             )
@@ -295,7 +294,7 @@ impl UserService for ClientServiceImpl {
                 &metadata,
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
-                    client_api.unbind_email(&authenticated.user_id, req).await
+                    client_api.unbind_email(&authenticated.user_id(), req).await
                 },
             )
             .await
@@ -318,7 +317,7 @@ impl UserService for ClientServiceImpl {
                 move |authenticated| async move {
                     client_api
                         .start_sensitive_operation_verification(
-                            &authenticated.user_id,
+                            &authenticated.user_id(),
                             synctv_api_common::impls::client::token_auth_context_from_claims(
                                 &authenticated.claims,
                             ),
@@ -346,7 +345,7 @@ impl UserService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     client_api
-                        .start_sensitive_operation_passkey(&authenticated.user_id, req)
+                        .start_sensitive_operation_passkey(&authenticated.user_id(), req)
                         .await
                 },
             )
@@ -369,7 +368,7 @@ impl UserService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     client_api
-                        .request_sensitive_operation_email_code(&authenticated.user_id, req)
+                        .request_sensitive_operation_email_code(&authenticated.user_id(), req)
                         .await
                 },
             )
@@ -394,7 +393,7 @@ impl UserService for ClientServiceImpl {
                 move |request_control, authenticated| async move {
                     client_api
                         .finish_sensitive_operation_verification(
-                            &authenticated.user_id,
+                            &authenticated.user_id(),
                             req,
                             client_ip,
                             Some(&request_control),
@@ -421,7 +420,7 @@ impl UserService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     client_api
-                        .start_opaque_password_update(&authenticated.user_id, req)
+                        .start_opaque_password_update(&authenticated.user_id(), req)
                         .await
                 },
             )
@@ -444,7 +443,7 @@ impl UserService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     client_api
-                        .finish_opaque_password_update(&authenticated.user_id, req)
+                        .finish_opaque_password_update(&authenticated.user_id(), req)
                         .await
                 },
             )
@@ -467,7 +466,7 @@ impl UserService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     client_api
-                        .start_passkey_bind(&authenticated.user_id, req)
+                        .start_passkey_bind(&authenticated.user_id(), req)
                         .await
                 },
             )
@@ -490,7 +489,7 @@ impl UserService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     client_api
-                        .finish_passkey_bind_request(&authenticated.user_id, req)
+                        .finish_passkey_bind_request(&authenticated.user_id(), req)
                         .await
                 },
             )
@@ -511,7 +510,7 @@ impl UserService for ClientServiceImpl {
                 &metadata,
                 EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
-                    client_api.list_passkeys(&authenticated.user_id).await
+                    client_api.list_passkeys(&authenticated.user_id()).await
                 },
             )
             .await
@@ -532,7 +531,9 @@ impl UserService for ClientServiceImpl {
                 &metadata,
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
-                    client_api.delete_passkey(&authenticated.user_id, req).await
+                    client_api
+                        .delete_passkey(&authenticated.user_id(), req)
+                        .await
                 },
             )
             .await
@@ -552,7 +553,7 @@ impl UserService for ClientServiceImpl {
             .execute_user_endpoint(
                 &metadata,
                 EndpointRateLimitCategory::Write,
-                move |auth| async move { client_api.start_totp_setup(&auth.user_id, req).await },
+                move |auth| async move { client_api.start_totp_setup(&auth.user_id(), req).await },
             )
             .await
             .map_err(map_api_error)?;
@@ -571,7 +572,7 @@ impl UserService for ClientServiceImpl {
             .execute_user_endpoint(
                 &metadata,
                 EndpointRateLimitCategory::Write,
-                move |auth| async move { client_api.finish_totp_setup(&auth.user_id, req).await },
+                move |auth| async move { client_api.finish_totp_setup(&auth.user_id(), req).await },
             )
             .await
             .map_err(map_api_error)?;
@@ -592,7 +593,7 @@ impl UserService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |auth| async move {
                     client_api
-                        .regenerate_totp_recovery_codes(&auth.user_id, req)
+                        .regenerate_totp_recovery_codes(&auth.user_id(), req)
                         .await
                 },
             )
@@ -613,7 +614,7 @@ impl UserService for ClientServiceImpl {
             .execute_user_endpoint(
                 &metadata,
                 EndpointRateLimitCategory::Write,
-                move |auth| async move { client_api.delete_totp(&auth.user_id, req).await },
+                move |auth| async move { client_api.delete_totp(&auth.user_id(), req).await },
             )
             .await
             .map_err(map_api_error)?;
@@ -633,7 +634,7 @@ impl UserService for ClientServiceImpl {
                 EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
                     client_api
-                        .get_user_preferences(&authenticated.user_id)
+                        .get_user_preferences(&authenticated.user_id())
                         .await
                 },
             )
@@ -656,7 +657,7 @@ impl UserService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     client_api
-                        .update_user_preferences(&authenticated.user_id, req)
+                        .update_user_preferences(&authenticated.user_id(), req)
                         .await
                 },
             )
@@ -679,7 +680,7 @@ impl UserService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     client_api
-                        .set_two_factor_enabled(&authenticated.user_id, req)
+                        .set_two_factor_enabled(&authenticated.user_id(), req)
                         .await
                 },
             )
@@ -700,7 +701,7 @@ impl UserService for ClientServiceImpl {
                 &metadata,
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
-                    client_api.close_account(&authenticated.user_id).await
+                    client_api.close_account(&authenticated.user_id()).await
                 },
             )
             .await
@@ -721,7 +722,7 @@ impl UserService for ClientServiceImpl {
                 &metadata,
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
-                    Box::pin(client_api.create_room(&authenticated.user_id, req)).await
+                    Box::pin(client_api.create_room(&authenticated.user_id(), req)).await
                 },
             )
             .await
@@ -763,7 +764,7 @@ impl UserService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |request_control, authenticated| async move {
                     Box::pin(client_api.join_room_with_control(
-                        &authenticated.user_id,
+                        &authenticated.user_id(),
                         &room_id,
                         req,
                         client_ip.as_deref(),
@@ -793,7 +794,7 @@ impl UserService for ClientServiceImpl {
                 move |request_control, authenticated| async move {
                     client_api
                         .start_room_password_login_with_control(
-                            &authenticated.user_id,
+                            &authenticated.user_id(),
                             req,
                             client_ip.as_deref(),
                             Some(&request_control),
@@ -821,7 +822,7 @@ impl UserService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |_request_control, authenticated| async move {
                     Box::pin(client_api.finish_room_password_login_with_control(
-                        &authenticated.user_id,
+                        &authenticated.user_id(),
                         None,
                         req,
                         client_ip.as_deref(),
@@ -848,7 +849,7 @@ impl UserService for ClientServiceImpl {
                 EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
                     client_api
-                        .get_room_discovery(&authenticated.user_id, req)
+                        .get_room_discovery(&authenticated.user_id(), req)
                         .await
                 },
             )
@@ -870,7 +871,9 @@ impl UserService for ClientServiceImpl {
                 &metadata,
                 EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
-                    client_api.discover_rooms(&authenticated.user_id, req).await
+                    client_api
+                        .discover_rooms(&authenticated.user_id(), req)
+                        .await
                 },
             )
             .await
@@ -891,7 +894,9 @@ impl UserService for ClientServiceImpl {
                 &metadata,
                 EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
-                    client_api.list_my_rooms(&authenticated.user_id, req).await
+                    client_api
+                        .list_my_rooms(&authenticated.user_id(), req)
+                        .await
                 },
             )
             .await
@@ -912,7 +917,9 @@ impl UserService for ClientServiceImpl {
                 &metadata,
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
-                    client_api.favorite_room(&authenticated.user_id, req).await
+                    client_api
+                        .favorite_room(&authenticated.user_id(), req)
+                        .await
                 },
             )
             .await
@@ -934,7 +941,7 @@ impl UserService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     client_api
-                        .unfavorite_room(&authenticated.user_id, req)
+                        .unfavorite_room(&authenticated.user_id(), req)
                         .await
                 },
             )
@@ -957,7 +964,7 @@ impl UserService for ClientServiceImpl {
                 EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
                     client_api
-                        .list_favorite_rooms(&authenticated.user_id, req)
+                        .list_favorite_rooms(&authenticated.user_id(), req)
                         .await
                 },
             )

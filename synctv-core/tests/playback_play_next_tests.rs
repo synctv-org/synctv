@@ -275,17 +275,21 @@ async fn insert_root_media(pool: &PgPool, room_id: &RoomId, name: &str, position
 #[derive(Debug)]
 struct TestDynamicProvider {
     instance_id: String,
-    provider_type: &'static str,
+    provider_type: synctv_core::models::SourceProvider,
     require_credential_encryption: bool,
 }
 
 impl TestDynamicProvider {
     fn new(instance_id: impl Into<String>) -> Self {
-        Self::with_provider_type("alist", instance_id, false)
+        Self::with_provider_type(
+            synctv_core::models::SourceProvider::Alist,
+            instance_id,
+            false,
+        )
     }
 
     fn with_provider_type(
-        provider_type: &'static str,
+        provider_type: synctv_core::models::SourceProvider,
         instance_id: impl Into<String>,
         require_credential_encryption: bool,
     ) -> Self {
@@ -297,7 +301,11 @@ impl TestDynamicProvider {
     }
 
     fn requiring_credential_encryption(instance_id: impl Into<String>) -> Self {
-        Self::with_provider_type("alist", instance_id, true)
+        Self::with_provider_type(
+            synctv_core::models::SourceProvider::Alist,
+            instance_id,
+            true,
+        )
     }
 
     fn is_bound_instance(&self) -> bool {
@@ -356,7 +364,7 @@ impl TestDynamicProvider {
         PlaybackResult {
             playback_infos: infos,
             default_mode: "direct".to_string(),
-            provider: self.provider_type.to_string(),
+            provider: self.provider_type,
             provider_instance_name: Some(self.instance_id.clone()),
             duration_seconds: None,
             playback_kind: Some(synctv_core::models::PlaybackKind::Regular),
@@ -378,7 +386,7 @@ impl TestDynamicProvider {
 #[async_trait]
 impl MediaProvider for TestDynamicProvider {
     fn name(&self) -> &'static str {
-        self.provider_type
+        self.provider_type.as_str()
     }
 
     async fn generate_playback(
@@ -410,7 +418,9 @@ impl DynamicPlaylistProvider for TestDynamicProvider {
         _query: DynamicListQuery,
     ) -> Result<DynamicListResult, ProviderError> {
         if self.require_credential_encryption && ctx.credential_encryption.is_none() {
-            return Err(ProviderError::EncryptionRequired(self.provider_type));
+            return Err(ProviderError::EncryptionRequired(
+                self.provider_type.as_str(),
+            ));
         }
         let items = match target
             .map(decode_alist_target)

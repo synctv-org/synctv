@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tracing::{debug, warn};
 
-use crate::models::{RoomId, UserId};
+use crate::models::{RealtimeActor, RoomId, UserId};
 use crate::{
     redis_runtime_snapshot, Error, RedisConnectionRuntime, Result, SharedStateMode,
     SharedStateProfile,
@@ -24,8 +24,7 @@ const PRESENCE_BATCH_CONCURRENCY: usize = 16;
 pub struct PresenceConnection {
     pub connection_id: String,
     pub node_id: String,
-    pub user_id: UserId,
-    pub actor_id: String,
+    pub actor: RealtimeActor,
     pub room_id: Option<RoomId>,
     pub connected_at_ms: i64,
     pub last_seen_at_ms: i64,
@@ -100,6 +99,7 @@ pub enum PresenceEvent {
 #[derive(Debug, Default)]
 struct PresenceState {
     connections: HashMap<String, PresenceConnection>,
+    actor_connections: HashMap<String, HashSet<String>>,
     user_connections: HashMap<UserId, HashSet<String>>,
     room_connections: HashMap<RoomId, HashSet<String>>,
     user_room_connections: HashMap<(UserId, RoomId), HashSet<String>>,
@@ -196,15 +196,13 @@ impl OnlinePresenceService {
         &self,
         connection_id: String,
         node_id: String,
-        user_id: UserId,
-        actor_id: String,
+        actor: RealtimeActor,
     ) -> Result<()> {
         let now = now_ms();
         let connection = PresenceConnection {
             connection_id: connection_id.clone(),
             node_id: node_id.clone(),
-            user_id,
-            actor_id,
+            actor: actor.clone(),
             room_id: None,
             connected_at_ms: now,
             last_seen_at_ms: now,
@@ -217,10 +215,17 @@ impl OnlinePresenceService {
                 .connections
                 .insert(connection_id.clone(), connection.clone());
             state
-                .user_connections
-                .entry(user_id)
+                .actor_connections
+                .entry(actor.connection_key())
                 .or_default()
-                .insert(connection_id);
+                .insert(connection_id.clone());
+            if let Some(user_id) = actor.user_id() {
+                state
+                    .user_connections
+                    .entry(user_id)
+                    .or_default()
+                    .insert(connection_id.clone());
+            }
             state
                 .node_connections
                 .entry(node_id)
@@ -230,7 +235,9 @@ impl OnlinePresenceService {
 
         self.persist_connection(&connection).await?;
         self.publish(PresenceEvent::ConnectionOpened(connection));
-        self.publish_user_stats(user_id).await;
+        if let Some(user_id) = actor.user_id() {
+            self.publish_user_stats(user_id).await;
+        }
         Ok(())
     }
 
@@ -240,7 +247,7 @@ impl OnlinePresenceService {
             let Some(existing) = state.connections.get(connection_id) else {
                 return Err(Error::NotFound("presence connection not found".to_string()));
             };
-            let user_id = existing.user_id;
+            let user_id = existing.actor.user_id();
             let previous_room_id = existing.room_id;
             if previous_room_id == Some(room_id) {
                 let Some(connection) = state.connections.get_mut(connection_id) else {
@@ -258,15 +265,17 @@ impl OnlinePresenceService {
                             state.room_connections.remove(&previous_room_id);
                         }
                     }
-                    if let Some(connections) = state
-                        .user_room_connections
-                        .get_mut(&(user_id, previous_room_id))
-                    {
-                        connections.remove(connection_id);
-                        if connections.is_empty() {
-                            state
-                                .user_room_connections
-                                .remove(&(user_id, previous_room_id));
+                    if let Some(user_id) = user_id {
+                        if let Some(connections) = state
+                            .user_room_connections
+                            .get_mut(&(user_id, previous_room_id))
+                        {
+                            connections.remove(connection_id);
+                            if connections.is_empty() {
+                                state
+                                    .user_room_connections
+                                    .remove(&(user_id, previous_room_id));
+                            }
                         }
                     }
                 }
@@ -283,11 +292,13 @@ impl OnlinePresenceService {
                     .entry(room_id)
                     .or_default()
                     .insert(connection_id.to_string());
-                state
-                    .user_room_connections
-                    .entry((user_id, room_id))
-                    .or_default()
-                    .insert(connection_id.to_string());
+                if let Some(user_id) = user_id {
+                    state
+                        .user_room_connections
+                        .entry((user_id, room_id))
+                        .or_default()
+                        .insert(connection_id.to_string());
+                }
 
                 let affected_rooms = previous_room_id
                     .into_iter()
@@ -296,7 +307,7 @@ impl OnlinePresenceService {
                 (
                     connection.clone(),
                     previous_room_id,
-                    vec![user_id],
+                    user_id.into_iter().collect(),
                     affected_rooms,
                     true,
                 )
@@ -330,10 +341,19 @@ impl OnlinePresenceService {
                 return Ok(());
             };
 
-            if let Some(connections) = state.user_connections.get_mut(&connection.user_id) {
+            let actor_key = connection.actor.connection_key();
+            if let Some(connections) = state.actor_connections.get_mut(&actor_key) {
                 connections.remove(connection_id);
                 if connections.is_empty() {
-                    state.user_connections.remove(&connection.user_id);
+                    state.actor_connections.remove(&actor_key);
+                }
+            }
+            if let Some(user_id) = connection.actor.user_id() {
+                if let Some(connections) = state.user_connections.get_mut(&user_id) {
+                    connections.remove(connection_id);
+                    if connections.is_empty() {
+                        state.user_connections.remove(&user_id);
+                    }
                 }
             }
             if let Some(connections) = state.node_connections.get_mut(&connection.node_id) {
@@ -349,15 +369,14 @@ impl OnlinePresenceService {
                         state.room_connections.remove(&room_id);
                     }
                 }
-                if let Some(connections) = state
-                    .user_room_connections
-                    .get_mut(&(connection.user_id, room_id))
-                {
-                    connections.remove(connection_id);
-                    if connections.is_empty() {
-                        state
-                            .user_room_connections
-                            .remove(&(connection.user_id, room_id));
+                if let Some(user_id) = connection.actor.user_id() {
+                    if let Some(connections) =
+                        state.user_room_connections.get_mut(&(user_id, room_id))
+                    {
+                        connections.remove(connection_id);
+                        if connections.is_empty() {
+                            state.user_room_connections.remove(&(user_id, room_id));
+                        }
                     }
                 }
             }
@@ -369,7 +388,9 @@ impl OnlinePresenceService {
         if let Some(room_id) = removed.room_id {
             self.publish_room_stats(room_id).await;
         }
-        self.publish_user_stats(removed.user_id).await;
+        if let Some(user_id) = removed.actor.user_id() {
+            self.publish_user_stats(user_id).await;
+        }
         Ok(())
     }
 
@@ -740,6 +761,59 @@ impl OnlinePresenceService {
             }))
     }
 
+    pub async fn actor_has_other_connection_in_room(
+        &self,
+        actor: &RealtimeActor,
+        room_id: RoomId,
+        excluding_connection_id: &str,
+    ) -> Result<bool> {
+        if let Some(has_other) = self
+            .redis_actor_has_other_connection_in_room(actor, room_id, excluding_connection_id)
+            .await?
+        {
+            return Ok(has_other);
+        }
+        let state = self.state.lock();
+        Ok(state
+            .actor_connections
+            .get(&actor.connection_key())
+            .is_some_and(|connections| {
+                connections.iter().any(|connection_id| {
+                    connection_id != excluding_connection_id
+                        && state
+                            .connections
+                            .get(connection_id)
+                            .is_some_and(|connection| connection.room_id == Some(room_id))
+                })
+            }))
+    }
+
+    pub async fn actor_connection_count_in_room(
+        &self,
+        actor: &RealtimeActor,
+        room_id: RoomId,
+    ) -> Result<usize> {
+        if let Some(count) = self
+            .redis_actor_connection_count_in_room(actor, room_id)
+            .await?
+        {
+            return Ok(count);
+        }
+        let state = self.state.lock();
+        Ok(state
+            .actor_connections
+            .get(&actor.connection_key())
+            .into_iter()
+            .flatten()
+            .filter(|connection_id| {
+                state
+                    .connections
+                    .get(*connection_id)
+                    .is_some_and(|connection| connection.room_id == Some(room_id))
+            })
+            .count())
+    }
+
     fn publish(&self, event: PresenceEvent) {
         if let Err(error) = self.event_tx.send(event) {
             debug!(%error, "presence event had no subscribers");
@@ -774,11 +848,11 @@ impl OnlinePresenceService {
             .get(&room_id)
             .cloned()
             .unwrap_or_default();
-        let mut users = HashSet::new();
+        let mut actors = HashSet::new();
         let mut node_connection_counts = BTreeMap::new();
         for connection_id in &connection_ids {
             if let Some(connection) = state.connections.get(connection_id) {
-                users.insert(connection.user_id);
+                actors.insert(connection.actor.connection_key());
                 *node_connection_counts
                     .entry(connection.node_id.clone())
                     .or_default() += 1;
@@ -786,7 +860,7 @@ impl OnlinePresenceService {
         }
         OnlineRoomStats {
             room_id,
-            online_user_count: users.len(),
+            online_user_count: actors.len(),
             connection_count: connection_ids.len(),
             node_connection_counts,
             sampled_at_ms: now_ms(),
@@ -833,11 +907,11 @@ impl OnlinePresenceService {
             .get(node_id)
             .cloned()
             .unwrap_or_default();
-        let mut users = HashSet::new();
+        let mut actors = HashSet::new();
         let mut rooms = HashSet::new();
         for connection_id in &connection_ids {
             if let Some(connection) = state.connections.get(connection_id) {
-                users.insert(connection.user_id);
+                actors.insert(connection.actor.connection_key());
                 if let Some(room_id) = connection.room_id {
                     rooms.insert(room_id);
                 }
@@ -846,7 +920,7 @@ impl OnlinePresenceService {
         OnlineNodeStats {
             node_id: node_id.to_string(),
             connection_count: connection_ids.len(),
-            online_user_count: users.len(),
+            online_user_count: actors.len(),
             room_count: rooms.len(),
             sampled_at_ms: now_ms(),
             version: self.next_version(),
@@ -1040,20 +1114,11 @@ impl OnlinePresenceService {
                 Error::Internal(format!("serialize presence connection: {error}"))
             })?;
             let conn_key = self.conn_key(&connection.connection_id);
-            let user_key = self.user_key(connection.user_id);
             let node_key = self.node_key(&connection.node_id);
             pipe.cmd("SET")
                 .arg(&conn_key)
                 .arg(payload)
                 .arg("EX")
-                .arg(PRESENCE_METADATA_TTL_SECONDS)
-                .ignore()
-                .cmd("SADD")
-                .arg(&user_key)
-                .arg(&connection.connection_id)
-                .ignore()
-                .cmd("EXPIRE")
-                .arg(&user_key)
                 .arg(PRESENCE_METADATA_TTL_SECONDS)
                 .ignore()
                 .cmd("SADD")
@@ -1072,23 +1137,25 @@ impl OnlinePresenceService {
                 .arg(&nodes_key)
                 .arg(PRESENCE_METADATA_TTL_SECONDS)
                 .ignore();
+            if let Some(user_id) = connection.actor.user_id() {
+                let user_key = self.user_key(user_id);
+                pipe.cmd("SADD")
+                    .arg(&user_key)
+                    .arg(&connection.connection_id)
+                    .ignore()
+                    .cmd("EXPIRE")
+                    .arg(&user_key)
+                    .arg(PRESENCE_METADATA_TTL_SECONDS)
+                    .ignore();
+            }
             if let Some(room_id) = connection.room_id {
                 let room_key = self.room_key(room_id);
-                let user_room_key = self.user_room_key(connection.user_id, room_id);
                 pipe.cmd("SADD")
                     .arg(&room_key)
                     .arg(&connection.connection_id)
                     .ignore()
                     .cmd("EXPIRE")
                     .arg(&room_key)
-                    .arg(PRESENCE_METADATA_TTL_SECONDS)
-                    .ignore()
-                    .cmd("SADD")
-                    .arg(&user_room_key)
-                    .arg(&connection.connection_id)
-                    .ignore()
-                    .cmd("EXPIRE")
-                    .arg(&user_room_key)
                     .arg(PRESENCE_METADATA_TTL_SECONDS)
                     .ignore()
                     .cmd("SADD")
@@ -1099,6 +1166,17 @@ impl OnlinePresenceService {
                     .arg(&rooms_key)
                     .arg(PRESENCE_METADATA_TTL_SECONDS)
                     .ignore();
+                if let Some(user_id) = connection.actor.user_id() {
+                    let user_room_key = self.user_room_key(user_id, room_id);
+                    pipe.cmd("SADD")
+                        .arg(&user_room_key)
+                        .arg(&connection.connection_id)
+                        .ignore()
+                        .cmd("EXPIRE")
+                        .arg(&user_room_key)
+                        .arg(PRESENCE_METADATA_TTL_SECONDS)
+                        .ignore();
+                }
             }
         }
         pipe.query_async::<()>(&mut redis)
@@ -1120,7 +1198,6 @@ impl OnlinePresenceService {
             return Ok(());
         };
         let room_key = self.room_key(room_id);
-        let user_room_key = self.user_room_key(connection.user_id, room_id);
         let rooms_key = self.rooms_key();
         let mut pipe = redis::pipe();
         pipe.cmd("SADD")
@@ -1132,14 +1209,6 @@ impl OnlinePresenceService {
             .arg(PRESENCE_METADATA_TTL_SECONDS)
             .ignore()
             .cmd("SADD")
-            .arg(&user_room_key)
-            .arg(&connection.connection_id)
-            .ignore()
-            .cmd("EXPIRE")
-            .arg(&user_room_key)
-            .arg(PRESENCE_METADATA_TTL_SECONDS)
-            .ignore()
-            .cmd("SADD")
             .arg(&rooms_key)
             .arg(room_id.to_string())
             .ignore()
@@ -1147,15 +1216,28 @@ impl OnlinePresenceService {
             .arg(&rooms_key)
             .arg(PRESENCE_METADATA_TTL_SECONDS)
             .ignore();
+        if let Some(user_id) = connection.actor.user_id() {
+            let user_room_key = self.user_room_key(user_id, room_id);
+            pipe.cmd("SADD")
+                .arg(&user_room_key)
+                .arg(&connection.connection_id)
+                .ignore()
+                .cmd("EXPIRE")
+                .arg(&user_room_key)
+                .arg(PRESENCE_METADATA_TTL_SECONDS)
+                .ignore();
+        }
         if let Some(previous_room_id) = previous_room_id {
             pipe.cmd("SREM")
                 .arg(self.room_key(previous_room_id))
                 .arg(&connection.connection_id)
-                .ignore()
-                .cmd("SREM")
-                .arg(self.user_room_key(connection.user_id, previous_room_id))
-                .arg(&connection.connection_id)
                 .ignore();
+            if let Some(user_id) = connection.actor.user_id() {
+                pipe.cmd("SREM")
+                    .arg(self.user_room_key(user_id, previous_room_id))
+                    .arg(&connection.connection_id)
+                    .ignore();
+            }
         }
         pipe.query_async::<()>(&mut redis)
             .await
@@ -1170,11 +1252,13 @@ impl OnlinePresenceService {
         let mut pipe = redis::pipe();
         pipe.cmd("DEL")
             .arg(self.conn_key(&connection.connection_id))
-            .ignore()
-            .cmd("SREM")
-            .arg(self.user_key(connection.user_id))
-            .arg(&connection.connection_id)
             .ignore();
+        if let Some(user_id) = connection.actor.user_id() {
+            pipe.cmd("SREM")
+                .arg(self.user_key(user_id))
+                .arg(&connection.connection_id)
+                .ignore();
+        }
         pipe.cmd("SREM")
             .arg(self.node_key(&connection.node_id))
             .arg(&connection.connection_id)
@@ -1183,11 +1267,13 @@ impl OnlinePresenceService {
             pipe.cmd("SREM")
                 .arg(self.room_key(room_id))
                 .arg(&connection.connection_id)
-                .ignore()
-                .cmd("SREM")
-                .arg(self.user_room_key(connection.user_id, room_id))
-                .arg(&connection.connection_id)
                 .ignore();
+            if let Some(user_id) = connection.actor.user_id() {
+                pipe.cmd("SREM")
+                    .arg(self.user_room_key(user_id, room_id))
+                    .arg(&connection.connection_id)
+                    .ignore();
+            }
         }
         pipe.query_async::<()>(&mut redis)
             .await
@@ -1204,17 +1290,17 @@ impl OnlinePresenceService {
                 connection.room_id == Some(room_id)
             })
             .await?;
-        let mut users = HashSet::new();
+        let mut actors = HashSet::new();
         let mut node_connection_counts = BTreeMap::new();
         for connection in &connections {
-            users.insert(connection.user_id);
+            actors.insert(connection.actor.connection_key());
             *node_connection_counts
                 .entry(connection.node_id.clone())
                 .or_default() += 1;
         }
         Ok(Some(OnlineRoomStats {
             room_id,
-            online_user_count: users.len(),
+            online_user_count: actors.len(),
             connection_count: connections.len(),
             node_connection_counts,
             sampled_at_ms: now_ms(),
@@ -1237,7 +1323,8 @@ impl OnlinePresenceService {
                     &mut redis,
                     self.user_room_key(*user_id, room_id),
                     |connection| {
-                        connection.user_id == *user_id && connection.room_id == Some(room_id)
+                        connection.actor.user_id() == Some(*user_id)
+                            && connection.room_id == Some(room_id)
                     },
                 )
                 .await?;
@@ -1277,7 +1364,7 @@ impl OnlinePresenceService {
         };
         let connections = self
             .load_scoped_connections_for_index(&mut redis, self.user_key(user_id), |connection| {
-                connection.user_id == user_id
+                connection.actor.user_id() == Some(user_id)
             })
             .await?;
         let mut rooms = HashSet::new();
@@ -1312,10 +1399,10 @@ impl OnlinePresenceService {
                 connection.node_id == node_id
             })
             .await?;
-        let mut users = HashSet::new();
+        let mut actors = HashSet::new();
         let mut rooms = HashSet::new();
         for connection in &connections {
-            users.insert(connection.user_id);
+            actors.insert(connection.actor.connection_key());
             if let Some(room_id) = connection.room_id {
                 rooms.insert(room_id);
             }
@@ -1323,7 +1410,7 @@ impl OnlinePresenceService {
         Ok(Some(OnlineNodeStats {
             node_id: node_id.to_string(),
             connection_count: connections.len(),
-            online_user_count: users.len(),
+            online_user_count: actors.len(),
             room_count: rooms.len(),
             sampled_at_ms: now_ms(),
             version: self.next_version(),
@@ -1374,7 +1461,11 @@ impl OnlinePresenceService {
                     |connection| connection.node_id == node_id,
                 )
                 .await?;
-            users.extend(connections.into_iter().map(|connection| connection.user_id));
+            users.extend(
+                connections
+                    .into_iter()
+                    .filter_map(|connection| connection.actor.user_id()),
+            );
         }
         Ok(Some(users.len()))
     }
@@ -1394,7 +1485,10 @@ impl OnlinePresenceService {
             .load_scoped_connections_for_index(
                 &mut redis,
                 self.user_room_key(user_id, room_id),
-                |connection| connection.user_id == user_id && connection.room_id == Some(room_id),
+                |connection| {
+                    connection.actor.user_id() == Some(user_id)
+                        && connection.room_id == Some(room_id)
+                },
             )
             .await?;
         let last_seen_at_ms = connections
@@ -1425,12 +1519,50 @@ impl OnlinePresenceService {
             .load_scoped_connections_for_index(
                 &mut redis,
                 self.user_room_key(user_id, room_id),
-                |connection| connection.user_id == user_id && connection.room_id == Some(room_id),
+                |connection| {
+                    connection.actor.user_id() == Some(user_id)
+                        && connection.room_id == Some(room_id)
+                },
             )
             .await?;
         Ok(Some(connections.iter().any(|connection| {
             connection.connection_id != excluding_connection_id
         })))
+    }
+
+    async fn redis_actor_has_other_connection_in_room(
+        &self,
+        actor: &RealtimeActor,
+        room_id: RoomId,
+        excluding_connection_id: &str,
+    ) -> Result<Option<bool>> {
+        let Some(mut redis) = self.redis_connection("read actor room presence").await? else {
+            return Ok(None);
+        };
+        let connections = self
+            .load_scoped_connections_for_index(&mut redis, self.room_key(room_id), |connection| {
+                &connection.actor == actor && connection.room_id == Some(room_id)
+            })
+            .await?;
+        Ok(Some(connections.iter().any(|connection| {
+            connection.connection_id != excluding_connection_id
+        })))
+    }
+
+    async fn redis_actor_connection_count_in_room(
+        &self,
+        actor: &RealtimeActor,
+        room_id: RoomId,
+    ) -> Result<Option<usize>> {
+        let Some(mut redis) = self.redis_connection("read actor room presence").await? else {
+            return Ok(None);
+        };
+        let connections = self
+            .load_scoped_connections_for_index(&mut redis, self.room_key(room_id), |connection| {
+                &connection.actor == actor && connection.room_id == Some(room_id)
+            })
+            .await?;
+        Ok(Some(connections.len()))
     }
 }
 
@@ -1512,16 +1644,14 @@ mod tests {
             .register_connection(
                 "conn-a".to_string(),
                 "node-a".to_string(),
-                user_id(1),
-                "1".to_string(),
+                RealtimeActor::user(user_id(1), "1"),
             )
             .await?;
         presence
             .register_connection(
                 "conn-b".to_string(),
                 "node-b".to_string(),
-                user_id(1),
-                "1".to_string(),
+                RealtimeActor::user(user_id(1), "1"),
             )
             .await?;
         presence.join_room("conn-a", room_id(10)).await?;
@@ -1542,8 +1672,7 @@ mod tests {
             .register_connection(
                 "conn-a".to_string(),
                 "node-a".to_string(),
-                user_id(1),
-                "1".to_string(),
+                RealtimeActor::user(user_id(1), "1"),
             )
             .await?;
         presence.join_room("conn-a", room_id(10)).await?;
@@ -1555,8 +1684,7 @@ mod tests {
             .register_connection(
                 "conn-b".to_string(),
                 "node-a".to_string(),
-                user_id(2),
-                "2".to_string(),
+                RealtimeActor::user(user_id(2), "2"),
             )
             .await?;
         presence.join_room("conn-b", room_id(10)).await?;
@@ -1589,8 +1717,7 @@ mod tests {
             .register_connection(
                 "conn-a".to_string(),
                 "node-a".to_string(),
-                user_id(1),
-                "1".to_string(),
+                RealtimeActor::user(user_id(1), "1"),
             )
             .await?;
         presence.join_room("conn-a", room_id(10)).await?;
@@ -1609,24 +1736,21 @@ mod tests {
             .register_connection(
                 "conn-a".to_string(),
                 "node-a".to_string(),
-                user_id(1),
-                "1".to_string(),
+                RealtimeActor::user(user_id(1), "1"),
             )
             .await?;
         presence
             .register_connection(
                 "conn-b".to_string(),
                 "node-a".to_string(),
-                user_id(2),
-                "2".to_string(),
+                RealtimeActor::user(user_id(2), "2"),
             )
             .await?;
         presence
             .register_connection(
                 "conn-c".to_string(),
                 "node-b".to_string(),
-                user_id(2),
-                "2".to_string(),
+                RealtimeActor::user(user_id(2), "2"),
             )
             .await?;
         presence.join_room("conn-a", room_id(10)).await?;
@@ -1652,8 +1776,7 @@ mod tests {
             .register_connection(
                 "conn-a".to_string(),
                 "node-a".to_string(),
-                user_id(1),
-                "1".to_string(),
+                RealtimeActor::user(user_id(1), "1"),
             )
             .await?;
 
@@ -1669,24 +1792,21 @@ mod tests {
             .register_connection(
                 "conn-a".to_string(),
                 "node-a".to_string(),
-                user_id(1),
-                "1".to_string(),
+                RealtimeActor::user(user_id(1), "1"),
             )
             .await?;
         presence
             .register_connection(
                 "conn-b".to_string(),
                 "node-a".to_string(),
-                user_id(1),
-                "1".to_string(),
+                RealtimeActor::user(user_id(1), "1"),
             )
             .await?;
         presence
             .register_connection(
                 "conn-c".to_string(),
                 "node-a".to_string(),
-                user_id(1),
-                "1".to_string(),
+                RealtimeActor::user(user_id(1), "1"),
             )
             .await?;
         presence.join_room("conn-a", room_id(10)).await?;
@@ -1712,6 +1832,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn guest_room_presence_is_counted_by_actor() -> anyhow::Result<()> {
+        let presence = OnlinePresenceService::local();
+        let guest = RealtimeActor::guest("gst_session");
+        presence
+            .register_connection("guest-a".to_string(), "node-a".to_string(), guest.clone())
+            .await?;
+        presence
+            .register_connection("guest-b".to_string(), "node-b".to_string(), guest.clone())
+            .await?;
+        presence.join_room("guest-a", room_id(10)).await?;
+        presence.join_room("guest-b", room_id(10)).await?;
+
+        assert_eq!(guest.user_id(), None);
+        assert_eq!(
+            presence
+                .actor_connection_count_in_room(&guest, room_id(10))
+                .await?,
+            2
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn redis_presence_reads_cross_replica_room_and_node_stats() -> anyhow::Result<()> {
         let (_container, client) = start_redis_with_client().await;
@@ -1723,24 +1866,21 @@ mod tests {
             .register_connection(
                 "conn-a".to_string(),
                 "node-a".to_string(),
-                user_id(1),
-                "1".to_string(),
+                RealtimeActor::user(user_id(1), "1"),
             )
             .await?;
         presence_b
             .register_connection(
                 "conn-b".to_string(),
                 "node-b".to_string(),
-                user_id(2),
-                "2".to_string(),
+                RealtimeActor::user(user_id(2), "2"),
             )
             .await?;
         presence_b
             .register_connection(
                 "conn-c".to_string(),
                 "node-b".to_string(),
-                user_id(3),
-                "3".to_string(),
+                RealtimeActor::user(user_id(3), "3"),
             )
             .await?;
         presence_a.join_room("conn-a", room_id(10)).await?;
@@ -1789,8 +1929,7 @@ mod tests {
             .register_connection(
                 "conn-stale".to_string(),
                 "node-a".to_string(),
-                user_id(1),
-                "1".to_string(),
+                RealtimeActor::user(user_id(1), "1"),
             )
             .await?;
         presence.join_room("conn-stale", room_id(10)).await?;

@@ -13,7 +13,9 @@ use chrono::Utc;
 use synctv_core::models::id::{RoomId, UserId};
 use synctv_realtime::sync::{RealtimeConfig, RealtimeEvent, RealtimeManager, RoomMessageHub};
 mod integration_test_helpers;
-use integration_test_helpers::{broadcast_until_all_clients_receive, create_node, TestRedis};
+use integration_test_helpers::{
+    broadcast_until_all_clients_receive, create_node, user_actor, TestRedis,
+};
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -44,11 +46,11 @@ async fn test_room_hub_connection_manager_state_consistency() {
 
     // Subscribe two users via RealtimeManager (RoomMessageHub)
     let (_rx1, conn_id_1) = manager
-        .subscribe(room_id, user1)
+        .subscribe(room_id, user_actor(user1))
         .await
         .expect("subscribe should succeed");
     let (_rx2, conn_id_2) = manager
-        .subscribe(room_id, user2)
+        .subscribe(room_id, user_actor(user2))
         .await
         .expect("subscribe should succeed");
 
@@ -158,7 +160,7 @@ async fn test_rapid_subscribe_unsubscribe_no_leak() {
     for i in 0..100 {
         let user = UserId::expect_positive(110_000 + i);
         let (_rx, conn_id) = manager
-            .subscribe(room_id, user)
+            .subscribe(room_id, user_actor(user))
             .await
             .expect("subscribe should succeed");
         manager.unsubscribe(&conn_id);
@@ -194,7 +196,7 @@ async fn test_multi_replica_websocket_connections() {
     for i in 0..5 {
         let user_id = UserId::expect_positive(120_000 + i);
         let (rx, conn_id) = node_a
-            .subscribe(room_id, user_id)
+            .subscribe(room_id, user_actor(user_id))
             .await
             .expect("subscribe should succeed");
         clients_a.push((rx, conn_id));
@@ -205,7 +207,7 @@ async fn test_multi_replica_websocket_connections() {
     for i in 0..5 {
         let user_id = UserId::expect_positive(130_000 + i);
         let (rx, conn_id) = node_b
-            .subscribe(room_id, user_id)
+            .subscribe(room_id, user_actor(user_id))
             .await
             .expect("subscribe should succeed");
         clients_b.push((rx, conn_id));
@@ -216,7 +218,7 @@ async fn test_multi_replica_websocket_connections() {
     for i in 0..5 {
         let user_id = UserId::expect_positive(140_000 + i);
         let (rx, conn_id) = node_c
-            .subscribe(room_id, user_id)
+            .subscribe(room_id, user_actor(user_id))
             .await
             .expect("subscribe should succeed");
         clients_c.push((rx, conn_id));

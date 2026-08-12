@@ -2310,7 +2310,7 @@ impl PlaybackService {
                     .media_service
                     .resolve_dynamic_playlist_item(
                         room_id,
-                        resolver_user_id,
+                        crate::provider::ProviderActor::User(actor_user_id),
                         playlist_id,
                         requested_target,
                     )
@@ -2422,9 +2422,11 @@ impl PlaybackService {
         };
         let mut ctx = self.media_service.build_provider_context(
             provider.name(),
-            media.creator_id.as_ref().or(viewer_user_id),
-            &media.room_id,
-            media.creator_id.as_ref(),
+            viewer_user_id.map_or(crate::provider::ProviderActor::System, |user_id| {
+                crate::provider::ProviderActor::User(*user_id)
+            }),
+            media.room_id,
+            media.creator_id,
             media.provider_instance_name.as_deref(),
         );
         ctx = ctx.with_media_id(media.id);
@@ -2481,9 +2483,11 @@ impl PlaybackService {
         };
         let ctx = self.media_service.build_provider_context(
             provider.name(),
-            playlist.creator_id.as_ref().or(viewer_user_id),
-            &playlist.room_id,
-            playlist.creator_id.as_ref(),
+            viewer_user_id.map_or(crate::provider::ProviderActor::System, |user_id| {
+                crate::provider::ProviderActor::User(*user_id)
+            }),
+            playlist.room_id,
+            playlist.creator_id,
             playlist.provider_instance_name.as_deref(),
         );
         let result = match provider.generate_playback(&ctx, source_config).await {
@@ -2539,17 +2543,16 @@ impl PlaybackService {
         let credential_owner = playlist.creator_id.as_ref().ok_or_else(|| {
             Error::Authorization("Dynamic playlist has no active credential owner".to_string())
         })?;
-        let resolver_user = playlist
-            .creator_id
-            .as_ref()
-            .unwrap_or(viewer_user_id.unwrap_or(credential_owner));
+        let resolver_actor = viewer_user_id.map_or(crate::provider::ProviderActor::System, |id| {
+            crate::provider::ProviderActor::User(*id)
+        });
         let item = self
             .media_service
-            .resolve_dynamic_playlist_item(*room_id, *resolver_user, playlist_id, target)
+            .resolve_dynamic_playlist_item(*room_id, resolver_actor, playlist_id, target)
             .await?
             .ok_or_else(|| Error::NotFound("Dynamic playlist item not found".to_string()))?;
         self.preflight_dynamic_playlist_item(
-            Some(resolver_user),
+            viewer_user_id.or(Some(credential_owner)),
             &playlist,
             &item.name,
             &item.source_config,

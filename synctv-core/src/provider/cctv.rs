@@ -196,7 +196,7 @@ impl CctvProvider {
         Ok(PlaybackResult {
             playback_infos,
             default_mode,
-            provider: Self::NAME.to_string(),
+            provider: crate::models::SourceProvider::Cctv,
             provider_instance_name: None,
             duration_seconds,
             playback_kind: Some(crate::models::PlaybackKind::Regular),

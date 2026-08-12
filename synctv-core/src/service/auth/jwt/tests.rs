@@ -63,8 +63,8 @@ fn test_sign_and_verify_access_token() {
         "access token should verify",
     );
 
-    assert_eq!(claims.sub, user_id.to_string());
-    assert!(claims.is_access_token());
+    assert_eq!(claims.user_id(), user_id);
+    assert_eq!(claims.token_type(), TokenType::Access);
 }
 
 #[test]
@@ -88,9 +88,9 @@ fn test_sign_and_verify_refresh_token() {
         "refresh token should verify",
     );
 
-    assert_eq!(claims.sub, user_id.to_string());
-    assert!(claims.is_refresh_token());
-    assert_eq!(claims.sid.as_deref(), Some(session_id.as_str()));
+    assert_eq!(claims.user_id(), user_id);
+    assert_eq!(claims.token_type(), TokenType::Refresh);
+    assert_eq!(claims.session_id(), Some(session_id.as_str()));
 }
 
 #[test]
@@ -107,6 +107,59 @@ fn test_refresh_token_without_session_id_is_rejected() {
     );
 
     assert!(matches!(result, Err(Error::InvalidInput(message)) if message.contains("session id")));
+}
+
+#[test]
+fn test_empty_token_identity_fields_are_rejected_during_decode() {
+    let jwt = create_jwt_service();
+    let now = crate::SystemClock.now();
+    let user_id = UserId::new().to_string();
+    let cases = [
+        serde_json::json!({
+            "sub": user_id,
+            "typ": "access",
+            "jti": "",
+            "iat": now.timestamp(),
+            "exp": (now + Duration::hours(1)).timestamp(),
+            "pv": 0,
+            "cbm": "password"
+        }),
+        serde_json::json!({
+            "sub": user_id,
+            "typ": "refresh",
+            "sid": "",
+            "jti": "test-jti",
+            "iat": now.timestamp(),
+            "exp": (now + Duration::hours(1)).timestamp(),
+            "pv": 0,
+            "cbm": "password"
+        }),
+        serde_json::json!({
+            "sub": user_id,
+            "typ": "access",
+            "sid": "  ",
+            "jti": "test-jti",
+            "iat": now.timestamp(),
+            "exp": (now + Duration::hours(1)).timestamp(),
+            "pv": 0,
+            "cbm": "password"
+        }),
+    ];
+
+    for claims in cases {
+        let token = ok(
+            encode(
+                &Header::new(Algorithm::HS256),
+                &claims,
+                &EncodingKey::from_secret(TEST_JWT_SECRET.as_bytes()),
+            ),
+            "malformed token should encode",
+        );
+        assert!(matches!(
+            jwt.verify_token(&token),
+            Err(Error::Authentication(_))
+        ));
+    }
 }
 
 #[test]
@@ -145,8 +198,8 @@ fn test_token_pair_can_share_session_id() {
         "refresh token should verify",
     );
 
-    assert_eq!(access_claims.sid.as_deref(), Some(session_id.as_str()));
-    assert_eq!(refresh_claims.sid.as_deref(), Some(session_id.as_str()));
+    assert_eq!(access_claims.session_id(), Some(session_id.as_str()));
+    assert_eq!(refresh_claims.session_id(), Some(session_id.as_str()));
 }
 
 #[test]
@@ -167,23 +220,15 @@ fn test_verify_wrong_token_type() {
 fn test_access_token_rejects_invalid_user_id_claim() {
     let jwt = create_jwt_service();
     let now = crate::SystemClock.now();
-    let claims = Claims {
-        sub: "not-a-user-id".to_string(),
-        typ: "access".to_string(),
-        jti: "test-jti".to_string(),
-        iat: now.timestamp(),
-        exp: (now + Duration::hours(1)).timestamp(),
-        pv: 0,
-        sid: None,
-        amr: None,
-        cbm: None,
-        opi: None,
-        ops: None,
-        eml: None,
-        wcid: None,
-        iss: None,
-        aud: None,
-    };
+    let claims = serde_json::json!({
+        "sub": "not-a-user-id",
+        "typ": "access",
+        "jti": "test-jti",
+        "iat": now.timestamp(),
+        "exp": (now + Duration::hours(1)).timestamp(),
+        "pv": 0,
+        "cbm": "password"
+    });
     let token = ok(
         encode(
             &Header::new(Algorithm::HS256),
@@ -202,18 +247,16 @@ fn test_access_token_rejects_invalid_user_id_claim() {
 fn test_guest_token_rejects_invalid_room_id_claim() {
     let jwt = create_jwt_service();
     let now = crate::SystemClock.now();
-    let claims = GuestClaims {
-        sub: "guest:not-a-room-id:session".to_string(),
-        room_id: "not-a-room-id".to_string(),
-        session_id: "session".to_string(),
-        jti: "test-jti".to_string(),
-        typ: "guest".to_string(),
-        iat: now.timestamp(),
-        exp: (now + Duration::hours(1)).timestamp(),
-        gv: 0,
-        iss: None,
-        aud: None,
-    };
+    let claims = serde_json::json!({
+        "sub": "guest:not-a-room-id:session",
+        "typ": "guest",
+        "room_id": "not-a-room-id",
+        "session_id": "session",
+        "jti": "test-jti",
+        "iat": now.timestamp(),
+        "exp": (now + Duration::hours(1)).timestamp(),
+        "gv": 0
+    });
     let token = ok(
         encode(
             &Header::new(Algorithm::HS256),
@@ -263,11 +306,8 @@ fn test_sign_and_verify_guest_token() {
     let token = sign_guest_token(&jwt, &room_id);
     let claims = ok(jwt.verify_guest_token(&token), "guest token should verify");
 
-    assert_eq!(ok(claims.room_id(), "guest room ID should parse"), room_id);
-    assert!(claims.is_guest());
-    assert_eq!(claims.typ, "guest");
+    assert_eq!(claims.room_id(), room_id);
     assert!(!claims.session_id().is_empty());
-    assert!(claims.sub.starts_with("guest:"));
 }
 
 #[test]
@@ -337,131 +377,102 @@ fn test_claims_user_id_extraction() {
     let user_id = UserId::new();
     let token = sign_access_token(&jwt, &user_id);
     let claims = ok(jwt.verify_token(&token), "token should verify");
-    assert_eq!(ok(claims.user_id(), "user ID claim should parse"), user_id);
+    assert_eq!(claims.user_id(), user_id);
 }
 
 #[test]
-fn test_claims_type_predicates() {
-    let access = Claims {
-        sub: "u1".into(),
-        typ: "access".into(),
-        jti: String::new(),
-        iat: 0,
-        exp: 0,
-        pv: 0,
-        sid: None,
-        amr: None,
-        cbm: None,
-        opi: None,
-        ops: None,
-        eml: None,
-        wcid: None,
-        iss: None,
-        aud: None,
-    };
-    assert!(access.is_access_token());
-    assert!(!access.is_refresh_token());
-    assert!(!access.is_guest_token());
+fn test_claims_credential_binding_round_trips_typed_variants() {
+    let jwt = create_jwt_service();
+    let user_id = UserId::new();
+    let bindings = [
+        TokenCredentialBinding::Password { version: 7 },
+        TokenCredentialBinding::OAuth2 {
+            provider_instance_name: "github".to_string(),
+            provider_user_id: "provider-user".to_string(),
+        },
+        TokenCredentialBinding::WebAuthn {
+            credential_id: vec![0, 1, 2, 253, 254, 255],
+        },
+        TokenCredentialBinding::Email {
+            email: "user@example.com".to_string(),
+        },
+    ];
 
-    let refresh = Claims {
-        sub: "u1".into(),
-        typ: "refresh".into(),
-        jti: String::new(),
-        iat: 0,
-        exp: 0,
-        pv: 0,
-        sid: None,
-        amr: None,
-        cbm: None,
-        opi: None,
-        ops: None,
-        eml: None,
-        wcid: None,
-        iss: None,
-        aud: None,
-    };
-    assert!(!refresh.is_access_token());
-    assert!(refresh.is_refresh_token());
-    assert!(!refresh.is_guest_token());
-
-    let guest = Claims {
-        sub: "u1".into(),
-        typ: "guest".into(),
-        jti: String::new(),
-        iat: 0,
-        exp: 0,
-        pv: 0,
-        sid: None,
-        amr: None,
-        cbm: None,
-        opi: None,
-        ops: None,
-        eml: None,
-        wcid: None,
-        iss: None,
-        aud: None,
-    };
-    assert!(!guest.is_access_token());
-    assert!(!guest.is_refresh_token());
-    assert!(guest.is_guest_token());
-}
-
-fn base_test_claims() -> Claims {
-    Claims {
-        sub: "1".into(),
-        typ: "refresh".into(),
-        jti: "test-jti".into(),
-        iat: 0,
-        exp: 3600,
-        pv: 7,
-        sid: Some("session".into()),
-        amr: None,
-        cbm: None,
-        opi: None,
-        ops: None,
-        eml: None,
-        wcid: None,
-        iss: None,
-        aud: None,
+    for binding in bindings {
+        let token = ok(
+            jwt.sign_refresh_token_with_session(&user_id, 7, None, "session", &binding),
+            "refresh token should sign",
+        );
+        let claims = ok(
+            jwt.verify_refresh_token(&token),
+            "refresh token should verify",
+        );
+        assert_eq!(claims.credential_binding(), binding);
     }
 }
 
 #[test]
-fn test_claims_credential_binding_parses_password_binding() {
-    let mut claims = base_test_claims();
-    claims.cbm = Some("password".to_string());
-
-    assert!(matches!(
-        ok(
-            claims.credential_binding(),
-            "credential binding should parse"
-        ),
-        TokenCredentialBinding::Password { version: 7 }
-    ));
-}
-
-#[test]
 fn test_claims_credential_binding_rejects_malformed_binding() {
-    let mut missing_oauth_field = base_test_claims();
-    missing_oauth_field.cbm = Some("oauth2".to_string());
-    missing_oauth_field.opi = Some("github".to_string());
-    assert!(matches!(
-        missing_oauth_field.credential_binding(),
-        Err(Error::Authentication(_))
-    ));
+    let jwt = create_jwt_service();
+    let now = crate::SystemClock.now();
+    let base = serde_json::json!({
+        "sub": UserId::new().to_string(),
+        "typ": "access",
+        "jti": "test-jti",
+        "iat": now.timestamp(),
+        "exp": (now + Duration::hours(1)).timestamp(),
+        "pv": 0
+    });
 
-    let mut invalid_webauthn = base_test_claims();
-    invalid_webauthn.cbm = Some("webauthn".to_string());
-    invalid_webauthn.wcid = Some("***not-base64url***".to_string());
-    assert!(matches!(
-        invalid_webauthn.credential_binding(),
-        Err(Error::Authentication(_))
-    ));
+    for binding in [
+        serde_json::json!({"cbm": "oauth2", "opi": "github"}),
+        serde_json::json!({"cbm": "unknown"}),
+    ] {
+        let mut claims = base.clone();
+        claims
+            .as_object_mut()
+            .expect("test claims should be an object")
+            .extend(
+                binding
+                    .as_object()
+                    .expect("binding should be an object")
+                    .clone(),
+            );
+        let token = ok(
+            encode(
+                &Header::new(Algorithm::HS256),
+                &claims,
+                &EncodingKey::from_secret(TEST_JWT_SECRET.as_bytes()),
+            ),
+            "malformed token should encode",
+        );
 
-    let mut unknown = base_test_claims();
-    unknown.cbm = Some("unknown".to_string());
+        assert!(matches!(
+            jwt.verify_access_token(&token),
+            Err(Error::Authentication(_))
+        ));
+    }
+
+    let mut invalid_webauthn = base;
+    invalid_webauthn
+        .as_object_mut()
+        .expect("test claims should be an object")
+        .extend(
+            serde_json::json!({"cbm": "webauthn", "wcid": "***not-base64url***"})
+                .as_object()
+                .expect("binding should be an object")
+                .clone(),
+        );
+    let token = ok(
+        encode(
+            &Header::new(Algorithm::HS256),
+            &invalid_webauthn,
+            &EncodingKey::from_secret(TEST_JWT_SECRET.as_bytes()),
+        ),
+        "malformed token should encode",
+    );
     assert!(matches!(
-        unknown.credential_binding(),
+        jwt.verify_access_token(&token),
         Err(Error::Authentication(_))
     ));
 }
@@ -472,7 +483,7 @@ fn test_guest_claims_room_id_extraction() {
     let room_id = RoomId::new();
     let token = sign_guest_token(&jwt, &room_id);
     let claims = ok(jwt.verify_guest_token(&token), "guest token should verify");
-    assert_eq!(ok(claims.room_id(), "guest room ID should parse"), room_id);
+    assert_eq!(claims.room_id(), room_id);
 }
 
 #[test]
@@ -481,25 +492,13 @@ fn test_guest_claims_sub_format() {
     let room_id = RoomId::new();
     let token = sign_guest_token(&jwt, &room_id);
     let claims = ok(jwt.verify_guest_token(&token), "guest token should verify");
-    assert!(claims.sub.starts_with("guest:"));
-    assert!(claims.sub.contains(&room_id.to_string()));
-}
-
-#[test]
-fn test_guest_claims_is_guest_false_for_non_guest_sub() {
-    let claims = GuestClaims {
-        sub: "user:some_id".into(),
-        room_id: "room1".into(),
-        session_id: "sess1".into(),
-        jti: "test-jti".into(),
-        typ: "guest".into(),
-        iat: 0,
-        exp: 0,
-        gv: 0,
-        iss: None,
-        aud: None,
-    };
-    assert!(!claims.is_guest());
+    let serialized = ok(
+        serde_json::to_value(claims),
+        "guest claims should serialize",
+    );
+    assert!(serialized["sub"]
+        .as_str()
+        .is_some_and(|subject| subject.starts_with(&format!("guest:{room_id}:"))));
 }
 
 #[test]
@@ -559,23 +558,15 @@ fn test_expired_token_is_rejected() {
     );
 
     let past = crate::SystemClock.now() - Duration::hours(2);
-    let claims = Claims {
-        sub: "expired_user".into(),
-        typ: "access".into(),
-        jti: "test-jti".into(),
-        iat: (past - Duration::hours(3)).timestamp(),
-        exp: past.timestamp(),
-        pv: 0,
-        sid: None,
-        amr: None,
-        cbm: None,
-        opi: None,
-        ops: None,
-        eml: None,
-        wcid: None,
-        iss: None,
-        aud: None,
-    };
+    let claims = serde_json::json!({
+        "sub": UserId::new().to_string(),
+        "typ": "access",
+        "jti": "test-jti",
+        "iat": (past - Duration::hours(3)).timestamp(),
+        "exp": past.timestamp(),
+        "pv": 0,
+        "cbm": "password"
+    });
     let token = ok(
         encode(
             &Header::new(Algorithm::HS256),
@@ -627,11 +618,12 @@ fn test_jti_is_unique_per_token() {
     let claims2 = ok(jwt.verify_token(&token2), "second token should verify");
 
     assert_ne!(
-        claims1.jti, claims2.jti,
+        claims1.token_id(),
+        claims2.token_id(),
         "Each token should have a unique jti"
     );
-    assert!(!claims1.jti.is_empty());
-    assert!(!claims2.jti.is_empty());
+    assert!(!claims1.token_id().is_empty());
+    assert!(!claims2.token_id().is_empty());
 }
 
 #[test]

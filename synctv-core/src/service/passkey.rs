@@ -693,7 +693,7 @@ impl PasskeyService {
             ));
         }
 
-        if registration_policy.need_review {
+        if registration_policy.requires_review() {
             let pending_user = self
                 .user_service
                 .create_webauthn_registration_request(

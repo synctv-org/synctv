@@ -1074,8 +1074,8 @@ impl MediaProvider for SynologyProvider {
             .credential_owner_or_user_id()
             .ok_or(ProviderError::CredentialRequired)?;
         Ok(vec![ProviderCredentialDependency::new(
-            Self::NAME,
-            owner.to_string(),
+            crate::models::SourceProvider::Synology,
+            *owner,
             Self::source_server_id(source_config)?,
         )])
     }
@@ -2103,7 +2103,7 @@ async fn generate_video_playback(
     Ok(PlaybackResult {
         playback_infos,
         default_mode: default_mode.to_string(),
-        provider: SynologyProvider::NAME.to_string(),
+        provider: crate::models::SourceProvider::Synology,
         provider_instance_name: auth.instance_name.clone(),
         duration_seconds: duration
             .map(|duration| std::time::Duration::from_secs(duration).as_secs_f64()),
@@ -2135,7 +2135,7 @@ fn single_result(
             },
         )]),
         default_mode: mode.to_string(),
-        provider: SynologyProvider::NAME.to_string(),
+        provider: crate::models::SourceProvider::Synology,
         provider_instance_name: instance_name,
         duration_seconds,
         playback_kind: is_live.map(|value| {

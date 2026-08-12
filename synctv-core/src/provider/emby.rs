@@ -1619,7 +1619,7 @@ impl EmbyProvider {
         Ok(PlaybackResult {
             playback_infos,
             default_mode,
-            provider: Self::NAME.to_string(),
+            provider: crate::models::SourceProvider::Emby,
             provider_instance_name: config.provider_instance_name.clone(),
             duration_seconds: item
                 .duration_seconds
@@ -1784,8 +1784,8 @@ impl MediaProvider for EmbyProvider {
         })?;
 
         Ok(vec![ProviderCredentialDependency::new(
-            Self::NAME,
-            credential_owner_id.to_string(),
+            crate::models::SourceProvider::Emby,
+            *credential_owner_id,
             server_id,
         )])
     }
@@ -3040,7 +3040,7 @@ mod tests {
                 },
             )]),
             default_mode: "source".to_string(),
-            provider: EmbyProvider::NAME.to_string(),
+            provider: crate::models::SourceProvider::Emby,
             provider_instance_name: None,
             duration_seconds: Some(60.0),
             playback_kind: Some(crate::models::PlaybackKind::Regular),

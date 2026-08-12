@@ -31,6 +31,7 @@ pub struct FnosMediaLibrary {
 #[derive(Debug, Clone, Serialize)]
 pub struct FnosMediaListRequest {
     pub ancestor_guid: Option<String>,
+    pub parent_guid: Option<String>,
     pub exclude_grouped_video: u32,
     pub sort_type: String,
     pub sort_column: String,
@@ -49,8 +50,7 @@ pub struct FnosMediaTags {
 pub struct FnosMediaList {
     #[serde(default)]
     pub total: u64,
-    #[serde(default)]
-    pub list: Vec<FnosMediaItem>,
+    pub list: Option<Vec<FnosMediaItem>>,
     pub mdb_name: Option<String>,
     pub mdb_category: Option<String>,
 }
@@ -109,12 +109,56 @@ impl FnosMediaItem {
 
     #[must_use]
     pub fn display_title(&self) -> String {
-        self.tv_title
-            .as_deref()
-            .filter(|value| !value.is_empty())
-            .or_else(|| (!self.title.is_empty()).then_some(self.title.as_str()))
-            .unwrap_or("FNOS media")
-            .to_string()
+        match self.item_type.to_ascii_lowercase().as_str() {
+            "season" if self.title.is_empty() => format!("S{:02}", self.season_number),
+            _ => (!self.title.is_empty())
+                .then_some(self.title.as_str())
+                .or_else(|| self.tv_title.as_deref().filter(|value| !value.is_empty()))
+                .unwrap_or("FNOS media")
+                .to_string(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(item_type: &str, title: &str, season_number: u32) -> FnosMediaItem {
+        FnosMediaItem {
+            guid: "item".to_string(),
+            title: title.to_string(),
+            item_type: item_type.to_string(),
+            poster: None,
+            tv_title: Some("Series".to_string()),
+            parent_title: None,
+            parent_guid: None,
+            ancestor_guid: None,
+            ancestor_name: None,
+            ancestor_category: None,
+            watched: 0,
+            is_favorite: 0,
+            ts: 0,
+            duration: 0,
+            episode_number: 0,
+            season_number,
+            vote_average: None,
+            overview: None,
+            media_guid: None,
+            video_guid: None,
+            audio_guid: None,
+            subtitle_guid: None,
+            single_child_guid: None,
+        }
+    }
+
+    #[test]
+    fn uses_native_episode_title_and_numbered_season_title() {
+        assert_eq!(
+            item("Episode", "First Tide", 1).display_title(),
+            "First Tide"
+        );
+        assert_eq!(item("Season", "", 2).display_title(), "S02");
     }
 }
 

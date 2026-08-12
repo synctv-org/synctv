@@ -61,7 +61,7 @@ impl TwitchApiImpl {
         publish_provider_credential_changed(
             &self.event_service,
             user_id,
-            TwitchProvider::NAME,
+            synctv_core::models::SourceProvider::Twitch,
             &server_id,
         );
         Ok(BindResponse {
@@ -113,7 +113,7 @@ impl TwitchApiImpl {
             publish_provider_credential_changed(
                 &self.event_service,
                 user_id,
-                TwitchProvider::NAME,
+                synctv_core::models::SourceProvider::Twitch,
                 &req.server_id,
             );
         }

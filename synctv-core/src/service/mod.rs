@@ -273,15 +273,16 @@ pub use user::{
 };
 pub use user::{
     AccountRegistrationOutcome, AuthFactorMethod, AuthenticatedLogin,
-    CreateUserAvatarUploadSession, LoginSession, LoginSessionState, LoginSessionStore,
-    LoginStartChallenge, MfaChallenge, MfaSession, MfaSessionStore, OpaqueLoginStartChallenge,
-    OpaquePasswordUpdateVerification, OpaqueRegistrationPurpose, OpaqueRegistrationSession,
-    OpaqueRegistrationSessionStore, OpaqueRegistrationStartChallenge, PendingAccountRegistration,
-    RefreshRateLimitConfig, RegistrationMode, RegistrationPolicy, SensitiveVerificationChallenge,
-    SensitiveVerificationOutcome, SensitiveVerificationSession, SensitiveVerificationSessionStore,
-    TotpRecoveryCodes, TotpSetup, UserDeletedChatMessage, UserDeletedRoomImpact,
-    UserDeletionOptions, UserDeletionSource, UserDeletionSummary, UserRestoreOptions,
-    UserRestoreResult, UserService, UserServiceDependencies, UserServiceRuntimeOptions,
+    CreateUserAvatarUploadSession, LoginSession, LoginSessionIdentity, LoginSessionState,
+    LoginSessionStore, LoginStartChallenge, MfaChallenge, MfaSession, MfaSessionStore,
+    OpaqueLoginStartChallenge, OpaquePasswordUpdateVerification, OpaqueRegistrationPurpose,
+    OpaqueRegistrationSession, OpaqueRegistrationSessionStore, OpaqueRegistrationStartChallenge,
+    PendingAccountRegistration, RefreshRateLimitConfig, RegistrationMode, RegistrationPolicy,
+    SensitiveVerificationChallenge, SensitiveVerificationOutcome, SensitiveVerificationSession,
+    SensitiveVerificationSessionStore, TotpRecoveryCodes, TotpSetup, UserDeletedChatMessage,
+    UserDeletedRoomImpact, UserDeletionOptions, UserDeletionSource, UserDeletionSummary,
+    UserRestoreOptions, UserRestoreResult, UserService, UserServiceDependencies,
+    UserServiceRuntimeOptions,
 };
 pub use user::{
     InMemoryLoginSessionStore, InMemoryMfaSessionStore, InMemoryOpaqueRegistrationSessionStore,

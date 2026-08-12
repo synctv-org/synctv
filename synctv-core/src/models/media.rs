@@ -442,8 +442,7 @@ pub struct PlaybackResult {
     pub name: String,
 
     /// Provider that generated this playback result.
-    #[serde(default)]
-    pub provider: String,
+    pub provider: SourceProvider,
 
     /// Provider instance selected for this playback result, when a named
     /// instance was used.
@@ -775,6 +774,12 @@ pub enum PlaybackFnosMedia {
         media_guid: String,
         quality_index: Option<usize>,
     },
+    MediaOriginalRefresh {
+        credential_owner_id: String,
+        server_id: String,
+        media_guid: String,
+        path: String,
+    },
     TranscodeRefresh {
         credential_owner_id: String,
         server_id: String,
@@ -804,6 +809,10 @@ pub enum FnosProxyResource {
     Media {
         media_guid: String,
         quality_index: Option<usize>,
+    },
+    MediaOriginal {
+        media_guid: String,
+        path: String,
     },
     Transcode {
         spec: FnosTranscodeResource,
@@ -1044,7 +1053,8 @@ pub enum PlaybackTwitchMedia {
         resource_kind: TwitchPlaybackResourceKind,
         resource_id: String,
         quality_name: String,
-        credential_owner_id: UserId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credential_owner_id: Option<UserId>,
         provider_instance_name: Option<String>,
     },
     Proxy {
@@ -1065,7 +1075,8 @@ pub enum PlaybackYoutubeMedia {
     Refresh {
         video_id: String,
         resource: YoutubePlaybackResource,
-        credential_owner_id: UserId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credential_owner_id: Option<UserId>,
         provider_instance_name: Option<String>,
     },
     Proxy {
@@ -1087,7 +1098,8 @@ pub enum PlaybackDouyinMedia {
         resource: DouyinPlaybackResource,
         variant_key: String,
         root_url: String,
-        credential_owner_id: UserId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credential_owner_id: Option<UserId>,
         provider_instance_name: Option<String>,
     },
     Proxy {
@@ -1109,7 +1121,8 @@ pub enum PlaybackTikTokMedia {
         resource: TikTokPlaybackResource,
         variant_key: String,
         root_url: String,
-        credential_owner_id: UserId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credential_owner_id: Option<UserId>,
         provider_instance_name: Option<String>,
     },
     Proxy {
@@ -1428,7 +1441,8 @@ pub enum PlaybackYoutubeSubtitle {
         video_id: String,
         track_id: String,
         target_language_code: Option<String>,
-        credential_owner_id: UserId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credential_owner_id: Option<UserId>,
         provider_instance_name: Option<String>,
     },
     Proxy {
@@ -1450,7 +1464,8 @@ pub enum PlaybackTikTokSubtitle {
         resource: TikTokPlaybackResource,
         language: String,
         format: String,
-        credential_owner_id: UserId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credential_owner_id: Option<UserId>,
         provider_instance_name: Option<String>,
     },
     Proxy {
@@ -2689,7 +2704,7 @@ impl PlaybackResult {
             playlist_id: media.playlist_id,
             room_id: media.room_id,
             name: media.name.clone(),
-            provider: media.source_provider.to_string(),
+            provider: media.source_provider,
             provider_instance_name: media.provider_instance_name.clone(),
             position: media.position,
             playback_infos,
@@ -2714,7 +2729,7 @@ impl PlaybackResult {
             playlist_id,
             room_id,
             name,
-            provider: String::new(),
+            provider: None,
             provider_instance_name: None,
             position,
             playback_infos: indexmap::IndexMap::new(),
@@ -2746,7 +2761,7 @@ pub struct PlaybackResultBuilder {
     playlist_id: Option<PlaylistId>,
     room_id: RoomId,
     name: String,
-    provider: String,
+    provider: Option<SourceProvider>,
     provider_instance_name: Option<String>,
     position: f64,
     /// Uses `IndexMap` to guarantee insertion-order determinism when falling
@@ -2776,8 +2791,8 @@ impl PlaybackResultBuilder {
     }
 
     #[must_use]
-    pub fn provider(mut self, provider: String) -> Self {
-        self.provider = provider;
+    pub fn provider(mut self, provider: SourceProvider) -> Self {
+        self.provider = Some(provider);
         self
     }
 
@@ -2843,7 +2858,7 @@ impl PlaybackResultBuilder {
             playlist_id: self.playlist_id,
             room_id: self.room_id,
             name: self.name,
-            provider: self.provider,
+            provider: self.provider?,
             provider_instance_name: self.provider_instance_name,
             position: self.position,
             playback_infos: self.playback_infos.into_iter().collect(),

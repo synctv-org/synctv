@@ -86,7 +86,7 @@ impl ConnectionManager {
     /// rate limiting to silently stop working.
     ///
     /// Also refreshes TTLs on connection metadata keys (`conn_mgr:conn:*`,
-    /// `conn_mgr:user:*`, `conn_mgr:room:*`) to prevent them from expiring
+    /// `conn_mgr:actor:*`, `conn_mgr:room:*`) to prevent them from expiring
     /// while the connection is still active.
     ///
     /// Additionally, synchronizes local connection counts to Redis counters to handle
@@ -103,17 +103,17 @@ impl ConnectionManager {
             return;
         };
 
-        // Collect unique user and room keys from active connections
+        // Collect unique actor and room keys from active connections
         let mut counter_keys = std::collections::HashSet::new();
         let mut metadata_keys = std::collections::HashSet::new();
-        let mut has_user_metadata = false;
+        let mut has_actor_metadata = false;
         let mut has_room_metadata = false;
 
-        for entry in self.user_connections.iter() {
+        for entry in self.actor_connections.iter() {
             if !entry.value().is_empty() {
-                counter_keys.insert(self.user_counter_key(entry.key()));
-                metadata_keys.insert(self.user_index_key(entry.key()));
-                has_user_metadata = true;
+                counter_keys.insert(self.actor_counter_key(entry.key()));
+                metadata_keys.insert(self.actor_index_key(entry.key()));
+                has_actor_metadata = true;
             }
         }
         for entry in self.room_connections.iter() {
@@ -124,8 +124,8 @@ impl ConnectionManager {
             }
         }
 
-        if has_user_metadata {
-            metadata_keys.insert(self.user_index_directory_key());
+        if has_actor_metadata {
+            metadata_keys.insert(self.actor_index_directory_key());
         }
         if has_room_metadata {
             metadata_keys.insert(self.room_index_directory_key());
@@ -306,13 +306,13 @@ impl ConnectionManager {
     /// still legitimately active on other replicas.
     async fn sync_local_counts_to_redis(&self, conn: &mut redis::aio::ConnectionManager) {
         // Collect local counts first (avoid holding locks during Redis operations)
-        let mut user_counts: std::collections::HashMap<String, usize> =
+        let mut actor_counts: std::collections::HashMap<String, usize> =
             std::collections::HashMap::new();
-        for entry in self.user_connections.iter() {
+        for entry in self.actor_connections.iter() {
             let count = entry.value().len();
             if count > 0 {
-                let key = self.user_counter_key(entry.key());
-                user_counts.insert(key, count);
+                let key = self.actor_counter_key(entry.key());
+                actor_counts.insert(key, count);
             }
         }
 
@@ -338,10 +338,10 @@ impl ConnectionManager {
         let mut sync_count = 0u64;
         let mut sync_errors = 0u64;
 
-        // Sync user counters
-        for (key, local_count) in &user_counts {
+        // Sync actor counters
+        for (key, local_count) in &actor_counts {
             let script_result: Result<Vec<i64>, _> = self
-                .redis_op("sync user connection counter", async {
+                .redis_op("sync actor connection counter", async {
                     SYNC_COUNTER_MIN_SCRIPT
                         .key(key)
                         .arg(usize_to_i64_saturating(*local_count))
@@ -360,7 +360,7 @@ impl ConnectionManager {
                             key = %key,
                             old_value = old_value,
                             new_value = *local_count,
-                            "Raised user connection counter in Redis to cover local connections"
+                            "Raised actor connection counter in Redis to cover local connections"
                         );
                     }
                 }
@@ -370,7 +370,7 @@ impl ConnectionManager {
                 }
                 Err(e) => {
                     sync_errors += 1;
-                    warn!(key = %key, error = %e, "Failed to sync user counter to Redis");
+                    warn!(key = %key, error = %e, "Failed to sync actor counter to Redis");
                 }
             }
         }
@@ -458,7 +458,7 @@ impl ConnectionManager {
     /// This method performs a full reconciliation between local state and Redis:
     /// 1. Syncs local connection counts to Redis counters
     /// 2. Writes missing connection metadata to Redis
-    /// 3. Cleans up stale Redis user/room index members that reference missing metadata
+    /// 3. Cleans up stale Redis actor/room index members that reference missing metadata
     ///
     /// # When to Call
     ///
@@ -488,7 +488,7 @@ impl ConnectionManager {
         // Step 2: Sync connection metadata to Redis
         self.sync_connection_metadata_to_redis(&mut conn).await;
 
-        // Step 3: Clean up stale Redis user/room index members that point to
+        // Step 3: Clean up stale Redis actor/room index members that point to
         // missing connection metadata.
         // Important: this must NOT delete `conn_mgr:conn:*` keys globally just
         // because this replica does not know about them. Those keys may belong
@@ -505,15 +505,16 @@ impl ConnectionManager {
 
         let mut synced = 0u64;
         let mut errors = 0u64;
-        let user_index_directory_key = self.user_index_directory_key();
+        let actor_index_directory_key = self.actor_index_directory_key();
         let room_index_directory_key = self.room_index_directory_key();
-        let mut has_user_index = false;
+        let mut has_actor_index = false;
         let mut has_room_index = false;
 
         for entry in self.connections.iter() {
             let conn_info = entry.value();
             let key = self.conn_metadata_key(&conn_info.connection_id);
-            let user_index_key = self.user_index_key(conn_info.user_id);
+            let actor_key = conn_info.actor.connection_key();
+            let actor_index_key = self.actor_index_key(&actor_key);
             let room_index_key = conn_info
                 .room_id
                 .as_ref()
@@ -559,30 +560,30 @@ impl ConnectionManager {
 
             if let Err(e) = self
                 .redis_op(
-                    "repair user connection index membership",
-                    conn.sadd::<_, _, ()>(&user_index_key, &conn_info.connection_id),
+                    "repair actor connection index membership",
+                    conn.sadd::<_, _, ()>(&actor_index_key, &conn_info.connection_id),
                 )
                 .await
             {
                 errors += 1;
                 warn!(
                     connection_id = %conn_info.connection_id,
-                    user_id = %conn_info.user_id,
+                    actor = %conn_info.actor,
                     error = %e,
-                    "Failed to repair user connection index membership in Redis"
+                    "Failed to repair actor connection index membership in Redis"
                 );
             }
             let _: Result<(), _> = self
                 .redis_op(
-                    "repair user connection index directory",
-                    conn.sadd(&user_index_directory_key, &user_index_key),
+                    "repair actor connection index directory",
+                    conn.sadd(&actor_index_directory_key, &actor_index_key),
                 )
                 .await;
-            has_user_index = true;
+            has_actor_index = true;
             let _: Result<(), _> = self
                 .redis_op(
-                    "refresh user connection index TTL",
-                    conn.expire(&user_index_key, CONNECTION_METADATA_TTL_SECONDS),
+                    "refresh actor connection index TTL",
+                    conn.expire(&actor_index_key, CONNECTION_METADATA_TTL_SECONDS),
                 )
                 .await;
 
@@ -618,11 +619,11 @@ impl ConnectionManager {
             }
         }
 
-        if has_user_index {
+        if has_actor_index {
             let _: Result<(), _> = self
                 .redis_op(
-                    "refresh user connection index directory TTL",
-                    conn.expire(&user_index_directory_key, CONNECTION_METADATA_TTL_SECONDS),
+                    "refresh actor connection index directory TTL",
+                    conn.expire(&actor_index_directory_key, CONNECTION_METADATA_TTL_SECONDS),
                 )
                 .await;
         }
@@ -715,8 +716,8 @@ impl ConnectionManager {
                 Some(metadata_json) => {
                     match serde_json::from_str::<ConnectionInfoPersistent>(&metadata_json) {
                         Ok(info) => {
-                            let matches_user =
-                                expected_user_id.is_none_or(|user_id| info.user_id == *user_id);
+                            let matches_user = expected_user_id
+                                .is_none_or(|user_id| info.actor.user_id() == Some(*user_id));
                             let matches_room = expected_room_id
                                 .is_none_or(|room_id| info.room_id.as_ref() == Some(room_id));
 
@@ -776,10 +777,10 @@ impl ConnectionManager {
         Ok(valid_conn_ids)
     }
 
-    /// Clean up stale Redis user/room index members whose metadata key is gone.
+    /// Clean up stale Redis actor/room index members whose metadata key is gone.
     ///
     /// This only removes index members that are provably invalid:
-    /// - `conn_mgr:user:*` set members without a matching `conn_mgr:conn:*`
+    /// - `conn_mgr:actor:*` set members without a matching `conn_mgr:conn:*`
     /// - `conn_mgr:room:*` set members without a matching `conn_mgr:conn:*`
     ///
     /// It deliberately does not delete arbitrary `conn_mgr:conn:*` keys by
@@ -790,7 +791,7 @@ impl ConnectionManager {
         use redis::AsyncCommands;
 
         let directories = [
-            self.user_index_directory_key(),
+            self.actor_index_directory_key(),
             self.room_index_directory_key(),
         ];
         let mut cleaned = 0u64;
@@ -967,8 +968,8 @@ impl ConnectionManager {
     pub fn get_connection_id(&self, room_id: &RoomId, user_id: &UserId) -> Option<String> {
         // Collect IDs first to avoid holding cross-DashMap locks
         let conn_ids: Vec<String> = self
-            .user_connections
-            .get(user_id)
+            .actor_connections
+            .get(&Self::user_actor_key(user_id))
             .map(|ids| ids.clone())
             .unwrap_or_default();
 
@@ -986,7 +987,7 @@ impl ConnectionManager {
     pub async fn try_join_voice_rtc(
         &self,
         room_id: &RoomId,
-        user_id: &UserId,
+        actor: &synctv_core::models::RealtimeActor,
         conn_id: &str,
         max_participants: usize,
     ) -> Result<VoiceRtcJoinOutcome, String> {
@@ -995,7 +996,7 @@ impl ConnectionManager {
         let current = self
             .get_connection(conn_id)
             .ok_or_else(|| "Connection not found".to_string())?;
-        if &current.user_id != user_id || current.room_id.as_ref() != Some(room_id) {
+        if &current.actor != actor || current.room_id.as_ref() != Some(room_id) {
             return Err("Connection is not in this room".to_string());
         }
         if current.voice_rtc_joined {
@@ -1042,9 +1043,9 @@ impl ConnectionManager {
             false
         };
 
-        self.mark_voice_rtc_joined(room_id, user_id, conn_id, true);
+        self.mark_voice_rtc_joined(room_id, actor, conn_id, true);
         if let Err(error) = self.sync_connection_metadata_distributed(conn_id).await {
-            self.mark_voice_rtc_joined(room_id, user_id, conn_id, false);
+            self.mark_voice_rtc_joined(room_id, actor, conn_id, false);
             if distributed_reserved {
                 self.release_voice_rtc_slot_best_effort(room_id, conn_id)
                     .await;
@@ -1057,7 +1058,7 @@ impl ConnectionManager {
     pub async fn leave_voice_rtc(
         &self,
         room_id: &RoomId,
-        user_id: &UserId,
+        actor: &synctv_core::models::RealtimeActor,
         conn_id: &str,
     ) -> Result<bool, String> {
         let room_lock = self.voice_room_lock(room_id);
@@ -1065,16 +1066,16 @@ impl ConnectionManager {
         let current = self
             .get_connection(conn_id)
             .ok_or_else(|| "Connection not found".to_string())?;
-        if &current.user_id != user_id || current.room_id.as_ref() != Some(room_id) {
+        if &current.actor != actor || current.room_id.as_ref() != Some(room_id) {
             return Err("Connection is not in this room".to_string());
         }
         if !current.voice_rtc_joined {
             return Ok(false);
         }
 
-        self.mark_voice_rtc_joined(room_id, user_id, conn_id, false);
+        self.mark_voice_rtc_joined(room_id, actor, conn_id, false);
         if let Err(error) = self.sync_connection_metadata_distributed(conn_id).await {
-            self.mark_voice_rtc_joined(room_id, user_id, conn_id, true);
+            self.mark_voice_rtc_joined(room_id, actor, conn_id, true);
             return Err(error);
         }
         self.release_voice_rtc_slot_best_effort(room_id, conn_id)
@@ -1108,13 +1109,13 @@ impl ConnectionManager {
     pub fn mark_voice_rtc_joined(
         &self,
         room_id: &RoomId,
-        user_id: &UserId,
+        actor: &synctv_core::models::RealtimeActor,
         conn_id: &str,
         joined: bool,
     ) {
         // Verify the connection belongs to the user and room
         if let Some(mut conn) = self.connections.get_mut(conn_id) {
-            if &conn.user_id == user_id && conn.room_id.as_ref() == Some(room_id) {
+            if &conn.actor == actor && conn.room_id.as_ref() == Some(room_id) {
                 conn.voice_rtc_joined = joined;
                 // Set or clear the RTC join timestamp
                 conn.voice_rtc_joined_at = if joined { Some(Instant::now()) } else { None };
@@ -1125,7 +1126,7 @@ impl ConnectionManager {
                 }
                 debug!(
                     connection_id = %conn_id,
-                    user_id = %user_id,
+                    actor = %actor,
                     room_id = %room_id,
                     joined = joined,
                     "WebRTC join status updated"
@@ -1210,7 +1211,7 @@ impl ConnectionManager {
             )
             .await?
         {
-            let user_index_key = format!("{}conn_mgr:user:{}", self.redis_key_prefix, user_id);
+            let user_index_key = self.actor_index_key(Self::user_actor_key(user_id));
 
             match self
                 .load_valid_connection_ids_from_index(
@@ -1310,7 +1311,7 @@ impl ConnectionManager {
             )
             .await?
         {
-            let user_index_key = self.user_index_key(user_id);
+            let user_index_key = self.actor_index_key(Self::user_actor_key(user_id));
             let conn_ids = self
                 .load_valid_connection_ids_from_index(
                     &mut conn,

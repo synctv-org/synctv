@@ -54,7 +54,7 @@ macro_rules! impl_synology_provider_service {
                         &metadata,
                         EndpointRateLimitCategory::Auth,
                         move |auth| async move {
-                            api.login(auth.user_id, req, instance.as_deref())
+                            api.login(auth.user_id(), req, instance.as_deref())
                                 .await
                                 .map_err(synctv_api_common::impls::ApiError::from)
                         },
@@ -79,7 +79,7 @@ macro_rules! impl_synology_provider_service {
                             &metadata,
                             EndpointRateLimitCategory::Read,
                             move |auth| async move {
-                                api.$method(auth.user_id, req, instance.as_deref())
+                                api.$method(auth.user_id(), req, instance.as_deref())
                                     .await
                                     .map_err(synctv_api_common::impls::ApiError::from)
                             },
@@ -103,7 +103,7 @@ macro_rules! impl_synology_provider_service {
                         &metadata,
                         EndpointRateLimitCategory::Write,
                         move |auth| async move {
-                            api.logout(auth.user_id, req)
+                            api.logout(auth.user_id(), req)
                                 .await
                                 .map_err(synctv_api_common::impls::ApiError::from)
                         },
@@ -127,7 +127,7 @@ macro_rules! impl_synology_provider_service {
                         &metadata,
                         EndpointRateLimitCategory::Read,
                         move |auth| async move {
-                            api.binds(auth.user_id, instance.as_deref())
+                            api.binds(auth.user_id(), instance.as_deref())
                                 .await
                                 .map_err(synctv_api_common::impls::ApiError::from)
                         },

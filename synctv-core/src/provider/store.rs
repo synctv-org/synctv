@@ -648,7 +648,7 @@ mod tests {
             result: super::super::PlaybackResult {
                 playback_infos: std::collections::HashMap::new(),
                 default_mode: "direct".to_string(),
-                provider: "test".to_string(),
+                provider: crate::models::SourceProvider::DirectUrl,
                 provider_instance_name: None,
                 duration_seconds: None,
                 playback_kind: Some(crate::models::PlaybackKind::Regular),

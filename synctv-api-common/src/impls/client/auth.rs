@@ -8,7 +8,8 @@ use std::net::IpAddr;
 use std::num::TryFromIntError;
 use synctv_core::provider::ExecutionControl;
 use synctv_core::service::{
-    AccountRegistrationOutcome, AuthFactorMethod, AuthenticatedLogin, PendingAccountRegistration,
+    AccountRegistrationOutcome, AuthFactorMethod, AuthenticatedLogin, LoginSessionIdentity,
+    PendingAccountRegistration,
 };
 use synctv_proto::client::{RegisterWithDirectPasswordRequest, StartOpaqueRegistrationRequest};
 use webauthn_rs::prelude::{CreationChallengeResponse, RequestChallengeResponse};
@@ -277,14 +278,13 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
         let started_at = std::time::Instant::now();
         let result = async {
-            match (session.user_id(), session.email()) {
-                (Some(user_id), Some(email)) => {
+            match session.identity() {
+                LoginSessionIdentity::Account {
+                    user_id,
+                    email: Some(email),
+                } => {
                     email_api
-                        .validate_email_login_token_with_control(
-                            &user_id,
-                            &req.email_token,
-                            control,
-                        )
+                        .validate_email_login_token_with_control(user_id, &req.email_token, control)
                         .await?;
                     self.user_service
                         .consume_login_session_for_method(
@@ -295,15 +295,15 @@ impl ClientApiImpl {
                         .map_err(ApiError::from)?;
                     email_api
                         .complete_verified_email_login_with_control(
-                            &user_id, email, client_ip, control,
+                            user_id, email, client_ip, control,
                         )
                         .await
                 }
-                (None, None) => email_api
+                LoginSessionIdentity::Decoy => email_api
                     .reject_decoy_email_login()
                     .map(|()| unreachable!("decoy email confirmation always fails")),
-                _ => Err(ApiError::Internal(
-                    "Email login session has inconsistent account identity".to_string(),
+                LoginSessionIdentity::Account { email: None, .. } => Err(ApiError::Internal(
+                    "Email login session is missing the account email".to_string(),
                 )),
             }
         }
@@ -330,20 +330,23 @@ impl ClientApiImpl {
             )
         })?;
         let rate_limit_key = self.user_service.email_login_rate_limit_key(&session);
-        let result = match (session.user_id(), session.email()) {
-            (Some(user_id), Some(email)) => {
+        let result = match session.identity() {
+            LoginSessionIdentity::Account {
+                user_id,
+                email: Some(email),
+            } => {
                 email_api
-                    .request_email_login_with_control(&user_id, email, &rate_limit_key, control)
+                    .request_email_login_with_control(user_id, email, &rate_limit_key, control)
                     .await?
             }
-            (None, None) => {
+            LoginSessionIdentity::Decoy => {
                 email_api
                     .request_decoy_email_login_with_control(&rate_limit_key, control)
                     .await?
             }
-            _ => {
+            LoginSessionIdentity::Account { email: None, .. } => {
                 return Err(ApiError::Internal(
-                    "Email login session has inconsistent account identity".to_string(),
+                    "Email login session is missing the account email".to_string(),
                 ));
             }
         };
@@ -395,8 +398,8 @@ impl ClientApiImpl {
             .jwt_service
             .verify_guest_token(&token)
             .map_err(ApiError::from)?;
-        let guest_id = crate::impls::messaging::guest_public_id(&claims.session_id);
-        let display_name = crate::impls::messaging::guest_display_name(&claims.session_id);
+        let guest_id = crate::impls::messaging::guest_public_id(claims.session_id());
+        let display_name = crate::impls::messaging::guest_display_name(claims.session_id());
         let now = self.clock.now().timestamp();
         let expires_in_secs = nonnegative_token_ttl_seconds(claims.exp, now)?;
 
@@ -981,28 +984,22 @@ where
             ApiError::Authentication(synctv_common::messages::INVALID_OR_EXPIRED_TOKEN.to_string())
         })?;
 
-    if claims.jti.is_empty() {
-        return Err(ApiError::Authentication(
-            "Access token missing jti".to_string(),
-        ));
-    }
-
     let remaining_ttl = (claims.exp - now).max(0).cast_unsigned();
     if remaining_ttl == 0 {
         return Err(ApiError::Authentication(
             "Access token already expired".to_string(),
         ));
     }
-    let user_id = claims.user_id().map_err(ApiError::from)?;
+    let user_id = claims.user_id();
     let session_id = claims
-        .sid
-        .clone()
+        .session_id()
+        .map(ToString::to_string)
         .ok_or_else(|| ApiError::Authentication("Access token missing session id".to_string()))?;
 
     revoke(LogoutToken {
         user_id,
         session_id,
-        jti: claims.jti.clone(),
+        jti: claims.token_id().to_string(),
         remaining_ttl_secs: remaining_ttl,
         revoked_at: now,
     })
@@ -1010,7 +1007,7 @@ where
     .map_err(|error| {
         tracing::warn!(
             error = %error,
-            jti = %claims.jti,
+            jti = %claims.token_id(),
             "Failed to revoke session during logout"
         );
         ApiError::from(error)

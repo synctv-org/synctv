@@ -1,8 +1,10 @@
 use synctv_core::models::{
-    ContentReportAdminRow, ContentReportStatus, ContentReportTargetType, RoomId, UserId, UserStatus,
+    ContentReportAdminRow, ContentReportStatus, ContentReportTargetType, RoomId, SignupMethod,
+    UserId, UserStatus,
 };
 use synctv_core::service::{
-    BanRecordRow, RoomCreationReviewRecord, RoomJoinReviewRecord, UserRegistrationReviewRecord,
+    BanRecordRow, BanRecordTargetType, RoomCreationReviewRecord, RoomJoinReviewRecord,
+    UserRegistrationReviewRecord,
 };
 
 use super::{user_status_to_proto, ApiError};
@@ -310,7 +312,7 @@ pub(in crate::impls::admin) fn user_registration_review_row_to_proto(
             .map_err(ApiError::InvalidInput)?,
         username: row.username.clone(),
         email: row.email.clone(),
-        signup_method: i32::from(i16::from(row.signup_method)),
+        signup_method: signup_method_to_proto(row.signup_method) as i32,
         status: i32::from(row.status),
         requested_at: row.requested_at.timestamp(),
         reviewed_at: optional_timestamp(row.reviewed_at),
@@ -378,7 +380,7 @@ pub(in crate::impls::admin) fn room_join_review_row_to_proto(
             .encode_user_id(row.user_id)
             .map_err(ApiError::InvalidInput)?,
         username: row.username.clone(),
-        requested_role: row.requested_role,
+        requested_role: i32::from(row.requested_role),
         status: i32::from(row.status),
         requested_at: row.requested_at.timestamp(),
         reviewed_at: optional_timestamp(row.reviewed_at),
@@ -395,7 +397,10 @@ pub(in crate::impls::admin) fn ban_row_to_proto(
         id: public_id_codec
             .encode_ban_record_id(row.id)
             .map_err(ApiError::InvalidInput)?,
-        target_type: row.target_type,
+        target_type: match row.target_type {
+            BanRecordTargetType::User => synctv_proto::admin::BanTargetType::User as i32,
+            BanRecordTargetType::Room => synctv_proto::admin::BanTargetType::Room as i32,
+        },
         user_id: encode_optional_user_id(public_id_codec, row.user_id)?,
         username: row.username.clone(),
         room_id: encode_optional_room_id(public_id_codec, row.room_id)?,
@@ -409,6 +414,17 @@ pub(in crate::impls::admin) fn ban_row_to_proto(
         revoked_by: encode_optional_user_id(public_id_codec, row.revoked_by)?,
         is_active: row.is_active,
     })
+}
+
+const fn signup_method_to_proto(value: SignupMethod) -> synctv_proto::admin::SignupMethod {
+    match value {
+        SignupMethod::Unknown => synctv_proto::admin::SignupMethod::Unspecified,
+        SignupMethod::Email => synctv_proto::admin::SignupMethod::Email,
+        SignupMethod::Password => synctv_proto::admin::SignupMethod::Password,
+        SignupMethod::OAuth2 => synctv_proto::admin::SignupMethod::Oauth2,
+        SignupMethod::AdminCreated => synctv_proto::admin::SignupMethod::AdminCreated,
+        SignupMethod::WebAuthn => synctv_proto::admin::SignupMethod::Webauthn,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -225,7 +225,7 @@ synctv-xiu = { path = "synctv-xiu", default-features = false }
 retina = "=0.4.19"
 rust_h265 = "=0.1.0"
 rusty_aac = { version = "=0.1.1", default-features = false }
-rusty_h264 = { version = "=0.7.0", default-features = false }
+rusty_h264 = { version = "=0.8.0", default-features = false }
 ffmpeg-next = { version = "=9.0.0", default-features = false, features = ["build", "format"] }
 ffmpeg-sys-next = { version = "=9.0.0", features = ["build-portable"] }
 

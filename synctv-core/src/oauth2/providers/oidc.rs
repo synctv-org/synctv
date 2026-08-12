@@ -903,7 +903,11 @@ impl OidcProvider {
     fn id_token_validation(&self, alg: Algorithm) -> Validation {
         let mut validation = Validation::new(alg);
         if self.issuer_policy == OidcIssuerPolicy::Exact {
-            validation.set_issuer(&[self.init_config.issuer.as_str()]);
+            let issuer_with_trailing_slash = format!("{}/", self.init_config.issuer);
+            validation.set_issuer(&[
+                self.init_config.issuer.as_str(),
+                issuer_with_trailing_slash.as_str(),
+            ]);
         }
         validation.set_audience(&[self.init_config.client_id.as_str()]);
         validation.set_required_spec_claims(&["exp", "iat", "iss", "sub", "aud"]);
@@ -2062,6 +2066,86 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
             .checked("ID token without kid should validate against the single JWKS key");
 
         assert_eq!(id_token_claims.sub, "subject-123");
+    }
+
+    async fn validate_test_id_token(
+        configured_issuer: &str,
+        token_issuer: &str,
+    ) -> Result<OidcIdTokenClaims, Error> {
+        crate::install_process_crypto_provider();
+
+        let jwks_uri =
+            spawn_jwks_server(jwk_set_with_key(test_signing_jwk(Some("test-kid")))).await;
+        let provider = OidcProvider::create_with_endpoints_and_ssrf_guard(
+            "id".to_string(),
+            "secret".to_string(),
+            configured_issuer,
+            OidcEndpointOverrides {
+                auth_url: Some("https://issuer.example.com/authorize".to_string()),
+                token_url: Some("https://issuer.example.com/token".to_string()),
+                userinfo_url: None,
+                jwks_url: Some(jwks_uri),
+            },
+            &synctv_common::ssrf::SsrfGuard::disabled(),
+        )
+        .checked("test OIDC provider should be created");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .checked("system clock should be after epoch")
+            .as_secs();
+        let claims = serde_json::json!({
+            "iss": token_issuer,
+            "sub": "subject-123",
+            "aud": "id",
+            "iat": now,
+            "exp": now + 300,
+            "nonce": "nonce-123"
+        });
+        let token = jsonwebtoken::encode(
+            &Header {
+                kid: Some("test-kid".to_string()),
+                ..Header::new(Algorithm::RS256)
+            },
+            &claims,
+            &EncodingKey::from_rsa_pem(TEST_RSA_PRIVATE_KEY).checked("test RSA key should parse"),
+        )
+        .checked("test ID token should encode");
+        let resolved = provider
+            .get_resolved()
+            .await
+            .checked("test OIDC provider should resolve");
+
+        provider
+            .validate_id_token(resolved, &token, "nonce-123")
+            .await
+    }
+
+    #[tokio::test]
+    async fn test_validate_id_token_accepts_trailing_slash_issuer() {
+        for configured_issuer in [
+            "https://issuer.example.com/application/o/synctv",
+            "https://issuer.example.com/application/o/synctv/",
+        ] {
+            let claims = validate_test_id_token(
+                configured_issuer,
+                "https://issuer.example.com/application/o/synctv/",
+            )
+            .await
+            .checked("issuer should match regardless of configured trailing slash");
+
+            assert_eq!(claims.sub, "subject-123");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_validate_id_token_rejects_different_issuer() {
+        let result = validate_test_id_token(
+            "https://issuer.example.com/application/o/synctv/",
+            "https://different.example.com/application/o/synctv/",
+        )
+        .await;
+
+        assert!(matches!(result, Err(Error::Authentication(_))));
     }
 
     #[test]

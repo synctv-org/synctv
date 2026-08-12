@@ -45,12 +45,13 @@ pub(crate) async fn execute_provider_fnos(command: ProviderFnosCommand) -> Resul
             synctv_proto::providers::fnos::ListMediaItemsRequest {
                 server_id: args.bind.server_id,
                 collection: args.collection.to_proto(),
-                ancestor_guid: args.ancestor_guid,
+                library_guid: args.library_guid,
                 page: args.page,
                 page_size: args.page_size,
                 media_types: args.media_types,
                 search: args.search,
                 instance_name: provider_service_instance_name(&args.bind.instance),
+                parent_guid: args.parent_guid,
             }
         ),
         ProviderFnosSubcommand::SetFavorite(args) => provider_call!(

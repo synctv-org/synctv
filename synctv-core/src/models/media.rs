@@ -774,6 +774,12 @@ pub enum PlaybackFnosMedia {
         media_guid: String,
         quality_index: Option<usize>,
     },
+    MediaOriginalRefresh {
+        credential_owner_id: String,
+        server_id: String,
+        media_guid: String,
+        path: String,
+    },
     TranscodeRefresh {
         credential_owner_id: String,
         server_id: String,
@@ -803,6 +809,10 @@ pub enum FnosProxyResource {
     Media {
         media_guid: String,
         quality_index: Option<usize>,
+    },
+    MediaOriginal {
+        media_guid: String,
+        path: String,
     },
     Transcode {
         spec: FnosTranscodeResource,

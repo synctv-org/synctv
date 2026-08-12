@@ -231,8 +231,14 @@ impl FnosApiImpl {
         let collection = MediaCollection::try_from(req.collection).map_err(|_| {
             ProviderError::InvalidConfig("FNOS media collection is invalid".to_string())
         })?;
+        if collection == MediaCollection::Library && req.library_guid.is_none() {
+            return Err(ProviderError::InvalidConfig(
+                "FNOS media library_guid is required".to_string(),
+            ));
+        }
         let request = synctv_media_providers::fnos::FnosMediaListRequest {
-            ancestor_guid: req.ancestor_guid.clone(),
+            ancestor_guid: req.library_guid.clone(),
+            parent_guid: req.parent_guid.clone(),
             exclude_grouped_video: 1,
             sort_type: match collection {
                 MediaCollection::Favorites | MediaCollection::History => "DESC",
@@ -244,10 +250,10 @@ impl FnosApiImpl {
                 MediaCollection::Library | MediaCollection::Unspecified => "title",
             }
             .to_string(),
-            page_size,
-            page,
+            page_size: 200,
+            page: 1,
             tags: synctv_media_providers::fnos::FnosMediaTags {
-                media_types: req.media_types.clone(),
+                media_types: Vec::new(),
             },
         };
         let (items, total, stored_instance_name) = if collection == MediaCollection::History {
@@ -256,14 +262,16 @@ impl FnosApiImpl {
             retain_media_items(&mut items, &req, search, false);
             paginate_media_items(items, page, page_size, instance_name)
         } else if collection == MediaCollection::Favorites
-            && req.ancestor_guid.is_none()
+            && req.parent_guid.is_none()
             && search.is_none()
         {
             let (response, instance_name) = self
                 .provider
                 .favorite_media_items(user_id, &req.server_id, &request)
                 .await?;
-            (response.list, response.total, instance_name)
+            let mut items = response.list.unwrap_or_default();
+            retain_media_items(&mut items, &req, None, false);
+            paginate_media_items(items, page, page_size, instance_name)
         } else if let Some(search) = search {
             let (mut items, instance_name) = self
                 .provider
@@ -277,18 +285,20 @@ impl FnosApiImpl {
             );
             paginate_media_items(items, page, page_size, instance_name)
         } else {
-            let (response, instance_name) = self
+            let (mut items, instance_name) = self
                 .provider
-                .media_items(user_id, &req.server_id, &request)
+                .all_media_items(user_id, &req.server_id, &request)
                 .await?;
-            (response.list, response.total, instance_name)
+            retain_media_items(&mut items, &req, None, false);
+            paginate_media_items(items, page, page_size, instance_name)
         };
         let instance_name =
             resolve_bound_instance_name(requested_instance_name, stored_instance_name.as_deref())?;
         let page_source = fnos_media_playlist_source(
             &server_id,
             collection,
-            req.ancestor_guid.as_deref(),
+            req.library_guid.as_deref(),
+            req.parent_guid.as_deref(),
             &req.media_types,
             instance_name.as_deref(),
         );
@@ -303,6 +313,7 @@ impl FnosApiImpl {
                         Some(fnos_media_playlist_source(
                             &server_id,
                             MediaCollection::Library,
+                            item.ancestor_guid.as_deref(),
                             Some(&item.guid),
                             &req.media_types,
                             instance_name.as_deref(),
@@ -346,6 +357,7 @@ impl FnosApiImpl {
                         is_playable,
                         favorite: item.is_favorite != 0,
                         source,
+                        library_guid: item.ancestor_guid,
                     }
                 })
                 .collect(),
@@ -488,24 +500,30 @@ fn fnos_file_source(
 fn fnos_media_playlist_source(
     server_id: &str,
     collection: MediaCollection,
-    ancestor_guid: Option<&str>,
+    library_guid: Option<&str>,
+    parent_guid: Option<&str>,
     media_types: &[String],
     provider_instance_name: Option<&str>,
 ) -> synctv_proto::providers::common::DiscoveredSource {
     let source = match collection {
-        MediaCollection::Favorites => {
+        MediaCollection::Favorites if parent_guid.is_none() => {
             fnos_playlist_source_config::Source::Favorites(FnosFavoritesPlaylistSourceConfig {
                 media_types: media_types.to_vec(),
             })
         }
-        MediaCollection::History => {
+        MediaCollection::History if parent_guid.is_none() => {
             fnos_playlist_source_config::Source::History(FnosHistoryPlaylistSourceConfig {})
         }
-        MediaCollection::Library | MediaCollection::Unspecified => {
+        MediaCollection::Library
+        | MediaCollection::Favorites
+        | MediaCollection::History
+        | MediaCollection::Unspecified => {
+            let library_guid = library_guid.unwrap_or_default().to_string();
             fnos_playlist_source_config::Source::MediaLibrary(
                 FnosMediaLibraryPlaylistSourceConfig {
-                    ancestor_guid: ancestor_guid.map(str::to_string),
+                    library_guid,
                     media_types: media_types.to_vec(),
+                    parent_guid: parent_guid.map(str::to_string),
                 },
             )
         }
@@ -536,11 +554,16 @@ fn retain_media_items(
     require_favorite: bool,
 ) {
     let lowercase_search = search.map(str::to_ascii_lowercase);
+    let is_library = req.collection == MediaCollection::Library as i32;
     items.retain(|item| {
-        let in_source = req.ancestor_guid.as_deref().is_none_or(|ancestor| {
-            item.parent_guid.as_deref() == Some(ancestor)
-                || item.ancestor_guid.as_deref() == Some(ancestor)
-        });
+        let in_library = req
+            .library_guid
+            .as_deref()
+            .is_none_or(|library| item.ancestor_guid.as_deref() == Some(library));
+        let in_parent = req.parent_guid.as_deref().map_or_else(
+            || !is_library || item.parent_guid.as_deref().is_none_or(str::is_empty),
+            |parent| item.parent_guid.as_deref() == Some(parent),
+        );
         let has_type = req.media_types.is_empty()
             || req
                 .media_types
@@ -550,7 +573,7 @@ fn retain_media_items(
             .as_deref()
             .is_none_or(|search| media_item_matches_search(item, search));
         let in_collection = !require_favorite || item.is_favorite != 0;
-        in_source && has_type && has_search && in_collection
+        in_library && in_parent && has_type && has_search && in_collection
     });
 }
 
@@ -573,4 +596,91 @@ fn paginate_media_items(
         .take(usize::try_from(page_size).unwrap_or(usize::MAX))
         .collect();
     (items, total, instance_name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use synctv_media_providers::fnos::FnosMediaItem;
+
+    fn item(guid: &str, item_type: &str, parent_guid: Option<&str>) -> FnosMediaItem {
+        FnosMediaItem {
+            guid: guid.to_string(),
+            title: guid.to_string(),
+            item_type: item_type.to_string(),
+            poster: None,
+            tv_title: None,
+            parent_title: None,
+            parent_guid: parent_guid.map(str::to_string),
+            ancestor_guid: Some("library".to_string()),
+            ancestor_name: None,
+            ancestor_category: None,
+            watched: 0,
+            is_favorite: 0,
+            ts: 0,
+            duration: 0,
+            episode_number: 0,
+            season_number: 0,
+            vote_average: None,
+            overview: None,
+            media_guid: None,
+            video_guid: None,
+            audio_guid: None,
+            subtitle_guid: None,
+            single_child_guid: None,
+        }
+    }
+
+    fn request(parent_guid: Option<&str>, media_types: Vec<&str>) -> ListMediaItemsRequest {
+        ListMediaItemsRequest {
+            server_id: "server".to_string(),
+            collection: MediaCollection::Library as i32,
+            library_guid: Some("library".to_string()),
+            page: 1,
+            page_size: 50,
+            media_types: media_types.into_iter().map(str::to_string).collect(),
+            search: None,
+            instance_name: String::new(),
+            parent_guid: parent_guid.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn keeps_only_root_items_for_a_library_root() {
+        let mut items = vec![
+            item("series", "TV", None),
+            item("season", "Season", Some("series")),
+            item("episode", "Episode", Some("season")),
+        ];
+        retain_media_items(&mut items, &request(None, Vec::new()), None, false);
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.guid.as_str())
+                .collect::<Vec<_>>(),
+            ["series"]
+        );
+    }
+
+    #[test]
+    fn keeps_direct_children_and_applies_media_type_filter() {
+        let mut items = vec![
+            item("season", "Season", Some("series")),
+            item("bonus", "Video", Some("series")),
+            item("episode", "Episode", Some("season")),
+        ];
+        retain_media_items(
+            &mut items,
+            &request(Some("series"), vec!["Season"]),
+            None,
+            false,
+        );
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.guid.as_str())
+                .collect::<Vec<_>>(),
+            ["season"]
+        );
+    }
 }

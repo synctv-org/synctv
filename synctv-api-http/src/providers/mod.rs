@@ -75,6 +75,11 @@ pub(crate) async fn execute_playback_transport(
             url,
             headers,
             range_header,
+        }
+        | PlaybackTransportAction::StreamAndForward {
+            url,
+            headers,
+            range_header,
         } => {
             let cfg = synctv_proxy::ProxyConfig {
                 ssrf_guard,
@@ -258,6 +263,33 @@ async fn execute_playback_transport_with_runtime_for_method(
                 proxy_control.as_ref(),
             )
             .await
+        }
+        PlaybackTransportAction::StreamAndForward {
+            url,
+            headers,
+            range_header,
+        } => {
+            let proxy_control = playback_transport_execution_control(request_control);
+            let cfg = synctv_proxy::ProxyConfig {
+                ssrf_guard: runtime.ssrf_guard,
+                client: runtime.proxy_http_client,
+                url: &url,
+                provider_headers: &headers,
+                range_header: range_header.as_deref(),
+                request_control: proxy_control.as_ref(),
+                upstream_header_timeout: Some(synctv_proxy::DEFAULT_UPSTREAM_HEADER_TIMEOUT),
+            };
+            match method {
+                Method::GET => {
+                    synctv_proxy::proxy_fetch_and_forward(cfg, &synctv_proxy::NoopMetrics)
+                        .await
+                        .map_err(map_proxy_execution_error)
+                }
+                Method::HEAD => synctv_proxy::proxy_head_and_forward(cfg)
+                    .await
+                    .map_err(map_proxy_execution_error),
+                _ => Err(playback_transport_method_not_allowed()),
+            }
         }
         PlaybackTransportAction::M3u8Rewrite { .. }
         | PlaybackTransportAction::M3u8RewriteWithSource { .. }
@@ -706,6 +738,60 @@ mod tests {
         )?;
 
         assert_eq!(response.status(), StatusCode::OK);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_stream_and_forward_bypasses_slice_cache() -> TestResult {
+        let Some(mock_server) = start_mock_server_or_skip().await? else {
+            return Ok(());
+        };
+        let body = Bytes::from((0_u8..=31).collect::<Vec<_>>());
+
+        Mock::expect(
+            Mock::given(method("GET"))
+                .and(path("/video.mkv"))
+                .and(HeaderAbsent("range"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_bytes(body.clone())
+                        .insert_header("Content-Length", body.len().to_string()),
+                ),
+            1,
+        )
+        .mount(&mock_server)
+        .await;
+
+        let client = mock_proxy_client(&mock_server)?;
+        let ssrf_guard = synctv_common::ssrf::SsrfGuard::builder()
+            .extra_allowed_host("cdn.example.com".to_string())
+            .build();
+        let cache = synctv_proxy::slice_cache::SliceCache::new_with_client_and_ssrf_guard(
+            SliceCacheConfig {
+                slice_size: 4,
+                ..Default::default()
+            },
+            client.clone(),
+            ssrf_guard.clone(),
+        )?;
+        let runtime = PlaybackTransportRuntime {
+            proxy_http_client: &client,
+            ssrf_guard: &ssrf_guard,
+            proxy_slice_cache: &cache,
+        };
+        let action = PlaybackTransportAction::StreamAndForward {
+            url: mock_public_url(&mock_server, "/video.mkv"),
+            headers: HashMap::new(),
+            range_header: None,
+        };
+
+        let response = app_ok(
+            execute_playback_transport_with_runtime_for_method(&runtime, action, None, Method::GET)
+                .await,
+        )?;
+        assert_eq!(response.status(), StatusCode::OK);
+        let received = axum::body::to_bytes(response.into_body(), usize::MAX).await?;
+        assert_eq!(received, body);
         Ok(())
     }
 

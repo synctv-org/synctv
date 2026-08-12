@@ -329,8 +329,9 @@ pub fn playlist_source_config_from_proto(
                     source_config_proto::fnos_playlist_source_config::Source::MediaLibrary(
                         library,
                     ) => synctv_core::models::FnosPlaylistSource::MediaLibrary {
-                        ancestor_guid: library.ancestor_guid,
+                        library_guid: library.library_guid,
                         media_types: library.media_types,
+                        parent_guid: library.parent_guid,
                     },
                     source_config_proto::fnos_playlist_source_config::Source::Favorites(
                         favorites,

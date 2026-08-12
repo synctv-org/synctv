@@ -605,10 +605,12 @@ pub fn provider_target_to_proto(
                         synctv_core::models::FnosTargetKind::MediaItem {
                             item_guid,
                             media_guid,
+                            library_guid,
                         } => client_proto::fnos_target::Target::MediaItem(
                             client_proto::FnosMediaItemTarget {
                                 item_guid: item_guid.clone(),
                                 media_guid: media_guid.clone(),
+                                library_guid: library_guid.clone(),
                             },
                         ),
                     }),
@@ -832,7 +834,11 @@ pub fn provider_target_from_proto(
                     synctv_core::models::ProviderTarget::fnos(file.relative_path)
                 }
                 client_proto::fnos_target::Target::MediaItem(item) => {
-                    synctv_core::models::ProviderTarget::fnos_media(item.item_guid, item.media_guid)
+                    synctv_core::models::ProviderTarget::fnos_media(
+                        item.item_guid,
+                        item.media_guid,
+                        item.library_guid,
+                    )
                 }
             }
         }
@@ -1369,12 +1375,14 @@ pub fn playlist_source_config_to_proto(
                         )
                     }
                     synctv_core::models::FnosPlaylistSource::MediaLibrary {
-                        ancestor_guid,
+                        library_guid,
                         media_types,
+                        parent_guid,
                     } => source_config_proto::fnos_playlist_source_config::Source::MediaLibrary(
                         source_config_proto::FnosMediaLibraryPlaylistSourceConfig {
-                            ancestor_guid,
+                            library_guid,
                             media_types,
+                            parent_guid,
                         },
                     ),
                     synctv_core::models::FnosPlaylistSource::Favorites { media_types } => {
@@ -4341,6 +4349,7 @@ fn playback_media_url(
         PlaybackMediaProvider::Fnos(
             PlaybackFnosMedia::FileRefresh { .. }
             | PlaybackFnosMedia::MediaRefresh { .. }
+            | PlaybackFnosMedia::MediaOriginalRefresh { .. }
             | PlaybackFnosMedia::TranscodeRefresh { .. },
         ) => {
             return Err(crate::impls::ApiError::Internal(

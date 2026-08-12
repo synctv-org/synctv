@@ -355,6 +355,7 @@ message FnosFileTarget {
 message FnosMediaItemTarget {
   string item_guid = 1;
   optional string media_guid = 2;
+  optional string library_guid = 3;
 }
 
 message FnosTarget {

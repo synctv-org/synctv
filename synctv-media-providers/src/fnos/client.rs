@@ -279,10 +279,28 @@ impl FnosClient {
         })?;
         let mut url = Url::parse(endpoint)
             .map_err(|error| ProviderClientError::InvalidConfig(error.to_string()))?;
+        let mut path_segments = path.split('/').filter(|segment| !segment.is_empty());
+        let first = path_segments.next();
+        let second = path_segments.next();
+        let strips_internal_prefix = first.is_some_and(|segment| {
+            segment.strip_prefix("vol").is_some_and(|volume| {
+                !volume.is_empty() && volume.bytes().all(|byte| byte.is_ascii_digit())
+            })
+        }) && second
+            .is_some_and(|user_id| user_id.bytes().all(|byte| byte.is_ascii_digit()));
+        let path_segments = if strips_internal_prefix {
+            path_segments.collect::<Vec<_>>()
+        } else {
+            first
+                .into_iter()
+                .chain(second)
+                .chain(path_segments)
+                .collect()
+        };
         let segments = config
             .root
             .split('/')
-            .chain(path.split('/'))
+            .chain(path_segments)
             .filter(|segment| !segment.is_empty());
         url.path_segments_mut()
             .map_err(|()| {
@@ -563,11 +581,25 @@ fn normalize_webdav_endpoint(value: &str) -> Result<String, ProviderClientError>
 fn parse_webdav_config(value: &Value, endpoints: &FnosEndpoints) -> FnosWebDavConfig {
     let data = value.get("data").unwrap_or(value);
     let enabled = find_bool(data, &["webdavEnable", "enable", "enabled"]).unwrap_or(false);
-    let port = find_u16(data, &["svcPort", "port", "webdavPort"]);
-    let secure = find_bool(data, &["httpsEnable", "tls", "ssl"]).unwrap_or(false);
-    let endpoint = Url::parse(&endpoints.websocket).ok().and_then(|url| {
-        let host = url.host_str()?;
-        let port = port?;
+    let websocket = Url::parse(&endpoints.websocket).ok();
+    let prefers_https = websocket.as_ref().is_some_and(|url| url.scheme() == "wss");
+    let endpoint = if prefers_https {
+        find_string(data, &["httpsAddr", "httpsAddress"])
+            .or_else(|| find_string(data, &["httpAddr", "httpAddress"]))
+    } else {
+        find_string(data, &["httpAddr", "httpAddress"])
+            .or_else(|| find_string(data, &["httpsAddr", "httpsAddress"]))
+    }
+    .and_then(|endpoint| normalize_webdav_endpoint(&endpoint).ok())
+    .or_else(|| {
+        let secure = find_bool(data, &["httpsEnable", "tls", "ssl"]).unwrap_or(prefers_https);
+        let port_keys = if secure {
+            ["httpsPort", "svcPort", "port", "webdavPort"]
+        } else {
+            ["httpPort", "svcPort", "port", "webdavPort"]
+        };
+        let host = websocket.as_ref()?.host_str()?;
+        let port = find_u16(data, &port_keys)?;
         Some(format!(
             "{}://{}:{port}",
             if secure { "https" } else { "http" },
@@ -803,5 +835,48 @@ mod tests {
         );
         assert!(config.enabled);
         assert_eq!(config.endpoint.as_deref(), Some("http://nas.example:5005"));
+    }
+
+    #[test]
+    fn discovers_current_fnos_webdav_addresses() {
+        let endpoints =
+            FnosEndpoints::parse("http://nas.example:5666").expect("test endpoint should parse");
+        let config = parse_webdav_config(
+            &serde_json::json!({
+                "result": "succ",
+                "data": {
+                    "webdavEnable": true,
+                    "httpAddr": "http://nas.example:5005",
+                    "httpsAddr": "https://nas.example:5006",
+                    "option": {
+                        "http": true,
+                        "https": true,
+                        "httpPort": 5005,
+                        "httpsPort": 5006
+                    }
+                }
+            }),
+            &endpoints,
+        );
+        assert!(config.enabled);
+        assert_eq!(config.endpoint.as_deref(), Some("http://nas.example:5005"));
+    }
+
+    #[test]
+    fn maps_internal_fnos_paths_to_webdav_paths() {
+        let config = FnosWebDavConfig {
+            enabled: true,
+            endpoint: Some("http://nas.example:5005".to_string()),
+            root: "/".to_string(),
+        };
+        assert_eq!(
+            FnosClient::webdav_file_url(&config, "vol1/1000/Media/Movie.mp4")
+                .expect("test path should map"),
+            "http://nas.example:5005/Media/Movie.mp4"
+        );
+        assert_eq!(
+            FnosClient::webdav_file_url(&config, "Media/Movie.mp4").expect("test path should map"),
+            "http://nas.example:5005/Media/Movie.mp4"
+        );
     }
 }

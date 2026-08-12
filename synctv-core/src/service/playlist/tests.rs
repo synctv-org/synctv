@@ -184,13 +184,13 @@ impl MediaProvider for AlistCredentialDependencyCheckProvider {
         let dependency = if optional {
             ProviderCredentialDependency::optional(
                 crate::models::SourceProvider::Alist,
-                user_id.to_string(),
+                *user_id,
                 server_id,
             )
         } else {
             ProviderCredentialDependency::new(
                 crate::models::SourceProvider::Alist,
-                user_id.to_string(),
+                *user_id,
                 server_id,
             )
         };

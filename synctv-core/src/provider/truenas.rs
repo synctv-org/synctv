@@ -684,7 +684,7 @@ impl MediaProvider for TrueNasProvider {
             .ok_or(ProviderError::CredentialRequired)?;
         Ok(vec![ProviderCredentialDependency::new(
             crate::models::SourceProvider::TrueNas,
-            owner.to_string(),
+            *owner,
             Self::source_server_id(source_config)?.to_string(),
         )])
     }

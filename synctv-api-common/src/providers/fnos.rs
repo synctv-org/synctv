@@ -67,7 +67,7 @@ impl FnosApiImpl {
                 publish_provider_credential_changed(
                     &self.event_service,
                     user_id,
-                    FnosProvider::NAME,
+                    synctv_core::models::SourceProvider::Fnos,
                     &server_id,
                 );
                 login_response::Result::Authenticated(Authenticated {
@@ -397,7 +397,7 @@ impl FnosApiImpl {
             publish_provider_credential_changed(
                 &self.event_service,
                 user_id,
-                FnosProvider::NAME,
+                synctv_core::models::SourceProvider::Fnos,
                 &req.server_id,
             );
         }

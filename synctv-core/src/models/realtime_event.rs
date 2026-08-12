@@ -2,7 +2,7 @@ use crate::models::id::{MediaId, PlaylistId, RoomId, UserId};
 use crate::models::notification::{NotificationData, NotificationType};
 use crate::models::playback::RoomPlaybackState;
 use crate::models::{ChatMessageEvent, ChatPinEvent, Playlist, RoomSettings};
-use crate::models::{RoomPermissionSet, RoomRole};
+use crate::models::{RoomPermissionSet, RoomRole, SourceProvider};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -471,7 +471,7 @@ pub enum RealtimeEvent {
     ProviderCredentialChanged {
         event_id: String,
         user_id: UserId,
-        provider: String,
+        provider: SourceProvider,
         server_id: String,
         timestamp: DateTime<Utc>,
     },
@@ -850,7 +850,7 @@ mod tests {
         let event = RealtimeEvent::ProviderCredentialChanged {
             event_id: synctv_common::snanoid!(16),
             user_id: UserId::expect_positive(42),
-            provider: "bilibili".to_string(),
+            provider: SourceProvider::Bilibili,
             server_id: "global".to_string(),
             timestamp: crate::SystemClock.now(),
         };

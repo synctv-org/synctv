@@ -1785,7 +1785,7 @@ impl MediaProvider for EmbyProvider {
 
         Ok(vec![ProviderCredentialDependency::new(
             crate::models::SourceProvider::Emby,
-            credential_owner_id.to_string(),
+            *credential_owner_id,
             server_id,
         )])
     }

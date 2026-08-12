@@ -2451,13 +2451,13 @@ fn bilibili_credential_dependencies(
     Ok(vec![if required {
         ProviderCredentialDependency::new(
             crate::models::SourceProvider::Bilibili,
-            credential_user_id.to_string(),
+            credential_user_id,
             bilibili_credential_server_id(),
         )
     } else {
         ProviderCredentialDependency::optional(
             crate::models::SourceProvider::Bilibili,
-            credential_user_id.to_string(),
+            credential_user_id,
             bilibili_credential_server_id(),
         )
     }])
@@ -4200,8 +4200,8 @@ mod tests {
             super::SourceConfig::dynamic_playlist(&config),
         ))?;
         assert_eq!(dependencies.len(), 1);
-        assert_eq!(dependencies[0].user_id, creator_id.to_string());
-        assert!(dependencies[0].required);
+        assert_eq!(dependencies[0].user_id, creator_id);
+        assert!(dependencies[0].requirement.is_required());
         Ok(())
     }
 

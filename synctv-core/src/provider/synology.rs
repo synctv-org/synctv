@@ -1075,7 +1075,7 @@ impl MediaProvider for SynologyProvider {
             .ok_or(ProviderError::CredentialRequired)?;
         Ok(vec![ProviderCredentialDependency::new(
             crate::models::SourceProvider::Synology,
-            owner.to_string(),
+            *owner,
             Self::source_server_id(source_config)?,
         )])
     }

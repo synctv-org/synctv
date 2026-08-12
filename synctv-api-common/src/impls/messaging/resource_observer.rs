@@ -5,7 +5,10 @@ use std::time::Duration;
 
 use synctv_core::spawn::spawn_monitored;
 use synctv_core::{
-    models::{ChatEventKind, ChatMessageSelection, RealtimeActor, RoomId, RoomRole, UserId},
+    models::{
+        ChatEventKind, ChatMessageSelection, RealtimeActor, RoomId, RoomRole, SourceProvider,
+        UserId,
+    },
     service::{
         ChatService, OnlinePresenceService, RoomResourceEventPayload, RoomResourceKind, RoomService,
     },
@@ -1479,7 +1482,7 @@ impl MediaResourceHub {
                     match &observation.resource {
                         ObservedResource::Playback { .. } => observer
                             .current_playback_depends_on_provider_credential(
-                                user_id, provider, server_id,
+                                user_id, *provider, server_id,
                             )
                             .await
                             .unwrap_or_else(|error| {
@@ -1947,7 +1950,7 @@ impl MediaResourceHub {
                         let should_refresh = match &observation.resource {
                             ObservedResource::Playback { .. } => observer
                                 .current_playback_depends_on_provider_credential(
-                                    user_id, provider, server_id,
+                                    user_id, *provider, server_id,
                                 )
                                 .await
                                 .unwrap_or_else(|error| {
@@ -2875,7 +2878,7 @@ impl ResourceObserver {
     async fn current_playback_depends_on_provider_credential(
         &self,
         changed_user_id: &synctv_core::models::UserId,
-        provider: &str,
+        provider: SourceProvider,
         server_id: &str,
     ) -> Result<bool, String> {
         let state = self
@@ -2889,17 +2892,16 @@ impl ResourceObserver {
             .await
             .map_err(|error| error.to_string())?;
 
-        let changed_user_id_key = changed_user_id.to_string();
         Ok(dependencies
             .iter()
-            .any(|dependency| dependency.matches(provider, &changed_user_id_key, server_id)))
+            .any(|dependency| dependency.matches(provider, *changed_user_id, server_id)))
     }
 
     pub(super) async fn handle_provider_credential_changed_admin_event(
         self: &Arc<Self>,
         event_id: &str,
         changed_user_id: &synctv_core::models::UserId,
-        provider: &str,
+        provider: SourceProvider,
         server_id: &str,
     ) {
         let invalidation =
@@ -2921,7 +2923,7 @@ impl ResourceObserver {
                 room_id = %self.room_id,
                 actor = ?self.actor,
                 changed_user_id = %changed_user_id,
-                provider,
+                provider = ?provider,
                 server_id,
                 error = %error,
                 "Failed to refresh observed resources after provider credential change"

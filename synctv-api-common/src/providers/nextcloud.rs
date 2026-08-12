@@ -217,7 +217,7 @@ impl NextcloudApiImpl {
         publish_provider_credential_changed(
             &self.event_service,
             user_id,
-            NextcloudProvider::NAME,
+            synctv_core::models::SourceProvider::Nextcloud,
             server_id,
         );
     }

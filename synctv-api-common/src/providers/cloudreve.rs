@@ -55,7 +55,7 @@ impl CloudreveApiImpl {
         publish_provider_credential_changed(
             &self.event_service,
             user_id,
-            CloudreveProvider::NAME,
+            synctv_core::models::SourceProvider::Cloudreve,
             &server_id,
         );
         Ok(LoginResponse { server_id })
@@ -192,7 +192,7 @@ impl CloudreveApiImpl {
             publish_provider_credential_changed(
                 &self.event_service,
                 user_id,
-                CloudreveProvider::NAME,
+                synctv_core::models::SourceProvider::Cloudreve,
                 &req.server_id,
             );
         }

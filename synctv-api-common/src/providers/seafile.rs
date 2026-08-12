@@ -234,7 +234,7 @@ impl SeafileApiImpl {
         publish_provider_credential_changed(
             &self.event_service,
             user_id,
-            SeafileProvider::NAME,
+            synctv_core::models::SourceProvider::Seafile,
             server_id,
         );
     }

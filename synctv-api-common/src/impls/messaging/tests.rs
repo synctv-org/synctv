@@ -4072,7 +4072,7 @@ async fn test_provider_credential_change_refreshes_dependent_playback() {
     playback_service.replace_dependencies(vec![
         synctv_core::provider::ProviderCredentialDependency::new(
             synctv_core::models::SourceProvider::Bilibili,
-            handler.test_user_id().to_string(),
+            handler.test_user_id(),
             "bilibili",
         ),
     ]);
@@ -4114,7 +4114,7 @@ async fn test_provider_credential_change_refreshes_dependent_playback() {
     event_service.broadcast(RealtimeEvent::ProviderCredentialChanged {
         event_id: "evt-provider-credential-dependent".to_string(),
         user_id: handler.test_user_id(),
-        provider: "bilibili".to_string(),
+        provider: synctv_core::models::SourceProvider::Bilibili,
         server_id: "bilibili".to_string(),
         timestamp: now(),
     });
@@ -4210,7 +4210,7 @@ async fn test_provider_credential_change_does_not_refresh_unrelated_playback() {
     playback_service.replace_dependencies(vec![
         synctv_core::provider::ProviderCredentialDependency::new(
             synctv_core::models::SourceProvider::Bilibili,
-            handler.test_user_id().to_string(),
+            handler.test_user_id(),
             "bilibili",
         ),
     ]);
@@ -4231,7 +4231,7 @@ async fn test_provider_credential_change_does_not_refresh_unrelated_playback() {
     event_service.broadcast(RealtimeEvent::ProviderCredentialChanged {
         event_id: "evt-provider-credential-unrelated".to_string(),
         user_id: UserId::expect_positive(handler.test_user_id().get() + 1),
-        provider: "bilibili".to_string(),
+        provider: synctv_core::models::SourceProvider::Bilibili,
         server_id: "bilibili".to_string(),
         timestamp: now(),
     });

@@ -2382,7 +2382,7 @@ impl MediaProvider for FnosProvider {
             .ok_or(ProviderError::CredentialRequired)?;
         Ok(vec![ProviderCredentialDependency::new(
             crate::models::SourceProvider::Fnos,
-            user_id.to_string(),
+            *user_id,
             server_id.to_string(),
         )])
     }

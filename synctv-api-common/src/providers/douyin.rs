@@ -52,7 +52,7 @@ impl DouyinApiImpl {
         publish_provider_credential_changed(
             &self.event_service,
             user_id,
-            DouyinProvider::NAME,
+            synctv_core::models::SourceProvider::Douyin,
             &server_id,
         );
         Ok(BindResponse { server_id })
@@ -95,7 +95,7 @@ impl DouyinApiImpl {
             publish_provider_credential_changed(
                 &self.event_service,
                 user_id,
-                DouyinProvider::NAME,
+                synctv_core::models::SourceProvider::Douyin,
                 &req.server_id,
             );
         }

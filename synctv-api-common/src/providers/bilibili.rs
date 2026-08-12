@@ -485,7 +485,7 @@ impl BilibiliApiImpl {
         publish_provider_credential_changed(
             &self.event_service,
             *caller_user_id,
-            synctv_core::provider::BilibiliProvider::NAME,
+            synctv_core::models::SourceProvider::Bilibili,
             server_id,
         );
 
@@ -1534,7 +1534,7 @@ impl BilibiliApiImpl {
             publish_provider_credential_changed(
                 &self.event_service,
                 *caller_user_id,
-                synctv_core::provider::BilibiliProvider::NAME,
+                synctv_core::models::SourceProvider::Bilibili,
                 &server_id,
             );
         }

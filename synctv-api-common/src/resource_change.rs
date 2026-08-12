@@ -1,6 +1,8 @@
 #[cfg(test)]
 use synctv_core::models::RoomRole;
-use synctv_core::models::{ChatMessageEvent, ChatPinEvent, MediaId, PlaylistId, RoomId, UserId};
+use synctv_core::models::{
+    ChatMessageEvent, ChatPinEvent, MediaId, PlaylistId, RoomId, SourceProvider, UserId,
+};
 use synctv_realtime::sync::{CacheTarget, RealtimeEvent};
 
 #[derive(Debug, Clone)]
@@ -22,7 +24,7 @@ pub enum ResourceInvalidation {
     },
     ProviderCredential {
         user_id: UserId,
-        provider: String,
+        provider: SourceProvider,
         server_id: String,
     },
 }
@@ -201,12 +203,12 @@ pub fn resource_invalidations_for_cache_targets(
 
 pub fn provider_credential_resource_invalidation(
     user_id: UserId,
-    provider: &str,
+    provider: SourceProvider,
     server_id: &str,
 ) -> ResourceInvalidation {
     ResourceInvalidation::ProviderCredential {
         user_id,
-        provider: provider.to_string(),
+        provider,
         server_id: server_id.to_string(),
     }
 }

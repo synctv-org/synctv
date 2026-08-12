@@ -113,7 +113,7 @@ impl AlistApiImpl {
         publish_provider_credential_changed(
             &self.event_service,
             *caller_user_id,
-            synctv_core::provider::AlistProvider::NAME,
+            synctv_core::models::SourceProvider::Alist,
             &login.server_id,
         );
 
@@ -323,7 +323,7 @@ impl AlistApiImpl {
             publish_provider_credential_changed(
                 &self.event_service,
                 *caller_user_id,
-                synctv_core::provider::AlistProvider::NAME,
+                synctv_core::models::SourceProvider::Alist,
                 &req.server_id,
             );
         }

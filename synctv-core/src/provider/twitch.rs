@@ -1162,13 +1162,13 @@ impl MediaProvider for TwitchProvider {
             if credential_policy.uses_resource_owner() || credential_required {
                 ProviderCredentialDependency::new(
                     crate::models::SourceProvider::Twitch,
-                    owner_id.to_string(),
+                    owner_id,
                     server_id,
                 )
             } else {
                 ProviderCredentialDependency::optional(
                     crate::models::SourceProvider::Twitch,
-                    owner_id.to_string(),
+                    owner_id,
                     server_id,
                 )
             },

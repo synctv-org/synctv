@@ -339,7 +339,7 @@ impl PreparedResourceWatchSession {
                                     .handle_provider_credential_changed_admin_event(
                                         event_id,
                                         user_id,
-                                        provider,
+                                        *provider,
                                         server_id,
                                     )
                                     .await;

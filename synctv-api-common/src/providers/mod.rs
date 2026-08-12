@@ -50,13 +50,13 @@ pub use youtube::YoutubeApiImpl;
 pub fn publish_provider_credential_changed(
     event_service: &Arc<dyn RealtimeEventService>,
     user_id: synctv_core::models::UserId,
-    provider: &str,
+    provider: synctv_core::models::SourceProvider,
     server_id: &str,
 ) {
     let event = synctv_realtime::sync::RealtimeEvent::ProviderCredentialChanged {
         event_id: synctv_common::snanoid!(16),
         user_id,
-        provider: provider.to_string(),
+        provider,
         server_id: server_id.to_string(),
         timestamp: synctv_core::SystemClock.now(),
     };
@@ -64,7 +64,7 @@ pub fn publish_provider_credential_changed(
     if !outcome.delivered_to_any() || outcome.distributed_delivery_missed() {
         tracing::warn!(
             user_id = %user_id,
-            provider,
+            provider = %provider,
             server_id,
             local_delivered = outcome.local_delivered(),
             distributed_available = outcome.distributed_available(),

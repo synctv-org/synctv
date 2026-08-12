@@ -1603,7 +1603,7 @@ impl StreamMessageHandler {
                             self.resource_observer.handle_provider_credential_changed_admin_event(
                                 event_id,
                                 user_id,
-                                provider,
+                                *provider,
                                 server_id,
                             )
                             .await;
@@ -2597,7 +2597,7 @@ impl StreamMessageHandler {
                                     .handle_provider_credential_changed_admin_event(
                                         event_id,
                                         changed_user_id,
-                                        provider,
+                                        *provider,
                                         server_id,
                                     )
                                     .await;

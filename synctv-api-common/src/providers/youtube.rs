@@ -55,7 +55,7 @@ impl YoutubeApiImpl {
         publish_provider_credential_changed(
             &self.event_service,
             user_id,
-            YoutubeProvider::NAME,
+            synctv_core::models::SourceProvider::Youtube,
             &server_id,
         );
         Ok(BindResponse { server_id })
@@ -100,7 +100,7 @@ impl YoutubeApiImpl {
             publish_provider_credential_changed(
                 &self.event_service,
                 user_id,
-                YoutubeProvider::NAME,
+                synctv_core::models::SourceProvider::Youtube,
                 &req.server_id,
             );
         }

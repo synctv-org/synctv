@@ -2391,7 +2391,7 @@ impl MediaProvider for AlistProvider {
 
         Ok(vec![ProviderCredentialDependency::new(
             crate::models::SourceProvider::Alist,
-            credential_owner_id.to_string(),
+            *credential_owner_id,
             config.server_id,
         )])
     }

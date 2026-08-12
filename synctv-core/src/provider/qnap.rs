@@ -1044,7 +1044,7 @@ impl MediaProvider for QnapProvider {
             .ok_or(ProviderError::CredentialRequired)?;
         Ok(vec![ProviderCredentialDependency::new(
             crate::models::SourceProvider::Qnap,
-            owner.to_string(),
+            *owner,
             Self::source_server_id(source_config)?.to_string(),
         )])
     }

@@ -1077,7 +1077,7 @@ impl MediaProvider for TikTokProvider {
         };
         Ok(vec![ProviderCredentialDependency::optional(
             crate::models::SourceProvider::TikTok,
-            owner_id.to_string(),
+            owner_id,
             Self::credential_server_id_for_instance(super::bound_provider_instance_name(ctx)),
         )])
     }

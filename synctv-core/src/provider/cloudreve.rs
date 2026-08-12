@@ -1114,7 +1114,7 @@ impl MediaProvider for CloudreveProvider {
             .ok_or(ProviderError::CredentialRequired)?;
         Ok(vec![ProviderCredentialDependency::new(
             crate::models::SourceProvider::Cloudreve,
-            user_id.to_string(),
+            *user_id,
             server_id.to_string(),
         )])
     }

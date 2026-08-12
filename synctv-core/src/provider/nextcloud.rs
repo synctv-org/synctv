@@ -853,7 +853,7 @@ impl MediaProvider for NextcloudProvider {
             .ok_or(ProviderError::CredentialRequired)?;
         Ok(vec![ProviderCredentialDependency::new(
             crate::models::SourceProvider::Nextcloud,
-            owner.to_string(),
+            *owner,
             Self::source_server_id(source_config)?.to_string(),
         )])
     }

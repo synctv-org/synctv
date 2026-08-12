@@ -82,8 +82,8 @@ pub use synctv_common::{ExecutionControl, ExecutionControlError};
 pub use traits::ProviderResourceMetadata;
 pub use traits::{
     BilibiliLiveDanmakuEvent, BilibiliLiveDanmakuEventKind, BilibiliLiveDanmakuProvider,
-    BilibiliLiveDanmakuStream, DynamicBrowsePathSegment, DynamicListQuery, DynamicListResult,
-    DynamicPagination, DynamicPlaylistItem, DynamicPlaylistItemSourceConfig,
+    BilibiliLiveDanmakuStream, CredentialRequirement, DynamicBrowsePathSegment, DynamicListQuery,
+    DynamicListResult, DynamicPagination, DynamicPlaylistItem, DynamicPlaylistItemSourceConfig,
     DynamicPlaylistItemThumbnail, DynamicPlaylistProvider, ItemType, MediaProvider, NextPlayItem,
     PlaybackInfo, PlaybackResult, PreparedSourceConfig, ProviderCredentialDependency,
     ProviderPlaybackSessionLifecycle, SourceConfig, SourceConfigKind, SourceCover,

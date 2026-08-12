@@ -26,6 +26,7 @@ SMOKE_USER="devuser_$RUN_ID"
 SMOKE_ROOM="Smoke Room $RUN_ID"
 
 HTTP_PID=""
+SYNCTV_PID=""
 
 trap 'rc=$?; printf "FAILED rc=%s line=%s command=%s\n" "$rc" "$LINENO" "$BASH_COMMAND" >&2' ERR
 
@@ -42,7 +43,13 @@ cleanup() {
   if [ -n "${HTTP_PID:-}" ] && kill -0 "$HTTP_PID" 2>/dev/null; then
     kill "$HTTP_PID" 2>/dev/null || true
   fi
-  make dev-stop DEV_BIN="$BIN" >/dev/null 2>&1 || true
+  if [ -n "${SYNCTV_PID:-}" ] && kill -0 "$SYNCTV_PID" 2>/dev/null; then
+    cli stop >/dev/null 2>&1 || {
+      pkill -TERM -P "$SYNCTV_PID" 2>/dev/null || true
+      kill "$SYNCTV_PID" 2>/dev/null || true
+    }
+    wait "$SYNCTV_PID" 2>/dev/null || true
+  fi
 }
 trap cleanup EXIT
 
@@ -93,8 +100,12 @@ start_stack() {
 start_synctv() {
   log "Starting SyncTV host server"
   mkdir -p "$RUN_DIR" "$RESULTS_DIR"
-  make dev-stop DEV_BIN="$BIN" >/dev/null 2>&1 || true
-  make dev-start DEV_BIN="$BIN"
+  if curl -fsS "$HEALTH_URL/health/ready" >/dev/null 2>&1 || \
+    { [ -S "$RUN_DIR/synctv.sock" ] && cli system stats --output json >/dev/null 2>&1; }; then
+    die "SyncTV is already running; stop it before running the smoke test"
+  fi
+  make dev-serve DEV_BIN="$BIN" >"$RUN_DIR/synctv-smoke.log" 2>&1 &
+  SYNCTV_PID="$!"
   wait_socket
   wait_http "$HEALTH_URL/health/ready"
 }

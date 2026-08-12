@@ -53,10 +53,6 @@ Development environment from a full repository checkout:
 # Starts PostgreSQL and Redis, then runs SyncTV locally with development settings.
 make dev-serve
 
-# Starts SyncTV in the background with the same development settings.
-make dev-start
-make dev-stop
-
 # Starts optional media/auth/storage dependencies too.
 make dev-stack
 

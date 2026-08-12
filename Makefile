@@ -21,7 +21,6 @@ DEV_STACK_SERVICES ?= $(DEV_BASE_SERVICES) $(DEV_OPTIONAL_SERVICES)
 DEV_STACK_WAIT_SERVICES ?= $(DEV_STACK_SERVICES) rustfs-init openlist-init nextcloud-init seafile-init emby-init jellyfin-init
 DEV_WAIT_TIMEOUT ?= 120
 DEV_LOG_TAIL ?= 100
-DEV_START_TIMEOUT ?= 120
 CPU_COUNT ?= $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 1)
 DEV_JOBS ?= $(CPU_COUNT)
 CARGO_JOBS_ARGS ?= -j "$(DEV_JOBS)"
@@ -48,9 +47,7 @@ DEV_SSRF_ALLOW_PRIVATE_NETWORK_TARGETS ?= false
 
 DEV_DATA_DIR := $(CURDIR)/.dev-data
 DEV_SOCKET := $(DEV_DATA_DIR)/run/synctv.sock
-DEV_PID := $(DEV_DATA_DIR)/run/synctv.pid
-DEV_LOG := $(DEV_DATA_DIR)/run/synctv.log
-DEV_BIN ?= $(CURDIR)/target/debug/synctv
+DEV_BIN ?=
 DEV_DATABASE_URL := postgresql://synctv:synctv@127.0.0.1:5432/synctv
 DEV_REDIS_URL := redis://127.0.0.1:6379
 DEV_ROOT_USERNAME := root
@@ -121,7 +118,7 @@ export SYNCTV_MANAGEMENT_TRANSPORT=unix; \
 export SYNCTV_MANAGEMENT_UNIX_SOCKET_PATH="$(DEV_SOCKET)"
 endef
 
-.PHONY: help clean compose-init compose-config compose-pull compose-up compose-down compose-logs compose-ps dev-check dev-env dev-up dev-stack dev-build release-build dev-serve dev-start dev-stop dev-down dev-clean dev-reset dev-data-reset dev-logs dev-ps dev-status dev-wait dev-shell dev-migrate dev-dropdb dev-db dev-redis dev-open dev-smoke fmt fmt-check check check-all-targets build-workspace proto-freshness feature-check feature-check-key-crates-tls-ring-webpki sqlx-prepare nextest nextest-default nextest-ignored doc-test clippy clippy-check install-cargo-audit audit audit-advisories install-cargo-deny deny-check deny-advisories deny-licenses deny-bans deny-sources install-cargo-udeps udeps cargo-workspace-version set-release-version validate-helm require-cross install-cross cross-linux-check cross-windows-check cross-darwin-check cross-linux-clippy cross-windows-clippy cross-darwin-clippy
+.PHONY: help clean compose-init compose-config compose-pull compose-up compose-down compose-logs compose-ps dev-check dev-env dev-up dev-stack dev-build release-build dev-serve dev-down dev-clean dev-reset dev-data-reset dev-logs dev-ps dev-status dev-wait dev-shell dev-migrate dev-dropdb dev-db dev-redis dev-open dev-smoke fmt fmt-check check check-all-targets build-workspace proto-freshness feature-check feature-check-key-crates-tls-ring-webpki sqlx-prepare nextest nextest-default nextest-ignored doc-test clippy clippy-check install-cargo-audit audit audit-advisories install-cargo-deny deny-check deny-advisories deny-licenses deny-bans deny-sources install-cargo-udeps udeps cargo-workspace-version set-release-version validate-helm require-cross install-cross cross-linux-check cross-windows-check cross-darwin-check cross-linux-clippy cross-windows-clippy cross-darwin-clippy
 
 help: ## Show available targets.
 	@awk 'BEGIN {FS = ":.*##"; printf "SyncTV targets:\n"} /^[a-zA-Z0-9_.-]+:.*##/ {printf "  %-18s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -216,7 +213,7 @@ dev-stack: dev-up ## Start media, storage, and auth development dependencies aft
 	@$(MAKE) dev-wait SERVICES="$(DEV_STACK_WAIT_SERVICES)"
 	@$(MAKE) dev-env
 
-dev-build: ## Build the local SyncTV binary used by background dev commands.
+dev-build: ## Build the local SyncTV binary.
 	SQLX_OFFLINE=true $(CARGO) build $(CARGO_BUILD_ARGS) -p synctv --bin synctv $(DEV_CARGO_FEATURE_ARGS)
 
 release-build: ## Build the optimized SyncTV release binary.
@@ -224,69 +221,18 @@ release-build: ## Build the optimized SyncTV release binary.
 
 dev-serve: dev-up ## Run SyncTV locally with development defaults.
 	mkdir -p "$(DEV_DATA_DIR)/run"
-	$(DEV_ENV_EXPORTS); \
-	SQLX_OFFLINE=true $(CARGO) run $(CARGO_BUILD_ARGS) -p synctv --bin synctv $(DEV_CARGO_FEATURE_ARGS) -- serve
-
-dev-start: dev-up dev-build ## Start SyncTV in the background with development defaults.
-	@mkdir -p "$(DEV_DATA_DIR)/run"
-	@if [ -f "$(DEV_PID)" ] && kill -0 "$$(cat "$(DEV_PID)")" 2>/dev/null; then \
-		printf "SyncTV already running with pid %s.\n" "$$(cat "$(DEV_PID)")"; \
-	elif [ -S "$(DEV_SOCKET)" ] && "$(DEV_BIN)" --endpoint "unix://$(DEV_SOCKET)" system stats --output json >/dev/null 2>&1; then \
-		printf "SyncTV already responding on %s.\n" "$(DEV_SOCKET)"; \
-	else \
-		rm -f "$(DEV_PID)" "$(DEV_SOCKET)"; \
+	@if [ -n "$(DEV_BIN)" ]; then \
 		$(DEV_ENV_EXPORTS); \
-		nohup "$(DEV_BIN)" serve >"$(DEV_LOG)" 2>&1 < /dev/null & \
-		pid="$$!"; \
-		printf "%s\n" "$$pid" >"$(DEV_PID)"; \
-		printf "Started SyncTV pid %s. Logs: %s\n" "$$pid" "$(DEV_LOG)"; \
-		deadline=$$((SECONDS + $(DEV_START_TIMEOUT))); \
-		until [ -S "$(DEV_SOCKET)" ] && "$(DEV_BIN)" --endpoint "unix://$(DEV_SOCKET)" system stats --output json >/dev/null 2>&1 && curl -fsS http://127.0.0.1:8081/health/ready >/dev/null; do \
-			if ! kill -0 "$$pid" 2>/dev/null; then \
-				printf "SyncTV exited during startup. Last log lines:\n"; \
-				tail -n 80 "$(DEV_LOG)" || true; \
-				exit 1; \
-			fi; \
-			if [ "$$SECONDS" -ge "$$deadline" ]; then \
-				printf "Timed out waiting for SyncTV. Last log lines:\n"; \
-				tail -n 80 "$(DEV_LOG)" || true; \
-				exit 1; \
-			fi; \
-			sleep 2; \
-		done; \
-		printf "SyncTV ready at http://127.0.0.1:8080.\n"; \
+		exec "$(DEV_BIN)" serve; \
+	else \
+		$(DEV_ENV_EXPORTS); \
+		SQLX_OFFLINE=true exec $(CARGO) run $(CARGO_BUILD_ARGS) -p synctv --bin synctv $(DEV_CARGO_FEATURE_ARGS) -- serve; \
 	fi
 
-dev-stop: ## Stop locally running SyncTV processes started by dev-serve/dev-start.
-	@if [ -S "$(DEV_SOCKET)" ] && [ -x "$(DEV_BIN)" ]; then \
-		"$(DEV_BIN)" --endpoint "unix://$(DEV_SOCKET)" stop >/dev/null 2>&1 || true; \
-	fi
-	@if [ -f "$(DEV_PID)" ]; then \
-		pid="$$(cat "$(DEV_PID)")"; \
-		if [ -n "$$pid" ] && kill -0 "$$pid" 2>/dev/null; then \
-			for _ in $$(seq 1 20); do \
-				kill -0 "$$pid" 2>/dev/null || break; \
-				sleep 0.5; \
-			done; \
-			if kill -0 "$$pid" 2>/dev/null; then \
-				kill "$$pid" 2>/dev/null || true; \
-			fi; \
-			printf "Stopped local SyncTV process: %s\n" "$$pid"; \
-		fi; \
-	fi
-	@pids="$$(pgrep -f '[/]synctv serve|[c]argo (\+nightly )?run -p synctv .* serve' || true)"; \
-	if [ -n "$$pids" ]; then \
-		kill $$pids; \
-		printf "Stopped local SyncTV process(es): %s\n" "$$pids"; \
-	elif [ ! -f "$(DEV_PID)" ]; then \
-		printf "No local SyncTV process found.\n"; \
-	fi; \
-	rm -f "$(DEV_PID)" "$(DEV_SOCKET)"
-
-dev-down: dev-stop ## Stop development containers and keep volumes.
+dev-down: ## Stop development containers and keep volumes.
 	$(COMPOSE_DEV_PROFILES) down --remove-orphans
 
-dev-clean: dev-stop ## Stop development containers and remove Compose volumes.
+dev-clean: ## Stop development containers and remove Compose volumes.
 	$(COMPOSE_DEV_PROFILES) down -v --remove-orphans
 
 dev-data-reset: ## Remove local .dev-data used by dev-serve.

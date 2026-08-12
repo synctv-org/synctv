@@ -3080,18 +3080,33 @@ dependencies = [
 ]
 
 [[package]]
-name = "http-acl-reqwest"
-version = "0.11.0"
+name = "http-acl"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "834b832e162e9c98153a78ccdb6fc88bc2640f374b07a09644472ca4eba0b7f9"
+checksum = "232a02fa3d6156cff50f63c36ef3b7160746f44fbfbf0394a7ff3f45c349f40b"
+dependencies = [
+ "ipnet",
+ "matchit 0.9.2",
+ "percent-encoding",
+ "thiserror 2.0.19",
+ "url",
+]
+
+[[package]]
+name = "http-acl-reqwest"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "49eb15de736dde04bcacb569dbc81c16a4d423ef012a152f878b6513a78c0f5a"
 dependencies = [
  "anyhow",
  "async-trait",
  "http",
- "http-acl",
+ "http-acl 0.12.0",
+ "percent-encoding",
  "reqwest",
  "reqwest-middleware",
  "thiserror 2.0.19",
+ "url",
 ]
 
 [[package]]
@@ -7914,7 +7929,7 @@ version = "1.0.1"
 dependencies = [
  "chrono",
  "chrono-tz",
- "http-acl",
+ "http-acl 0.11.0",
  "http-acl-reqwest",
  "iana-time-zone",
  "ipnet",

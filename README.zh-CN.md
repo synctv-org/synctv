@@ -52,10 +52,6 @@ SyncTV 是使用 Rust 实现的实时同步观影平台，支持媒体 Provider 
 # 启动 PostgreSQL 和 Redis，然后用开发配置在本机运行 SyncTV。
 make dev-serve
 
-# 使用同一套开发配置在后台启动 SyncTV。
-make dev-start
-make dev-stop
-
 # 同时启动媒体、认证和对象存储等可选依赖。
 make dev-stack
 

@@ -210,16 +210,16 @@ pub struct RoomAutoPlaySettingsPatch {
 
 fn proto_room_password_policy(
     value: synctv_core::service::RoomPasswordPolicy,
-) -> synctv_proto::admin::RoomPasswordPolicy {
+) -> synctv_proto::common::RoomPasswordPolicy {
     match value {
         synctv_core::service::RoomPasswordPolicy::Optional => {
-            synctv_proto::admin::RoomPasswordPolicy::Optional
+            synctv_proto::common::RoomPasswordPolicy::Optional
         }
         synctv_core::service::RoomPasswordPolicy::Required => {
-            synctv_proto::admin::RoomPasswordPolicy::Required
+            synctv_proto::common::RoomPasswordPolicy::Required
         }
         synctv_core::service::RoomPasswordPolicy::Forbidden => {
-            synctv_proto::admin::RoomPasswordPolicy::Forbidden
+            synctv_proto::common::RoomPasswordPolicy::Forbidden
         }
     }
 }

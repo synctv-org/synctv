@@ -1978,7 +1978,17 @@ impl ClientApiImpl {
             default_max_members: s.default_max_members,
             max_pinned_chat_messages_per_room: s.max_pinned_chat_messages_per_room,
             room_creation_approval_required: s.approval_required,
-            room_password_policy: s.room_password_policy.to_string(),
+            room_password_policy: match s.room_password_policy {
+                synctv_core::service::RoomPasswordPolicy::Optional => {
+                    synctv_proto::common::RoomPasswordPolicy::Optional as i32
+                }
+                synctv_core::service::RoomPasswordPolicy::Required => {
+                    synctv_proto::common::RoomPasswordPolicy::Required as i32
+                }
+                synctv_core::service::RoomPasswordPolicy::Forbidden => {
+                    synctv_proto::common::RoomPasswordPolicy::Forbidden as i32
+                }
+            },
             enable_password_signup: s.enable_password_signup,
             password_signup_need_review: s.password_signup_need_review,
             enable_email_signup: s.enable_email_signup,

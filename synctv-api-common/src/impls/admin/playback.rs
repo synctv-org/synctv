@@ -98,7 +98,7 @@ impl AdminApiImpl {
             media.position,
         )
         .id(media.id)
-        .provider(provider_result.provider.clone())
+        .provider(provider_result.provider)
         .provider_instance_name(provider_result.provider_instance_name.clone())
         .default_mode(provider_result.default_mode.clone())
         .duration_seconds(duration_seconds)
@@ -216,7 +216,7 @@ impl AdminApiImpl {
             item.name.clone(),
             0.0,
         )
-        .provider(provider_result.provider.clone())
+        .provider(provider_result.provider)
         .provider_instance_name(provider_result.provider_instance_name.clone())
         .default_mode(provider_result.default_mode.clone())
         .duration_seconds(duration_seconds)

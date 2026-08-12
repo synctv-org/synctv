@@ -136,6 +136,7 @@ mod jwt_auth {
     use synctv_core::service::JwtService;
     use synctv_core::service::JwtValidator;
     use synctv_core::service::TokenCredentialBinding;
+    use synctv_core::service::TokenType;
 
     // Use a 32+ character secret for testing
     const TEST_SECRET: &str = "this-is-a-test-secret-with-enough-entropy-for-jwt-signing-32chars";
@@ -184,9 +185,8 @@ mod jwt_auth {
         let token = svc.sign_access_token(&user_id, 0).unwrap();
 
         let claims = svc.verify_access_token(&token).unwrap();
-        assert_eq!(claims.sub, user_id.to_string());
-        assert!(claims.is_access_token());
-        assert!(!claims.is_refresh_token());
+        assert_eq!(claims.user_id(), user_id);
+        assert_eq!(claims.token_type(), TokenType::Access);
     }
 
     #[test]
@@ -196,9 +196,8 @@ mod jwt_auth {
         let token = sign_test_refresh_token(&svc, &user_id);
 
         let claims = svc.verify_refresh_token(&token).unwrap();
-        assert_eq!(claims.sub, user_id.to_string());
-        assert!(claims.is_refresh_token());
-        assert!(!claims.is_access_token());
+        assert_eq!(claims.user_id(), user_id);
+        assert_eq!(claims.token_type(), TokenType::Refresh);
     }
 
     #[test]
@@ -247,7 +246,7 @@ mod jwt_auth {
         let header = format!("Bearer {token}");
 
         let claims = validator.validate_authorization_header(&header).unwrap();
-        assert_eq!(claims.sub, user_id.to_string());
+        assert_eq!(claims.user_id(), user_id);
     }
 
     #[test]
@@ -267,7 +266,7 @@ mod jwt_auth {
         let user_id = UserId::expect_positive(10_000_021);
         let token = svc.sign_access_token(&user_id, 0).unwrap();
         let claims = svc.verify_access_token(&token).unwrap();
-        assert!(!claims.jti.is_empty(), "JWT ID (jti) should be set");
+        assert!(!claims.token_id().is_empty(), "JWT ID (jti) should be set");
     }
 
     #[test]
@@ -279,7 +278,8 @@ mod jwt_auth {
         let claims1 = svc.verify_access_token(&token1).unwrap();
         let claims2 = svc.verify_access_token(&token2).unwrap();
         assert_ne!(
-            claims1.jti, claims2.jti,
+            claims1.token_id(),
+            claims2.token_id(),
             "Each token should have a unique jti"
         );
     }
@@ -803,10 +803,7 @@ mod websocket_e2e {
             brute_force,
             UserServiceRuntimeOptions {
                 password_registration_policy_override: Some(
-                    synctv_core::service::RegistrationPolicy {
-                        enabled: true,
-                        need_review: false,
-                    },
+                    synctv_core::service::RegistrationPolicy::Immediate,
                 ),
                 ..synctv_core::service::UserServiceRuntimeOptions::test_defaults()
             },

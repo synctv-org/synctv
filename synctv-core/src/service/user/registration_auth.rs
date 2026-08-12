@@ -157,29 +157,23 @@ impl UserService {
         }
 
         let Some(registry) = self.runtime_settings_store.as_ref() else {
-            return Ok(RegistrationPolicy {
-                enabled: false,
-                need_review: false,
-            });
+            return Ok(RegistrationPolicy::Disabled);
         };
 
         Ok(match mode {
-            RegistrationMode::Password => RegistrationPolicy {
-                enabled: registry.user.enable_password_signup.get()?,
-                need_review: registry.user.password_signup_need_review.get()?,
-            },
-            RegistrationMode::Email => RegistrationPolicy {
-                enabled: registry.user.enable_email_signup.get()?,
-                need_review: registry.user.email_signup_need_review.get()?,
-            },
-            RegistrationMode::OAuth2 => RegistrationPolicy {
-                enabled: false,
-                need_review: false,
-            },
-            RegistrationMode::WebAuthn => RegistrationPolicy {
-                enabled: registry.user.enable_webauthn_signup.get()?,
-                need_review: registry.user.webauthn_signup_need_review.get()?,
-            },
+            RegistrationMode::Password => RegistrationPolicy::from_runtime_settings(
+                registry.user.enable_password_signup.get()?,
+                registry.user.password_signup_need_review.get()?,
+            ),
+            RegistrationMode::Email => RegistrationPolicy::from_runtime_settings(
+                registry.user.enable_email_signup.get()?,
+                registry.user.email_signup_need_review.get()?,
+            ),
+            RegistrationMode::OAuth2 => RegistrationPolicy::Disabled,
+            RegistrationMode::WebAuthn => RegistrationPolicy::from_runtime_settings(
+                registry.user.enable_webauthn_signup.get()?,
+                registry.user.webauthn_signup_need_review.get()?,
+            ),
         })
     }
 
@@ -188,13 +182,13 @@ impl UserService {
         mode: RegistrationMode,
     ) -> Result<RegistrationPolicy> {
         let policy = self.registration_policy(mode)?;
-        if !policy.enabled {
+        if !policy.is_enabled() {
             return Err(Error::Authorization(format!(
                 "{} registration is disabled",
                 mode.as_str()
             )));
         }
-        if policy.need_review && !mode.supports_review() {
+        if policy.requires_review() && !mode.supports_review() {
             return Err(Error::InvalidInput(format!(
                 "{} registration review is not supported yet",
                 mode.as_str()
@@ -217,7 +211,7 @@ impl UserService {
             cache_reason,
         } = completion;
 
-        if registration_policy.need_review {
+        if registration_policy.requires_review() {
             let pending_user = self
                 .create_registration_request(
                     &username,

@@ -826,7 +826,7 @@ impl RequestExecutor {
                     .or(metadata.socket_ip)
                     .map_or_else(|| "anon:unknown".to_string(), |ip| format!("anon:{ip}"))
             },
-            |authenticated| format!("user:{}", authenticated.user_id),
+            |authenticated| format!("user:{}", authenticated.user_id()),
         );
 
         if rate_limit.strategy.enabled() {

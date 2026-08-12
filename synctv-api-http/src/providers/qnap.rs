@@ -77,7 +77,7 @@ pub(crate) async fn login(
         request_meta,
         EndpointRateLimitCategory::Auth,
         move |_control, auth| {
-            async move { api.login(auth.user_id, req, instance.as_deref()).await }.boxed()
+            async move { api.login(auth.user_id(), req, instance.as_deref()).await }.boxed()
         },
     )
     .await
@@ -106,7 +106,7 @@ pub(crate) async fn list(
         request_meta,
         EndpointRateLimitCategory::Read,
         move |_control, auth| {
-            async move { api.list(auth.user_id, req, instance.as_deref()).await }.boxed()
+            async move { api.list(auth.user_id(), req, instance.as_deref()).await }.boxed()
         },
     )
     .await
@@ -139,7 +139,7 @@ pub(crate) async fn capabilities(
         EndpointRateLimitCategory::Read,
         move |_control, auth| {
             async move {
-                api.capabilities(auth.user_id, req, instance.as_deref())
+                api.capabilities(auth.user_id(), req, instance.as_deref())
                     .await
             }
             .boxed()
@@ -169,7 +169,7 @@ pub(crate) async fn logout(
         &state,
         request_meta,
         EndpointRateLimitCategory::Write,
-        move |_control, auth| async move { api.logout(auth.user_id, req).await }.boxed(),
+        move |_control, auth| async move { api.logout(auth.user_id(), req).await }.boxed(),
     )
     .await
 }
@@ -195,7 +195,7 @@ pub(crate) async fn binds(
         &state,
         request_meta,
         EndpointRateLimitCategory::Read,
-        move |auth| async move { api.binds(auth.user_id, instance.as_deref()).await }.boxed(),
+        move |auth| async move { api.binds(auth.user_id(), instance.as_deref()).await }.boxed(),
     )
     .await
 }
@@ -250,7 +250,7 @@ pub(crate) async fn thumbnail(
                 let public_user = state
                     .shared_api_runtime
                     .public_id_codec
-                    .encode_user_id(auth.user_id)
+                    .encode_user_id(auth.user_id())
                     .map_err(synctv_api_common::impls::ApiError::Internal)?;
                 let public_owner = requested_owner
                     .clone()
@@ -287,7 +287,7 @@ pub(crate) async fn thumbnail(
                         .decode_room_id(&room_id)
                         .map_err(synctv_api_common::impls::ApiError::InvalidInput)?;
                     super::playback_provider::playback_provider_api_runtime(&state)
-                        .validate_fresh_access(&room_id, &auth.user_id)
+                        .validate_fresh_access(&room_id, &auth.user_id())
                         .await?;
                 }
                 let owner = state

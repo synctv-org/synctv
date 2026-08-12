@@ -93,7 +93,7 @@ pub(crate) async fn parse(
         move |control, authenticated| {
             async move {
                 api.parse_with_context(
-                    &authenticated.user_id,
+                    &authenticated.user_id(),
                     req,
                     instance_name.as_deref(),
                     Some(&control),
@@ -135,7 +135,7 @@ pub(crate) async fn list_playlist(
         move |control, authenticated| {
             async move {
                 api.list_playlist_with_context(
-                    &authenticated.user_id,
+                    &authenticated.user_id(),
                     req,
                     instance_name.as_deref(),
                     Some(&control),
@@ -223,7 +223,7 @@ pub(crate) async fn list_favorite_folders(
         move |control, authenticated| {
             async move {
                 api.list_favorite_folders_with_context(
-                    &authenticated.user_id,
+                    &authenticated.user_id(),
                     req,
                     instance_name.as_deref(),
                     Some(&control),
@@ -269,7 +269,7 @@ pub(crate) async fn list_followed_pgc(
         move |control, authenticated| {
             async move {
                 api.list_followed_pgc_with_context(
-                    &authenticated.user_id,
+                    &authenticated.user_id(),
                     req,
                     instance_name.as_deref(),
                     Some(&control),
@@ -312,7 +312,7 @@ pub(crate) async fn list_history(
         move |control, authenticated| {
             async move {
                 api.list_history_with_context(
-                    &authenticated.user_id,
+                    &authenticated.user_id(),
                     req,
                     instance_name.as_deref(),
                     Some(&control),
@@ -350,7 +350,7 @@ pub(crate) async fn list_pgc_timeline(
         move |control, authenticated| {
             async move {
                 api.list_pgc_timeline_with_context(
-                    &authenticated.user_id,
+                    &authenticated.user_id(),
                     req,
                     instance_name.as_deref(),
                     Some(&control),
@@ -388,7 +388,7 @@ pub(crate) async fn list_pgc_seasons(
         move |control, authenticated| {
             async move {
                 api.list_pgc_seasons_with_context(
-                    &authenticated.user_id,
+                    &authenticated.user_id(),
                     req,
                     instance_name.as_deref(),
                     Some(&control),
@@ -493,7 +493,7 @@ pub(crate) async fn qr_check(
         move |control, authenticated| {
             async move {
                 api.check_qr_with_context(
-                    &authenticated.user_id,
+                    &authenticated.user_id(),
                     req,
                     instance_name.as_deref(),
                     Some(&control),
@@ -647,7 +647,7 @@ pub(crate) async fn sms_login(
         EndpointRateLimitCategory::Auth,
         move |control, authenticated| {
             async move {
-                api.login_sms_with_context(&authenticated.user_id, req, None, Some(&control))
+                api.login_sms_with_context(&authenticated.user_id(), req, None, Some(&control))
                     .await
             }
             .boxed()
@@ -700,7 +700,7 @@ pub(crate) async fn user_info(
         move |control, authenticated| {
             async move {
                 api.get_user_info_with_context(
-                    &authenticated.user_id,
+                    &authenticated.user_id(),
                     req,
                     instance_name.as_deref(),
                     Some(&control),
@@ -751,8 +751,11 @@ pub(crate) async fn binds(
         EndpointRateLimitCategory::Read,
         move |authenticated| {
             async move {
-                tracing::info!("Bilibili binds request for user: {}", authenticated.user_id);
-                api.get_binds(&authenticated.user_id, instance_name.as_deref())
+                tracing::info!(
+                    "Bilibili binds request for user: {}",
+                    authenticated.user_id()
+                );
+                api.get_binds(&authenticated.user_id(), instance_name.as_deref())
                     .await
             }
             .boxed()
@@ -797,7 +800,7 @@ pub(crate) async fn logout(
         &state,
         request_meta,
         EndpointRateLimitCategory::Auth,
-        move |authenticated| async move { api.logout(&authenticated.user_id, req).await }.boxed(),
+        move |authenticated| async move { api.logout(&authenticated.user_id(), req).await }.boxed(),
     )
     .await
     .map_err(|e| {

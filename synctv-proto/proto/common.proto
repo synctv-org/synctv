@@ -54,6 +54,13 @@ enum ListSortDirection {
   LIST_SORT_DIRECTION_DESC = 2;
 }
 
+enum RoomPasswordPolicy {
+  ROOM_PASSWORD_POLICY_UNSPECIFIED = 0;
+  ROOM_PASSWORD_POLICY_OPTIONAL = 1;
+  ROOM_PASSWORD_POLICY_REQUIRED = 2;
+  ROOM_PASSWORD_POLICY_FORBIDDEN = 3;
+}
+
 // ==================== Shared Types ====================
 
 // Room member information (shared between admin and client APIs)

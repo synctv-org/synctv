@@ -68,10 +68,9 @@ fn create_user_service(pool: &PgPool) -> UserService {
         key_builder,
         brute_force,
         synctv_core::service::UserServiceRuntimeOptions {
-            password_registration_policy_override: Some(synctv_core::service::RegistrationPolicy {
-                enabled: true,
-                need_review: false,
-            }),
+            password_registration_policy_override: Some(
+                synctv_core::service::RegistrationPolicy::Immediate,
+            ),
             ..synctv_core::service::UserServiceRuntimeOptions::test_defaults()
         },
     )
@@ -480,7 +479,7 @@ async fn scenario_blacklisted_access_token_rejected() {
     let auth_result = pipeline.check(&claims).await;
     assert!(auth_result.is_ok(), "Token should work before blacklisting");
 
-    let blacklist_key = key_builder.access_token_blacklist(&claims.jti);
+    let blacklist_key = key_builder.access_token_blacklist(claims.token_id());
     ok(
         token_blacklist.blacklist(&blacklist_key, 3600).await,
         "access token should be blacklisted",
@@ -560,7 +559,7 @@ async fn scenario_complete_authentication_flow() {
         "access token should verify",
     );
 
-    assert_eq!(ok(claims.user_id(), "claims user id should parse"), user.id);
+    assert_eq!(claims.user_id(), user.id);
 
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
@@ -568,7 +567,7 @@ async fn scenario_complete_authentication_flow() {
         security_pipeline_with_blacklist(user_service.clone(), token_blacklist, key_builder);
 
     let auth_result = ok(pipeline.check(&claims).await, "security check should pass");
-    assert_eq!(auth_result.user_id, user.id);
+    assert_eq!(auth_result.user_id(), user.id);
 
     let (new_access_token, _new_refresh_token) = ok(
         user_service.refresh_token(refresh_token.clone()).await,
@@ -586,7 +585,7 @@ async fn scenario_complete_authentication_flow() {
         pipeline.check(&new_claims).await,
         "new token should pass security check",
     );
-    assert_eq!(auth_result.user_id, user.id);
+    assert_eq!(auth_result.user_id(), user.id);
 }
 
 async fn scenario_login_wrong_password_fails() {

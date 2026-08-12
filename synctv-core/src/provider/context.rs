@@ -18,6 +18,28 @@ pub enum ProviderActor {
     Guest,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderCredentialPolicy {
+    Viewer,
+    ResourceOwner,
+}
+
+impl ProviderCredentialPolicy {
+    #[must_use]
+    pub const fn from_shared(shared: bool) -> Self {
+        if shared {
+            Self::ResourceOwner
+        } else {
+            Self::Viewer
+        }
+    }
+
+    #[must_use]
+    pub const fn uses_resource_owner(self) -> bool {
+        matches!(self, Self::ResourceOwner)
+    }
+}
+
 /// Provider execution context.
 #[derive(Clone)]
 pub struct ProviderContext<'a> {
@@ -217,14 +239,16 @@ impl<'a> ProviderContext<'a> {
 
     /// Select the stored credential subject for providers whose credentials are optional.
     #[must_use]
-    pub const fn selected_credential_user_id(&self, shared: bool) -> Option<UserId> {
-        if shared {
-            self.credential_owner_id
-        } else {
-            match self.actor {
+    pub const fn selected_credential_user_id(
+        &self,
+        policy: ProviderCredentialPolicy,
+    ) -> Option<UserId> {
+        match policy {
+            ProviderCredentialPolicy::ResourceOwner => self.credential_owner_id,
+            ProviderCredentialPolicy::Viewer => match self.actor {
                 ProviderActor::User(user_id) => Some(user_id),
                 ProviderActor::System | ProviderActor::Guest => None,
-            }
+            },
         }
     }
 
@@ -271,7 +295,7 @@ impl<'a> ProviderContext<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProviderActor, ProviderContext};
+    use super::{ProviderActor, ProviderContext, ProviderCredentialPolicy};
     use crate::models::UserId;
 
     #[test]
@@ -303,11 +327,29 @@ mod tests {
         let system = ProviderContext::new("test", ProviderActor::System)
             .with_credential_owner_id(creator_id);
 
-        assert_eq!(user.selected_credential_user_id(false), Some(viewer_id));
-        assert_eq!(user.selected_credential_user_id(true), Some(creator_id));
-        assert_eq!(guest.selected_credential_user_id(false), None);
-        assert_eq!(guest.selected_credential_user_id(true), Some(creator_id));
-        assert_eq!(system.selected_credential_user_id(false), None);
-        assert_eq!(system.selected_credential_user_id(true), Some(creator_id));
+        assert_eq!(
+            user.selected_credential_user_id(ProviderCredentialPolicy::Viewer),
+            Some(viewer_id)
+        );
+        assert_eq!(
+            user.selected_credential_user_id(ProviderCredentialPolicy::ResourceOwner),
+            Some(creator_id)
+        );
+        assert_eq!(
+            guest.selected_credential_user_id(ProviderCredentialPolicy::Viewer),
+            None
+        );
+        assert_eq!(
+            guest.selected_credential_user_id(ProviderCredentialPolicy::ResourceOwner),
+            Some(creator_id)
+        );
+        assert_eq!(
+            system.selected_credential_user_id(ProviderCredentialPolicy::Viewer),
+            None
+        );
+        assert_eq!(
+            system.selected_credential_user_id(ProviderCredentialPolicy::ResourceOwner),
+            Some(creator_id)
+        );
     }
 }

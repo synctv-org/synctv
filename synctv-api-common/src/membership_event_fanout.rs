@@ -129,7 +129,7 @@ mod tests {
             changed_by_username: "actor-user".to_string(),
             role_changed: false,
             new_permissions: synctv_core::models::RoomPermissionSet(7),
-            role: i32::from(synctv_core::models::RoomRole::Member),
+            role: synctv_core::models::RoomRole::Member,
             added_permissions: synctv_core::models::RoomPermissionSet(1),
             removed_permissions: synctv_core::models::RoomPermissionSet(2),
             admin_added_permissions: synctv_core::models::RoomPermissionSet(0),
@@ -201,7 +201,7 @@ mod tests {
             username: "target-user".to_string(),
             remark_name: String::new(),
             display_tag: String::new(),
-            role: synctv_proto::common::RoomMemberRole::Admin as i32,
+            role: synctv_core::models::RoomRole::Admin,
         })?;
         assert!(!event.enqueue_outbox);
         prepared.publish_after_outbox_commit();

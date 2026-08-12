@@ -18,7 +18,7 @@ pub(super) async fn start_playback(
             EndpointRateLimitCategory::Media,
             move |authenticated| async move {
                 client_api
-                    .start_playback(&authenticated.user_id, room_id.as_str(), req)
+                    .start_playback(&authenticated.user_id(), room_id.as_str(), req)
                     .await
             },
         )
@@ -41,7 +41,7 @@ pub(super) async fn stop_playback(
             EndpointRateLimitCategory::Media,
             move |authenticated| async move {
                 client_api
-                    .stop_playback(&authenticated.user_id, room_id.as_str(), req)
+                    .stop_playback(&authenticated.user_id(), room_id.as_str(), req)
                     .await
             },
         )
@@ -65,7 +65,7 @@ pub(super) async fn play_next(
             EndpointRateLimitCategory::Media,
             move |authenticated| async move {
                 client_api
-                    .play_next(&authenticated.user_id, &room_id, req)
+                    .play_next(&authenticated.user_id(), &room_id, req)
                     .await
             },
         )
@@ -89,7 +89,7 @@ pub(super) async fn play_previous(
             EndpointRateLimitCategory::Media,
             move |authenticated| async move {
                 client_api
-                    .play_previous(&authenticated.user_id, &room_id, req)
+                    .play_previous(&authenticated.user_id(), &room_id, req)
                     .await
             },
         )
@@ -113,7 +113,7 @@ pub(super) async fn list_playback_history(
             EndpointRateLimitCategory::Read,
             move |authenticated| async move {
                 client_api
-                    .list_playback_history(&authenticated.user_id, &room_id, req)
+                    .list_playback_history(&authenticated.user_id(), &room_id, req)
                     .await
             },
         )
@@ -137,7 +137,7 @@ pub(super) async fn play_history_entry(
             EndpointRateLimitCategory::Media,
             move |authenticated| async move {
                 client_api
-                    .play_history_entry(&authenticated.user_id, &room_id, req)
+                    .play_history_entry(&authenticated.user_id(), &room_id, req)
                     .await
             },
         )
@@ -181,7 +181,7 @@ pub(super) async fn update_playback_state(
             EndpointRateLimitCategory::Media,
             move |authenticated| async move {
                 client_api
-                    .update_playback_state(&authenticated.user_id, room_id.as_str(), req)
+                    .update_playback_state(&authenticated.user_id(), room_id.as_str(), req)
                     .await
             },
         )

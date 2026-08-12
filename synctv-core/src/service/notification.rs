@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
 use crate::{
-    models::{MediaId, PlaylistId, RealtimeEvent, RoomId, RoomSettings, UserId},
+    models::{MediaId, PlaylistId, RealtimeEvent, RoomId, RoomRole, RoomSettings, UserId},
     Result,
 };
 
@@ -97,7 +97,7 @@ pub enum RoomEvent {
     /// Member permissions changed
     PermissionChanged {
         user_id: UserId,
-        role: i32,
+        role: RoomRole,
         effective_permissions: u64,
         added_permissions: u64,
         removed_permissions: u64,
@@ -141,7 +141,7 @@ pub struct MediaAddedNotification<'a> {
 #[derive(Debug, Clone, Copy)]
 pub struct PermissionChangedNotification<'a> {
     pub user_id: &'a UserId,
-    pub role: i32,
+    pub role: RoomRole,
     pub effective_permissions: u64,
     pub added_permissions: u64,
     pub removed_permissions: u64,
@@ -664,7 +664,7 @@ mod tests {
             },
             RoomEvent::PermissionChanged {
                 user_id: UserId::new(),
-                role: 1,
+                role: RoomRole::Creator,
                 effective_permissions: 123,
                 added_permissions: 1,
                 removed_permissions: 2,

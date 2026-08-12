@@ -162,7 +162,7 @@ fn build_playback_result_from_provider(
     } = request;
     let mut builder =
         synctv_core::models::media::PlaybackResult::builder(playlist_id, room_id, name, position)
-            .provider(provider_result.provider.clone())
+            .provider(provider_result.provider)
             .provider_instance_name(provider_result.provider_instance_name.clone())
             .default_mode(provider_result.default_mode.clone())
             .duration_seconds(duration_seconds)

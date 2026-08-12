@@ -75,7 +75,7 @@ impl GuestTokenValidator {
         // Step 1: Verify JWT signature and expiration
         let claims = self.jwt_service.verify_guest_token(token)?;
 
-        let key = self.key_builder.guest_token_blacklist(&claims.jti);
+        let key = self.key_builder.guest_token_blacklist(claims.token_id());
         match self.token_blacklist.is_blacklisted_checked(&key).await {
             Ok(true) => {
                 return Err(Error::Authentication(
@@ -85,7 +85,7 @@ impl GuestTokenValidator {
             Ok(false) => {}
             Err(e) => {
                 tracing::error!(
-                    jti = %claims.jti,
+                    jti = %claims.token_id(),
                     error = %e,
                     "Guest token blacklist check failed due to storage error"
                 );
@@ -263,11 +263,7 @@ mod tests {
             "guest token should validate",
         );
 
-        assert_eq!(
-            ok(claims.room_id(), "guest claims should include room ID"),
-            room_id
-        );
-        assert!(claims.is_guest());
+        assert_eq!(claims.room_id(), room_id);
     }
 
     #[tokio::test]
@@ -330,7 +326,7 @@ mod tests {
         );
 
         ok(
-            validator.blacklist_token(&claims.jti, 3600).await,
+            validator.blacklist_token(claims.token_id(), 3600).await,
             "guest token should blacklist",
         );
 
@@ -366,11 +362,7 @@ mod tests {
         let token = ok(jwt.sign_guest_token(&room_id), "guest token should sign");
         let claims = ok(validator.validate(&token), "guest token should validate");
 
-        assert_eq!(
-            ok(claims.room_id(), "guest claims should include room ID"),
-            room_id
-        );
-        assert!(claims.is_guest());
+        assert_eq!(claims.room_id(), room_id);
     }
 
     #[test]

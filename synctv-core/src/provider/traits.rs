@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::pin::Pin;
 
+use crate::models::SourceProvider;
+
 /// Playback information for a single mode
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlaybackInfo {
@@ -46,7 +48,7 @@ pub struct PlaybackResult {
     pub default_mode: String,
 
     /// Provider that generated this playback result.
-    pub provider: String,
+    pub provider: SourceProvider,
 
     /// Provider instance selected for this playback result.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -105,7 +107,7 @@ pub enum BilibiliLiveDanmakuEventKind {
 /// provider-specific fields such as Bilibili's shared/non-shared flag.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderCredentialDependency {
-    pub provider: String,
+    pub provider: SourceProvider,
     pub user_id: String,
     pub server_id: String,
     #[serde(default = "default_required_provider_credential_dependency")]
@@ -119,12 +121,12 @@ const fn default_required_provider_credential_dependency() -> bool {
 impl ProviderCredentialDependency {
     #[must_use]
     pub fn new(
-        provider: impl Into<String>,
+        provider: SourceProvider,
         user_id: impl Into<String>,
         server_id: impl Into<String>,
     ) -> Self {
         Self {
-            provider: provider.into(),
+            provider,
             user_id: user_id.into(),
             server_id: server_id.into(),
             required: true,
@@ -133,12 +135,12 @@ impl ProviderCredentialDependency {
 
     #[must_use]
     pub fn optional(
-        provider: impl Into<String>,
+        provider: SourceProvider,
         user_id: impl Into<String>,
         server_id: impl Into<String>,
     ) -> Self {
         Self {
-            provider: provider.into(),
+            provider,
             user_id: user_id.into(),
             server_id: server_id.into(),
             required: false,
@@ -147,7 +149,7 @@ impl ProviderCredentialDependency {
 
     #[must_use]
     pub fn matches(&self, provider: &str, user_id: &str, server_id: &str) -> bool {
-        self.provider == provider && self.user_id == user_id && self.server_id == server_id
+        self.provider.as_str() == provider && self.user_id == user_id && self.server_id == server_id
     }
 }
 

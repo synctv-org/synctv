@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use synctv_core::spawn::spawn_monitored;
 use synctv_core::{
-    models::{ChatEventKind, ChatMessageSelection, RealtimeActor, RoomId, UserId},
+    models::{ChatEventKind, ChatMessageSelection, RealtimeActor, RoomId, RoomRole, UserId},
     service::{
         ChatService, OnlinePresenceService, RoomResourceEventPayload, RoomResourceKind, RoomService,
     },
@@ -30,7 +30,7 @@ use crate::resource_change::{
     provider_credential_resource_invalidation, resource_invalidations_for_cache_targets,
     resource_invalidations_for_room_event, ResourceInvalidation,
 };
-use synctv_proto::client::{ResourceDeliveryMode, ServerMessage};
+use synctv_proto::client::{OnlineEventKind, ResourceDeliveryMode, ServerMessage};
 
 const RESOURCE_EVALUATION_REUSE_WINDOW: Duration = Duration::from_secs(5);
 const MEDIA_RESOURCE_REFRESH_DEDUP_WINDOW: Duration = Duration::from_secs(5);
@@ -130,43 +130,43 @@ struct ResourceEvaluation {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum ObservationEvaluationKey {
     PlaybackState {
-        delivery_mode: i32,
+        delivery_mode: ResourceDeliveryMode,
     },
     Playback {
-        delivery_mode: i32,
+        delivery_mode: ResourceDeliveryMode,
         playback_client_profile: Option<String>,
     },
     RoomSettings {
-        delivery_mode: i32,
+        delivery_mode: ResourceDeliveryMode,
     },
     PlaylistItems {
-        delivery_mode: i32,
+        delivery_mode: ResourceDeliveryMode,
         request: Vec<u8>,
     },
     PlaybackHistory {
-        delivery_mode: i32,
+        delivery_mode: ResourceDeliveryMode,
         request: Vec<u8>,
     },
     RoomMemberEvents {
-        delivery_mode: i32,
+        delivery_mode: ResourceDeliveryMode,
     },
     SelfRoomMember {
-        delivery_mode: i32,
+        delivery_mode: ResourceDeliveryMode,
     },
     ChatEvents {
-        delivery_mode: i32,
+        delivery_mode: ResourceDeliveryMode,
         include_message_types: Vec<i32>,
     },
     ChatPinEvents {
-        delivery_mode: i32,
+        delivery_mode: ResourceDeliveryMode,
     },
     OnlineCount {
-        delivery_mode: i32,
-        roles: Vec<i32>,
+        delivery_mode: ResourceDeliveryMode,
+        roles: Vec<RoomRole>,
         user_ids: Vec<UserId>,
     },
     OnlineEvent {
-        delivery_mode: i32,
+        delivery_mode: ResourceDeliveryMode,
     },
 }
 
@@ -398,12 +398,12 @@ enum ObservedResource {
     },
     ChatPinEvents,
     OnlineCount {
-        roles: Vec<i32>,
+        roles: Vec<RoomRole>,
         user_ids: Vec<UserId>,
     },
     OnlineEvent {
-        roles: Vec<i32>,
-        kinds: Vec<i32>,
+        roles: Vec<RoomRole>,
+        kinds: Vec<OnlineEventKind>,
         user_ids: Vec<UserId>,
     },
 }
@@ -455,7 +455,7 @@ impl ResourceObservation {
     }
 
     fn evaluation_key(&self) -> ObservationEvaluationKey {
-        let delivery_mode = self.delivery_mode as i32;
+        let delivery_mode = self.delivery_mode;
         match &self.resource {
             ObservedResource::PlaybackState => {
                 ObservationEvaluationKey::PlaybackState { delivery_mode }
@@ -2283,6 +2283,30 @@ impl ResourceObserver {
         }
     }
 
+    fn normalize_online_roles(values: &[i32], resource: &str) -> Result<Vec<RoomRole>, String> {
+        values
+            .iter()
+            .map(|value| {
+                proto_role_filter_to_room_role(*value)
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| format!("{resource} role filter is unspecified"))
+            })
+            .collect()
+    }
+
+    fn normalize_online_event_kinds(values: &[i32]) -> Result<Vec<OnlineEventKind>, String> {
+        values
+            .iter()
+            .map(|value| match OnlineEventKind::try_from(*value) {
+                Ok(OnlineEventKind::Joined) => Ok(OnlineEventKind::Joined),
+                Ok(OnlineEventKind::Left) => Ok(OnlineEventKind::Left),
+                Ok(OnlineEventKind::Unspecified) | Err(_) => {
+                    Err("online_event kind filter is unsupported".to_string())
+                }
+            })
+            .collect()
+    }
+
     fn observation_from_request(
         &self,
         request: &synctv_proto::client::ObserveResource,
@@ -2331,7 +2355,7 @@ impl ResourceObserver {
             },
             Resource::ChatPinEvents(_) => ObservedResource::ChatPinEvents,
             Resource::OnlineCount(observe) => ObservedResource::OnlineCount {
-                roles: observe.roles.clone(),
+                roles: Self::normalize_online_roles(&observe.roles, "online_count")?,
                 user_ids: observe
                     .user_ids
                     .iter()
@@ -2345,8 +2369,8 @@ impl ResourceObserver {
                     .collect::<Result<Vec<_>, _>>()?,
             },
             Resource::OnlineEvent(observe) => ObservedResource::OnlineEvent {
-                roles: observe.roles.clone(),
-                kinds: observe.kinds.clone(),
+                roles: Self::normalize_online_roles(&observe.roles, "online_event")?,
+                kinds: Self::normalize_online_event_kinds(&observe.kinds)?,
                 user_ids: observe
                     .user_ids
                     .iter()
@@ -3013,16 +3037,12 @@ impl ResourceObserver {
         };
 
         let (user_id, role, kind) = match event {
-            RealtimeEvent::UserJoined { user_id, role, .. } => (
-                *user_id,
-                *role,
-                synctv_proto::client::OnlineEventKind::Joined as i32,
-            ),
-            RealtimeEvent::UserLeft { user_id, role, .. } => (
-                *user_id,
-                *role,
-                synctv_proto::client::OnlineEventKind::Left as i32,
-            ),
+            RealtimeEvent::UserJoined { user_id, role, .. } => {
+                (*user_id, *role, OnlineEventKind::Joined)
+            }
+            RealtimeEvent::UserLeft { user_id, role, .. } => {
+                (*user_id, *role, OnlineEventKind::Left)
+            }
             _ => return false,
         };
 
@@ -3379,7 +3399,7 @@ impl ResourceObserver {
 
     async fn online_count_for_filters(
         &self,
-        roles: &[i32],
+        roles: &[RoomRole],
         user_ids: &[UserId],
     ) -> Result<usize, String> {
         if roles.is_empty() && user_ids.is_empty() {
@@ -3395,10 +3415,7 @@ impl ResourceObserver {
         if !roles.is_empty() {
             let mut role_user_ids = HashSet::new();
             for role in roles {
-                let role = proto_role_filter_to_room_role(*role)
-                    .map_err(|error| error.to_string())?
-                    .ok_or_else(|| "online_count role filter is unspecified".to_string())?;
-                role_user_ids.extend(self.user_ids_for_room_role(role).await?);
+                role_user_ids.extend(self.user_ids_for_room_role(*role).await?);
             }
 
             if filtered_user_ids.is_empty() {
@@ -3687,8 +3704,8 @@ mod tests {
         let user = UserId::expect_positive(42);
         let other = UserId::expect_positive(43);
         let resource = ObservedResource::OnlineEvent {
-            roles: vec![synctv_proto::common::RoomMemberRole::Admin as i32],
-            kinds: vec![synctv_proto::client::OnlineEventKind::Joined as i32],
+            roles: vec![RoomRole::Admin],
+            kinds: vec![OnlineEventKind::Joined],
             user_ids: vec![user],
         };
         let matching = RealtimeEvent::UserJoined {
@@ -3699,7 +3716,7 @@ mod tests {
             remark_name: String::new(),
             display_tag: String::new(),
             permissions: synctv_core::models::RoomPermissionSet::default_admin(),
-            role: synctv_proto::common::RoomMemberRole::Admin as i32,
+            role: RoomRole::Admin,
             added_permissions: synctv_core::models::RoomPermissionSet(0),
             removed_permissions: synctv_core::models::RoomPermissionSet(0),
             admin_added_permissions: synctv_core::models::RoomPermissionSet(0),
@@ -3715,7 +3732,7 @@ mod tests {
             remark_name: String::new(),
             display_tag: String::new(),
             permissions: synctv_core::models::RoomPermissionSet::default_admin(),
-            role: synctv_proto::common::RoomMemberRole::Admin as i32,
+            role: RoomRole::Admin,
             added_permissions: synctv_core::models::RoomPermissionSet(0),
             removed_permissions: synctv_core::models::RoomPermissionSet(0),
             admin_added_permissions: synctv_core::models::RoomPermissionSet(0),
@@ -3730,7 +3747,7 @@ mod tests {
             username: "admin".to_string(),
             remark_name: String::new(),
             display_tag: String::new(),
-            role: synctv_proto::common::RoomMemberRole::Admin as i32,
+            role: RoomRole::Admin,
             timestamp: synctv_core::SystemClock.now(),
         };
 

@@ -37,7 +37,7 @@ pub struct PermissionChangedOutboxSnapshot {
     pub changed_by_username: String,
     pub role_changed: bool,
     pub new_permissions: RoomPermissionSet,
-    pub role: i32,
+    pub role: RoomRole,
     pub added_permissions: RoomPermissionSet,
     pub removed_permissions: RoomPermissionSet,
     pub admin_added_permissions: RoomPermissionSet,
@@ -51,7 +51,7 @@ pub struct UserLeftOutboxSnapshot {
     pub username: String,
     pub remark_name: String,
     pub display_tag: String,
-    pub role: i32,
+    pub role: RoomRole,
 }
 
 pub(super) fn log_if_no_local_subscribers(
@@ -216,7 +216,7 @@ impl RoomService {
             (
                 self.permission_service
                     .effective_member_permissions(member, &room_settings),
-                i32::from(member.role),
+                member.role,
                 RoomPermissionSet(member.added_permissions),
                 RoomPermissionSet(member.removed_permissions),
                 RoomPermissionSet(member.admin_added_permissions),
@@ -225,7 +225,7 @@ impl RoomService {
         } else {
             (
                 RoomPermissionSet::empty(),
-                i32::from(RoomRole::Member),
+                RoomRole::Member,
                 RoomPermissionSet::empty(),
                 RoomPermissionSet::empty(),
                 RoomPermissionSet::empty(),
@@ -257,10 +257,9 @@ impl RoomService {
         user_id: UserId,
     ) -> Result<UserLeftOutboxSnapshot> {
         let member = self.get_member(&room_id, &user_id).await?;
-        let role = member.as_ref().map_or_else(
-            || i32::from(RoomRole::Member),
-            |member| i32::from(member.role),
-        );
+        let role = member
+            .as_ref()
+            .map_or(RoomRole::Member, |member| member.role);
         let (remark_name, display_tag) = member
             .map(|member| (member.remark_name, member.display_tag))
             .unwrap_or_default();

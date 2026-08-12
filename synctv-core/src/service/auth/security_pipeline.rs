@@ -29,8 +29,14 @@ const TWO_FACTOR_REQUIRED_MESSAGE: &str =
 /// Outcome of a successful security pipeline check.
 #[derive(Debug, Clone)]
 pub struct AuthenticatedToken {
-    pub user_id: UserId,
     pub claims: Claims,
+}
+
+impl AuthenticatedToken {
+    #[must_use]
+    pub fn user_id(&self) -> UserId {
+        self.claims.user_id()
+    }
 }
 
 /// Shared security pipeline that performs the post-JWT security checks.
@@ -126,7 +132,7 @@ impl SecurityPipeline {
     /// # Returns
     /// [`AuthenticatedToken`] on success, or an [`Error::Authentication`] on failure.
     pub async fn check(&self, claims: &Claims) -> Result<AuthenticatedToken> {
-        let user_id = claims.user_id()?;
+        let user_id = claims.user_id();
 
         if let Some(cache) = &self.user_cache {
             match cache.get(&user_id).await {
@@ -217,7 +223,6 @@ impl SecurityPipeline {
         }
 
         Ok(AuthenticatedToken {
-            user_id,
             claims: claims.clone(),
         })
     }
@@ -242,22 +247,14 @@ impl SecurityPipeline {
         key_builder: &KeyBuilder,
         claims: &Claims,
     ) -> Result<()> {
-        // Reject tokens with empty JTI — a missing JTI would bypass the
-        // blacklist check entirely, allowing crafted tokens to survive logout.
-        if claims.jti.is_empty() {
-            return Err(Error::Authentication(
-                "Invalid token: missing token identifier".to_string(),
-            ));
-        }
-
-        let key = key_builder.access_token_blacklist(&claims.jti);
+        let key = key_builder.access_token_blacklist(claims.token_id());
         match token_blacklist.is_blacklisted_checked(&key).await {
             Ok(true) => Err(Error::Authentication("Authentication failed".to_string())),
             Ok(false) => Ok(()),
             Err(e) => {
                 tracing::error!(
-                    user_id = %claims.sub,
-                    jti = %claims.jti,
+                    user_id = %claims.user_id(),
+                    jti = %claims.token_id(),
                     error = %e,
                     "Access token blacklist check failed due to storage error"
                 );
@@ -327,25 +324,14 @@ mod tests {
         }
     }
 
-    fn make_claims(user_id: &str, pv: i32) -> Claims {
+    fn make_claims(user_id: UserId, pv: i32) -> Claims {
         let now = crate::SystemClock.now();
-        Claims {
-            sub: user_id.to_string(),
-            typ: "access".to_string(),
-            jti: "test-jti".to_string(),
-            iat: now.timestamp(),
-            exp: (now + chrono::Duration::hours(1)).timestamp(),
+        Claims::test_access(
+            user_id,
             pv,
-            sid: None,
-            amr: None,
-            cbm: None,
-            opi: None,
-            ops: None,
-            eml: None,
-            wcid: None,
-            iss: None,
-            aud: None,
-        }
+            now.timestamp(),
+            (now + chrono::Duration::hours(1)).timestamp(),
+        )
     }
 
     #[tokio::test]
@@ -355,7 +341,7 @@ mod tests {
         let err = SecurityPipeline::check_access_token_blacklist_with(
             blacklist.as_ref(),
             &key_builder,
-            &make_claims("user-1", 0),
+            &make_claims(UserId::expect_positive(1), 0),
         )
         .await
         .expect_err("blacklist storage failures must fail closed");

@@ -1007,7 +1007,7 @@ fn permission_changed_event_for_target(
         changed_by_username: "owner".to_string(),
         role_changed,
         new_permissions: RoomPermissionSet(RoomMemberPermissionBits::SEND_CHAT_MESSAGES),
-        role: synctv_proto::common::RoomMemberRole::Admin as i32,
+        role: RoomRole::Admin,
         added_permissions: RoomPermissionSet(RoomMemberPermissionBits::SEND_CHAT_MESSAGES),
         removed_permissions: RoomPermissionSet(0),
         admin_added_permissions: RoomPermissionSet(0),
@@ -4071,7 +4071,7 @@ async fn test_provider_credential_change_refreshes_dependent_playback() {
     });
     playback_service.replace_dependencies(vec![
         synctv_core::provider::ProviderCredentialDependency::new(
-            "bilibili",
+            synctv_core::models::SourceProvider::Bilibili,
             handler.test_user_id().to_string(),
             "bilibili",
         ),
@@ -4209,7 +4209,7 @@ async fn test_provider_credential_change_does_not_refresh_unrelated_playback() {
     });
     playback_service.replace_dependencies(vec![
         synctv_core::provider::ProviderCredentialDependency::new(
-            "bilibili",
+            synctv_core::models::SourceProvider::Bilibili,
             handler.test_user_id().to_string(),
             "bilibili",
         ),
@@ -5467,7 +5467,7 @@ fn test_room_member_events_filter_self_and_permission_only_changes() {
                 remark_name: String::new(),
                 display_tag: String::new(),
                 permissions: RoomPermissionSet::default_member(),
-                role: synctv_proto::common::RoomMemberRole::Member as i32,
+                role: RoomRole::Member,
                 added_permissions: RoomPermissionSet::default(),
                 removed_permissions: RoomPermissionSet::default(),
                 admin_added_permissions: RoomPermissionSet::default(),
@@ -5487,7 +5487,7 @@ fn test_room_member_events_filter_self_and_permission_only_changes() {
                 username: "test-user".to_string(),
                 remark_name: String::new(),
                 display_tag: String::new(),
-                role: synctv_proto::common::RoomMemberRole::Member as i32,
+                role: RoomRole::Member,
                 timestamp: now(),
             },
             Some(user_id()),
@@ -7159,7 +7159,7 @@ fn test_user_joined_event_conversion() {
         remark_name: String::new(),
         display_tag: String::new(),
         permissions: RoomPermissionSet::default_member(),
-        role: 3,
+        role: RoomRole::Member,
         added_permissions: RoomPermissionSet(RoomAdminPermissionBits::CONTROL_PLAYBACK_STATE),
         removed_permissions: RoomPermissionSet(RoomAdminPermissionBits::MANAGE_OWN_MEDIA),
         admin_added_permissions: RoomPermissionSet(RoomAdminPermissionBits::REMOVE_MEMBERS),
@@ -7174,32 +7174,6 @@ fn test_user_joined_event_conversion() {
 }
 
 #[test]
-fn test_user_joined_event_rejects_unspecified_role() {
-    let event = RealtimeEvent::UserJoined {
-        event_id: "evt-invalid-role".to_string(),
-        room_id: room_id(),
-        user_id: user_id(),
-        username: "carol".to_string(),
-        remark_name: String::new(),
-        display_tag: String::new(),
-        permissions: RoomPermissionSet::default_member(),
-        role: synctv_proto::common::RoomMemberRole::Unspecified as i32,
-        added_permissions: RoomPermissionSet(0),
-        removed_permissions: RoomPermissionSet(0),
-        admin_added_permissions: RoomPermissionSet(0),
-        admin_removed_permissions: RoomPermissionSet(0),
-        joined_at: now(),
-        timestamp: now(),
-    };
-
-    assert!(
-        realtime_event_to_server_messages(&event, "room_test", &public_id_codec())
-            .checked("member events are delivered through room_member_events")
-            .is_empty()
-    );
-}
-
-#[test]
 fn test_user_joined_event_rejects_invalid_username() {
     let event = RealtimeEvent::UserJoined {
         event_id: "evt-invalid-username".to_string(),
@@ -7209,7 +7183,7 @@ fn test_user_joined_event_rejects_invalid_username() {
         remark_name: String::new(),
         display_tag: String::new(),
         permissions: RoomPermissionSet::default_member(),
-        role: synctv_proto::common::RoomMemberRole::Member as i32,
+        role: RoomRole::Member,
         added_permissions: RoomPermissionSet(0),
         removed_permissions: RoomPermissionSet(0),
         admin_added_permissions: RoomPermissionSet(0),
@@ -7234,7 +7208,7 @@ fn test_user_left_event_conversion() {
         username: "dave".to_string(),
         remark_name: String::new(),
         display_tag: String::new(),
-        role: synctv_proto::common::RoomMemberRole::Member as i32,
+        role: RoomRole::Member,
         timestamp: now(),
     };
 
@@ -7260,7 +7234,7 @@ fn test_resource_backed_events_do_not_emit_direct_server_messages() {
             changed_by_username: "owner".to_string(),
             role_changed: false,
             new_permissions: RoomPermissionSet(RoomAdminPermissionBits::USE_VOICE_CHAT),
-            role: synctv_proto::common::RoomMemberRole::Member as i32,
+            role: RoomRole::Member,
             added_permissions: RoomPermissionSet(RoomMemberPermissionBits::USE_VOICE_CHAT),
             removed_permissions: RoomPermissionSet(RoomMemberPermissionBits::SEND_CHAT_MESSAGES),
             admin_added_permissions: RoomPermissionSet(0),
@@ -7378,7 +7352,7 @@ fn test_permission_changed_room_member_event_preserves_presence_snapshot() {
         changed_by_username: "owner".to_string(),
         role_changed: false,
         new_permissions: RoomPermissionSet(RoomAdminPermissionBits::USE_VOICE_CHAT),
-        role: synctv_proto::common::RoomMemberRole::Member as i32,
+        role: RoomRole::Member,
         added_permissions: RoomPermissionSet(RoomMemberPermissionBits::USE_VOICE_CHAT),
         removed_permissions: RoomPermissionSet(RoomMemberPermissionBits::SEND_CHAT_MESSAGES),
         admin_added_permissions: RoomPermissionSet(0),
@@ -8370,7 +8344,7 @@ async fn test_permission_revocation_ends_active_voice_and_media_sessions() {
             changed_by_username: fixture.handler.username.clone(),
             role_changed: false,
             new_permissions: RoomPermissionSet::empty(),
-            role: synctv_proto::common::RoomMemberRole::Member as i32,
+            role: RoomRole::Member,
             added_permissions: RoomPermissionSet::empty(),
             removed_permissions: RoomPermissionSet::empty(),
             admin_added_permissions: RoomPermissionSet::empty(),
@@ -9673,7 +9647,7 @@ fn test_admin_event_requires_skip_cleanup_only_for_room_scoped_or_redundant_exit
             username: "tester".to_string(),
             remark_name: String::new(),
             display_tag: String::new(),
-            role: synctv_proto::common::RoomMemberRole::Member as i32,
+            role: RoomRole::Member,
             timestamp: now,
         },
         Some(uid),
@@ -9783,7 +9757,7 @@ fn test_watch_admin_event_matches_access_revocation_events() {
             username: "tester".to_string(),
             remark_name: String::new(),
             display_tag: String::new(),
-            role: synctv_proto::common::RoomMemberRole::Member as i32,
+            role: RoomRole::Member,
             timestamp: now,
         },
         Some(uid),

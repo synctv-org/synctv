@@ -12,6 +12,7 @@ use std::time::Duration;
 use chrono::Utc;
 use synctv_core::cache::{CacheInvalidationRuntime, CacheInvalidationService, InvalidationMessage};
 use synctv_core::models::id::{RoomId, UserId};
+use synctv_core::models::RoomRole;
 use synctv_core::{DirectRedisConnectionRuntime, RedisConnectionRuntime, SharedStateProfile};
 use synctv_core_testing::redis_connection_manager;
 use synctv_realtime::sync::{
@@ -183,7 +184,7 @@ async fn test_cross_replica_permission_changed() {
                 synctv_core::models::RoomPermissionSet::default_member().0
                     | synctv_core::models::RoomAdminPermissionBits::REMOVE_MEMBERS,
             ),
-            role: 3,
+            role: RoomRole::Member,
             added_permissions: synctv_core::models::RoomPermissionSet(
                 synctv_core::models::RoomAdminPermissionBits::REMOVE_MEMBERS,
             ),

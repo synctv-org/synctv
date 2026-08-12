@@ -35,10 +35,9 @@ fn create_user_service(pool: &sqlx::PgPool) -> UserService {
         key_builder,
         brute_force,
         synctv_core::service::UserServiceRuntimeOptions {
-            password_registration_policy_override: Some(synctv_core::service::RegistrationPolicy {
-                enabled: true,
-                need_review: false,
-            }),
+            password_registration_policy_override: Some(
+                synctv_core::service::RegistrationPolicy::Immediate,
+            ),
             ..synctv_core::service::UserServiceRuntimeOptions::test_defaults()
         },
     )

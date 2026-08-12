@@ -5,7 +5,7 @@
 
 #![allow(clippy::unwrap_used)]
 use synctv_core::models::id::{MediaId, RoomId, UserId};
-use synctv_core::models::RoomPermissionSet;
+use synctv_core::models::{RoomPermissionSet, RoomRole};
 use synctv_realtime::sync::RealtimeEvent;
 
 fn event_id() -> String {
@@ -82,7 +82,7 @@ fn test_permission_changed_is_critical() {
         changed_by_username: "admin".to_string(),
         role_changed: false,
         new_permissions: RoomPermissionSet(0),
-        role: 0, // RoomMemberRole::Guest
+        role: RoomRole::Guest,
         added_permissions: RoomPermissionSet(0),
         removed_permissions: RoomPermissionSet(0),
         admin_added_permissions: RoomPermissionSet(0),
@@ -128,7 +128,7 @@ fn test_user_left_is_critical() {
         username: "test_user".to_string(),
         remark_name: String::new(),
         display_tag: String::new(),
-        role: 2,
+        role: RoomRole::Member,
         timestamp: chrono::Utc::now(),
     };
     assert!(event.is_critical(), "UserLeft should be a critical event");

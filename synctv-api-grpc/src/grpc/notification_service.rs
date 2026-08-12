@@ -63,7 +63,7 @@ impl NotificationService for NotificationServiceImpl {
                 EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
                     notification_api
-                        .list_notifications_response(&authenticated.user_id, req)
+                        .list_notifications_response(&authenticated.user_id(), req)
                         .await
                 },
             )
@@ -92,7 +92,7 @@ impl NotificationService for NotificationServiceImpl {
                 EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
                     notification_api
-                        .get_notification_response(&authenticated.user_id, req)
+                        .get_notification_response(&authenticated.user_id(), req)
                         .await
                 },
             )
@@ -121,7 +121,7 @@ impl NotificationService for NotificationServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     notification_api
-                        .mark_as_read_response(&authenticated.user_id, req)
+                        .mark_as_read_response(&authenticated.user_id(), req)
                         .await
                 },
             )
@@ -150,7 +150,7 @@ impl NotificationService for NotificationServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     notification_api
-                        .mark_all_as_read_response(&authenticated.user_id, req)
+                        .mark_all_as_read_response(&authenticated.user_id(), req)
                         .await
                 },
             )
@@ -179,7 +179,7 @@ impl NotificationService for NotificationServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     notification_api
-                        .delete_notification_response(&authenticated.user_id, req)
+                        .delete_notification_response(&authenticated.user_id(), req)
                         .await
                 },
             )
@@ -207,7 +207,7 @@ impl NotificationService for NotificationServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     notification_api
-                        .delete_all_read_response(&authenticated.user_id)
+                        .delete_all_read_response(&authenticated.user_id())
                         .await
                 },
             )

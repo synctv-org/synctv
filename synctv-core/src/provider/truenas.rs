@@ -573,7 +573,7 @@ impl MediaProvider for TrueNasProvider {
         let result = PlaybackResult {
             playback_infos,
             default_mode: "original".to_string(),
-            provider: Self::NAME.to_string(),
+            provider: crate::models::SourceProvider::TrueNas,
             provider_instance_name: auth.instance_name,
             duration_seconds: None,
             playback_kind: Some(crate::models::PlaybackKind::Regular),
@@ -683,7 +683,7 @@ impl MediaProvider for TrueNasProvider {
             .credential_owner_or_user_id()
             .ok_or(ProviderError::CredentialRequired)?;
         Ok(vec![ProviderCredentialDependency::new(
-            Self::NAME,
+            crate::models::SourceProvider::TrueNas,
             owner.to_string(),
             Self::source_server_id(source_config)?.to_string(),
         )])
@@ -1218,7 +1218,7 @@ mod tests {
                     },
                 )]),
                 default_mode: "proxy".to_string(),
-                provider: TrueNasProvider::NAME.to_string(),
+                provider: crate::models::SourceProvider::TrueNas,
                 provider_instance_name: None,
                 duration_seconds: None,
                 playback_kind: Some(crate::models::PlaybackKind::Regular),

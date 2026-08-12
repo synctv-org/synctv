@@ -2,8 +2,10 @@ use serde::{Deserialize, Serialize};
 use webauthn_rs::prelude::Passkey;
 
 use crate::{
-    models::oauth2_client::OAuth2Provider,
-    models::{FileMetadata, FileUploadManifestPart, SignupMethod, User, UserId},
+    models::oauth2_client::{OAuth2Provider, OAuth2UserInfo},
+    models::{
+        FileMetadata, FileUploadManifestPart, OpaquePasswordRecord, SignupMethod, User, UserId,
+    },
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,9 +32,28 @@ impl RegistrationMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RegistrationPolicy {
-    pub enabled: bool,
-    pub need_review: bool,
+pub enum RegistrationPolicy {
+    Disabled,
+    Immediate,
+    ReviewRequired,
+}
+
+impl RegistrationPolicy {
+    pub(super) const fn from_runtime_settings(enabled: bool, need_review: bool) -> Self {
+        match (enabled, need_review) {
+            (false, _) => Self::Disabled,
+            (true, false) => Self::Immediate,
+            (true, true) => Self::ReviewRequired,
+        }
+    }
+
+    pub(super) const fn is_enabled(self) -> bool {
+        !matches!(self, Self::Disabled)
+    }
+
+    pub(crate) const fn requires_review(self) -> bool {
+        matches!(self, Self::ReviewRequired)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -77,20 +98,30 @@ pub(crate) enum PendingRegistrationConflict {
 pub(super) struct PendingRegistrationRequest {
     pub(super) username: String,
     pub(super) email: Option<String>,
-    pub(super) opaque_record: Option<Vec<u8>>,
-    pub(super) opaque_credential_identifier: Option<Vec<u8>>,
-    pub(super) opaque_ciphersuite: Option<String>,
-    pub(super) opaque_server_setup_version: Option<i32>,
-    pub(super) oauth2_provider: Option<OAuth2Provider>,
-    pub(super) oauth2_provider_instance_name: Option<String>,
-    pub(super) oauth2_provider_issuer: Option<String>,
-    pub(super) oauth2_provider_user_id: Option<String>,
-    pub(super) oauth2_provider_username: Option<String>,
-    pub(super) oauth2_avatar_url: Option<String>,
-    pub(super) webauthn_credential_id: Option<Vec<u8>>,
-    pub(super) webauthn_passkey: Option<Passkey>,
-    pub(super) webauthn_credential_name: Option<String>,
-    pub(super) signup_method: SignupMethod,
+    pub(super) credential: PendingRegistrationCredential,
+}
+
+#[derive(Debug)]
+pub(super) enum PendingRegistrationCredential {
+    Password {
+        signup_method: SignupMethod,
+        opaque_record: OpaquePasswordRecord,
+    },
+    OAuth2(OAuth2UserInfo),
+    WebAuthn {
+        passkey: Passkey,
+        credential_name: Option<String>,
+    },
+}
+
+impl PendingRegistrationCredential {
+    pub(super) const fn signup_method(&self) -> SignupMethod {
+        match self {
+            Self::Password { signup_method, .. } => *signup_method,
+            Self::OAuth2(_) => SignupMethod::OAuth2,
+            Self::WebAuthn { .. } => SignupMethod::WebAuthn,
+        }
+    }
 }
 
 pub(super) struct PendingRegistrationRequestRow {

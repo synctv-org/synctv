@@ -70,6 +70,14 @@ pub enum VoiceRtcJoinOutcome {
     RoomAtCapacity,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ConnectionReservationError {
+    #[error("Room at capacity ({current} connections, max: {max})")]
+    RoomAtCapacity { current: usize, max: usize },
+    #[error("Actor at capacity ({current} connections, max: {max})")]
+    ActorAtCapacity { current: usize, max: usize },
+}
+
 struct ConnectionIdClaim<'a> {
     manager: &'a ConnectionManager,
     connection_id: String,
@@ -907,7 +915,7 @@ impl ConnectionManager {
     /// (success or failure) or if the WebSocket upgrade fails.
     ///
     /// Returns Ok(()) if the slot was reserved, or Err if the room is at capacity.
-    pub fn reserve_room_slot(&self, room_id: &RoomId) -> Result<(), String> {
+    pub fn reserve_room_slot(&self, room_id: &RoomId) -> Result<(), ConnectionReservationError> {
         let counter = self
             .pending_room_reservations
             .entry(*room_id)
@@ -920,10 +928,10 @@ impl ConnectionManager {
             let effective = registered + pending;
 
             if effective >= self.limits.max_per_room {
-                return Err(format!(
-                    "Room at capacity ({effective} connections, max: {})",
-                    self.limits.max_per_room
-                ));
+                return Err(ConnectionReservationError::RoomAtCapacity {
+                    current: effective,
+                    max: self.limits.max_per_room,
+                });
             }
 
             // Try to atomically increment the pending count
@@ -975,15 +983,18 @@ impl ConnectionManager {
     /// Same semantics as `reserve_room_slot` but for per-user limits.
     /// The caller MUST call `release_user_reservation` after registration
     /// completes or on failure.
-    pub fn reserve_user_slot(&self, user_id: &UserId) -> Result<(), String> {
+    pub fn reserve_user_slot(&self, user_id: &UserId) -> Result<(), ConnectionReservationError> {
         self.reserve_actor_key_slot(&Self::user_actor_key(user_id))
     }
 
-    pub fn reserve_actor_slot(&self, actor: &RealtimeActor) -> Result<(), String> {
+    pub fn reserve_actor_slot(
+        &self,
+        actor: &RealtimeActor,
+    ) -> Result<(), ConnectionReservationError> {
         self.reserve_actor_key_slot(&actor.connection_key())
     }
 
-    fn reserve_actor_key_slot(&self, actor_key: &str) -> Result<(), String> {
+    fn reserve_actor_key_slot(&self, actor_key: &str) -> Result<(), ConnectionReservationError> {
         let counter = self
             .pending_actor_reservations
             .entry(actor_key.to_string())
@@ -998,10 +1009,10 @@ impl ConnectionManager {
             let effective = registered + pending;
 
             if effective >= self.limits.max_per_user {
-                return Err(format!(
-                    "Actor at capacity ({effective} connections, max: {})",
-                    self.limits.max_per_user
-                ));
+                return Err(ConnectionReservationError::ActorAtCapacity {
+                    current: effective,
+                    max: self.limits.max_per_user,
+                });
             }
 
             if counter

@@ -336,9 +336,13 @@ async fn test_jwt_jti_uniqueness() {
     let claims2 = verify_access_token(&jwt_service, &token2);
 
     // JTI should be different for each token
-    assert_ne!(claims1.jti, claims2.jti, "JTI should be unique per token");
-    assert!(!claims1.jti.is_empty(), "JTI should not be empty");
-    assert!(!claims2.jti.is_empty(), "JTI should not be empty");
+    assert_ne!(
+        claims1.token_id(),
+        claims2.token_id(),
+        "JTI should be unique per token"
+    );
+    assert!(!claims1.token_id().is_empty(), "JTI should not be empty");
+    assert!(!claims2.token_id().is_empty(), "JTI should not be empty");
 }
 
 #[tokio::test]
@@ -410,7 +414,7 @@ async fn test_jwt_concurrent_token_generation() {
             let user_id = UserId::new();
             let token = sign_access_token(&service, &user_id, 0);
             let claims = verify_access_token(&service, &token);
-            claims.jti
+            claims.token_id().to_string()
         });
         handles.push(handle);
     }
@@ -670,12 +674,13 @@ async fn test_refresh_token_rotation_produces_new_jti() {
 
     // New token should have different JTI
     assert_ne!(
-        old_claims.jti, new_claims.jti,
+        old_claims.token_id(),
+        new_claims.token_id(),
         "Rotated token should have new JTI"
     );
 
     // Both should have same subject
-    assert_eq!(old_claims.sub, new_claims.sub);
+    assert_eq!(old_claims.user_id(), new_claims.user_id());
 }
 
 #[tokio::test]

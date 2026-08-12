@@ -257,7 +257,7 @@ impl DouyuProvider {
         Ok(PlaybackResult {
             playback_infos: infos,
             default_mode,
-            provider: Self::NAME.to_string(),
+            provider: crate::models::SourceProvider::Douyu,
             provider_instance_name: None,
             duration_seconds: None,
             playback_kind: Some(if metadata.is_live {

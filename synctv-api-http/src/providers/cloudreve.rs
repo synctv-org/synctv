@@ -65,7 +65,7 @@ pub(crate) async fn login(
         EndpointRateLimitCategory::Auth,
         move |_control, authenticated| {
             async move {
-                api.login(authenticated.user_id, req, instance_name.as_deref())
+                api.login(authenticated.user_id(), req, instance_name.as_deref())
                     .await
             }
             .boxed()
@@ -108,7 +108,7 @@ pub(crate) async fn list(
         EndpointRateLimitCategory::Read,
         move |_control, authenticated| {
             async move {
-                api.list(authenticated.user_id, req, instance_name.as_deref())
+                api.list(authenticated.user_id(), req, instance_name.as_deref())
                     .await
             }
             .boxed()
@@ -151,7 +151,7 @@ pub(crate) async fn search(
         EndpointRateLimitCategory::Read,
         move |_control, authenticated| {
             async move {
-                api.search(authenticated.user_id, req, instance_name.as_deref())
+                api.search(authenticated.user_id(), req, instance_name.as_deref())
                     .await
             }
             .boxed()
@@ -194,7 +194,7 @@ pub(crate) async fn me(
         EndpointRateLimitCategory::Read,
         move |_control, authenticated| {
             async move {
-                api.get_me(authenticated.user_id, req, instance_name.as_deref())
+                api.get_me(authenticated.user_id(), req, instance_name.as_deref())
                     .await
             }
             .boxed()
@@ -235,7 +235,7 @@ pub(crate) async fn logout(
         request_meta,
         EndpointRateLimitCategory::Auth,
         move |_control, authenticated| {
-            async move { api.logout(authenticated.user_id, req).await }.boxed()
+            async move { api.logout(authenticated.user_id(), req).await }.boxed()
         },
     )
     .await
@@ -273,7 +273,7 @@ pub(crate) async fn binds(
         EndpointRateLimitCategory::Read,
         move |authenticated| {
             async move {
-                api.get_binds(authenticated.user_id, instance_name.as_deref())
+                api.get_binds(authenticated.user_id(), instance_name.as_deref())
                     .await
             }
             .boxed()

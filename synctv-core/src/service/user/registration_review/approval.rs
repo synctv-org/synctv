@@ -1,6 +1,8 @@
 use sqlx::{Postgres, Transaction};
+use webauthn_rs::prelude::Passkey;
 
 use crate::{
+    models::oauth2_client::OAuth2UserInfo,
     models::{OpaquePasswordRecord, SignupMethod, User, UserId},
     repository::{
         PasswordCredentialMaterial, ReviewRepository, UserOAuthProviderRepository,
@@ -10,50 +12,22 @@ use crate::{
     Error, Result,
 };
 
-use super::super::registration_types::PendingRegistrationRequest;
+use super::super::registration_types::PendingRegistrationCredential;
 
 impl UserService {
     async fn approve_oauth2_registration(
         &self,
         created: &User,
-        request: &PendingRegistrationRequest,
+        user_info: &OAuth2UserInfo,
         tx: &mut Transaction<'_, Postgres>,
     ) -> Result<()> {
-        let provider = request.oauth2_provider.as_ref().ok_or_else(|| {
-            Error::InvalidInput("OAuth2 registration request is missing provider".to_string())
-        })?;
-        let provider_user_id = request.oauth2_provider_user_id.as_deref().ok_or_else(|| {
-            Error::InvalidInput(
-                "OAuth2 registration request is missing provider user ID".to_string(),
-            )
-        })?;
-        let provider_instance_name = request
-            .oauth2_provider_instance_name
-            .as_deref()
-            .ok_or_else(|| {
-                Error::InvalidInput(
-                    "OAuth2 registration request is missing provider instance name".to_string(),
-                )
-            })?;
-
-        let oauth2_user_info = crate::models::oauth2_client::OAuth2UserInfo {
-            provider: provider.clone(),
-            provider_instance_name: provider_instance_name.to_string(),
-            provider_issuer: request.oauth2_provider_issuer.clone(),
-            provider_user_id: provider_user_id.to_string(),
-            username: request
-                .oauth2_provider_username
-                .clone()
-                .unwrap_or_else(|| request.username.clone()),
-            avatar: request.oauth2_avatar_url.clone(),
-        };
         UserOAuthProviderRepository::new(self.repository.pool().clone())
             .upsert_with_executor(
                 &created.id,
-                provider,
-                provider_instance_name,
-                provider_user_id,
-                &oauth2_user_info,
+                &user_info.provider,
+                &user_info.provider_instance_name,
+                &user_info.provider_user_id,
+                user_info,
                 &mut **tx,
             )
             .await
@@ -62,30 +36,12 @@ impl UserService {
     async fn approve_webauthn_registration(
         &self,
         created: &User,
-        request: &PendingRegistrationRequest,
+        passkey: &Passkey,
+        credential_name: Option<&str>,
         tx: &mut Transaction<'_, Postgres>,
     ) -> Result<()> {
-        let passkey = request.webauthn_passkey.as_ref().ok_or_else(|| {
-            Error::InvalidInput("Registration request is missing WebAuthn passkey".to_string())
-        })?;
-        let credential_id = request.webauthn_credential_id.as_deref().ok_or_else(|| {
-            Error::InvalidInput(
-                "Registration request is missing WebAuthn credential ID".to_string(),
-            )
-        })?;
-        if credential_id != AsRef::<[u8]>::as_ref(passkey.cred_id()) {
-            return Err(Error::InvalidInput(
-                "Registration request WebAuthn credential ID does not match passkey".to_string(),
-            ));
-        }
-
         WebAuthnCredentialRepository::new(self.repository.pool().clone())
-            .create_with_executor(
-                &created.id,
-                passkey,
-                request.webauthn_credential_name.as_deref(),
-                &mut **tx,
-            )
+            .create_with_executor(&created.id, passkey, credential_name, &mut **tx)
             .await?;
         Ok(())
     }
@@ -93,35 +49,13 @@ impl UserService {
     async fn approve_password_registration(
         &self,
         created: &User,
-        request: &PendingRegistrationRequest,
+        opaque_record: &OpaquePasswordRecord,
         tx: &mut Transaction<'_, Postgres>,
     ) -> Result<()> {
-        let opaque_record = OpaquePasswordRecord {
-            record: request.opaque_record.clone().ok_or_else(|| {
-                Error::InvalidInput("Registration request is missing OPAQUE record".to_string())
-            })?,
-            credential_identifier: request.opaque_credential_identifier.clone().ok_or_else(
-                || {
-                    Error::InvalidInput(
-                        "Registration request is missing OPAQUE credential identifier".to_string(),
-                    )
-                },
-            )?,
-            ciphersuite: request.opaque_ciphersuite.clone().ok_or_else(|| {
-                Error::InvalidInput(
-                    "Registration request is missing OPAQUE ciphersuite".to_string(),
-                )
-            })?,
-            server_setup_version: request.opaque_server_setup_version.ok_or_else(|| {
-                Error::InvalidInput(
-                    "Registration request is missing OPAQUE setup version".to_string(),
-                )
-            })?,
-        };
         self.user_password_repository
             .create_for_user_with_executor(
                 created,
-                PasswordCredentialMaterial::opaque_only(&opaque_record),
+                PasswordCredentialMaterial::opaque_only(opaque_record),
                 &mut **tx,
             )
             .await?;
@@ -142,7 +76,8 @@ impl UserService {
                 ))
             })?;
 
-        let approved_email = (!matches!(request.signup_method, SignupMethod::OAuth2))
+        let signup_method = request.credential.signup_method();
+        let approved_email = (!matches!(signup_method, SignupMethod::OAuth2))
             .then(|| request.email.clone())
             .flatten();
 
@@ -165,7 +100,7 @@ impl UserService {
             ));
         }
 
-        let user = User::new(request.username.clone(), request.signup_method);
+        let user = User::new(request.username.clone(), signup_method);
         let created = self
             .repository
             .create_with_executor(&user, &mut *tx)
@@ -176,17 +111,25 @@ impl UserService {
             .await
             .map_err(Self::map_registration_identity_conflict)?;
 
-        match request.signup_method {
-            SignupMethod::OAuth2 => {
-                self.approve_oauth2_registration(&created, &request, &mut tx)
+        match &request.credential {
+            PendingRegistrationCredential::OAuth2(user_info) => {
+                self.approve_oauth2_registration(&created, user_info, &mut tx)
                     .await?;
             }
-            SignupMethod::WebAuthn => {
-                self.approve_webauthn_registration(&created, &request, &mut tx)
-                    .await?;
+            PendingRegistrationCredential::WebAuthn {
+                passkey,
+                credential_name,
+            } => {
+                self.approve_webauthn_registration(
+                    &created,
+                    passkey,
+                    credential_name.as_deref(),
+                    &mut tx,
+                )
+                .await?;
             }
-            _ => {
-                self.approve_password_registration(&created, &request, &mut tx)
+            PendingRegistrationCredential::Password { opaque_record, .. } => {
+                self.approve_password_registration(&created, opaque_record, &mut tx)
                     .await?;
             }
         }

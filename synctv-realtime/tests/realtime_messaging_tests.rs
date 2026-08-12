@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use synctv_core::models::id::{MediaId, RoomId, UserId};
+use synctv_core::models::RoomRole;
 use synctv_core::{DirectRedisConnectionRuntime, RedisConnectionRuntime, SharedStateProfile};
 use synctv_core_testing::{redis_connection_manager, start_redis_client_manager, RedisContainer};
 use synctv_realtime::sync::{
@@ -255,7 +256,7 @@ async fn test_dedup_with_different_events() {
         remark_name: String::new(),
         display_tag: String::new(),
         permissions: synctv_core::models::RoomPermissionSet(0),
-        role: 2,
+        role: RoomRole::Member,
         added_permissions: synctv_core::models::RoomPermissionSet(0),
         removed_permissions: synctv_core::models::RoomPermissionSet(0),
         admin_added_permissions: synctv_core::models::RoomPermissionSet(0),
@@ -271,7 +272,7 @@ async fn test_dedup_with_different_events() {
         username: "test".to_string(),
         remark_name: String::new(),
         display_tag: String::new(),
-        role: 2,
+        role: RoomRole::Member,
         timestamp: chrono::Utc::now(),
     };
 
@@ -549,7 +550,7 @@ async fn test_critical_event_classification() {
         changed_by_username: "admin".to_string(),
         role_changed: false,
         new_permissions: synctv_core::models::RoomPermissionSet(0),
-        role: 2,
+        role: RoomRole::Member,
         added_permissions: synctv_core::models::RoomPermissionSet(0),
         removed_permissions: synctv_core::models::RoomPermissionSet(0),
         admin_added_permissions: synctv_core::models::RoomPermissionSet(0),
@@ -575,7 +576,7 @@ async fn test_critical_event_classification() {
         username: "test".to_string(),
         remark_name: String::new(),
         display_tag: String::new(),
-        role: 2,
+        role: RoomRole::Member,
         timestamp: chrono::Utc::now(),
     }
     .is_critical());

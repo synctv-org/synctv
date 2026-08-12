@@ -906,7 +906,7 @@ impl MediaProvider for DirectUrlProvider {
         let result = PlaybackResult {
             playback_infos,
             default_mode: "direct".to_string(),
-            provider: Self::NAME.to_string(),
+            provider: crate::models::SourceProvider::DirectUrl,
             provider_instance_name: _ctx.provider_instance_name().map(str::to_string),
             duration_seconds,
             playback_kind,

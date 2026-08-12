@@ -60,10 +60,7 @@ fn create_user_service_with_runtime(
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
     runtime.password_registration_policy_override =
-        Some(synctv_core::service::RegistrationPolicy {
-            enabled: true,
-            need_review: false,
-        });
+        Some(synctv_core::service::RegistrationPolicy::Immediate);
 
     UserService::new_with_brute_force_service_and_runtime(
         pool,
@@ -122,10 +119,9 @@ fn create_user_service_with_security_pipeline(
             brute_force: Arc::new(brute_force),
         },
         UserServiceRuntimeOptions {
-            password_registration_policy_override: Some(synctv_core::service::RegistrationPolicy {
-                enabled: true,
-                need_review: false,
-            }),
+            password_registration_policy_override: Some(
+                synctv_core::service::RegistrationPolicy::Immediate,
+            ),
             ..UserServiceRuntimeOptions::test_defaults()
         },
     );

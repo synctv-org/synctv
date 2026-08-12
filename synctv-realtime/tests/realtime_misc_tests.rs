@@ -43,7 +43,7 @@ async fn test_critical_events_high_priority() {
         changed_by_username: "admin".to_string(),
         role_changed: false,
         new_permissions: synctv_core::models::RoomPermissionSet::default_member(),
-        role: 2, // Member role
+        role: synctv_core::models::RoomRole::Member,
         added_permissions: synctv_core::models::RoomPermissionSet::empty(),
         removed_permissions: synctv_core::models::RoomPermissionSet::empty(),
         admin_added_permissions: synctv_core::models::RoomPermissionSet::empty(),

@@ -54,7 +54,7 @@ impl FnosProviderService for FnosProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Auth,
                 move |authenticated| async move {
-                    api.login(authenticated.user_id, req, instance_name.as_deref())
+                    api.login(authenticated.user_id(), req, instance_name.as_deref())
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },
@@ -74,7 +74,7 @@ impl FnosProviderService for FnosProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
-                    api.list(authenticated.user_id, req, instance_name.as_deref())
+                    api.list(authenticated.user_id(), req, instance_name.as_deref())
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },
@@ -97,7 +97,7 @@ impl FnosProviderService for FnosProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
-                    api.get_server_info(authenticated.user_id, req, instance_name.as_deref())
+                    api.get_server_info(authenticated.user_id(), req, instance_name.as_deref())
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },
@@ -120,7 +120,7 @@ impl FnosProviderService for FnosProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
-                    api.list_media_libraries(authenticated.user_id, req, instance_name.as_deref())
+                    api.list_media_libraries(authenticated.user_id(), req, instance_name.as_deref())
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },
@@ -143,7 +143,7 @@ impl FnosProviderService for FnosProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
-                    api.list_media_items(authenticated.user_id, req, instance_name.as_deref())
+                    api.list_media_items(authenticated.user_id(), req, instance_name.as_deref())
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },
@@ -166,7 +166,7 @@ impl FnosProviderService for FnosProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
-                    api.set_favorite(authenticated.user_id, req, instance_name.as_deref())
+                    api.set_favorite(authenticated.user_id(), req, instance_name.as_deref())
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },
@@ -189,7 +189,7 @@ impl FnosProviderService for FnosProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
-                    api.set_watched(authenticated.user_id, req, instance_name.as_deref())
+                    api.set_watched(authenticated.user_id(), req, instance_name.as_deref())
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },
@@ -211,7 +211,7 @@ impl FnosProviderService for FnosProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Auth,
                 move |authenticated| async move {
-                    api.logout(authenticated.user_id, req)
+                    api.logout(authenticated.user_id(), req)
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },
@@ -233,7 +233,7 @@ impl FnosProviderService for FnosProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
-                    api.get_binds(authenticated.user_id, instance_name.as_deref())
+                    api.get_binds(authenticated.user_id(), instance_name.as_deref())
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },

@@ -8,7 +8,8 @@ use super::{
     DynamicListQuery, DynamicListResult, DynamicPagination, DynamicPlaylistItem,
     DynamicPlaylistItemSourceConfig, DynamicPlaylistItemThumbnail, DynamicPlaylistProvider,
     ItemType, MediaProvider, NextPlayItem, PlaybackInfo, PlaybackResult, PreparedSourceConfig,
-    ProviderContext, ProviderCredentialDependency, ProviderError, SourceConfig, SourceCover,
+    ProviderContext, ProviderCredentialDependency, ProviderCredentialPolicy, ProviderError,
+    SourceConfig, SourceCover,
 };
 use aes_gcm::{
     aead::{Aead, AeadCore, Generate, KeyInit as AeadKeyInit},
@@ -1434,12 +1435,7 @@ impl BilibiliProvider {
     }
 
     pub fn anonymous_access() -> BilibiliAccess {
-        BilibiliAccess {
-            cookies: HashMap::new(),
-            credential_cache_partition: "anon".to_string(),
-            authenticated: false,
-            provider_instance_name: None,
-        }
+        BilibiliAccess::anonymous("anon", None)
     }
 
     pub fn access_from_stored_credential(
@@ -1450,14 +1446,11 @@ impl BilibiliProvider {
         provider_instance_name: Option<String>,
     ) -> Result<BilibiliAccess, ProviderError> {
         match credential {
-            ProviderCredential::Bilibili { cookies } => Ok(BilibiliAccess {
+            ProviderCredential::Bilibili { cookies } => Ok(BilibiliAccess::authenticated(
                 cookies,
-                credential_cache_partition: format!(
-                    "auth:{user_id}:{server_id}:{credential_revision}"
-                ),
-                authenticated: true,
+                format!("auth:{user_id}:{server_id}:{credential_revision}"),
                 provider_instance_name,
-            }),
+            )),
             _ => Err(ProviderError::InvalidCredentialType),
         }
     }
@@ -1575,7 +1568,10 @@ impl BilibiliProvider {
         ctx: &ProviderContext<'_>,
         config: &BilibiliSourceConfig,
     ) -> Result<Option<SourceCover>, ProviderError> {
-        let credential_user_id = bilibili_optional_credential_user_id(ctx, config.shared())?;
+        let credential_user_id = bilibili_optional_credential_user_id(
+            ctx,
+            ProviderCredentialPolicy::from_shared(config.shared()),
+        )?;
         let (cookies, credential_cache_partition) =
             resolve_optional_bilibili_cookies(ctx, credential_user_id).await?;
 
@@ -2402,18 +2398,18 @@ async fn resolve_optional_bilibili_cookies(
     let access = access_service
         .bilibili_access(credential_user_id, ctx.request_context())
         .await?;
-    Ok((access.cookies, access.credential_cache_partition))
+    Ok(access.into_cookies_and_partition())
 }
 
 fn bilibili_optional_credential_user_id(
     ctx: &ProviderContext<'_>,
-    shared: bool,
+    credential_policy: ProviderCredentialPolicy,
 ) -> Result<Option<UserId>, ProviderError> {
     if matches!(ctx.actor(), super::ProviderActor::Guest) {
         return Ok(None);
     }
-    let credential_user_id = ctx.selected_credential_user_id(shared);
-    if shared && credential_user_id.is_none() {
+    let credential_user_id = ctx.selected_credential_user_id(credential_policy);
+    if credential_policy.uses_resource_owner() && credential_user_id.is_none() {
         return Err(ProviderError::Internal(
             "Bilibili credential owner is unavailable".to_string(),
         ));
@@ -2425,15 +2421,15 @@ fn bilibili_credential_dependencies(
     ctx: &ProviderContext<'_>,
     source_config: SourceConfig<'_>,
 ) -> Result<Vec<ProviderCredentialDependency>, ProviderError> {
-    let (shared, required) = match source_config {
+    let (credential_policy, required) = match source_config {
         SourceConfig::Media(config) => {
             let shared = BilibiliSourceConfig::from_media_config(config)?.shared();
-            (shared, false)
+            (ProviderCredentialPolicy::from_shared(shared), shared)
         }
         SourceConfig::DynamicPlaylist(config) => {
             let config = BilibiliProvider::playlist_config(config)?;
             (
-                config.shared,
+                ProviderCredentialPolicy::from_shared(config.shared),
                 BilibiliProvider::playlist_requires_credential(&config.source),
             )
         }
@@ -2443,7 +2439,7 @@ fn bilibili_credential_dependencies(
     }
     let credential_user_id = match ctx.actor() {
         super::ProviderActor::Guest if required => ctx.credential_owner_id().copied(),
-        _ => ctx.selected_credential_user_id(shared),
+        _ => ctx.selected_credential_user_id(credential_policy),
     };
     let Some(credential_user_id) = credential_user_id else {
         return if required {
@@ -2454,13 +2450,13 @@ fn bilibili_credential_dependencies(
     };
     Ok(vec![if required {
         ProviderCredentialDependency::new(
-            BilibiliProvider::NAME,
+            crate::models::SourceProvider::Bilibili,
             credential_user_id.to_string(),
             bilibili_credential_server_id(),
         )
     } else {
         ProviderCredentialDependency::optional(
-            BilibiliProvider::NAME,
+            crate::models::SourceProvider::Bilibili,
             credential_user_id.to_string(),
             bilibili_credential_server_id(),
         )
@@ -2553,25 +2549,24 @@ impl BilibiliProvider {
         config: &BilibiliPlaylistSourceConfig,
     ) -> Result<BilibiliAccess, ProviderError> {
         let credential_required = Self::playlist_requires_credential(&config.source);
+        let credential_policy = ProviderCredentialPolicy::from_shared(config.shared);
         let user_id = match ctx.actor() {
             super::ProviderActor::Guest | super::ProviderActor::System if credential_required => {
                 ctx.credential_owner_id().copied()
             }
             super::ProviderActor::Guest => None,
             super::ProviderActor::System | super::ProviderActor::User(_) => {
-                ctx.selected_credential_user_id(config.shared)
+                ctx.selected_credential_user_id(credential_policy)
             }
         };
         let Some(user_id) = user_id else {
             if credential_required {
                 return Err(ProviderError::CredentialRequired);
             }
-            return Ok(BilibiliAccess {
-                cookies: HashMap::new(),
-                credential_cache_partition: "anonymous".to_string(),
-                authenticated: false,
-                provider_instance_name: super::bound_provider_instance_name(ctx).map(str::to_owned),
-            });
+            return Ok(BilibiliAccess::anonymous(
+                "anonymous",
+                super::bound_provider_instance_name(ctx).map(str::to_owned),
+            ));
         };
         let access_service = ctx.provider_access_service.as_ref().ok_or_else(|| {
             ProviderError::Internal(
@@ -2581,7 +2576,7 @@ impl BilibiliProvider {
         let access = access_service
             .bilibili_access(user_id, ctx.request_context())
             .await?;
-        if credential_required && !access.authenticated {
+        if credential_required && !access.is_authenticated() {
             return Err(ProviderError::CredentialRequired);
         }
         Ok(access)
@@ -2603,7 +2598,7 @@ impl BilibiliProvider {
             .await?;
         client
             .list_videos(bilibili_upstream::ListVideosReq {
-                cookies: access.cookies,
+                cookies: access.into_cookies(),
                 source: Some(Self::playlist_source_request(&config.source)?),
                 page: u64::try_from(page).map_err(|_| {
                     ProviderError::InvalidConfig("Bilibili page exceeds u64::MAX".to_string())
@@ -2632,7 +2627,7 @@ impl BilibiliProvider {
             .await?;
         client
             .list_video_parts(bilibili_upstream::ListVideoPartsReq {
-                cookies: access.cookies,
+                cookies: access.into_cookies(),
                 bvid: bvid.to_string(),
                 aid,
             })
@@ -2678,7 +2673,7 @@ impl BilibiliProvider {
             .await?;
         client
             .list_live_rooms(bilibili_upstream::ListLiveRoomsReq {
-                cookies: access.cookies,
+                cookies: access.into_cookies(),
                 source: Some(source),
                 page: u64::try_from(page).map_err(|_| {
                     ProviderError::InvalidConfig("Bilibili page exceeds u64::MAX".to_string())
@@ -2747,7 +2742,7 @@ impl BilibiliProvider {
             .await?;
         client
             .list_history(bilibili_upstream::ListHistoryReq {
-                cookies: access.cookies,
+                cookies: access.into_cookies(),
                 r#type: match history_type {
                     BilibiliHistoryType::All => bilibili_upstream::HistoryType::All as i32,
                     BilibiliHistoryType::Archive => bilibili_upstream::HistoryType::Archive as i32,
@@ -2788,7 +2783,7 @@ impl BilibiliProvider {
             .await?;
         client
             .list_pgc_timeline(bilibili_upstream::ListPgcTimelineReq {
-                cookies: access.cookies,
+                cookies: access.into_cookies(),
                 r#type: match timeline_type {
                     BilibiliPgcTimelineType::Anime => {
                         bilibili_upstream::PgcTimelineType::Anime as i32
@@ -3155,8 +3150,10 @@ impl MediaProvider for BilibiliProvider {
                         ..BilibiliPlaybackMetadata::new(BilibiliPlaybackKind::Pgc)
                     },
                     BilibiliSourceConfig::Live(config) => {
-                        let credential_user_id =
-                            bilibili_optional_credential_user_id(ctx, config.shared)?;
+                        let credential_user_id = bilibili_optional_credential_user_id(
+                            ctx,
+                            ProviderCredentialPolicy::from_shared(config.shared),
+                        )?;
                         let (cookies, _) =
                             resolve_optional_bilibili_cookies(ctx, credential_user_id).await?;
                         let client = self
@@ -3195,7 +3192,10 @@ impl MediaProvider for BilibiliProvider {
     ) -> Result<PlaybackResult, ProviderError> {
         let config = BilibiliSourceConfig::from_media_config(source_config)?;
 
-        let credential_user_id = bilibili_optional_credential_user_id(_ctx, config.shared())?;
+        let credential_user_id = bilibili_optional_credential_user_id(
+            _ctx,
+            ProviderCredentialPolicy::from_shared(config.shared()),
+        )?;
         let (cookies, credential_cache_partition) =
             resolve_optional_bilibili_cookies(_ctx, credential_user_id).await?;
 
@@ -4408,7 +4408,7 @@ mod tests {
                 },
             )]),
             default_mode: "durl".to_string(),
-            provider: BilibiliProvider::NAME.to_string(),
+            provider: crate::models::SourceProvider::Bilibili,
             provider_instance_name: None,
             duration_seconds: None,
             playback_kind: Some(crate::models::PlaybackKind::Regular),
@@ -4455,7 +4455,7 @@ mod tests {
                 },
             )]),
             default_mode: "dash".to_string(),
-            provider: "bilibili".to_string(),
+            provider: crate::models::SourceProvider::Bilibili,
             provider_instance_name: None,
             duration_seconds: Some(10.0),
             playback_kind: Some(crate::models::PlaybackKind::Regular),
@@ -4634,7 +4634,10 @@ impl super::BilibiliLiveDanmakuProvider for BilibiliProvider {
             ));
         };
 
-        let credential_user_id = bilibili_optional_credential_user_id(ctx, config.shared)?;
+        let credential_user_id = bilibili_optional_credential_user_id(
+            ctx,
+            ProviderCredentialPolicy::from_shared(config.shared),
+        )?;
         let (cookies, _) = resolve_optional_bilibili_cookies(ctx, credential_user_id).await?;
         let client = self
             .get_client_with_context(ctx.provider_instance_name(), ctx.request_context())
@@ -5557,7 +5560,7 @@ impl BilibiliProvider {
                 Ok(PlaybackResult {
                     playback_infos,
                     default_mode,
-                    provider: Self::NAME.to_string(),
+                    provider: crate::models::SourceProvider::Bilibili,
                     provider_instance_name: provider_instance_name.map(str::to_string),
                     duration_seconds,
                     playback_kind: Some(crate::models::PlaybackKind::Regular),
@@ -5727,7 +5730,7 @@ impl BilibiliProvider {
                 Ok(PlaybackResult {
                     playback_infos,
                     default_mode,
-                    provider: Self::NAME.to_string(),
+                    provider: crate::models::SourceProvider::Bilibili,
                     provider_instance_name: provider_instance_name.map(str::to_string),
                     duration_seconds,
                     playback_kind: Some(crate::models::PlaybackKind::Regular),
@@ -5776,7 +5779,7 @@ impl BilibiliProvider {
                 Ok(PlaybackResult {
                     playback_infos,
                     default_mode,
-                    provider: Self::NAME.to_string(),
+                    provider: crate::models::SourceProvider::Bilibili,
                     provider_instance_name: provider_instance_name.map(str::to_string),
                     duration_seconds: None,
                     playback_kind: Some(crate::models::PlaybackKind::Live),

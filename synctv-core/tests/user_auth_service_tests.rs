@@ -207,10 +207,9 @@ async fn run_concurrent_refresh_attempts(
 
 fn default_test_user_runtime_options() -> synctv_core::service::UserServiceRuntimeOptions {
     synctv_core::service::UserServiceRuntimeOptions {
-        password_registration_policy_override: Some(synctv_core::service::RegistrationPolicy {
-            enabled: true,
-            need_review: false,
-        }),
+        password_registration_policy_override: Some(
+            synctv_core::service::RegistrationPolicy::Immediate,
+        ),
         ..synctv_core::service::UserServiceRuntimeOptions::test_defaults()
     }
 }
@@ -996,8 +995,8 @@ async fn test_refresh_token_happy_path() {
         .verify_refresh_token(&new_refresh)
         .checked("New refresh token valid");
 
-    assert_eq!(access_claims.sub, user.id.to_string());
-    assert_eq!(refresh_claims.sub, user.id.to_string());
+    assert_eq!(access_claims.user_id(), user.id);
+    assert_eq!(refresh_claims.user_id(), user.id);
 
     assert_ne!(new_access, access_token);
     assert_ne!(new_refresh, refresh_token);
@@ -1026,7 +1025,7 @@ async fn test_refresh_token_old_jti_blacklisted_before_new_issued() {
     let old_claims = jwt
         .verify_refresh_token(&refresh_token)
         .checked("Old refresh token valid");
-    let old_jti = old_claims.jti.clone();
+    let old_jti = old_claims.token_id().to_string();
 
     let _new_tokens = service
         .refresh_token(refresh_token.clone())
@@ -1125,8 +1124,7 @@ async fn test_logout_session_revocation_blocks_only_current_refresh_session() {
         .revoke_refresh_token_session(
             &user.id,
             access_claims
-                .sid
-                .as_deref()
+                .session_id()
                 .checked("access token should carry sid"),
             revoked_at,
         )
@@ -1168,10 +1166,7 @@ async fn test_refresh_token_rejects_invalid_user_state_and_password_version() {
     let claims = jwt
         .verify_refresh_token(&refresh_token)
         .checked("Token valid");
-    let user_id = claims
-        .sub
-        .parse::<UserId>()
-        .checked("valid numeric user id claim");
+    let user_id = claims.user_id();
     opaque_update_password(&service, &user_id, "StrongPass1", "NewStrongPass1")
         .await
         .checked("Password change should succeed");

@@ -460,10 +460,14 @@ impl BilibiliApiImpl {
             .access_service
             .bilibili_access(*caller_user_id, request_context)
             .await?;
-        Ok(access.authenticated.then_some(ResolvedBilibiliCredential {
-            cookies: access.cookies,
-            provider_instance_name: access.provider_instance_name,
-        }))
+        Ok(access
+            .into_authenticated()
+            .map(
+                |(cookies, provider_instance_name)| ResolvedBilibiliCredential {
+                    cookies,
+                    provider_instance_name,
+                },
+            ))
     }
 
     async fn publish_login_change(

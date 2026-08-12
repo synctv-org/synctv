@@ -3098,15 +3098,7 @@ pub fn try_playback_to_proto(
         room_id: encode_room_id_for_proto(result.room_id, public_id_codec)?,
         name: result.name.clone(),
         playlist_position: result.position,
-        provider: result
-            .provider
-            .parse::<synctv_core::models::SourceProvider>()
-            .map(core_source_provider_to_proto)
-            .map_err(|error| {
-                crate::impls::ApiError::Internal(format!(
-                    "Playback result contains invalid provider: {error}"
-                ))
-            })?,
+        provider: core_source_provider_to_proto(result.provider),
         provider_instance_name: result.provider_instance_name.clone().unwrap_or_default(),
         playback_infos,
         default_mode: result.default_mode.clone(),
@@ -4999,7 +4991,7 @@ mod playback_conversion_tests {
             playlist_id: None,
             room_id: synctv_core::models::RoomId::new(),
             name: "media".to_string(),
-            provider: "bilibili".to_string(),
+            provider: synctv_core::models::SourceProvider::Bilibili,
             provider_instance_name: None,
             position: 0.0,
             playback_infos,
@@ -5019,7 +5011,7 @@ mod playback_conversion_tests {
             playlist_id: None,
             room_id: synctv_core::models::RoomId::new(),
             name: "media".to_string(),
-            provider: "direct_url".to_string(),
+            provider: synctv_core::models::SourceProvider::DirectUrl,
             provider_instance_name: None,
             position: 0.0,
             playback_infos,
@@ -5091,7 +5083,13 @@ mod playback_conversion_tests {
         let signing = signing_context(&key);
         let expires_at = synctv_core::SystemClock.now().timestamp() + 1800;
 
-        for provider in ["nextcloud", "qnap", "seafile", "truenas"] {
+        for provider in [
+            synctv_core::models::SourceProvider::Nextcloud,
+            synctv_core::models::SourceProvider::Qnap,
+            synctv_core::models::SourceProvider::Seafile,
+            synctv_core::models::SourceProvider::TrueNas,
+        ] {
+            let provider_name = provider.as_str();
             for (format, route) in [(" HLS ", "hls-manifests"), ("mp4", "resources")] {
                 let info = PlaybackInfo::builder()
                     .add_media(PlaybackMedia {
@@ -5100,11 +5098,11 @@ mod playback_conversion_tests {
                         expire_at: None,
                         metadata: None,
                         p2p_swarm_id: None,
-                        provider: storage_proxy_provider(provider, expires_at),
+                        provider: storage_proxy_provider(provider_name, expires_at),
                     })
                     .build();
                 let mut result = playback_result_with_mode("proxy mode", info);
-                result.provider = provider.to_string();
+                result.provider = provider;
                 let proto = try_playback_to_proto(&result, &codec(), Some(&signing))
                     .expect("storage playback should convert");
                 let media = &proto.playback_infos["proxy mode"].medias[0];
@@ -5113,14 +5111,14 @@ mod playback_conversion_tests {
                 assert_eq!(media.expire_at, Some(expires_at));
                 assert!(
                     media.url.starts_with(&format!(
-                        "/api/playback-providers/{provider}/storage%20v1/{route}/proxy%20mode/0?"
+                        "/api/playback-providers/{provider_name}/storage%20v1/{route}/proxy%20mode/0?"
                     )),
-                    "unexpected {provider} {format} URL: {}",
+                    "unexpected {provider_name} {format} URL: {}",
                     media.url
                 );
                 key.parse_and_verify_query(
                     signed_query(&media.url),
-                    provider,
+                    provider_name,
                     "storage v1",
                     &expected_resource,
                 )
@@ -5589,7 +5587,7 @@ mod playback_conversion_tests {
                 })
                 .build(),
         );
-        result.provider = "alist".to_string();
+        result.provider = synctv_core::models::SourceProvider::Alist;
 
         let proto = try_playback_to_proto(&result, &codec(), Some(&signing))
             .expect("playback should convert");

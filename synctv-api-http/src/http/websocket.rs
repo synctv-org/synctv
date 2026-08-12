@@ -343,7 +343,7 @@ async fn extract_handshake_auth(
                 EndpointRateLimitCategory::WebSocket,
                 |_request_control, authenticated| async move {
                     Ok(HandshakeAuthContext {
-                        principal: RealtimePrincipal::user(authenticated.user_id, String::new()),
+                        principal: RealtimePrincipal::user(authenticated.user_id(), String::new()),
                         ticket_commit: None,
                     })
                 },
@@ -1188,14 +1188,12 @@ fn reserve_websocket_upgrade_slots(
 ) -> Result<HandshakeReservation, AppError> {
     connection_service
         .reserve_actor_slot(actor)
-        .map_err(synctv_api_common::runtime::RealtimeAdmissionError::from_runtime_message)
-        .map_err(RealtimeJoinError::from)
+        .map_err(|error| RealtimeJoinError::RateLimited(error.to_string()))
         .map_err(map_websocket_pre_join_error)?;
 
     if let Err(error) = connection_service
         .reserve_room_slot(room_id)
-        .map_err(synctv_api_common::runtime::RealtimeAdmissionError::from_runtime_message)
-        .map_err(RealtimeJoinError::from)
+        .map_err(|error| RealtimeJoinError::RateLimited(error.to_string()))
         .map_err(map_websocket_pre_join_error)
     {
         connection_service.release_actor_reservation(actor);

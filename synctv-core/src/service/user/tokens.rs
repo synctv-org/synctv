@@ -3,7 +3,7 @@ use synctv_common::ExecutionControl;
 use crate::{
     models::UserId,
     repository::{UserOAuthProviderRepository, WebAuthnCredentialRepository},
-    service::{user::UserService, TokenAuthContext, TokenCredentialBinding},
+    service::{user::UserService, TokenCredentialBinding},
     Error, Result,
 };
 
@@ -30,7 +30,7 @@ impl UserService {
         control: Option<&ExecutionControl>,
     ) -> Result<(String, String)> {
         let claims = self.jwt_service.verify_refresh_token(&refresh_token)?;
-        let user_id: UserId = claims.sub.parse().map_err(crate::Error::Internal)?;
+        let user_id = claims.user_id();
 
         let rate_limit_key = format!("refresh:{user_id}");
         self.refresh_rate_limiter
@@ -62,13 +62,11 @@ impl UserService {
             .get_or_default(&user.id)
             .await?
             .two_factor_enabled
+            && claims.auth_context().is_none()
         {
-            let refresh_auth_context = claims.amr.as_deref();
-            if !matches!(refresh_auth_context, Some("local_2fa" | "oauth2")) {
-                return Err(Error::Authentication(
-                    TWO_FACTOR_REQUIRED_MESSAGE.to_string(),
-                ));
-            }
+            return Err(Error::Authentication(
+                TWO_FACTOR_REQUIRED_MESSAGE.to_string(),
+            ));
         }
 
         let password_version = self
@@ -80,12 +78,11 @@ impl UserService {
             .validate_refresh_credential_binding(&claims, &user.id, password_version)
             .await?;
         let session_id = claims
-            .sid
-            .as_deref()
+            .session_id()
             .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
 
         {
-            let old_jti = &claims.jti;
+            let old_jti = claims.token_id();
 
             let family_key = self.refresh_token_family_key(&user_id, session_id);
             let family_revoked_at = self
@@ -96,7 +93,7 @@ impl UserService {
                 if claims.iat <= revoked_at {
                     tracing::warn!(
                         user_id = %user_id,
-                        jti = %old_jti,
+                        jti = old_jti,
                         revoked_at = revoked_at,
                         token_iat = claims.iat,
                         "Refresh token rejected: token family revoked (possible token theft)"
@@ -105,41 +102,35 @@ impl UserService {
                 }
             }
 
-            if !old_jti.is_empty() {
-                let blacklist_key = self.key_builder.refresh_token_blacklist(old_jti);
-                let now = crate::SystemClock.now().timestamp();
-                let remaining_ttl = nonnegative_i64_to_u64((claims.exp - now).max(60));
+            let blacklist_key = self.key_builder.refresh_token_blacklist(old_jti);
+            let now = crate::SystemClock.now().timestamp();
+            let remaining_ttl = nonnegative_i64_to_u64((claims.exp - now).max(60));
 
-                let already_existed = self
-                    .token_blacklist
-                    .blacklist_if_not_exists(&blacklist_key, remaining_ttl)
+            let already_existed = self
+                .token_blacklist
+                .blacklist_if_not_exists(&blacklist_key, remaining_ttl)
+                .await?;
+
+            if already_existed {
+                tracing::warn!(
+                    user_id = %user_id,
+                    jti = old_jti,
+                    "Blacklisted refresh token JTI replayed - revoking token session"
+                );
+
+                let family_ttl = self
+                    .jwt_service
+                    .refresh_token_duration_seconds()
+                    .saturating_add(3600);
+                self.token_blacklist
+                    .set_family_revoked(&family_key, now, family_ttl)
                     .await?;
 
-                if already_existed {
-                    tracing::warn!(
-                        user_id = %user_id,
-                        jti = %old_jti,
-                        "Blacklisted refresh token JTI replayed - revoking token session"
-                    );
-
-                    let family_ttl = self
-                        .jwt_service
-                        .refresh_token_duration_seconds()
-                        .saturating_add(3600);
-                    self.token_blacklist
-                        .set_family_revoked(&family_key, now, family_ttl)
-                        .await?;
-
-                    return Err(Error::Authentication("Authentication failed".to_string()));
-                }
+                return Err(Error::Authentication("Authentication failed".to_string()));
             }
         }
 
-        let token_auth_context = match claims.amr.as_deref() {
-            Some("local_2fa") => Some(TokenAuthContext::LocalTwoFactor),
-            Some("oauth2") => Some(TokenAuthContext::OAuth2),
-            _ => None,
-        };
+        let token_auth_context = claims.auth_context();
         let new_access_token = self
             .jwt_service
             .sign_access_token_with_auth_context_and_session(
@@ -166,7 +157,7 @@ impl UserService {
         user_id: &UserId,
         current_password_version: i32,
     ) -> Result<TokenCredentialBinding> {
-        let credential_binding = claims.credential_binding()?;
+        let credential_binding = claims.credential_binding();
         match credential_binding {
             TokenCredentialBinding::Password { version } => {
                 if version != current_password_version {

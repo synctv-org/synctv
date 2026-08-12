@@ -12,8 +12,8 @@ use sha2::{Digest, Sha256};
 use super::{
     DynamicListQuery, DynamicListResult, DynamicPagination, DynamicPlaylistItem,
     DynamicPlaylistItemThumbnail, DynamicPlaylistProvider, ItemType, MediaProvider, NextPlayItem,
-    PlaybackInfo, PlaybackResult, ProviderContext, ProviderCredentialDependency, ProviderError,
-    SourceConfig, SourceCover,
+    PlaybackInfo, PlaybackResult, ProviderContext, ProviderCredentialDependency,
+    ProviderCredentialPolicy, ProviderError, SourceConfig, SourceCover,
 };
 use crate::cache::{SingleFlight, SingleFlightError};
 use crate::models::{
@@ -157,12 +157,12 @@ impl DouyinProvider {
     async fn session(
         &self,
         ctx: &ProviderContext<'_>,
-        shared: bool,
+        credential_policy: ProviderCredentialPolicy,
     ) -> Result<DouyinSession, ProviderError> {
         let Some(repo) = self.credential_repo_or(ctx.credential_repo) else {
             return Ok(DouyinSession::default());
         };
-        let owner_id = ctx.selected_credential_user_id(shared);
+        let owner_id = ctx.selected_credential_user_id(credential_policy);
         let Some(owner_id) = owner_id else {
             return Ok(DouyinSession::default());
         };
@@ -590,11 +590,17 @@ impl DouyinProvider {
         }
     }
 
-    const fn media_shared(config: &DouyinMediaSourceConfig) -> bool {
-        match config {
+    const fn media_credential_policy(config: &DouyinMediaSourceConfig) -> ProviderCredentialPolicy {
+        ProviderCredentialPolicy::from_shared(match config {
             DouyinMediaSourceConfig::Video { shared, .. }
             | DouyinMediaSourceConfig::Live { shared, .. } => *shared,
-        }
+        })
+    }
+
+    const fn playlist_credential_policy(
+        config: &DouyinPlaylistSourceConfig,
+    ) -> ProviderCredentialPolicy {
+        ProviderCredentialPolicy::from_shared(config.shared)
     }
 
     fn resource(config: &DouyinMediaSourceConfig) -> DouyinPlaybackResource {
@@ -760,7 +766,7 @@ impl DouyinProvider {
         Ok(PlaybackResult {
             playback_infos: infos,
             default_mode,
-            provider: Self::NAME.to_string(),
+            provider: crate::models::SourceProvider::Douyin,
             provider_instance_name: None,
             duration_seconds,
             playback_kind: Some(playback_kind),
@@ -939,14 +945,14 @@ impl MediaProvider for DouyinProvider {
         ctx.check_active()
             .map_err(|error| ProviderError::NetworkError(error.to_string()))?;
         let config = Self::media_config(source_config)?;
-        let shared = Self::media_shared(config);
-        let credential_owner_id = ctx.selected_credential_user_id(shared);
-        if shared && credential_owner_id.is_none() {
+        let credential_policy = Self::media_credential_policy(config);
+        let credential_owner_id = ctx.selected_credential_user_id(credential_policy);
+        if credential_policy.uses_resource_owner() && credential_owner_id.is_none() {
             return Err(ProviderError::Internal(
                 "Douyin credential owner is unavailable".to_string(),
             ));
         }
-        let session = self.session(ctx, shared).await?;
+        let session = self.session(ctx, credential_policy).await?;
         let provider_instance_name =
             super::bound_provider_instance_name(ctx).map(ToString::to_string);
         let resource = Self::resource(config);
@@ -986,14 +992,14 @@ impl MediaProvider for DouyinProvider {
         let config = Self::media_config(source_config)?;
         let cache_key = serde_json::to_string(source_config)
             .map_err(|error| ProviderError::Internal(error.to_string()))?;
-        let shared = Self::media_shared(config);
+        let credential_policy = Self::media_credential_policy(config);
         super::cached_provider_metadata_or_fill(
             Self::NAME,
             &cache_key,
             Duration::from_secs(15),
             ctx,
             || async {
-                let session = self.session(ctx, shared).await?;
+                let session = self.session(ctx, credential_policy).await?;
                 let media = self.resolve_media(config, &session).await?;
                 Ok(Some(PlaybackMetadata::Douyin(Self::metadata_model(
                     media.metadata,
@@ -1016,12 +1022,16 @@ impl MediaProvider for DouyinProvider {
         match source_config {
             SourceConfig::Media(source) => {
                 let config = Self::media_config(source)?;
-                let session = self.session(ctx, Self::media_shared(config)).await?;
+                let session = self
+                    .session(ctx, Self::media_credential_policy(config))
+                    .await?;
                 self.resolve_media(config, &session).await?;
             }
             SourceConfig::DynamicPlaylist(source) => {
                 let config = Self::playlist_config(source)?;
-                let session = self.session(ctx, config.shared).await?;
+                let session = self
+                    .session(ctx, Self::playlist_credential_policy(config))
+                    .await?;
                 self.client
                     .user_posts(&config.sec_uid, None, 1, Some(&session))
                     .await?;
@@ -1035,15 +1045,19 @@ impl MediaProvider for DouyinProvider {
         ctx: &ProviderContext<'_>,
         source_config: SourceConfig<'_>,
     ) -> Result<Vec<ProviderCredentialDependency>, ProviderError> {
-        let shared = match source_config {
-            SourceConfig::Media(source) => Self::media_shared(Self::media_config(source)?),
-            SourceConfig::DynamicPlaylist(source) => Self::playlist_config(source)?.shared,
+        let credential_policy = match source_config {
+            SourceConfig::Media(source) => {
+                Self::media_credential_policy(Self::media_config(source)?)
+            }
+            SourceConfig::DynamicPlaylist(source) => {
+                Self::playlist_credential_policy(Self::playlist_config(source)?)
+            }
         };
-        let Some(owner_id) = ctx.selected_credential_user_id(shared) else {
+        let Some(owner_id) = ctx.selected_credential_user_id(credential_policy) else {
             return Ok(Vec::new());
         };
         Ok(vec![ProviderCredentialDependency::optional(
-            Self::NAME,
+            crate::models::SourceProvider::Douyin,
             owner_id.to_string(),
             Self::credential_server_id_for_instance(super::bound_provider_instance_name(ctx)),
         )])
@@ -1057,12 +1071,16 @@ impl MediaProvider for DouyinProvider {
         let cover = match source_config {
             SourceConfig::Media(source) => {
                 let config = Self::media_config(source)?;
-                let session = self.session(ctx, Self::media_shared(config)).await?;
+                let session = self
+                    .session(ctx, Self::media_credential_policy(config))
+                    .await?;
                 self.resolve_media(config, &session).await?.metadata.cover
             }
             SourceConfig::DynamicPlaylist(source) => {
                 let config = Self::playlist_config(source)?;
-                let session = self.session(ctx, config.shared).await?;
+                let session = self
+                    .session(ctx, Self::playlist_credential_policy(config))
+                    .await?;
                 self.client
                     .user_posts(&config.sec_uid, None, 1, Some(&session))
                     .await?
@@ -1114,7 +1132,9 @@ impl DynamicPlaylistProvider for DouyinProvider {
         let count = u32::try_from(query.page_size.clamp(1, 50)).map_err(|_| {
             ProviderError::InvalidConfig("Douyin page size exceeds u32::MAX".to_string())
         })?;
-        let session = self.session(ctx, config.shared).await?;
+        let session = self
+            .session(ctx, Self::playlist_credential_policy(config))
+            .await?;
         let page = self
             .client
             .user_posts(&config.sec_uid, cursor, count, Some(&session))

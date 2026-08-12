@@ -23,11 +23,18 @@ pub(super) const TWO_FACTOR_REQUIRED_MESSAGE: &str =
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoginSession {
-    pub(crate) user_id: Option<UserId>,
+    pub(crate) identity: LoginSessionIdentity,
     pub(crate) brute_force_key: String,
-    pub(crate) user_existed: bool,
-    pub(crate) email: Option<String>,
     pub(crate) state: LoginSessionState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum LoginSessionIdentity {
+    Account {
+        user_id: UserId,
+        email: Option<String>,
+    },
+    Decoy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,7 +59,10 @@ impl LoginSession {
 
     #[must_use]
     pub fn user_id(&self) -> Option<UserId> {
-        self.user_id
+        match &self.identity {
+            LoginSessionIdentity::Account { user_id, .. } => Some(*user_id),
+            LoginSessionIdentity::Decoy => None,
+        }
     }
 
     #[must_use]
@@ -62,7 +72,20 @@ impl LoginSession {
 
     #[must_use]
     pub fn email(&self) -> Option<&str> {
-        self.email.as_deref()
+        match &self.identity {
+            LoginSessionIdentity::Account { email, .. } => email.as_deref(),
+            LoginSessionIdentity::Decoy => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn user_existed(&self) -> bool {
+        matches!(&self.identity, LoginSessionIdentity::Account { .. })
+    }
+
+    #[must_use]
+    pub const fn identity(&self) -> &LoginSessionIdentity {
+        &self.identity
     }
 }
 

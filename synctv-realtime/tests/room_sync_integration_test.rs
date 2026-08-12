@@ -11,6 +11,7 @@
 use std::time::Duration;
 
 use synctv_core::models::id::{RoomId, UserId};
+use synctv_core::models::RealtimeActor;
 use synctv_core::SharedStateProfile;
 use synctv_core_testing::redis_connection_manager;
 use synctv_realtime::sync::{
@@ -596,9 +597,11 @@ async fn test_audit_redis_subscriptions_prunes_stale_room_directory_members() {
     let live_room_key = format!("{prefix}room_hub:room:{live_room_id}");
     let stale_room_key = format!("{prefix}room_hub:room:10000095");
     let room_index_directory_key = format!("{prefix}room_hub:room_index");
+    let live_actor_json =
+        serde_json::to_string(&user_actor(live_user_id)).expect("serialize realtime actor");
 
     let _: () = conn
-        .hset(&live_room_key, "conn_live", live_user_id.get())
+        .hset(&live_room_key, "conn_live", live_actor_json)
         .await
         .unwrap();
     let _: () = conn.expire(&live_room_key, 180).await.unwrap();
@@ -654,14 +657,16 @@ async fn test_room_directory_key_uses_crash_safety_ttl() {
     let room_key = format!("{prefix}room_hub:room:{room_id}");
     let conn_key = format!("{prefix}room_hub:conn:conn_ttl");
 
-    let room_member: Option<i64> = conn
+    let room_member: Option<String> = conn
         .hget(&room_key, "conn_ttl")
         .await
         .expect("room subscriber hash entry");
+    let room_member = room_member
+        .map(|actor| serde_json::from_str::<RealtimeActor>(&actor).expect("realtime actor"));
     assert_eq!(
         room_member,
-        Some(user_id.get()),
-        "room subscriber hash should contain the connection -> user mapping"
+        Some(user_actor(user_id)),
+        "room subscriber hash should contain the connection -> actor mapping"
     );
 
     let mapped_room_id: Option<i64> = conn.get(&conn_key).await.expect("connection room mapping");

@@ -1,3 +1,5 @@
+#[cfg(test)]
+use synctv_core::models::RoomRole;
 use synctv_core::models::{ChatMessageEvent, ChatPinEvent, MediaId, PlaylistId, RoomId, UserId};
 use synctv_realtime::sync::{CacheTarget, RealtimeEvent};
 
@@ -518,7 +520,7 @@ mod tests {
             guest_id: "gst_test".to_string(),
             username: "Guest".to_string(),
             permissions: synctv_core::models::RoomPermissionSet::default_guest(),
-            role: synctv_proto::common::RoomMemberRole::Guest as i32,
+            role: RoomRole::Guest,
             joined_at: synctv_core::SystemClock.now(),
             timestamp: synctv_core::SystemClock.now(),
         };
@@ -544,7 +546,7 @@ mod tests {
             remark_name: String::new(),
             display_tag: String::new(),
             permissions: synctv_core::models::RoomPermissionSet::default_member(),
-            role: synctv_proto::common::RoomMemberRole::Member as i32,
+            role: RoomRole::Member,
             added_permissions: synctv_core::models::RoomPermissionSet(0),
             removed_permissions: synctv_core::models::RoomPermissionSet(0),
             admin_added_permissions: synctv_core::models::RoomPermissionSet(0),
@@ -559,7 +561,7 @@ mod tests {
             username: "User".to_string(),
             remark_name: String::new(),
             display_tag: String::new(),
-            role: synctv_proto::common::RoomMemberRole::Member as i32,
+            role: RoomRole::Member,
             timestamp: synctv_core::SystemClock.now(),
         };
 

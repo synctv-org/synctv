@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use synctv_core::models::{RealtimeActor, RoomId, RoomPermissionSet, UserId};
+use synctv_core::models::{RealtimeActor, RoomId, RoomPermissionSet, RoomRole, UserId};
 use synctv_realtime::sync::RealtimeEvent;
 use synctv_realtime::sync::{
     ConnectionLimits, ConnectionManager, RealtimeConfig, RealtimeManager, RoomMessageHub,
@@ -202,7 +202,7 @@ async fn test_local_realtime_manager_supports_room_operations() {
         remark_name: String::new(),
         display_tag: String::new(),
         permissions: RoomPermissionSet(0),
-        role: 2,
+        role: RoomRole::Admin,
         added_permissions: RoomPermissionSet(0),
         removed_permissions: RoomPermissionSet(0),
         admin_added_permissions: RoomPermissionSet(0),

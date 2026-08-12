@@ -80,7 +80,7 @@ pub(crate) async fn login(
         move |control, authenticated| {
             async move {
                 api.login_with_context(
-                    &authenticated.user_id,
+                    &authenticated.user_id(),
                     req,
                     instance_name.as_deref(),
                     Some(&control),
@@ -140,7 +140,7 @@ pub(crate) async fn list(
         move |control, authenticated| {
             async move {
                 api.list_with_context(
-                    &authenticated.user_id,
+                    &authenticated.user_id(),
                     req,
                     instance_name.as_deref(),
                     Some(&control),
@@ -197,7 +197,7 @@ pub(crate) async fn search(
         move |control, authenticated| {
             async move {
                 api.search_with_context(
-                    &authenticated.user_id,
+                    &authenticated.user_id(),
                     req,
                     instance_name.as_deref(),
                     Some(&control),
@@ -254,7 +254,7 @@ pub(crate) async fn me(
         move |control, authenticated| {
             async move {
                 api.get_me_with_context(
-                    &authenticated.user_id,
+                    &authenticated.user_id(),
                     req,
                     instance_name.as_deref(),
                     Some(&control),
@@ -307,7 +307,7 @@ pub(crate) async fn logout(
         &state,
         request_meta,
         EndpointRateLimitCategory::Auth,
-        move |authenticated| async move { api.logout(&authenticated.user_id, req).await }.boxed(),
+        move |authenticated| async move { api.logout(&authenticated.user_id(), req).await }.boxed(),
     )
     .await
     .map_err(|e| {
@@ -350,8 +350,8 @@ pub(crate) async fn binds(
         EndpointRateLimitCategory::Read,
         move |authenticated| {
             async move {
-                tracing::info!("Alist binds request for user: {}", authenticated.user_id);
-                api.get_binds(&authenticated.user_id, instance_name.as_deref())
+                tracing::info!("Alist binds request for user: {}", authenticated.user_id());
+                api.get_binds(&authenticated.user_id(), instance_name.as_deref())
                     .await
             }
             .boxed()

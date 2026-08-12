@@ -45,7 +45,7 @@ pub async fn create_room(
         EndpointRateLimitCategory::Write,
         EndpointRateLimitScope::RoomCreate,
         move |client_api, authenticated| async move {
-            Box::pin(client_api.create_room(&authenticated.user_id, req)).await
+            Box::pin(client_api.create_room(&authenticated.user_id(), req)).await
         },
     )
     .await?;
@@ -135,7 +135,7 @@ pub async fn join_room(
             EndpointRateLimitScope::RoomJoin,
             move |request_control, authenticated| async move {
                 Box::pin(client_api.join_room_with_control(
-                    &authenticated.user_id,
+                    &authenticated.user_id(),
                     &room_id,
                     req,
                     client_ip.as_deref(),
@@ -182,7 +182,7 @@ pub async fn leave_room(
         EndpointRateLimitScope::RoomJoin,
         move |client_api, authenticated| async move {
             client_api
-                .leave_room(&authenticated.user_id, &room_id)
+                .leave_room(&authenticated.user_id(), &room_id)
                 .await
         },
     )
@@ -228,7 +228,7 @@ pub async fn delete_room(
         EndpointRateLimitScope::RoomCreate,
         move |client_api, authenticated| async move {
             client_api
-                .delete_room(&authenticated.user_id, &room_id)
+                .delete_room(&authenticated.user_id(), &room_id)
                 .await
         },
     )

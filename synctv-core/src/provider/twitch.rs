@@ -12,8 +12,8 @@ use sha2::{Digest, Sha256};
 use super::{
     DynamicListQuery, DynamicListResult, DynamicPagination, DynamicPlaylistItem,
     DynamicPlaylistItemThumbnail, DynamicPlaylistProvider, ItemType, MediaProvider, NextPlayItem,
-    PlaybackInfo, PlaybackResult, ProviderContext, ProviderCredentialDependency, ProviderError,
-    SourceConfig, SourceCover,
+    PlaybackInfo, PlaybackResult, ProviderContext, ProviderCredentialDependency,
+    ProviderCredentialPolicy, ProviderError, SourceConfig, SourceCover,
 };
 use crate::models::{
     MediaSourceConfig, PlayMode, PlaybackDanmaku, PlaybackDanmakuProvider, PlaybackMedia,
@@ -118,12 +118,12 @@ impl TwitchProvider {
     async fn session(
         &self,
         ctx: &ProviderContext<'_>,
-        shared: bool,
+        credential_policy: ProviderCredentialPolicy,
     ) -> Result<TwitchSession, ProviderError> {
         let Some(repo) = self.credential_repo_or(ctx.credential_repo) else {
             return Ok(TwitchSession::default());
         };
-        let owner_id = ctx.selected_credential_user_id(shared);
+        let owner_id = ctx.selected_credential_user_id(credential_policy);
         let Some(owner_id) = owner_id else {
             return Ok(TwitchSession::default());
         };
@@ -561,12 +561,12 @@ impl TwitchProvider {
         }
     }
 
-    const fn media_shared(config: &TwitchMediaSourceConfig) -> bool {
-        match config {
+    const fn media_credential_policy(config: &TwitchMediaSourceConfig) -> ProviderCredentialPolicy {
+        ProviderCredentialPolicy::from_shared(match config {
             TwitchMediaSourceConfig::Live { shared, .. }
             | TwitchMediaSourceConfig::Video { shared, .. }
             | TwitchMediaSourceConfig::Clip { shared, .. } => *shared,
-        }
+        })
     }
 
     fn playlist_config(
@@ -623,13 +623,15 @@ impl TwitchProvider {
         }
     }
 
-    const fn playlist_shared(config: &TwitchPlaylistSourceConfig) -> bool {
-        match config {
+    const fn playlist_credential_policy(
+        config: &TwitchPlaylistSourceConfig,
+    ) -> ProviderCredentialPolicy {
+        ProviderCredentialPolicy::from_shared(match config {
             TwitchPlaylistSourceConfig::Channel { shared, .. }
             | TwitchPlaylistSourceConfig::FollowedLive { shared }
             | TwitchPlaylistSourceConfig::CategoryLive { shared, .. }
             | TwitchPlaylistSourceConfig::SearchLive { shared, .. } => *shared,
-        }
+        })
     }
 
     fn encode_target(resource: &TwitchResource) -> Result<ProviderTarget, ProviderError> {
@@ -749,15 +751,15 @@ impl TwitchProvider {
         let source_config = match resource.kind {
             TwitchResourceKind::Video => TwitchMediaSourceConfig::Video {
                 video_id: resource.id,
-                shared: Self::playlist_shared(base),
+                shared: Self::playlist_credential_policy(base).uses_resource_owner(),
             },
             TwitchResourceKind::Clip => TwitchMediaSourceConfig::Clip {
                 slug: resource.id,
-                shared: Self::playlist_shared(base),
+                shared: Self::playlist_credential_policy(base).uses_resource_owner(),
             },
             TwitchResourceKind::Channel => TwitchMediaSourceConfig::Live {
                 channel: resource.id,
-                shared: Self::playlist_shared(base),
+                shared: Self::playlist_credential_policy(base).uses_resource_owner(),
             },
         };
         Ok(NextPlayItem {
@@ -915,7 +917,7 @@ impl TwitchProvider {
         Ok(PlaybackResult {
             playback_infos: infos,
             default_mode,
-            provider: Self::NAME.to_string(),
+            provider: crate::models::SourceProvider::Twitch,
             provider_instance_name: None,
             duration_seconds,
             playback_kind: Some(if metadata.is_live {
@@ -998,7 +1000,7 @@ impl MediaProvider for TwitchProvider {
         let resource = Self::resource(config)?;
         let cache_key = serde_json::to_string(source_config)
             .map_err(|error| ProviderError::Internal(error.to_string()))?;
-        let shared = Self::media_shared(config);
+        let credential_policy = Self::media_credential_policy(config);
         super::cached_provider_metadata_or_fill(
             Self::NAME,
             &cache_key,
@@ -1009,7 +1011,7 @@ impl MediaProvider for TwitchProvider {
             },
             ctx,
             || async {
-                let session = self.session(ctx, shared).await?;
+                let session = self.session(ctx, credential_policy).await?;
                 let metadata = self.client.metadata(&resource, Some(&session)).await?;
                 Ok(Some(PlaybackMetadata::Twitch(Self::metadata_model(
                     metadata,
@@ -1029,14 +1031,14 @@ impl MediaProvider for TwitchProvider {
             .map_err(|error| ProviderError::NetworkError(error.to_string()))?;
         let config = Self::twitch_config(source_config)?;
         let resource = Self::resource(config)?;
-        let shared = Self::media_shared(config);
-        let credential_owner_id = ctx.selected_credential_user_id(shared);
-        if shared && credential_owner_id.is_none() {
+        let credential_policy = Self::media_credential_policy(config);
+        let credential_owner_id = ctx.selected_credential_user_id(credential_policy);
+        if credential_policy.uses_resource_owner() && credential_owner_id.is_none() {
             return Err(ProviderError::Internal(
                 "Twitch credential owner is unavailable".to_string(),
             ));
         }
-        let session = self.session(ctx, Self::media_shared(config)).await?;
+        let session = self.session(ctx, credential_policy).await?;
         let provider_instance_name =
             super::bound_provider_instance_name(ctx).map(ToString::to_string);
         let credential_server_id =
@@ -1085,7 +1087,9 @@ impl MediaProvider for TwitchProvider {
             SourceConfig::Media(source_config) => {
                 let config = Self::twitch_config(source_config)?;
                 let resource = Self::resource(config)?;
-                let session = self.session(ctx, Self::media_shared(config)).await?;
+                let session = self
+                    .session(ctx, Self::media_credential_policy(config))
+                    .await?;
                 if resource.kind == TwitchResourceKind::Channel {
                     self.client.metadata(&resource, Some(&session)).await?;
                 } else {
@@ -1094,7 +1098,9 @@ impl MediaProvider for TwitchProvider {
             }
             SourceConfig::DynamicPlaylist(source_config) => {
                 let config = Self::playlist_config(source_config)?;
-                let session = self.session(ctx, Self::playlist_shared(config)).await?;
+                let session = self
+                    .session(ctx, Self::playlist_credential_policy(config))
+                    .await?;
                 Self::require_playlist_session(config, &session)?;
                 match config {
                     TwitchPlaylistSourceConfig::Channel {
@@ -1134,29 +1140,39 @@ impl MediaProvider for TwitchProvider {
         ctx: &ProviderContext<'_>,
         source_config: SourceConfig<'_>,
     ) -> Result<Vec<ProviderCredentialDependency>, ProviderError> {
-        let (shared, credential_required) = match source_config {
+        let (credential_policy, credential_required) = match source_config {
             SourceConfig::Media(config) => {
-                let shared = Self::media_shared(Self::twitch_config(config)?);
-                (shared, shared)
+                let policy = Self::media_credential_policy(Self::twitch_config(config)?);
+                (policy, policy.uses_resource_owner())
             }
             SourceConfig::DynamicPlaylist(config) => {
                 let config = Self::playlist_config(config)?;
                 (
-                    Self::playlist_shared(config),
+                    Self::playlist_credential_policy(config),
                     !matches!(config, TwitchPlaylistSourceConfig::Channel { .. }),
                 )
             }
         };
-        let Some(owner_id) = ctx.selected_credential_user_id(shared) else {
+        let Some(owner_id) = ctx.selected_credential_user_id(credential_policy) else {
             return Ok(Vec::new());
         };
         let server_id =
             Self::credential_server_id_for_instance(super::bound_provider_instance_name(ctx));
-        Ok(vec![if shared || credential_required {
-            ProviderCredentialDependency::new(Self::NAME, owner_id.to_string(), server_id)
-        } else {
-            ProviderCredentialDependency::optional(Self::NAME, owner_id.to_string(), server_id)
-        }])
+        Ok(vec![
+            if credential_policy.uses_resource_owner() || credential_required {
+                ProviderCredentialDependency::new(
+                    crate::models::SourceProvider::Twitch,
+                    owner_id.to_string(),
+                    server_id,
+                )
+            } else {
+                ProviderCredentialDependency::optional(
+                    crate::models::SourceProvider::Twitch,
+                    owner_id.to_string(),
+                    server_id,
+                )
+            },
+        ])
     }
 
     async fn source_cover(
@@ -1166,10 +1182,13 @@ impl MediaProvider for TwitchProvider {
     ) -> Result<Option<SourceCover>, ProviderError> {
         ctx.check_active()
             .map_err(|error| ProviderError::NetworkError(error.to_string()))?;
-        let (resource, shared) = match source_config {
+        let (resource, credential_policy) = match source_config {
             SourceConfig::Media(config) => {
                 let config = Self::twitch_config(config)?;
-                (Some(Self::resource(config)?), Self::media_shared(config))
+                (
+                    Some(Self::resource(config)?),
+                    Self::media_credential_policy(config),
+                )
             }
             SourceConfig::DynamicPlaylist(config) => {
                 let config = Self::playlist_config(config)?;
@@ -1180,10 +1199,10 @@ impl MediaProvider for TwitchProvider {
                     }),
                     _ => None,
                 };
-                (resource, Self::playlist_shared(config))
+                (resource, Self::playlist_credential_policy(config))
             }
         };
-        let session = self.session(ctx, shared).await?;
+        let session = self.session(ctx, credential_policy).await?;
         if let SourceConfig::DynamicPlaylist(config) = source_config {
             Self::require_playlist_session(Self::playlist_config(config)?, &session)?;
         }
@@ -1260,7 +1279,9 @@ impl DynamicPlaylistProvider for TwitchProvider {
             .as_ref()
             .ok_or_else(|| ProviderError::InvalidConfig("Missing source_config".to_string()))?;
         let config = Self::playlist_config(config)?;
-        let session = self.session(ctx, Self::playlist_shared(config)).await?;
+        let session = self
+            .session(ctx, Self::playlist_credential_policy(config))
+            .await?;
         Self::require_playlist_session(config, &session)?;
         let cursor = match &query.pagination {
             DynamicPagination::Cursor { cursor } => cursor.as_deref(),

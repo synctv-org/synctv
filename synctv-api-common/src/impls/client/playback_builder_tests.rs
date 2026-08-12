@@ -461,7 +461,7 @@ fn test_media(url: &str) -> PlaybackMedia {
 #[test]
 fn test_direct_url_thumbnail_overrides_playback_modes() -> TestResult {
     let mut result = PlaybackResult::builder(None, RoomId::new(), "media".to_string(), 0.0)
-        .provider("direct_url".to_string())
+        .provider(synctv_core::models::SourceProvider::DirectUrl)
         .default_mode("direct".to_string())
         .add_mode(
             "direct".to_string(),

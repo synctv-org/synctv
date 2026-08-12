@@ -997,7 +997,7 @@ impl MediaProvider for CloudreveProvider {
                 },
             )]),
             default_mode: "direct".to_string(),
-            provider: Self::NAME.to_string(),
+            provider: crate::models::SourceProvider::Cloudreve,
             provider_instance_name: instance_name,
             duration_seconds: None,
             playback_kind: Some(crate::models::PlaybackKind::Regular),
@@ -1113,7 +1113,7 @@ impl MediaProvider for CloudreveProvider {
             .credential_owner_or_user_id()
             .ok_or(ProviderError::CredentialRequired)?;
         Ok(vec![ProviderCredentialDependency::new(
-            Self::NAME,
+            crate::models::SourceProvider::Cloudreve,
             user_id.to_string(),
             server_id.to_string(),
         )])
@@ -1724,7 +1724,7 @@ mod tests {
                 },
             )]),
             default_mode: "direct".to_string(),
-            provider: CloudreveProvider::NAME.to_string(),
+            provider: crate::models::SourceProvider::Cloudreve,
             provider_instance_name: None,
             duration_seconds: None,
             playback_kind: Some(crate::models::PlaybackKind::Regular),

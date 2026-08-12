@@ -68,7 +68,7 @@ impl RoomPermission {
 
 /// Effective permissions projected into the admin bitspace for checks and
 /// client-visible snapshots. It is derived data, not an override bitspace.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct RoomPermissionSet(pub u64);
 
@@ -683,7 +683,7 @@ impl Not for RoomPermissionSet {
 ///
 /// These are the room-level roles that determine base permissions.
 /// Custom permissions can be added/removed via Allow/Deny pattern.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
     /// Room creator - has all permissions (fixed, cannot be modified)

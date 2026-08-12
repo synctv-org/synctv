@@ -57,7 +57,7 @@ pub use access::{
     AlistAccess, AlistBinding, BilibiliAccess, CachedProviderAccessService, EmbyAccess,
     ProviderAccessService, ProviderCredentialReader,
 };
-pub use context::{ProviderActor, ProviderContext};
+pub use context::{ProviderActor, ProviderContext, ProviderCredentialPolicy};
 pub use error::ProviderError;
 pub(crate) use p2p_media::provider_p2p_swarm_id;
 pub use p2p_media::{
@@ -680,7 +680,7 @@ fn build_live_playback_with_flv(
     PlaybackResult {
         playback_infos,
         default_mode: "hls".to_string(),
-        provider: RtmpProvider::NAME.to_string(),
+        provider: crate::models::SourceProvider::Rtmp,
         provider_instance_name: None,
         duration_seconds: None,
         playback_kind: Some(crate::models::PlaybackKind::Live),
@@ -802,13 +802,11 @@ pub(crate) fn url_expiration_timestamp(value: &str) -> Option<i64> {
 #[must_use]
 pub(crate) fn build_versioned_playback_response(
     mut result: PlaybackResult,
-    provider_name: &str,
     provider_instance_name: Option<&str>,
     version: &str,
     expires_at: i64,
     mark_provider_resources: impl FnOnce(&mut PlaybackResult, &str, i64),
 ) -> PlaybackResult {
-    result.provider = provider_name.to_string();
     result.provider_instance_name = provider_instance_name.map(str::to_string);
     mark_provider_resources(&mut result, version, expires_at);
     result
@@ -858,7 +856,6 @@ pub(crate) async fn build_cached_versioned_playback_response(
 
     Ok(build_versioned_playback_response(
         versioned.result,
-        provider_name,
         ctx.provider_instance_name(),
         &versioned.version,
         versioned.expires_at,
@@ -1440,7 +1437,7 @@ mod playback_policy_tests {
                 ("proxy_direct".to_string(), info),
             ]),
             default_mode: "direct".to_string(),
-            provider: "test".to_string(),
+            provider: crate::models::SourceProvider::DirectUrl,
             provider_instance_name: None,
             duration_seconds: None,
             playback_kind: None,

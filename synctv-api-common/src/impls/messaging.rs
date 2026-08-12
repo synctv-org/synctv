@@ -139,7 +139,6 @@ impl CachedMembership {
 
 // Re-use the canonical role proto mapper from client::convert.
 use crate::impls::client::convert::chat_metadata_from_proto;
-use crate::impls::client::room_role_to_proto;
 
 mod transport;
 pub use transport::{MessageSender, StreamMessage};
@@ -741,7 +740,7 @@ impl StreamMessageHandler {
         {
             if self.principal.user_id() == Some(*target_user_id) && *role_changed {
                 self.current_room_role
-                    .store(*role, std::sync::atomic::Ordering::Relaxed);
+                    .store(i32::from(*role), std::sync::atomic::Ordering::Relaxed);
             }
         }
     }
@@ -1875,7 +1874,7 @@ impl StreamMessageHandler {
         }
 
         let (
-            role_proto,
+            role,
             permissions,
             added_permissions,
             removed_permissions,
@@ -1883,7 +1882,7 @@ impl StreamMessageHandler {
             admin_removed_permissions,
         ) = if let Some(identity) = self.principal.guest_identity() {
             (
-                synctv_proto::common::RoomMemberRole::Guest as i32,
+                synctv_core::models::RoomRole::Guest,
                 identity.permissions,
                 synctv_core::models::RoomPermissionSet(0),
                 synctv_core::models::RoomPermissionSet(0),
@@ -1906,9 +1905,8 @@ impl StreamMessageHandler {
                         .room_service
                         .permission_service()
                         .effective_member_permissions(member, settings);
-                    let role = room_role_to_proto(member.role);
                     (
-                        role,
+                        member.role,
                         effective,
                         synctv_core::models::RoomPermissionSet(member.added_permissions),
                         synctv_core::models::RoomPermissionSet(member.removed_permissions),
@@ -1919,7 +1917,7 @@ impl StreamMessageHandler {
                 None => {
                     // Fallback: if we can't fetch membership, use Member defaults
                     (
-                        synctv_proto::common::RoomMemberRole::Member as i32,
+                        synctv_core::models::RoomRole::Member,
                         synctv_core::models::RoomPermissionSet::default_member(),
                         synctv_core::models::RoomPermissionSet(0),
                         synctv_core::models::RoomPermissionSet(0),
@@ -1937,7 +1935,7 @@ impl StreamMessageHandler {
                 guest_id,
                 username: self.username.clone(),
                 permissions,
-                role: role_proto,
+                role,
                 joined_at: self.clock.now(),
                 timestamp: self.clock.now(),
             },
@@ -1949,7 +1947,7 @@ impl StreamMessageHandler {
                 remark_name: String::new(),
                 display_tag: String::new(),
                 permissions,
-                role: role_proto,
+                role,
                 added_permissions,
                 removed_permissions,
                 admin_added_permissions,
@@ -2138,6 +2136,8 @@ impl StreamMessageHandler {
                 let role = self
                     .current_room_role
                     .load(std::sync::atomic::Ordering::Relaxed);
+                let role = synctv_core::models::RoomRole::try_from(role)
+                    .expect("current room role must contain a valid role");
                 RealtimeEvent::UserLeft {
                     event_id: synctv_common::snanoid!(16),
                     room_id: self.room_id,

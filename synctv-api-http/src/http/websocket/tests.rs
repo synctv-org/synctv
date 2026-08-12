@@ -54,10 +54,9 @@ fn test_user_service(pool: &sqlx::PgPool) -> TestResult<UserService> {
         KeyBuilder::new("test"),
         BruteForceProtection::in_memory("test".to_string()),
         UserServiceRuntimeOptions {
-            password_registration_policy_override: Some(synctv_core::service::RegistrationPolicy {
-                enabled: true,
-                need_review: false,
-            }),
+            password_registration_policy_override: Some(
+                synctv_core::service::RegistrationPolicy::Immediate,
+            ),
             ..synctv_core::service::UserServiceRuntimeOptions::test_defaults()
         },
     ))
@@ -688,10 +687,10 @@ async fn test_handshake_timeout_releases_reserved_capacity_without_marking_prese
 
     manager
         .reserve_actor_slot(&actor)
-        .map_err(|error| test_error(error.clone()))?;
+        .map_err(|error| test_error(error.to_string()))?;
     manager
         .reserve_room_slot(&room_id)
-        .map_err(|error| test_error(error.clone()))?;
+        .map_err(|error| test_error(error.to_string()))?;
 
     assert!(
         manager.get_connection_id(&room_id, &user_id).is_none(),
@@ -1047,10 +1046,10 @@ async fn test_failed_upgrade_cleanup_releases_reserved_capacity_without_presence
 
     manager
         .reserve_actor_slot(&actor)
-        .map_err(|error| test_error(error.clone()))?;
+        .map_err(|error| test_error(error.to_string()))?;
     manager
         .reserve_room_slot(&room_id)
-        .map_err(|error| test_error(error.clone()))?;
+        .map_err(|error| test_error(error.to_string()))?;
 
     assert!(
         manager.get_connection_id(&room_id, &user_id).is_none(),
@@ -1119,12 +1118,12 @@ async fn test_failed_upgrade_cleanup_leaves_consumed_ticket_spent() -> TestResul
         .router_options
         .connection_manager
         .reserve_actor_slot(&actor)
-        .map_err(|error| test_error(error.clone()))?;
+        .map_err(|error| test_error(error.to_string()))?;
     state
         .router_options
         .connection_manager
         .reserve_room_slot(&room_id)
-        .map_err(|error| test_error(error.clone()))?;
+        .map_err(|error| test_error(error.to_string()))?;
 
     let ticket = ws_ticket_service
         .create_ticket(&user_id, &room_id, 0)
@@ -1217,12 +1216,12 @@ async fn test_commit_websocket_upgrade_releases_reservation_when_ticket_claim_fa
         .router_options
         .connection_manager
         .reserve_actor_slot(&actor)
-        .map_err(|error| test_error(error.clone()))?;
+        .map_err(|error| test_error(error.to_string()))?;
     state
         .router_options
         .connection_manager
         .reserve_room_slot(&room_id)
-        .map_err(|error| test_error(error.clone()))?;
+        .map_err(|error| test_error(error.to_string()))?;
     Ok(())
 }
 
@@ -1273,12 +1272,12 @@ async fn test_commit_websocket_upgrade_releases_reservation_when_timeout_cancels
         .router_options
         .connection_manager
         .reserve_actor_slot(&actor)
-        .map_err(|error| test_error(error.clone()))?;
+        .map_err(|error| test_error(error.to_string()))?;
     state
         .router_options
         .connection_manager
         .reserve_room_slot(&room_id)
-        .map_err(|error| test_error(error.clone()))?;
+        .map_err(|error| test_error(error.to_string()))?;
     Ok(())
 }
 
@@ -1300,10 +1299,10 @@ async fn test_reservation_stays_full_until_connection_pre_join_succeeds() -> Tes
 
     manager
         .reserve_actor_slot(&actor)
-        .map_err(|error| test_error(error.clone()))?;
+        .map_err(|error| test_error(error.to_string()))?;
     manager
         .reserve_room_slot(&room_id)
-        .map_err(|error| test_error(error.clone()))?;
+        .map_err(|error| test_error(error.to_string()))?;
 
     assert!(
         manager.reserve_actor_slot(&actor).is_err(),

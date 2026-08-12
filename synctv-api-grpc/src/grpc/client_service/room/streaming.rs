@@ -79,7 +79,7 @@ pub(super) async fn message_stream(
                 &metadata,
                 EndpointRateLimitCategory::WebSocket,
                 move |authenticated| async move {
-                    Ok::<_, synctv_api_common::impls::ApiError>(authenticated.user_id)
+                    Ok::<_, synctv_api_common::impls::ApiError>(authenticated.user_id())
                 },
             )
             .await

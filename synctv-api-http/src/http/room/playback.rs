@@ -61,7 +61,7 @@ pub async fn start_playback(
         EndpointRateLimitScope::RoomPlayback,
         move |client_api, authenticated| async move {
             client_api
-                .start_playback(&authenticated.user_id, &room_id, req)
+                .start_playback(&authenticated.user_id(), &room_id, req)
                 .await
         },
     )
@@ -104,7 +104,7 @@ pub async fn stop_playback(
         EndpointRateLimitScope::RoomPlayback,
         move |client_api, authenticated| async move {
             client_api
-                .stop_playback(&authenticated.user_id, &room_id, req)
+                .stop_playback(&authenticated.user_id(), &room_id, req)
                 .await
         },
     )
@@ -139,7 +139,7 @@ pub async fn play_next(
         EndpointRateLimitScope::RoomPlayback,
         move |client_api, authenticated| async move {
             client_api
-                .play_next(&authenticated.user_id, &room_id, req)
+                .play_next(&authenticated.user_id(), &room_id, req)
                 .await
         },
     )
@@ -173,7 +173,7 @@ pub async fn play_previous(
         EndpointRateLimitScope::RoomPlayback,
         move |client_api, authenticated| async move {
             client_api
-                .play_previous(&authenticated.user_id, &room_id, req)
+                .play_previous(&authenticated.user_id(), &room_id, req)
                 .await
         },
     )
@@ -210,7 +210,7 @@ pub async fn list_playback_history(
         EndpointRateLimitScope::RoomPlayback,
         move |client_api, authenticated| async move {
             client_api
-                .list_playback_history(&authenticated.user_id, &room_id, req)
+                .list_playback_history(&authenticated.user_id(), &room_id, req)
                 .await
         },
     )
@@ -245,7 +245,7 @@ pub async fn play_history_entry(
         move |client_api, authenticated| async move {
             client_api
                 .play_history_entry(
-                    &authenticated.user_id,
+                    &authenticated.user_id(),
                     &room_id,
                     PlayHistoryEntryRequest {
                         entry_id,
@@ -412,7 +412,7 @@ pub async fn update_playback_state(
         EndpointRateLimitScope::RoomPlayback,
         move |client_api, authenticated| async move {
             client_api
-                .update_playback_state(&authenticated.user_id, &room_id, req)
+                .update_playback_state(&authenticated.user_id(), &room_id, req)
                 .await
         },
     )

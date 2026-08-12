@@ -187,10 +187,11 @@ pub use registration_types::{
 };
 mod session_types;
 pub use session_types::{
-    AuthFactorMethod, AuthenticatedLogin, LoginSession, LoginSessionState, LoginStartChallenge,
-    MfaChallenge, MfaSession, OpaqueLoginStartChallenge, OpaquePasswordUpdateVerification,
-    OpaqueRegistrationPurpose, OpaqueRegistrationSession, OpaqueRegistrationStartChallenge,
-    SensitiveVerificationChallenge, SensitiveVerificationOutcome, SensitiveVerificationSession,
+    AuthFactorMethod, AuthenticatedLogin, LoginSession, LoginSessionIdentity, LoginSessionState,
+    LoginStartChallenge, MfaChallenge, MfaSession, OpaqueLoginStartChallenge,
+    OpaquePasswordUpdateVerification, OpaqueRegistrationPurpose, OpaqueRegistrationSession,
+    OpaqueRegistrationStartChallenge, SensitiveVerificationChallenge, SensitiveVerificationOutcome,
+    SensitiveVerificationSession,
 };
 mod tokens;
 mod totp;

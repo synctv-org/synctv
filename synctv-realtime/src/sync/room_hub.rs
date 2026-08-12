@@ -1337,7 +1337,7 @@ impl RoomMessageHub {
             };
 
             // Fetch all subscribers for this room
-            let entries: Vec<(String, i64)> = match self
+            let entries: Vec<(String, String)> = match self
                 .redis_op("load audited room subscribers", conn_clone.hgetall(&key))
                 .await
             {
@@ -1361,11 +1361,15 @@ impl RoomMessageHub {
                 continue;
             }
 
-            recovered += entries.len();
+            let valid_subscriber_count = entries
+                .iter()
+                .filter(|(_, actor)| serde_json::from_str::<RealtimeActor>(actor).is_ok())
+                .count();
+            recovered += valid_subscriber_count;
 
             info!(
                 room_id = %room_id,
-                subscriber_count = entries.len(),
+                subscriber_count = valid_subscriber_count,
                 "Audited room subscription state from Redis (observability only)"
             );
         }

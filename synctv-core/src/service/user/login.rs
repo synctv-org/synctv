@@ -9,8 +9,9 @@ use crate::{service::UserService, Error, Result};
 use super::{
     identity_policy::password_binding,
     session_types::{
-        AuthFactorMethod, AuthenticatedLogin, LoginSession, LoginSessionState, LoginStartChallenge,
-        OpaqueLoginStartChallenge, LOGIN_SESSION_TTL_SECS, LOGIN_SESSION_TTL_SECS_I64,
+        AuthFactorMethod, AuthenticatedLogin, LoginSession, LoginSessionIdentity,
+        LoginSessionState, LoginStartChallenge, OpaqueLoginStartChallenge, LOGIN_SESSION_TTL_SECS,
+        LOGIN_SESSION_TTL_SECS_I64,
     },
 };
 
@@ -33,8 +34,7 @@ impl UserService {
             .await?;
 
         let user = self.get_by_login_identifier(&brute_force_key).await?;
-        let user_existed = user.is_some();
-        let (user_id, email, available_methods) = if let Some(user) = user {
+        let (identity, available_methods) = if let Some(user) = user {
             let (auth_factors, email) = tokio::try_join!(
                 self.user_preferences_repository.auth_factors(&user.id),
                 self.user_email_repository.get_email(&user.id),
@@ -49,14 +49,20 @@ impl UserService {
             if email_login_enabled && auth_factors.email {
                 available_methods.push(AuthFactorMethod::Email);
             }
-            (Some(user.id), email, available_methods)
+            (
+                LoginSessionIdentity::Account {
+                    user_id: user.id,
+                    email,
+                },
+                available_methods,
+            )
         } else {
             let available_methods = self.decoy_login_methods(
                 &brute_force_key,
                 email_login_enabled,
                 passkey_login_enabled,
             );
-            (None, None, available_methods)
+            (LoginSessionIdentity::Decoy, available_methods)
         };
 
         let minimum_duration = Duration::from_millis(rand::random_range(100..=200));
@@ -67,10 +73,8 @@ impl UserService {
             .store(
                 &session_id,
                 &LoginSession {
-                    user_id,
+                    identity,
                     brute_force_key,
-                    user_existed,
-                    email,
                     state: LoginSessionState::Identified {
                         available_methods: available_methods.clone(),
                     },
@@ -188,12 +192,13 @@ impl UserService {
         let session = self
             .consume_login_session_for_method(login_session_id, AuthFactorMethod::Password)
             .await?;
+        let user_id = session.user_id();
         let normalized_identifier = session.brute_force_key;
         self.brute_force
             .check_allowed_with_control(&normalized_identifier, client_ip, control)
             .await?;
 
-        let Some(user_id) = session.user_id else {
+        let Some(user_id) = user_id else {
             self.record_direct_password_failure(
                 &normalized_identifier,
                 false,
@@ -314,7 +319,7 @@ impl UserService {
             .check_allowed_with_control(&session.brute_force_key, client_ip, control)
             .await?;
 
-        let opaque_record = if let Some(user_id) = session.user_id {
+        let opaque_record = if let Some(user_id) = session.user_id() {
             self.user_password_repository
                 .get_opaque_credential(&user_id)
                 .await?
@@ -387,6 +392,9 @@ impl UserService {
         let Some(session) = self.login_session_store.consume(session_id).await? else {
             return Err(Error::Authentication("Authentication failed".to_string()));
         };
+        let user_id = session.user_id();
+        let user_existed = session.user_existed();
+        let brute_force_key = session.brute_force_key;
         let LoginSessionState::OpaqueChallenge { server_login_state } = session.state else {
             return Err(Error::Authentication("Authentication failed".to_string()));
         };
@@ -395,10 +403,10 @@ impl UserService {
             .opaque_password_service
             .finish_login(&server_login_state, &credential_finalization);
 
-        let (Ok(_session_key), Some(user_id)) = (finish_result, session.user_id) else {
+        let (Ok(_session_key), Some(user_id)) = (finish_result, user_id) else {
             self.record_login_failure_for_bruteforce(
-                &session.brute_force_key,
-                session.user_existed,
+                &brute_force_key,
+                user_existed,
                 client_ip,
                 control,
                 "opaque",
@@ -423,7 +431,7 @@ impl UserService {
             user,
             AuthFactorMethod::Password,
             credential_binding,
-            &session.brute_force_key,
+            &brute_force_key,
             client_ip,
             control,
         )

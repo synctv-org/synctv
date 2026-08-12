@@ -116,7 +116,7 @@ impl AdminApiImpl {
             move |request_control, authenticated| async move {
                 let validated = AdminAuthValidator::new(user_service.as_ref())
                     .validate(
-                        authenticated.user_id,
+                        authenticated.user_id(),
                         authenticated.claims.pv,
                         authenticated.claims.iat,
                     )

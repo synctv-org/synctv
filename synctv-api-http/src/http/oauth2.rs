@@ -236,11 +236,13 @@ pub async fn exchange_authorization_code(
             &request_meta,
             EndpointRateLimitCategory::Auth,
             move |request_control, authenticated| async move {
-                let current_user_id = authenticated.as_ref().map(|token| &token.user_id);
+                let current_user_id = authenticated
+                    .as_ref()
+                    .map(synctv_core::service::AuthenticatedToken::user_id);
                 oauth2_api
                     .exchange_authorization_code_response_with_control(
                         req,
-                        current_user_id,
+                        current_user_id.as_ref(),
                         Some(client_ip),
                         Some(&request_control),
                     )
@@ -307,7 +309,7 @@ pub async fn get_bind_authorize_url(
             move |request_control, authenticated| async move {
                 oauth2_api
                     .get_authorization_url_for_bind_response_with_control(
-                        &authenticated.user_id,
+                        &authenticated.user_id(),
                         req,
                         Some(&request_control),
                     )
@@ -370,7 +372,7 @@ pub async fn unlink_provider(
             EndpointRateLimitCategory::Write,
             move |authenticated| async move {
                 oauth2_api
-                    .unlink_provider_response(&authenticated.user_id, req)
+                    .unlink_provider_response(&authenticated.user_id(), req)
                     .await
             },
         )
@@ -462,7 +464,7 @@ pub async fn get_linked_providers(
             EndpointRateLimitCategory::Read,
             move |authenticated| async move {
                 oauth2_api
-                    .get_linked_providers_response(&authenticated.user_id)
+                    .get_linked_providers_response(&authenticated.user_id())
                     .await
             },
         )

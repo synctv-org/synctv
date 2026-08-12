@@ -179,7 +179,7 @@ pub(crate) async fn login(
         move |control, authenticated| {
             async move {
                 api.login_with_context(
-                    &authenticated.user_id,
+                    &authenticated.user_id(),
                     req,
                     instance_name.as_deref(),
                     Some(&control),
@@ -236,7 +236,7 @@ pub(crate) async fn list(
         move |control, authenticated| {
             async move {
                 api.list_with_context(
-                    &authenticated.user_id,
+                    &authenticated.user_id(),
                     req,
                     instance_name.as_deref(),
                     Some(&control),
@@ -293,7 +293,7 @@ pub(crate) async fn me(
         move |control, authenticated| {
             async move {
                 api.get_me_with_context(
-                    &authenticated.user_id,
+                    &authenticated.user_id(),
                     req,
                     instance_name.as_deref(),
                     Some(&control),
@@ -346,7 +346,7 @@ pub(crate) async fn logout(
         &state,
         request_meta,
         EndpointRateLimitCategory::Auth,
-        move |authenticated| async move { api.logout(&authenticated.user_id, req).await }.boxed(),
+        move |authenticated| async move { api.logout(&authenticated.user_id(), req).await }.boxed(),
     )
     .await
     .map_err(|e| {
@@ -389,8 +389,8 @@ pub(crate) async fn binds(
         EndpointRateLimitCategory::Read,
         move |authenticated| {
             async move {
-                tracing::info!("Emby binds request for user: {}", authenticated.user_id);
-                api.get_binds(&authenticated.user_id, instance_name.as_deref())
+                tracing::info!("Emby binds request for user: {}", authenticated.user_id());
+                api.get_binds(&authenticated.user_id(), instance_name.as_deref())
                     .await
             }
             .boxed()
@@ -449,7 +449,7 @@ pub(crate) async fn thumbnail(
                 let public_auth_user_id = state
                     .shared_api_runtime
                     .public_id_codec
-                    .encode_user_id(authenticated.user_id)
+                    .encode_user_id(authenticated.user_id())
                     .map_err(synctv_api_common::impls::ApiError::Internal)?;
                 let scope = ThumbnailSignatureScope {
                     item_id: &item_id,
@@ -474,7 +474,7 @@ pub(crate) async fn thumbnail(
                         .decode_room_id(&room_id)
                         .map_err(synctv_api_common::impls::ApiError::InvalidInput)?;
                     super::playback_provider::playback_provider_api_runtime(&state)
-                        .validate_fresh_access(&room_id, &authenticated.user_id)
+                        .validate_fresh_access(&room_id, &authenticated.user_id())
                         .await?;
                 }
 
@@ -485,7 +485,7 @@ pub(crate) async fn thumbnail(
                         .decode_user_id(public_id)
                         .map_err(synctv_api_common::impls::ApiError::InvalidInput)?
                 } else {
-                    authenticated.user_id
+                    authenticated.user_id()
                 };
 
                 let access = state

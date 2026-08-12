@@ -72,7 +72,10 @@ pub async fn list_notifications(
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Read,
-            |auth| async move { api.list_notifications_response(&auth.user_id, query).await },
+            |auth| async move {
+                api.list_notifications_response(&auth.user_id(), query)
+                    .await
+            },
         )
         .await
         .map_err(crate::http::error::map_api_error)?;
@@ -117,7 +120,7 @@ pub async fn get_notification(
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Read,
-            |auth| async move { api.get_notification_response(&auth.user_id, req).await },
+            |auth| async move { api.get_notification_response(&auth.user_id(), req).await },
         )
         .await
         .map_err(crate::http::error::map_api_error)?;
@@ -161,7 +164,7 @@ pub async fn mark_as_read(
             &request_meta,
             EndpointRateLimitCategory::Write,
             |auth| async move {
-                api.mark_as_read_response(&auth.user_id, req)
+                api.mark_as_read_response(&auth.user_id(), req)
                     .await
                     .map(|_| ())
             },
@@ -210,7 +213,7 @@ pub async fn mark_all_as_read(
             &request_meta,
             EndpointRateLimitCategory::Write,
             |auth| async move {
-                api.mark_all_as_read_response(&auth.user_id, req)
+                api.mark_all_as_read_response(&auth.user_id(), req)
                     .await
                     .map(|_| ())
             },
@@ -259,7 +262,7 @@ pub async fn delete_notification(
             &request_meta,
             EndpointRateLimitCategory::Write,
             |auth| async move {
-                api.delete_notification_response(&auth.user_id, req)
+                api.delete_notification_response(&auth.user_id(), req)
                     .await
                     .map(|_| ())
             },
@@ -303,7 +306,7 @@ pub async fn delete_all_read(
             &request_meta,
             EndpointRateLimitCategory::Write,
             |auth| async move {
-                api.delete_all_read_response(&auth.user_id)
+                api.delete_all_read_response(&auth.user_id())
                     .await
                     .map(|_| ())
             },

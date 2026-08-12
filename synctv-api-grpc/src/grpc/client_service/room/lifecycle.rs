@@ -17,7 +17,7 @@ pub(super) async fn leave_room(
             EndpointRateLimitCategory::Write,
             move |authenticated| async move {
                 client_api
-                    .leave_room(&authenticated.user_id, room_id.as_str())
+                    .leave_room(&authenticated.user_id(), room_id.as_str())
                     .await
             },
         )
@@ -39,7 +39,7 @@ pub(super) async fn delete_room(
             EndpointRateLimitCategory::Write,
             move |authenticated| async move {
                 client_api
-                    .delete_room(&authenticated.user_id, room_id.as_str())
+                    .delete_room(&authenticated.user_id(), room_id.as_str())
                     .await
             },
         )

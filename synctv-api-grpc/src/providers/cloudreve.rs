@@ -51,7 +51,7 @@ impl CloudreveProviderService for CloudreveProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Auth,
                 move |authenticated| async move {
-                    api.login(authenticated.user_id, req, instance_name.as_deref())
+                    api.login(authenticated.user_id(), req, instance_name.as_deref())
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },
@@ -71,7 +71,7 @@ impl CloudreveProviderService for CloudreveProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
-                    api.list(authenticated.user_id, req, instance_name.as_deref())
+                    api.list(authenticated.user_id(), req, instance_name.as_deref())
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },
@@ -94,7 +94,7 @@ impl CloudreveProviderService for CloudreveProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
-                    api.search(authenticated.user_id, req, instance_name.as_deref())
+                    api.search(authenticated.user_id(), req, instance_name.as_deref())
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },
@@ -117,7 +117,7 @@ impl CloudreveProviderService for CloudreveProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
-                    api.get_me(authenticated.user_id, req, instance_name.as_deref())
+                    api.get_me(authenticated.user_id(), req, instance_name.as_deref())
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },
@@ -139,7 +139,7 @@ impl CloudreveProviderService for CloudreveProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Auth,
                 move |authenticated| async move {
-                    api.logout(authenticated.user_id, req)
+                    api.logout(authenticated.user_id(), req)
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },
@@ -161,7 +161,7 @@ impl CloudreveProviderService for CloudreveProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
-                    api.get_binds(authenticated.user_id, instance_name.as_deref())
+                    api.get_binds(authenticated.user_id(), instance_name.as_deref())
                         .await
                         .map_err(synctv_api_common::impls::ApiError::from)
                 },

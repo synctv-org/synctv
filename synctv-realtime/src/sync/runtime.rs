@@ -6,8 +6,9 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use super::connection_manager::{
-    ConnectionInfo, ConnectionLimits, ConnectionManager, ConnectionMetrics, DisconnectSignal,
-    RoomDisconnectReason, ShutdownReport, VoiceRtcJoinOutcome,
+    ConnectionInfo, ConnectionLimits, ConnectionManager, ConnectionMetrics,
+    ConnectionReservationError, DisconnectSignal, RoomDisconnectReason, ShutdownReport,
+    VoiceRtcJoinOutcome,
 };
 use super::room_hub::{ConnectionId, RoomLifecycleEvent, RoomMessageHub};
 use super::{RealtimeEvent, SharedRealtimeEvent};
@@ -160,11 +161,20 @@ pub trait ConnectionRuntime: Send + Sync {
 
     fn record_message(&self, connection_id: &str);
 
-    fn reserve_room_slot(&self, room_id: &RoomId) -> std::result::Result<(), String>;
+    fn reserve_room_slot(
+        &self,
+        room_id: &RoomId,
+    ) -> std::result::Result<(), ConnectionReservationError>;
 
-    fn reserve_user_slot(&self, user_id: &UserId) -> std::result::Result<(), String>;
+    fn reserve_user_slot(
+        &self,
+        user_id: &UserId,
+    ) -> std::result::Result<(), ConnectionReservationError>;
 
-    fn reserve_actor_slot(&self, actor: &RealtimeActor) -> std::result::Result<(), String>;
+    fn reserve_actor_slot(
+        &self,
+        actor: &RealtimeActor,
+    ) -> std::result::Result<(), ConnectionReservationError>;
 
     fn release_room_reservation(&self, room_id: &RoomId);
 
@@ -288,15 +298,24 @@ impl ConnectionRuntime for ConnectionManager {
         ConnectionManager::record_message(self, connection_id);
     }
 
-    fn reserve_room_slot(&self, room_id: &RoomId) -> std::result::Result<(), String> {
+    fn reserve_room_slot(
+        &self,
+        room_id: &RoomId,
+    ) -> std::result::Result<(), ConnectionReservationError> {
         ConnectionManager::reserve_room_slot(self, room_id)
     }
 
-    fn reserve_user_slot(&self, user_id: &UserId) -> std::result::Result<(), String> {
+    fn reserve_user_slot(
+        &self,
+        user_id: &UserId,
+    ) -> std::result::Result<(), ConnectionReservationError> {
         ConnectionManager::reserve_user_slot(self, user_id)
     }
 
-    fn reserve_actor_slot(&self, actor: &RealtimeActor) -> std::result::Result<(), String> {
+    fn reserve_actor_slot(
+        &self,
+        actor: &RealtimeActor,
+    ) -> std::result::Result<(), ConnectionReservationError> {
         ConnectionManager::reserve_actor_slot(self, actor)
     }
 

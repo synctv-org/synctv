@@ -47,7 +47,7 @@ pub async fn create_playlist(
         EndpointRateLimitScope::RoomMedia,
         move |client_api, authenticated| async move {
             client_api
-                .create_playlist(&authenticated.user_id, &room_id, req)
+                .create_playlist(&authenticated.user_id(), &room_id, req)
                 .await
         },
     )
@@ -95,7 +95,7 @@ pub async fn update_playlist(
         EndpointRateLimitScope::RoomMedia,
         move |client_api, authenticated| async move {
             client_api
-                .update_playlist(&authenticated.user_id, &room_id, req)
+                .update_playlist(&authenticated.user_id(), &room_id, req)
                 .await
         },
     )
@@ -143,7 +143,7 @@ pub async fn move_playlist(
         EndpointRateLimitScope::RoomPlaylist,
         move |client_api, authenticated| async move {
             client_api
-                .move_playlist(&authenticated.user_id, &room_id, req)
+                .move_playlist(&authenticated.user_id(), &room_id, req)
                 .await
         },
     )
@@ -194,7 +194,7 @@ pub async fn delete_playlist(
         EndpointRateLimitScope::RoomPlaylist,
         move |client_api, authenticated| async move {
             client_api
-                .delete_playlist(&authenticated.user_id, &room_id, req)
+                .delete_playlist(&authenticated.user_id(), &room_id, req)
                 .await
         },
     )

@@ -1805,7 +1805,7 @@ fn review_rows_preserve_absent_optional_fields() -> TestResult {
             room_name: "room_creation".to_string(),
             user_id: UserId::new(),
             username: "joiner".to_string(),
-            requested_role: synctv_proto::common::RoomMemberRole::Member as i32,
+            requested_role: synctv_core::models::RoomRole::Member,
             status: synctv_core::models::ReviewStatus::Pending,
             requested_at,
             reviewed_at: None,

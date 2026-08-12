@@ -49,11 +49,82 @@ pub struct AlistAccess {
 }
 
 #[derive(Debug, Clone)]
-pub struct BilibiliAccess {
-    pub cookies: HashMap<String, String>,
-    pub credential_cache_partition: String,
-    pub authenticated: bool,
-    pub provider_instance_name: Option<String>,
+pub enum BilibiliAccess {
+    Anonymous {
+        credential_cache_partition: String,
+        provider_instance_name: Option<String>,
+    },
+    Authenticated {
+        cookies: HashMap<String, String>,
+        credential_cache_partition: String,
+        provider_instance_name: Option<String>,
+    },
+}
+
+impl BilibiliAccess {
+    #[must_use]
+    pub fn anonymous(
+        credential_cache_partition: impl Into<String>,
+        provider_instance_name: Option<String>,
+    ) -> Self {
+        Self::Anonymous {
+            credential_cache_partition: credential_cache_partition.into(),
+            provider_instance_name,
+        }
+    }
+
+    #[must_use]
+    pub fn authenticated(
+        cookies: HashMap<String, String>,
+        credential_cache_partition: impl Into<String>,
+        provider_instance_name: Option<String>,
+    ) -> Self {
+        Self::Authenticated {
+            cookies,
+            credential_cache_partition: credential_cache_partition.into(),
+            provider_instance_name,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_authenticated(&self) -> bool {
+        matches!(self, Self::Authenticated { .. })
+    }
+
+    #[must_use]
+    pub fn into_cookies(self) -> HashMap<String, String> {
+        match self {
+            Self::Anonymous { .. } => HashMap::new(),
+            Self::Authenticated { cookies, .. } => cookies,
+        }
+    }
+
+    #[must_use]
+    pub fn into_cookies_and_partition(self) -> (HashMap<String, String>, String) {
+        match self {
+            Self::Anonymous {
+                credential_cache_partition,
+                ..
+            } => (HashMap::new(), credential_cache_partition),
+            Self::Authenticated {
+                cookies,
+                credential_cache_partition,
+                ..
+            } => (cookies, credential_cache_partition),
+        }
+    }
+
+    #[must_use]
+    pub fn into_authenticated(self) -> Option<(HashMap<String, String>, Option<String>)> {
+        match self {
+            Self::Anonymous { .. } => None,
+            Self::Authenticated {
+                cookies,
+                provider_instance_name,
+                ..
+            } => Some((cookies, provider_instance_name)),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -998,11 +1069,9 @@ mod tests {
             .await
             .checked("bilibili access resolves from credential reader");
 
-        assert!(access.authenticated);
-        assert_eq!(
-            access.cookies.get("SESSDATA").map(String::as_str),
-            Some("cookie")
-        );
+        assert!(access.is_authenticated());
+        let cookies = access.into_cookies();
+        assert_eq!(cookies.get("SESSDATA").map(String::as_str), Some("cookie"));
         assert!(store
             .get_raw(&CachedProviderAccessService::binding_key(
                 BilibiliProvider::NAME,

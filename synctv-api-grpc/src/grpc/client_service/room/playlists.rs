@@ -18,7 +18,7 @@ pub(super) async fn create_playlist(
             EndpointRateLimitCategory::Media,
             move |authenticated| async move {
                 client_api
-                    .create_playlist(&authenticated.user_id, room_id.as_str(), req)
+                    .create_playlist(&authenticated.user_id(), room_id.as_str(), req)
                     .await
             },
         )
@@ -63,7 +63,7 @@ pub(super) async fn update_playlist(
             EndpointRateLimitCategory::Media,
             move |authenticated| async move {
                 client_api
-                    .update_playlist(&authenticated.user_id, room_id.as_str(), req)
+                    .update_playlist(&authenticated.user_id(), room_id.as_str(), req)
                     .await
             },
         )
@@ -86,7 +86,7 @@ pub(super) async fn move_playlist(
             EndpointRateLimitCategory::Media,
             move |authenticated| async move {
                 client_api
-                    .move_playlist(&authenticated.user_id, room_id.as_str(), req)
+                    .move_playlist(&authenticated.user_id(), room_id.as_str(), req)
                     .await
             },
         )
@@ -109,7 +109,7 @@ pub(super) async fn delete_playlist(
             EndpointRateLimitCategory::Media,
             move |authenticated| async move {
                 client_api
-                    .delete_playlist(&authenticated.user_id, room_id.as_str(), req)
+                    .delete_playlist(&authenticated.user_id(), room_id.as_str(), req)
                     .await
             },
         )

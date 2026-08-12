@@ -290,10 +290,9 @@ pub fn create_test_user_service(pool: sqlx::PgPool) -> UserService {
             password_complexity: synctv_core::validation::PasswordComplexityOptions::default(),
         },
         UserServiceRuntimeOptions {
-            password_registration_policy_override: Some(synctv_core::service::RegistrationPolicy {
-                enabled: true,
-                need_review: false,
-            }),
+            password_registration_policy_override: Some(
+                synctv_core::service::RegistrationPolicy::Immediate,
+            ),
             ..UserServiceRuntimeOptions::test_defaults()
         },
     )

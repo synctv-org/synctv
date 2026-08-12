@@ -68,7 +68,7 @@ impl JwtValidator {
     /// User ID extracted from the token
     pub fn validate_and_extract_user_id(&self, token: &str) -> Result<UserId> {
         let claims = self.validate_token(token)?;
-        claims.user_id()
+        Ok(claims.user_id())
     }
 }
 
@@ -111,7 +111,7 @@ impl JwtValidator {
         auth_header: &str,
     ) -> Result<UserId> {
         let claims = self.validate_authorization_header(auth_header)?;
-        claims.user_id()
+        Ok(claims.user_id())
     }
 }
 
@@ -173,7 +173,7 @@ mod tests {
         let token = create_test_token(&jwt_service, 98_001);
 
         let claims = ok(validator.validate_token(&token), "token should validate");
-        assert_eq!(claims.sub, "98001");
+        assert_eq!(claims.user_id(), UserId::expect_positive(98_001));
 
         let result = validator.validate_token("invalid.token.here");
         assert!(matches!(result, Err(Error::Authentication(_))));
@@ -190,7 +190,7 @@ mod tests {
             validator.validate_authorization_header(&format!("Bearer {token}")),
             "authorization header bearer token should validate",
         );
-        assert_eq!(claims.sub, "98002");
+        assert_eq!(claims.user_id(), UserId::expect_positive(98_002));
 
         let result = validator.validate_authorization_header("Basic invalid");
         assert!(matches!(result, Err(Error::Authentication(_))));

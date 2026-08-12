@@ -767,7 +767,7 @@ mod tests {
             result: PlaybackResult {
                 playback_infos: HashMap::new(),
                 default_mode: "direct".to_string(),
-                provider: "test".to_string(),
+                provider: crate::models::SourceProvider::DirectUrl,
                 provider_instance_name: None,
                 duration_seconds: None,
                 playback_kind: Some(crate::models::PlaybackKind::Regular),
@@ -796,7 +796,7 @@ mod tests {
             result: PlaybackResult {
                 playback_infos: HashMap::new(),
                 default_mode: "direct".to_string(),
-                provider: "test".to_string(),
+                provider: crate::models::SourceProvider::DirectUrl,
                 provider_instance_name: None,
                 duration_seconds: None,
                 playback_kind: Some(crate::models::PlaybackKind::Regular),

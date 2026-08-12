@@ -818,13 +818,15 @@ fn microsoft_tenant_or_default(tenant: String) -> String {
 }
 
 fn core_room_password_policy(value: i32) -> Result<RoomPasswordPolicy, ApiError> {
-    match admin_proto::RoomPasswordPolicy::try_from(value) {
-        Ok(admin_proto::RoomPasswordPolicy::Optional) => Ok(RoomPasswordPolicy::Optional),
-        Ok(admin_proto::RoomPasswordPolicy::Required) => Ok(RoomPasswordPolicy::Required),
-        Ok(admin_proto::RoomPasswordPolicy::Forbidden) => Ok(RoomPasswordPolicy::Forbidden),
-        Ok(admin_proto::RoomPasswordPolicy::Unspecified) | Err(_) => Err(ApiError::InvalidInput(
-            "room_creation password policy is required".to_string(),
-        )),
+    match synctv_proto::common::RoomPasswordPolicy::try_from(value) {
+        Ok(synctv_proto::common::RoomPasswordPolicy::Optional) => Ok(RoomPasswordPolicy::Optional),
+        Ok(synctv_proto::common::RoomPasswordPolicy::Required) => Ok(RoomPasswordPolicy::Required),
+        Ok(synctv_proto::common::RoomPasswordPolicy::Forbidden) => {
+            Ok(RoomPasswordPolicy::Forbidden)
+        }
+        Ok(synctv_proto::common::RoomPasswordPolicy::Unspecified) | Err(_) => Err(
+            ApiError::InvalidInput("room_creation password policy is required".to_string()),
+        ),
     }
 }
 

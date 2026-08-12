@@ -34,7 +34,7 @@ macro_rules! user_post {
         pub(crate) async fn $name(request_meta: RequestMetadata, State(state): State<AppState>, Json(req): Json<$req>) -> AppResult<Json<$resp>> {
             let instance = provider_instance_name_from_request_field(&req.instance_name)?;
             let api = state.shared_api_runtime.truenas_api.clone();
-            execute_provider_user_endpoint_with_control(&state, request_meta, $category, move |_control, auth| async move { api.$method(auth.user_id, req, instance.as_deref()).await }.boxed()).await
+            execute_provider_user_endpoint_with_control(&state, request_meta, $category, move |_control, auth| async move { api.$method(auth.user_id(), req, instance.as_deref()).await }.boxed()).await
         }
     };
 }
@@ -67,7 +67,7 @@ pub(crate) async fn logout(
         &state,
         request_meta,
         EndpointRateLimitCategory::Write,
-        move |_control, auth| async move { api.logout(auth.user_id, req).await }.boxed(),
+        move |_control, auth| async move { api.logout(auth.user_id(), req).await }.boxed(),
     )
     .await
 }
@@ -84,7 +84,7 @@ pub(crate) async fn binds(
         &state,
         request_meta,
         EndpointRateLimitCategory::Read,
-        move |auth| async move { api.binds(auth.user_id, instance.as_deref()).await }.boxed(),
+        move |auth| async move { api.binds(auth.user_id(), instance.as_deref()).await }.boxed(),
     )
     .await
 }

@@ -7,6 +7,7 @@ use super::upstream_transport::alist as alist_upstream;
 use super::{
     access::{AlistAccess, AlistBinding},
     provider_client::{create_remote_alist_client, AlistClientArc, ProviderClientManager},
+    traits::dynamic_page_has_more,
     DynamicBrowsePathSegment, DynamicListQuery, DynamicListResult, DynamicPagination,
     DynamicPlaylistItem, DynamicPlaylistProvider, ItemType, MediaProvider, NextPlayItem,
     PlaybackClientProfile, PlaybackInfo, PlaybackResult, PlaybackStreamPreference,
@@ -2785,97 +2786,106 @@ impl DynamicPlaylistProvider for AlistProvider {
             .map(str::trim)
             .filter(|s| !s.is_empty());
 
-        let items: Vec<DynamicPlaylistItem> = if let Some(keywords) = search {
-            let search_resp = client
-                .fs_search(alist_resolved_search_request(
-                    &resolved,
-                    full_path.clone(),
-                    keywords.to_string(),
-                    page,
-                    per_page,
-                ))
-                .await?;
+        let (items, total, returned_count): (Vec<DynamicPlaylistItem>, usize, usize) =
+            if let Some(keywords) = search {
+                let search_resp = client
+                    .fs_search(alist_resolved_search_request(
+                        &resolved,
+                        full_path.clone(),
+                        keywords.to_string(),
+                        page,
+                        per_page,
+                    ))
+                    .await?;
 
-            search_resp
-                .content
-                .into_iter()
-                .filter_map(|file_item| {
-                    let item_type = alist_directory_item_type(&file_item.name, file_item.is_dir)?;
-                    Some((file_item, item_type))
-                })
-                .map(|(file_item, item_type)| {
-                    let full_item_path = join_alist_path(&file_item.parent, &file_item.name);
-                    let item_relative_path =
-                        alist_relative_path_from_base(&resolved.path, &full_item_path).ok_or_else(
-                            || {
-                                ProviderError::ApiError(format!(
+                let total = usize::try_from(search_resp.total).unwrap_or(usize::MAX);
+                let returned_count = search_resp.content.len();
+                let items = search_resp
+                    .content
+                    .into_iter()
+                    .filter_map(|file_item| {
+                        let item_type =
+                            alist_directory_item_type(&file_item.name, file_item.is_dir)?;
+                        Some((file_item, item_type))
+                    })
+                    .map(|(file_item, item_type)| {
+                        let full_item_path = join_alist_path(&file_item.parent, &file_item.name);
+                        let item_relative_path =
+                            alist_relative_path_from_base(&resolved.path, &full_item_path)
+                                .ok_or_else(|| {
+                                    ProviderError::ApiError(format!(
                             "Alist search result path '{full_item_path}' is outside base path '{}'",
                             resolved.path
                         ))
-                            },
-                        )?;
+                                })?;
 
-                    Ok(DynamicPlaylistItem {
-                        name: file_item.name,
-                        item_type,
-                        target: Self::encode_target(&item_relative_path)?,
-                        size: Some(file_item.size),
-                        thumbnail: None,
-                        description: None,
-                        modified_at: None,
-                        source_config: None,
-                        metadata: None,
+                        Ok(DynamicPlaylistItem {
+                            name: file_item.name,
+                            item_type,
+                            target: Self::encode_target(&item_relative_path)?,
+                            size: Some(file_item.size),
+                            thumbnail: None,
+                            description: None,
+                            modified_at: None,
+                            source_config: None,
+                            metadata: None,
+                        })
                     })
-                })
-                .collect::<Result<Vec<_>, ProviderError>>()?
-        } else {
-            let list_resp = client
-                .fs_list(alist_resolved_list_request(
-                    &resolved,
-                    full_path.clone(),
-                    page,
-                    per_page,
-                    query.refresh,
-                ))
-                .await?;
+                    .collect::<Result<Vec<_>, ProviderError>>()?;
+                (items, total, returned_count)
+            } else {
+                let list_resp = client
+                    .fs_list(alist_resolved_list_request(
+                        &resolved,
+                        full_path.clone(),
+                        page,
+                        per_page,
+                        query.refresh,
+                    ))
+                    .await?;
 
-            list_resp
-                .content
-                .into_iter()
-                .filter_map(|file_item| {
-                    let item_type = alist_directory_item_type(&file_item.name, file_item.is_dir)?;
-                    Some((file_item, item_type))
-                })
-                .map(|(file_item, item_type)| {
-                    let item_relative_path = if let Some(rel) = relative_path.as_deref() {
-                        format!("{}/{}", rel.trim_end_matches('/'), file_item.name)
-                    } else {
-                        format!("/{}", file_item.name)
-                    };
-
-                    Ok(DynamicPlaylistItem {
-                        name: file_item.name,
-                        item_type,
-                        target: Self::encode_target(&item_relative_path)?,
-                        size: Some(file_item.size),
-                        thumbnail: if file_item.thumb.is_empty() {
-                            None
+                let total = usize::try_from(list_resp.total).unwrap_or(usize::MAX);
+                let returned_count = list_resp.content.len();
+                let items = list_resp
+                    .content
+                    .into_iter()
+                    .filter_map(|file_item| {
+                        let item_type =
+                            alist_directory_item_type(&file_item.name, file_item.is_dir)?;
+                        Some((file_item, item_type))
+                    })
+                    .map(|(file_item, item_type)| {
+                        let item_relative_path = if let Some(rel) = relative_path.as_deref() {
+                            format!("{}/{}", rel.trim_end_matches('/'), file_item.name)
                         } else {
-                            Some(crate::provider::DynamicPlaylistItemThumbnail::Url(
-                                file_item.thumb,
-                            ))
-                        },
-                        description: None,
-                        modified_at: Some(alist_modified_to_i64(file_item.modified)?),
-                        source_config: None,
-                        metadata: None,
-                    })
-                })
-                .collect::<Result<Vec<_>, ProviderError>>()?
-        };
+                            format!("/{}", file_item.name)
+                        };
 
+                        Ok(DynamicPlaylistItem {
+                            name: file_item.name,
+                            item_type,
+                            target: Self::encode_target(&item_relative_path)?,
+                            size: Some(file_item.size),
+                            thumbnail: if file_item.thumb.is_empty() {
+                                None
+                            } else {
+                                Some(crate::provider::DynamicPlaylistItemThumbnail::Url(
+                                    file_item.thumb,
+                                ))
+                            },
+                            description: None,
+                            modified_at: Some(alist_modified_to_i64(file_item.modified)?),
+                            source_config: None,
+                            metadata: None,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, ProviderError>>()?;
+                (items, total, returned_count)
+            };
+
+        let page = query.page().max(1);
         Ok(DynamicListResult {
-            has_more: items.len() >= query.page_size.max(1),
+            has_more: dynamic_page_has_more(total, page, query.page_size, returned_count),
             items,
             pagination: DynamicPagination::Page {
                 page: query.page().max(1),
@@ -2921,7 +2931,7 @@ impl DynamicPlaylistProvider for AlistProvider {
 
         let mut page = 1;
         loop {
-            let page_items = self
+            let page_result = self
                 .list_playlist(
                     ctx,
                     playlist,
@@ -2933,11 +2943,8 @@ impl DynamicPlaylistProvider for AlistProvider {
                     },
                 )
                 .await?;
-            if page_items.is_empty() {
-                return Ok(None);
-            }
 
-            if let Some(item) = page_items
+            if let Some(item) = page_result
                 .iter()
                 .find(|item| item.item_type == ItemType::Media && &item.target == target)
             {
@@ -2949,7 +2956,7 @@ impl DynamicPlaylistProvider for AlistProvider {
                 }));
             }
 
-            if page_items.len() < LIST_PAGE_SIZE {
+            if !page_result.has_more {
                 return Ok(None);
             }
             page += 1;
@@ -3004,7 +3011,7 @@ impl DynamicPlaylistProvider for AlistProvider {
                 let mut current_page = 1;
 
                 loop {
-                    let page_items = self
+                    let page_result = self
                         .list_playlist(
                             ctx,
                             playlist,
@@ -3017,12 +3024,8 @@ impl DynamicPlaylistProvider for AlistProvider {
                         )
                         .await?;
 
-                    if page_items.is_empty() {
-                        break;
-                    }
-
                     if found_current {
-                        if let Some(next) = page_items
+                        if let Some(next) = page_result
                             .iter()
                             .find(|item| item.item_type == ItemType::Media)
                         {
@@ -3040,10 +3043,10 @@ impl DynamicPlaylistProvider for AlistProvider {
                             }));
                         }
                     } else if let Some(idx) =
-                        page_items.iter().position(|item| &item.target == target)
+                        page_result.iter().position(|item| &item.target == target)
                     {
                         found_current = true;
-                        if let Some(next) = page_items
+                        if let Some(next) = page_result
                             .iter()
                             .skip(idx + 1)
                             .find(|item| item.item_type == ItemType::Media)
@@ -3063,7 +3066,7 @@ impl DynamicPlaylistProvider for AlistProvider {
                         }
                     }
 
-                    if page_items.len() < LIST_PAGE_SIZE {
+                    if !page_result.has_more {
                         break;
                     }
                     current_page += 1;
@@ -3075,34 +3078,43 @@ impl DynamicPlaylistProvider for AlistProvider {
                         .map(|x| x.0)
                         .filter(|&s| !s.is_empty());
                     let parent_target = parent_path.map(Self::encode_target).transpose()?;
-                    let first_page = self
-                        .list_playlist(
-                            ctx,
-                            playlist,
-                            parent_target.as_ref(),
-                            DynamicListQuery {
-                                pagination: DynamicPagination::Page { page: 1 },
-                                page_size: LIST_PAGE_SIZE,
-                                ..DynamicListQuery::default()
-                            },
-                        )
-                        .await?;
-                    if let Some(first) = first_page
-                        .iter()
-                        .find(|item| item.item_type == ItemType::Media)
-                    {
-                        return Ok(Some(NextPlayItem {
-                            name: first.name.clone(),
-                            item_type: first.item_type,
-                            source_config: build_next_source_config(&build_full_path(
-                                &Self::decode_target(Some(&first.target))?.ok_or_else(|| {
-                                    ProviderError::InvalidConfig(
-                                        "Missing Alist item target".to_string(),
-                                    )
-                                })?,
-                            )),
-                            target: first.target.clone(),
-                        }));
+                    let mut page = 1;
+                    loop {
+                        let page_result = self
+                            .list_playlist(
+                                ctx,
+                                playlist,
+                                parent_target.as_ref(),
+                                DynamicListQuery {
+                                    pagination: DynamicPagination::Page { page },
+                                    page_size: LIST_PAGE_SIZE,
+                                    ..DynamicListQuery::default()
+                                },
+                            )
+                            .await?;
+                        if let Some(first) = page_result
+                            .iter()
+                            .find(|item| item.item_type == ItemType::Media)
+                        {
+                            return Ok(Some(NextPlayItem {
+                                name: first.name.clone(),
+                                item_type: first.item_type,
+                                source_config: build_next_source_config(&build_full_path(
+                                    &Self::decode_target(Some(&first.target))?.ok_or_else(
+                                        || {
+                                            ProviderError::InvalidConfig(
+                                                "Missing Alist item target".to_string(),
+                                            )
+                                        },
+                                    )?,
+                                )),
+                                target: first.target.clone(),
+                            }));
+                        }
+                        if !page_result.has_more {
+                            break;
+                        }
+                        page += 1;
                     }
                 }
 
@@ -3118,7 +3130,7 @@ impl DynamicPlaylistProvider for AlistProvider {
                 let mut all_items = Vec::with_capacity(SHUFFLE_MAX_ITEMS);
                 let mut page = 1;
                 loop {
-                    let page_items = self
+                    let page_result = self
                         .list_playlist(
                             ctx,
                             playlist,
@@ -3130,9 +3142,9 @@ impl DynamicPlaylistProvider for AlistProvider {
                             },
                         )
                         .await?;
-                    let is_last_page = page_items.len() < LIST_PAGE_SIZE;
-                    all_items.extend(page_items);
-                    if is_last_page || all_items.len() >= SHUFFLE_MAX_ITEMS {
+                    let has_more = page_result.has_more;
+                    all_items.extend(page_result);
+                    if !has_more || all_items.len() >= SHUFFLE_MAX_ITEMS {
                         break;
                     }
                     page += 1;

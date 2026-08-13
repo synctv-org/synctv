@@ -5,6 +5,7 @@
 use super::{
     access::EmbyAccess,
     provider_client::{create_remote_emby_client, EmbyClientArc, ProviderClientManager},
+    traits::dynamic_page_has_more,
     DynamicBrowsePathSegment, DynamicListQuery, DynamicListResult, DynamicPagination,
     DynamicPlaylistItem, DynamicPlaylistItemSourceConfig, DynamicPlaylistItemThumbnail,
     DynamicPlaylistProvider, ItemType, MediaProvider, NextPlayItem, PlaybackClientProfile,
@@ -2516,6 +2517,8 @@ impl DynamicPlaylistProvider for EmbyProvider {
         )?;
 
         let response = client.fs_list(list_req).await?;
+        let total = usize::try_from(response.total).unwrap_or(usize::MAX);
+        let returned_count = response.items.len();
         let items = response
             .items
             .into_iter()
@@ -2602,7 +2605,7 @@ impl DynamicPlaylistProvider for EmbyProvider {
             .collect::<Result<Vec<_>, ProviderError>>()?;
 
         Ok(DynamicListResult {
-            has_more: items.len() >= query.page_size.max(1),
+            has_more: dynamic_page_has_more(total, page, page_size, returned_count),
             items,
             pagination: DynamicPagination::Page { page },
         })
@@ -2690,7 +2693,7 @@ impl DynamicPlaylistProvider for EmbyProvider {
                 let mut current_page = 1;
 
                 loop {
-                    let page_items = self
+                    let page_result = self
                         .list_playlist(
                             ctx,
                             playlist,
@@ -2703,12 +2706,8 @@ impl DynamicPlaylistProvider for EmbyProvider {
                         )
                         .await?;
 
-                    if page_items.is_empty() {
-                        break;
-                    }
-
                     if found_current {
-                        if let Some(next) = page_items
+                        if let Some(next) = page_result
                             .iter()
                             .find(|item| item.item_type == ItemType::Media)
                         {
@@ -2728,10 +2727,10 @@ impl DynamicPlaylistProvider for EmbyProvider {
                             }));
                         }
                     } else if let Some(idx) =
-                        page_items.iter().position(|item| &item.target == target)
+                        page_result.iter().position(|item| &item.target == target)
                     {
                         found_current = true;
-                        if let Some(next) = page_items
+                        if let Some(next) = page_result
                             .iter()
                             .skip(idx + 1)
                             .find(|item| item.item_type == ItemType::Media)
@@ -2753,44 +2752,52 @@ impl DynamicPlaylistProvider for EmbyProvider {
                         }
                     }
 
-                    if page_items.len() < PAGE_SIZE {
+                    if !page_result.has_more {
                         break;
                     }
                     current_page += 1;
                 }
 
                 if found_current && play_mode == PlayMode::RepeatAll {
-                    let first_page = self
-                        .list_playlist(
-                            ctx,
-                            playlist,
-                            browse_target.as_ref(),
-                            DynamicListQuery {
-                                pagination: DynamicPagination::Page { page: 1 },
-                                page_size: PAGE_SIZE,
-                                ..DynamicListQuery::default()
-                            },
-                        )
-                        .await?;
-
-                    if let Some(first) = first_page
-                        .iter()
-                        .find(|item| item.item_type == ItemType::Media)
-                    {
-                        return Ok(Some(NextPlayItem {
-                            name: first.name.clone(),
-                            item_type: first.item_type,
-                            source_config: Self::build_next_source_config(
-                                &base_config.server_id,
-                                &Self::decode_target(Some(&first.target))?.ok_or_else(|| {
-                                    ProviderError::InvalidConfig(
-                                        "Missing Emby item target".to_string(),
-                                    )
-                                })?,
-                                base_config.proxy_mode,
-                            ),
-                            target: first.target.clone(),
-                        }));
+                    let mut page = 1;
+                    loop {
+                        let page_result = self
+                            .list_playlist(
+                                ctx,
+                                playlist,
+                                browse_target.as_ref(),
+                                DynamicListQuery {
+                                    pagination: DynamicPagination::Page { page },
+                                    page_size: PAGE_SIZE,
+                                    ..DynamicListQuery::default()
+                                },
+                            )
+                            .await?;
+                        if let Some(first) = page_result
+                            .iter()
+                            .find(|item| item.item_type == ItemType::Media)
+                        {
+                            return Ok(Some(NextPlayItem {
+                                name: first.name.clone(),
+                                item_type: first.item_type,
+                                source_config: Self::build_next_source_config(
+                                    &base_config.server_id,
+                                    &Self::decode_target(Some(&first.target))?.ok_or_else(
+                                        || {
+                                            ProviderError::InvalidConfig(
+                                                "Missing Emby item target".to_string(),
+                                            )
+                                        },
+                                    )?,
+                                    base_config.proxy_mode,
+                                ),
+                                target: first.target.clone(),
+                            }));
+                        }
+                        if !page_result.has_more {
+                            break;
+                        }
+                        page += 1;
                     }
                 }
 
@@ -2802,7 +2809,7 @@ impl DynamicPlaylistProvider for EmbyProvider {
                 let mut all_items = Vec::with_capacity(MAX_ITEMS);
                 let mut page = 1;
                 loop {
-                    let page_items = self
+                    let page_result = self
                         .list_playlist(
                             ctx,
                             playlist,
@@ -2814,9 +2821,9 @@ impl DynamicPlaylistProvider for EmbyProvider {
                             },
                         )
                         .await?;
-                    let is_last_page = page_items.len() < PAGE_SIZE;
-                    all_items.extend(page_items);
-                    if is_last_page || all_items.len() >= MAX_ITEMS {
+                    let has_more = page_result.has_more;
+                    all_items.extend(page_result);
+                    if !has_more || all_items.len() >= MAX_ITEMS {
                         break;
                     }
                     page += 1;

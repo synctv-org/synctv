@@ -430,6 +430,22 @@ impl DynamicListQuery {
     }
 }
 
+/// Determines whether a page-based upstream listing has another page.
+///
+/// `returned_count` is measured before provider-specific filtering so a page
+/// containing only unsupported entries continues to the next upstream page.
+#[must_use]
+pub fn dynamic_page_has_more(
+    total: usize,
+    page: usize,
+    page_size: usize,
+    returned_count: usize,
+) -> bool {
+    let effective_page_size = if page_size == 0 { 1 } else { page_size };
+    let page_start = page.saturating_sub(1).saturating_mul(effective_page_size);
+    page_start.saturating_add(returned_count) < total
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct DynamicListResult {
     pub items: Vec<DynamicPlaylistItem>,
@@ -451,6 +467,22 @@ impl IntoIterator for DynamicListResult {
 
     fn into_iter(self) -> Self::IntoIter {
         self.items.into_iter()
+    }
+}
+
+#[cfg(test)]
+mod dynamic_pagination_tests {
+    use super::dynamic_page_has_more;
+
+    #[test]
+    fn uses_the_upstream_page_size_before_filtering() {
+        assert!(dynamic_page_has_more(100, 1, 50, 50));
+        assert!(!dynamic_page_has_more(100, 2, 50, 50));
+    }
+
+    #[test]
+    fn stops_on_the_last_short_upstream_page() {
+        assert!(!dynamic_page_has_more(75, 2, 50, 25));
     }
 }
 

@@ -219,10 +219,10 @@ fn route_if_available(result: &PlaybackResult, mode_name: &str) -> Option<String
 }
 
 fn direct_route(result: &PlaybackResult, preferred: &str) -> Option<String> {
-    if !preferred.starts_with("proxy_") {
-        route_if_available(result, preferred).or_else(|| first_available_direct_route(result))
-    } else {
+    if preferred.starts_with("proxy_") {
         first_available_direct_route(result)
+    } else {
+        route_if_available(result, preferred).or_else(|| first_available_direct_route(result))
     }
 }
 
@@ -241,9 +241,8 @@ fn first_available_route(
     let mut modes = result
         .playback_infos
         .iter()
-        .filter_map(|(mode_name, info)| {
-            (include_mode(mode_name) && !info.medias.is_empty()).then(|| mode_name.clone())
-        })
+        .filter(|(mode_name, info)| include_mode(mode_name) && !info.medias.is_empty())
+        .map(|(mode_name, _)| mode_name.clone())
         .collect::<Vec<_>>();
     modes.sort();
     modes.into_iter().next()
@@ -1572,7 +1571,7 @@ mod playback_policy_tests {
         result
             .playback_infos
             .get_mut("direct")
-            .unwrap()
+            .expect("direct route should exist in the playback fixture")
             .medias
             .clear();
 

@@ -987,14 +987,14 @@ mod tests {
             playback_proxy_mode_from_proto(
                 source_config_proto::PlaybackProxyMode::DirectPrefer as i32
             )
-            .unwrap(),
+            .expect("direct-prefer proxy mode should map"),
             synctv_core::models::PlaybackProxyMode::DirectPrefer,
         );
         assert_eq!(
             playback_proxy_mode_from_proto(
                 source_config_proto::PlaybackProxyMode::DirectOnly as i32
             )
-            .unwrap(),
+            .expect("direct-only proxy mode should map"),
             synctv_core::models::PlaybackProxyMode::DirectOnly,
         );
     }

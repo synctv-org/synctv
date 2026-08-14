@@ -5924,10 +5924,12 @@ fn render_human_output_includes_playlist_items_snapshot_version() {
         current_path: Vec::new(),
         version: "items-v42".into(),
         pagination: None,
+        supports_search: true,
     })
     .expect("playlist items human output should render");
 
     assert_eq!(rendered["version"], "items-v42");
+    assert_eq!(rendered["supportsSearch"], true);
     assert_eq!(rendered["playlists"][0]["version"], 10);
     assert_eq!(rendered["media"][0]["version"], 11);
 }

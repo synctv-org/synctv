@@ -857,6 +857,7 @@ pub(in crate::cli) struct HumanPlaylistItemsResponse<P, M> {
     dynamic_items: Vec<synctv_proto::client::PlaylistItem>,
     current_path: Vec<synctv_proto::client::PlaylistBrowsePathNode>,
     version: String,
+    supports_search: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1954,6 +1955,7 @@ impl ToHuman for synctv_proto::client::ListPlaylistItemsResponse {
             dynamic_items: self.dynamic_items.clone(),
             current_path: self.current_path.clone(),
             version: self.version.clone(),
+            supports_search: self.supports_search,
         }
     }
 }

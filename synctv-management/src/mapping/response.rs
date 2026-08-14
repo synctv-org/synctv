@@ -81,6 +81,12 @@ const fn playback_proxy_mode_to_proto(mode: synctv_core::models::PlaybackProxyMo
         synctv_core::models::PlaybackProxyMode::Only => {
             source_config_proto::PlaybackProxyMode::Only as i32
         }
+        synctv_core::models::PlaybackProxyMode::DirectPrefer => {
+            source_config_proto::PlaybackProxyMode::DirectPrefer as i32
+        }
+        synctv_core::models::PlaybackProxyMode::DirectOnly => {
+            source_config_proto::PlaybackProxyMode::DirectOnly as i32
+        }
     }
 }
 
@@ -575,17 +581,7 @@ fn media_source_config_to_proto(
                     }
                 }),
                 duration_seconds: config.duration_seconds,
-                proxy_mode: match config.proxy_mode {
-                    synctv_core::models::PlaybackProxyMode::Auto => {
-                        source_config_proto::PlaybackProxyMode::Auto as i32
-                    }
-                    synctv_core::models::PlaybackProxyMode::Prefer => {
-                        source_config_proto::PlaybackProxyMode::Prefer as i32
-                    }
-                    synctv_core::models::PlaybackProxyMode::Only => {
-                        source_config_proto::PlaybackProxyMode::Only as i32
-                    }
-                },
+                proxy_mode: playback_proxy_mode_to_proto(config.proxy_mode),
                 medias: config
                     .medias
                     .into_iter()
@@ -1297,4 +1293,23 @@ pub(crate) fn created_media_to_client_proto(
         description: media.description.clone(),
         thumbnail: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::playback_proxy_mode_to_proto;
+    use synctv_core::models::PlaybackProxyMode;
+    use synctv_proto::source_config::PlaybackProxyMode as ProtoPlaybackProxyMode;
+
+    #[test]
+    fn maps_direct_playback_proxy_modes() {
+        assert_eq!(
+            playback_proxy_mode_to_proto(PlaybackProxyMode::DirectPrefer),
+            ProtoPlaybackProxyMode::DirectPrefer as i32,
+        );
+        assert_eq!(
+            playback_proxy_mode_to_proto(PlaybackProxyMode::DirectOnly),
+            ProtoPlaybackProxyMode::DirectOnly as i32,
+        );
+    }
 }

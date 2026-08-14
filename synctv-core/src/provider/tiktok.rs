@@ -1164,6 +1164,7 @@ impl DynamicPlaylistProvider for TikTokProvider {
                 cursor: page.cursor,
             },
             has_more: page.has_more,
+            supports_search: false,
         })
     }
 

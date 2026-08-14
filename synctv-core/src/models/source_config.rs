@@ -11,6 +11,8 @@ pub enum PlaybackProxyMode {
     Auto,
     Prefer,
     Only,
+    DirectPrefer,
+    DirectOnly,
 }
 
 impl PlaybackProxyMode {
@@ -25,6 +27,8 @@ impl PlaybackProxyMode {
             Self::Auto => "auto",
             Self::Prefer => "prefer",
             Self::Only => "only",
+            Self::DirectPrefer => "directPrefer",
+            Self::DirectOnly => "directOnly",
         }
     }
 }

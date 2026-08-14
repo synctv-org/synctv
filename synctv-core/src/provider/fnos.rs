@@ -956,12 +956,7 @@ impl FnosProvider {
         {
             let persist_error = ProviderError::Internal(error.to_string());
             return match self
-                .quit_transcode(
-                    &client,
-                    &token,
-                    &versioned.version,
-                    &response.play_link,
-                )
+                .quit_transcode(&client, &token, &versioned.version, &response.play_link)
                 .await
             {
                 Ok(()) => Err(persist_error),
@@ -1715,6 +1710,19 @@ fn mark_fnos_playback_resources(result: &mut PlaybackResult, version: &str, expi
     }
 }
 
+fn remap_filtered_default_index<T>(
+    resources: &[(usize, T)],
+    default_index: Option<usize>,
+) -> Option<usize> {
+    default_index
+        .and_then(|default_index| {
+            resources
+                .iter()
+                .position(|(source_index, _)| *source_index == default_index)
+        })
+        .or_else(|| (!resources.is_empty()).then_some(0))
+}
+
 #[async_trait]
 impl MediaProvider for FnosProvider {
     fn name(&self) -> &'static str {
@@ -1817,7 +1825,7 @@ impl MediaProvider for FnosProvider {
                         },
                     ))),
                 };
-                if config.proxy_mode == crate::models::PlaybackProxyMode::Prefer {
+                if super::playback_proxy_mode_includes_direct_routes(config.proxy_mode) {
                     if let Ok(webdav) = self.client.webdav_config(&endpoints, &credential).await {
                         if let Ok(url) = FnosClient::webdav_file_url(&webdav, path) {
                             let headers = webdav_headers(&credential);
@@ -2234,7 +2242,7 @@ impl MediaProvider for FnosProvider {
                         },
                     ))),
                 };
-                if config.proxy_mode == crate::models::PlaybackProxyMode::Prefer {
+                if super::playback_proxy_mode_includes_direct_routes(config.proxy_mode) {
                     let webdav = match self
                         .credential_with_repo(repo, owner, &config.server_id)
                         .await
@@ -2253,9 +2261,12 @@ impl MediaProvider for FnosProvider {
                             .get("direct")
                             .cloned()
                             .map(|mut info| {
+                                let default_media_index = info.default_media_index;
                                 let medias = std::mem::take(&mut info.medias)
                                     .into_iter()
-                                    .filter_map(|mut media| {
+                                    .enumerate()
+                                    .filter_map(|media| {
+                                        let (source_index, mut media) = media;
                                         let direct = match &media.provider {
                                             PlaybackMediaProvider::Fnos(
                                                 PlaybackFnosMedia::MediaOriginalRefresh {
@@ -2286,9 +2297,13 @@ impl MediaProvider for FnosProvider {
                                                 headers: direct.1,
                                             },
                                         );
-                                        Some(media)
+                                        Some((source_index, media))
                                     })
                                     .collect::<Vec<_>>();
+                                info.default_media_index =
+                                    remap_filtered_default_index(&medias, default_media_index);
+                                let medias: Vec<PlaybackMedia> =
+                                    medias.into_iter().map(|(_, media)| media).collect();
                                 (medias, info)
                             });
                     if let Some((medias, info)) = direct_medias {
@@ -2321,6 +2336,7 @@ impl MediaProvider for FnosProvider {
             || async { Ok(result) },
         )
         .await?;
+        let result = super::require_direct_playback_route(result, config.proxy_mode)?;
 
         let media = result
             .metadata
@@ -2836,6 +2852,7 @@ impl DynamicPlaylistProvider for FnosProvider {
                         items,
                         pagination: DynamicPagination::Page { page },
                         has_more,
+                        supports_search: true,
                     });
                 }
                 let mut items = client
@@ -2977,6 +2994,7 @@ impl DynamicPlaylistProvider for FnosProvider {
             items,
             pagination: DynamicPagination::Page { page },
             has_more,
+            supports_search: true,
         })
     }
 
@@ -3417,5 +3435,17 @@ mod tests {
                 ..
             }) if version == "version" && headers.get("Authorization").is_some()
         ));
+    }
+
+    #[test]
+    fn filtered_direct_media_remaps_the_default_index() {
+        assert_eq!(
+            remap_filtered_default_index(&[(0, ()), (2, ())], Some(2)),
+            Some(1)
+        );
+        assert_eq!(
+            remap_filtered_default_index(&[(0, ()), (2, ())], Some(1)),
+            Some(0)
+        );
     }
 }

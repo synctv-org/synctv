@@ -141,39 +141,111 @@ pub(crate) fn apply_provider_playback_policy(
         .unwrap_or(&result.default_mode)
         .to_string();
     let proxy_default = format!("proxy_{base_default}");
-    let has_proxy_default = result
-        .playback_infos
-        .get(&proxy_default)
-        .is_some_and(|info| !info.medias.is_empty());
+    let preferred_proxy = route_if_available(result, &proxy_default);
+    let preferred_direct = direct_route(result, &base_default);
 
     match proxy_mode {
         crate::models::PlaybackProxyMode::Auto if default_proxy => {
             result.playback_infos.retain(|mode_name, info| {
                 mode_name.starts_with("proxy_") && !info.medias.is_empty()
             });
-            if has_proxy_default {
-                result.default_mode = proxy_default;
+            if let Some(mode_name) = preferred_proxy {
+                result.default_mode = mode_name;
             }
         }
         crate::models::PlaybackProxyMode::Prefer => {
-            if has_proxy_default {
-                result.default_mode = proxy_default;
+            if let Some(mode_name) = preferred_proxy {
+                result.default_mode = mode_name;
             }
         }
         crate::models::PlaybackProxyMode::Only => {
             result.playback_infos.retain(|mode_name, info| {
                 mode_name.starts_with("proxy_") && !info.medias.is_empty()
             });
-            if has_proxy_default {
-                result.default_mode = proxy_default;
-            } else {
-                let mut remaining = result.playback_infos.keys().cloned().collect::<Vec<_>>();
-                remaining.sort();
-                result.default_mode = remaining.into_iter().next().unwrap_or_default();
-            }
+            result.default_mode = preferred_proxy
+                .or_else(|| first_available_proxy_route(result))
+                .unwrap_or_default();
+        }
+        crate::models::PlaybackProxyMode::DirectPrefer => {
+            result.default_mode = preferred_direct
+                .or(preferred_proxy)
+                .or_else(|| first_available_proxy_route(result))
+                .unwrap_or_default();
+        }
+        crate::models::PlaybackProxyMode::DirectOnly => {
+            result.playback_infos.retain(|mode_name, info| {
+                !mode_name.starts_with("proxy_") && !info.medias.is_empty()
+            });
+            result.default_mode = preferred_direct
+                .or_else(|| first_available_direct_route(result))
+                .unwrap_or_default();
         }
         crate::models::PlaybackProxyMode::Auto => {}
     }
+}
+
+#[must_use]
+pub(crate) const fn playback_proxy_mode_includes_direct_routes(
+    proxy_mode: crate::models::PlaybackProxyMode,
+) -> bool {
+    matches!(
+        proxy_mode,
+        crate::models::PlaybackProxyMode::Prefer
+            | crate::models::PlaybackProxyMode::DirectPrefer
+            | crate::models::PlaybackProxyMode::DirectOnly
+    )
+}
+
+pub(crate) fn require_direct_playback_route(
+    result: PlaybackResult,
+    proxy_mode: crate::models::PlaybackProxyMode,
+) -> std::result::Result<PlaybackResult, ProviderError> {
+    if matches!(proxy_mode, crate::models::PlaybackProxyMode::DirectOnly)
+        && result.playback_infos.is_empty()
+    {
+        return Err(ProviderError::UnsupportedFormat(
+            "This media source cannot provide a direct playback route".to_string(),
+        ));
+    }
+    Ok(result)
+}
+
+fn route_if_available(result: &PlaybackResult, mode_name: &str) -> Option<String> {
+    result
+        .playback_infos
+        .get(mode_name)
+        .filter(|info| !info.medias.is_empty())
+        .map(|_| mode_name.to_string())
+}
+
+fn direct_route(result: &PlaybackResult, preferred: &str) -> Option<String> {
+    if preferred.starts_with("proxy_") {
+        first_available_direct_route(result)
+    } else {
+        route_if_available(result, preferred).or_else(|| first_available_direct_route(result))
+    }
+}
+
+fn first_available_direct_route(result: &PlaybackResult) -> Option<String> {
+    first_available_route(result, |mode_name| !mode_name.starts_with("proxy_"))
+}
+
+fn first_available_proxy_route(result: &PlaybackResult) -> Option<String> {
+    first_available_route(result, |mode_name| mode_name.starts_with("proxy_"))
+}
+
+fn first_available_route(
+    result: &PlaybackResult,
+    include_mode: impl Fn(&str) -> bool,
+) -> Option<String> {
+    let mut modes = result
+        .playback_infos
+        .iter()
+        .filter(|(mode_name, info)| include_mode(mode_name) && !info.medias.is_empty())
+        .map(|(mode_name, _)| mode_name.clone())
+        .collect::<Vec<_>>();
+    modes.sort();
+    modes.into_iter().next()
 }
 
 pub(crate) fn playback_session_registration(
@@ -1483,6 +1555,45 @@ mod playback_policy_tests {
     }
 
     #[test]
+    fn direct_prefer_keeps_both_routes_and_selects_direct() {
+        let mut result = playback_result();
+
+        apply_provider_playback_policy(&mut result, PlaybackProxyMode::DirectPrefer, true);
+
+        assert_eq!(result.default_mode, "direct");
+        assert!(result.playback_infos.contains_key("direct"));
+        assert!(result.playback_infos.contains_key("proxy_direct"));
+    }
+
+    #[test]
+    fn direct_prefer_falls_back_to_proxy_when_direct_is_unavailable() {
+        let mut result = playback_result();
+        result
+            .playback_infos
+            .get_mut("direct")
+            .expect("direct route should exist in the playback fixture")
+            .medias
+            .clear();
+
+        apply_provider_playback_policy(&mut result, PlaybackProxyMode::DirectPrefer, true);
+
+        assert_eq!(result.default_mode, "proxy_direct");
+    }
+
+    #[test]
+    fn direct_only_filters_proxy_routes() {
+        let mut result = playback_result();
+
+        apply_provider_playback_policy(&mut result, PlaybackProxyMode::DirectOnly, true);
+
+        assert_eq!(result.default_mode, "direct");
+        assert_eq!(
+            result.playback_infos.keys().cloned().collect::<Vec<_>>(),
+            vec!["direct"]
+        );
+    }
+
+    #[test]
     fn auto_keeps_direct_route_for_public_url_sources() {
         let mut result = playback_result();
 
@@ -1490,6 +1601,42 @@ mod playback_policy_tests {
 
         assert_eq!(result.default_mode, "direct");
         assert_eq!(result.playback_infos.len(), 2);
+    }
+
+    #[test]
+    fn direct_route_modes_include_direct_urls() {
+        assert!(playback_proxy_mode_includes_direct_routes(
+            PlaybackProxyMode::Prefer
+        ));
+        assert!(playback_proxy_mode_includes_direct_routes(
+            PlaybackProxyMode::DirectPrefer
+        ));
+        assert!(playback_proxy_mode_includes_direct_routes(
+            PlaybackProxyMode::DirectOnly
+        ));
+        assert!(!playback_proxy_mode_includes_direct_routes(
+            PlaybackProxyMode::Auto
+        ));
+        assert!(!playback_proxy_mode_includes_direct_routes(
+            PlaybackProxyMode::Only
+        ));
+    }
+
+    #[test]
+    fn direct_only_requires_an_available_direct_route() {
+        let result = PlaybackResult {
+            playback_infos: HashMap::new(),
+            default_mode: String::new(),
+            provider: crate::models::SourceProvider::DirectUrl,
+            provider_instance_name: None,
+            duration_seconds: None,
+            playback_kind: None,
+            metadata: None,
+        };
+
+        let error = require_direct_playback_route(result, PlaybackProxyMode::DirectOnly)
+            .expect_err("direct-only playback should require a direct route");
+        assert!(matches!(error, ProviderError::UnsupportedFormat(_)));
     }
 }
 

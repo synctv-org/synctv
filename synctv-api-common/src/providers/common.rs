@@ -160,6 +160,12 @@ fn core_playback_proxy_mode(
         synctv_proto::source_config::PlaybackProxyMode::Only => {
             Ok(synctv_core::models::PlaybackProxyMode::Only)
         }
+        synctv_proto::source_config::PlaybackProxyMode::DirectPrefer => {
+            Ok(synctv_core::models::PlaybackProxyMode::DirectPrefer)
+        }
+        synctv_proto::source_config::PlaybackProxyMode::DirectOnly => {
+            Ok(synctv_core::models::PlaybackProxyMode::DirectOnly)
+        }
     }
 }
 

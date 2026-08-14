@@ -1280,6 +1280,7 @@ impl DynamicPlaylistProvider for YoutubeProvider {
                 cursor: page.next_cursor,
             },
             has_more,
+            supports_search: false,
         })
     }
 

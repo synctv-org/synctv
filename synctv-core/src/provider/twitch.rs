@@ -1380,6 +1380,7 @@ impl DynamicPlaylistProvider for TwitchProvider {
                 cursor: next_cursor,
             },
             has_more,
+            supports_search: false,
         })
     }
 

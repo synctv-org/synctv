@@ -966,7 +966,7 @@ impl MediaProvider for SynologyProvider {
                 .await
             }
         }?;
-        if config.proxy_mode == crate::models::PlaybackProxyMode::Prefer {
+        if super::playback_proxy_mode_includes_direct_routes(config.proxy_mode) {
             if let SynologyMediaSource::File { path } = &config.source {
                 let direct_url = auth.client.download_url(
                     required_api(&auth.apis, "SYNO.FileStation.Download")?,
@@ -1010,6 +1010,7 @@ impl MediaProvider for SynologyProvider {
             || async { Ok(result) },
         )
         .await?;
+        let result = super::require_direct_playback_route(result, config.proxy_mode)?;
 
         if let SynologyMediaSource::LibraryItem { file_id, .. } = &config.source {
             let resource_version = result.playback_infos.values().find_map(|info| {
@@ -1603,6 +1604,7 @@ async fn list_dynamic_page(
         items,
         pagination: DynamicPagination::Page { page },
         has_more: offset.saturating_add(u64::from(limit)) < total,
+        supports_search: !matches!(&config.source, SynologyPlaylistSource::Files { .. }),
     })
 }
 

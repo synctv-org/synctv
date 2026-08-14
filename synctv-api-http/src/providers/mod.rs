@@ -102,6 +102,7 @@ pub(crate) async fn execute_playback_transport(
         PlaybackTransportAction::M3u8Rewrite { .. }
         | PlaybackTransportAction::M3u8RewriteWithSource { .. }
         | PlaybackTransportAction::M3u8BodyRewrite { .. }
+        | PlaybackTransportAction::M3u8DirectBody { .. }
         | PlaybackTransportAction::MpdRewrite { .. }
         | PlaybackTransportAction::MpdBodyRewrite { .. } => Err(AppError::internal_server_error(
             "Manifest rewrite actions require provider-specific route context".to_string(),
@@ -293,7 +294,8 @@ async fn execute_playback_transport_with_runtime_for_method(
         }
         PlaybackTransportAction::M3u8Rewrite { .. }
         | PlaybackTransportAction::M3u8RewriteWithSource { .. }
-        | PlaybackTransportAction::M3u8BodyRewrite { .. } => {
+        | PlaybackTransportAction::M3u8BodyRewrite { .. }
+        | PlaybackTransportAction::M3u8DirectBody { .. } => {
             if method != Method::GET {
                 return Err(playback_transport_method_not_allowed());
             }

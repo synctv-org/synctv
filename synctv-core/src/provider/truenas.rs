@@ -580,7 +580,7 @@ impl MediaProvider for TrueNasProvider {
             metadata: Some(PlaybackMetadata::TrueNas(metadata)),
         };
         let mut result = result;
-        if config.proxy_mode == crate::models::PlaybackProxyMode::Prefer {
+        if super::playback_proxy_mode_includes_direct_routes(config.proxy_mode) {
             let ticket = auth
                 .client
                 .download_ticket(&auth.api_key, &config.path)
@@ -612,7 +612,7 @@ impl MediaProvider for TrueNasProvider {
                 );
             }
         }
-        super::cached_versioned_playback_or_fill(
+        let result = super::cached_versioned_playback_or_fill(
             Self::NAME,
             &format!(
                 "playback:{owner}:{}:room:{}:{}:proxy:{}",
@@ -630,7 +630,8 @@ impl MediaProvider for TrueNasProvider {
             },
             || async { Ok(result) },
         )
-        .await
+        .await?;
+        super::require_direct_playback_route(result, config.proxy_mode)
     }
 
     async fn validate_source_config(
@@ -749,6 +750,8 @@ impl DynamicPlaylistProvider for TrueNasProvider {
                 .collect(),
             pagination: DynamicPagination::Page { page },
             has_more,
+            supports_search: target.is_some()
+                || matches!(&config.source, TrueNasPlaylistSource::Folder { .. }),
         })
     }
 

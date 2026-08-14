@@ -663,6 +663,7 @@ impl AdminApiImpl {
                 current_path: Vec::new(),
                 version: String::new(),
                 pagination: None,
+                supports_search: true,
             };
             response.version =
                 crate::impls::client::media::compute_playlist_items_response_version(&response)?;
@@ -702,6 +703,7 @@ impl AdminApiImpl {
                     current_path,
                     version: String::new(),
                     pagination: None,
+                    supports_search: false,
                 };
                 response.version =
                     crate::impls::client::media::compute_playlist_items_response_version(
@@ -731,6 +733,7 @@ impl AdminApiImpl {
                 .await
                 .map_err(ApiError::from)?;
             let response_pagination = result.pagination.clone();
+            let supports_search = result.supports_search;
 
             let dynamic_items = result
                 .items
@@ -1076,6 +1079,7 @@ impl AdminApiImpl {
                         )
                     }
                 }),
+                supports_search,
             };
             response.version =
                 crate::impls::client::media::compute_playlist_items_response_version(&response)?;
@@ -1199,6 +1203,7 @@ impl AdminApiImpl {
             current_path,
             version: String::new(),
             pagination: None,
+            supports_search: true,
         };
         response.version =
             crate::impls::client::media::compute_playlist_items_response_version(&response)?;

@@ -68,6 +68,11 @@ pub enum PlaybackTransportAction {
     MpdBodyRewrite { body: Vec<u8>, source_url: String },
     /// Rewrite an already generated M3U8 body through the normal signed segment pipeline.
     M3u8BodyRewrite { body: Vec<u8> },
+    /// Return a generated M3U8 body without rewriting its segment URLs.
+    ///
+    /// This keeps media bytes on the client-to-upstream path while the signed
+    /// manifest endpoint controls access to the generated playlist.
+    M3u8DirectBody { body: Vec<u8> },
     /// Return a direct response body with a content type.
     ///
     /// Used for provider-specific responses that do not involve upstream

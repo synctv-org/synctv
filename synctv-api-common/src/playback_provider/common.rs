@@ -769,6 +769,14 @@ pub async fn playback_transport_action_to_chunk_stream(
             .map_err(|error| ApiError::ServiceUnavailable(error.to_string()))?;
             Ok(hls_manifest_chunk_stream(rewritten, 200, head))
         }
+        PlaybackTransportAction::M3u8DirectBody { body } => {
+            if body.len() > MAX_MANIFEST_SIZE {
+                return Err(ApiError::ServiceUnavailable(
+                    "M3U8 manifest exceeded size limit".to_string(),
+                ));
+            }
+            Ok(hls_manifest_chunk_stream(body, 200, head))
+        }
         PlaybackTransportAction::MpdRewrite { .. }
         | PlaybackTransportAction::MpdBodyRewrite { .. } => Err(ApiError::Internal(
             "MPD rewrite action requires DASH route signing context".to_string(),
@@ -2757,6 +2765,52 @@ mod tests {
         );
         assert_eq!(body.matches("targetUrl=").count(), 2);
         assert!(!body.contains("https://cdn.example/part-1.mp4\n"));
+        assert_eq!(chunk.cache_control.as_deref(), Some("no-store"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn in_memory_direct_m3u8_keeps_upstream_segment_urls() -> anyhow::Result<()> {
+        let Some(mock_server) = start_mock_server_or_skip().await? else {
+            return Ok(());
+        };
+        let client = mock_proxy_client(&mock_server)?;
+        let ssrf_guard = test_ssrf_guard();
+        let proxy_slice_cache =
+            synctv_proxy::slice_cache::SliceCache::new_with_client_and_ssrf_guard(
+                synctv_proxy::slice_cache::SliceCacheConfig::default(),
+                client.clone(),
+                ssrf_guard.clone(),
+            )?;
+        let signing_key = crate::proxy_signature::ProxySigningKey::try_derive_from(
+            b"test-secret-key-for-direct-in-memory-m3u8",
+        )?;
+        let body = "#EXTM3U\n#EXTINF:2,\nhttps://cdn.example/part-1.mp4\n#EXT-X-ENDLIST\n";
+        let deps = PlaybackTransportExecutorDeps {
+            proxy_signing_key: &signing_key,
+            proxy_http_client: &client,
+            ssrf_guard: &ssrf_guard,
+            proxy_slice_cache: &proxy_slice_cache,
+            request_control: None,
+            hls_rewrite: None,
+        };
+
+        let mut stream = playback_transport_action_to_chunk_stream(
+            deps,
+            PlaybackTransportAction::M3u8DirectBody {
+                body: body.as_bytes().to_vec(),
+            },
+            false,
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        let chunk = stream
+            .next()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("direct manifest should emit one chunk"))?
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+
+        assert_eq!(std::str::from_utf8(&chunk.data)?, body);
         assert_eq!(chunk.cache_control.as_deref(), Some("no-store"));
         Ok(())
     }

@@ -1270,6 +1270,7 @@ impl DynamicPlaylistProvider for CloudreveProvider {
             items,
             pagination: pagination_result,
             has_more,
+            supports_search: true,
         })
     }
 

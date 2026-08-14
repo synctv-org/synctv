@@ -964,6 +964,7 @@ pub fn compute_playlist_items_response_version(
     hash_optional_u64(&mut hasher, response.total);
     hasher.update(response.playlist_count.to_le_bytes());
     hasher.update(response.file_count.to_le_bytes());
+    hasher.update([u8::from(response.supports_search)]);
 
     for playlist in &response.playlists {
         hash_proto_message(&mut hasher, playlist)?;
@@ -2178,6 +2179,7 @@ impl ClientApiImpl {
                 .await
                 .map_err(ApiError::from)?;
             let response_pagination = result.pagination.clone();
+            let supports_search = result.supports_search;
             let dynamic_items = result
                 .items
                 .into_iter()
@@ -2262,6 +2264,7 @@ impl ClientApiImpl {
                     current_path: Vec::new(),
                     version: String::new(),
                     pagination: Some(dynamic_response_pagination(response_pagination)?),
+                    supports_search,
                 },
             );
         }
@@ -2388,6 +2391,7 @@ impl ClientApiImpl {
                     current_path: Vec::new(),
                     version: String::new(),
                     pagination: None,
+                    supports_search: true,
                 },
             );
         };
@@ -2434,6 +2438,7 @@ impl ClientApiImpl {
                         current_path,
                         version: String::new(),
                         pagination: None,
+                        supports_search: false,
                     },
                 );
             }
@@ -2466,6 +2471,7 @@ impl ClientApiImpl {
                 .await
                 .map_err(ApiError::from)?;
             let response_pagination = result.pagination.clone();
+            let supports_search = result.supports_search;
 
             // Convert provider DynamicPlaylistItem to proto PlaylistItem
             let dynamic_items: Vec<_> = result
@@ -2803,6 +2809,7 @@ impl ClientApiImpl {
                     current_path,
                     version: String::new(),
                     pagination,
+                    supports_search,
                 },
             );
         }
@@ -2928,6 +2935,7 @@ impl ClientApiImpl {
             current_path,
             version: String::new(),
             pagination: None,
+            supports_search: true,
         })
     }
 
@@ -3153,6 +3161,7 @@ mod tests {
             current_path: Vec::new(),
             version: String::new(),
             pagination: None,
+            supports_search: true,
         };
 
         let original = compute_playlist_items_response_version(&make_response(
@@ -3206,6 +3215,7 @@ mod tests {
                 current_path: Vec::new(),
                 version: String::new(),
                 pagination: None,
+                supports_search: true,
             };
 
         let live = compute_playlist_items_response_version(&make_response(true))?;

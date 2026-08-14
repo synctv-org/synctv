@@ -53,6 +53,7 @@ const SMS_LOGIN_SESSION_TTL_SECONDS: i64 = 10 * 60;
 const SMS_LOGIN_SESSION_VERSION: &str = "v2";
 const SMS_LOGIN_DOMAIN_SEPARATOR: &[u8] = b"synctv-bilibili-sms-login";
 const SMS_LOGIN_TOKEN_NONCE_SIZE: usize = 12;
+const BILIBILI_PLAYBACK_CACHE_SCHEMA_VERSION: &str = "v2";
 type HmacSha256 = Hmac<sha2::Sha256>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2085,16 +2086,18 @@ fn mark_bilibili_playback_resources(result: &mut PlaybackResult, version: &str, 
         if original_info.medias.len() == 1
             && matches!(
                 original_info.medias[0].provider,
-                PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::DurlManifest { .. })
+                PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::DirectDurlManifest { .. })
             )
         {
             if let Some(info) = result.playback_infos.get_mut(&mode_name) {
-                if let PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::DurlManifest {
-                    version: resource_version,
-                    expires_at: resource_expires_at,
-                    mode_name: resource_mode_name,
-                    ..
-                }) = &mut info.medias[0].provider
+                if let PlaybackMediaProvider::Bilibili(
+                    PlaybackBilibiliMedia::DirectDurlManifest {
+                        version: resource_version,
+                        expires_at: resource_expires_at,
+                        mode_name: resource_mode_name,
+                        ..
+                    },
+                ) = &mut info.medias[0].provider
                 {
                     *resource_version = version.to_string();
                     *resource_expires_at = expires_at;
@@ -2102,21 +2105,25 @@ fn mark_bilibili_playback_resources(result: &mut PlaybackResult, version: &str, 
                 }
             }
 
-            // DURL playback already uses a SyncTV-generated manifest and
-            // server-forwarded segments. Keep a proxy-named sibling so
-            // PLAYBACK_PROXY_MODE_ONLY can retain this fallback route.
+            // Direct DURL playback serves a generated manifest with Bilibili
+            // segment URLs. The proxy sibling preserves server forwarding and
+            // backup CDN candidate selection for proxy playback modes.
             let mut proxy_info = original_info.clone();
             if let Some(media) = proxy_info.medias.first_mut() {
-                if let PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::DurlManifest {
-                    version: resource_version,
-                    expires_at: resource_expires_at,
-                    mode_name: resource_mode_name,
-                    ..
-                }) = &mut media.provider
+                if let PlaybackMediaProvider::Bilibili(
+                    PlaybackBilibiliMedia::DirectDurlManifest {
+                        segments, headers, ..
+                    },
+                ) = &media.provider
                 {
-                    *resource_version = version.to_string();
-                    *resource_expires_at = expires_at;
-                    resource_mode_name.clone_from(&mode_name);
+                    media.provider =
+                        PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::DurlManifest {
+                            version: version.to_string(),
+                            expires_at,
+                            mode_name: mode_name.clone(),
+                            segments: segments.clone(),
+                            headers: headers.clone(),
+                        });
                 }
             }
             result
@@ -2357,7 +2364,7 @@ fn playback_cache_entry(
                 .cache_key_part();
             Ok((
                 format!(
-                    "playback:video:{video_key}:{}:{credential_cache_partition}",
+                    "playback:{BILIBILI_PLAYBACK_CACHE_SCHEMA_VERSION}:video:{video_key}:{}:{credential_cache_partition}",
                     config.cid
                 ),
                 Duration::from_hours(2),
@@ -2365,14 +2372,14 @@ fn playback_cache_entry(
         }
         BilibiliSourceConfig::Pgc(config) => Ok((
             format!(
-                "playback:pgc:{}:{}:{credential_cache_partition}",
+                "playback:{BILIBILI_PLAYBACK_CACHE_SCHEMA_VERSION}:pgc:{}:{}:{credential_cache_partition}",
                 config.epid, config.cid
             ),
             Duration::from_hours(2),
         )),
         BilibiliSourceConfig::Live(config) => Ok((
             format!(
-                "playback:live:{}:{credential_cache_partition}",
+                "playback:{BILIBILI_PLAYBACK_CACHE_SCHEMA_VERSION}:live:{}:{credential_cache_partition}",
                 config.room_id
             ),
             Duration::from_mins(2),
@@ -3542,6 +3549,7 @@ impl DynamicPlaylistProvider for BilibiliProvider {
                     cursor: Self::encode_history_cursor(response.cursor)?,
                 },
                 has_more: response.has_more,
+                supports_search: false,
             });
         }
         let DynamicPagination::Page { page } = query.pagination else {
@@ -3611,6 +3619,7 @@ impl DynamicPlaylistProvider for BilibiliProvider {
                 has_more: start.saturating_add(items.len()) < total,
                 items,
                 pagination: DynamicPagination::Page { page },
+                supports_search: false,
             });
         }
 
@@ -3663,6 +3672,7 @@ impl DynamicPlaylistProvider for BilibiliProvider {
                 items,
                 pagination: DynamicPagination::Page { page },
                 has_more: response.has_more,
+                supports_search: false,
             });
         }
 
@@ -3710,6 +3720,7 @@ impl DynamicPlaylistProvider for BilibiliProvider {
                 has_more: start.saturating_add(items.len()) < total,
                 items,
                 pagination: DynamicPagination::Page { page },
+                supports_search: false,
             });
         }
 
@@ -3754,6 +3765,7 @@ impl DynamicPlaylistProvider for BilibiliProvider {
                 has_more: start.saturating_add(items.len()) < total,
                 items,
                 pagination: DynamicPagination::Page { page },
+                supports_search: false,
             });
         }
 
@@ -3794,6 +3806,7 @@ impl DynamicPlaylistProvider for BilibiliProvider {
             items,
             pagination: DynamicPagination::Page { page },
             has_more: response.has_more,
+            supports_search: matches!(&config.source, BilibiliPlaylistSource::UpVideos { .. }),
         })
     }
 
@@ -4144,6 +4157,22 @@ mod tests {
         result.map_err(|error| anyhow::anyhow!(error.to_string()))
     }
 
+    #[test]
+    fn playback_cache_key_uses_the_durl_transport_schema_version() -> TestResult {
+        let config = super::BilibiliSourceConfig::Video(crate::models::BilibiliVideoSourceConfig {
+            bvid: Some("BV1test12345".to_string()),
+            aid: None,
+            cid: 42,
+            shared: false,
+            proxy_mode: crate::models::PlaybackProxyMode::Auto,
+        });
+
+        let (key, _) = provider_ok(super::playback_cache_entry(&config, "anonymous"))?;
+
+        assert!(key.starts_with("playback:v2:video:"));
+        Ok(())
+    }
+
     fn test_sms_login_secret() -> &'static [u8] {
         b"test-bilibili-sms-login-secret"
     }
@@ -4341,11 +4370,12 @@ mod tests {
             ],
             "sm3_test_durl".to_string(),
         ))?;
-        let PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::DurlManifest {
-            segments, ..
+        let PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::DirectDurlManifest {
+            segments,
+            ..
         }) = &media.provider
         else {
-            anyhow::bail!("DURL media should use an in-memory manifest");
+            anyhow::bail!("DURL media should use a direct in-memory manifest");
         };
 
         let manifest = provider_ok(build_bilibili_durl_manifest(segments))?;
@@ -4355,25 +4385,16 @@ mod tests {
                 &media,
                 "https://cdn.example/part-1.mp4?deadline=200"
             ),
-            Some(vec![
-                "https://cdn.example/part-1.mp4?deadline=200".to_string(),
-                "https://backup.example/part-1.mp4?deadline=75".to_string(),
-            ])
+            None
         );
         let restored: crate::models::PlaybackMedia =
             serde_json::from_value(serde_json::to_value(&media)?)?;
         assert_eq!(media.p2p_swarm_id.as_deref(), Some("sm3_test_durl"));
         assert_eq!(restored.p2p_swarm_id, media.p2p_swarm_id);
-        assert_eq!(
-            bilibili_durl_resource_candidates(
-                &restored,
-                "https://cdn.example/part-1.mp4?deadline=200"
-            ),
-            bilibili_durl_resource_candidates(
-                &media,
-                "https://cdn.example/part-1.mp4?deadline=200"
-            )
-        );
+        assert!(matches!(
+            restored.provider,
+            PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::DirectDurlManifest { .. })
+        ));
         assert_eq!(manifest.matches("#EXTINF:").count(), 2);
         assert_eq!(manifest.matches("#EXT-X-DISCONTINUITY").count(), 1);
         assert!(manifest.contains("#EXT-X-TARGETDURATION:3"));
@@ -4417,6 +4438,27 @@ mod tests {
 
         mark_bilibili_playback_resources(&mut result, "version", 123);
         assert!(result.playback_infos.contains_key("proxy_durl"));
+        assert!(matches!(
+            result.playback_infos["durl"].medias[0].provider,
+            PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::DirectDurlManifest { .. })
+        ));
+        assert!(matches!(
+            result.playback_infos["proxy_durl"].medias[0].provider,
+            PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::DurlManifest { .. })
+        ));
+
+        let mut direct_only = result.clone();
+        super::super::apply_provider_playback_policy(
+            &mut direct_only,
+            crate::models::PlaybackProxyMode::DirectOnly,
+            true,
+        );
+        assert_eq!(direct_only.default_mode, "durl");
+        assert!(!direct_only.playback_infos.contains_key("proxy_durl"));
+        assert!(matches!(
+            direct_only.playback_infos["durl"].medias[0].provider,
+            PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::DirectDurlManifest { .. })
+        ));
 
         super::super::apply_provider_playback_policy(
             &mut result,
@@ -4712,6 +4754,17 @@ impl BilibiliProvider {
             .medias
             .get(url_index)
             .ok_or(ProviderError::NotFound)?;
+        if let PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::DirectDurlManifest {
+            segments,
+            ..
+        }) = &media.provider
+        {
+            return Ok(
+                super::playback_transport::PlaybackTransportAction::M3u8DirectBody {
+                    body: build_bilibili_durl_manifest(segments)?.into_bytes(),
+                },
+            );
+        }
         if let PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::DurlManifest {
             segments,
             ..
@@ -5165,7 +5218,7 @@ fn bilibili_durl_media(
         "m3u8".to_string(),
         expires_at,
         Some(p2p_swarm_id),
-        PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::DurlManifest {
+        PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::DirectDurlManifest {
             version: String::new(),
             expires_at: 0,
             mode_name: "mp4".to_string(),

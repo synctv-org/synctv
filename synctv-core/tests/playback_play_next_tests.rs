@@ -463,6 +463,7 @@ impl DynamicPlaylistProvider for TestDynamicProvider {
             has_more: false,
             items,
             pagination: DynamicPagination::Page { page: 1 },
+            supports_search: false,
         })
     }
 

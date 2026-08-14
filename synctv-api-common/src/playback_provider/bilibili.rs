@@ -275,7 +275,7 @@ pub async fn get_bilibili_dash_resource(
     let kind = bilibili_dash_resource_kind(req.resource_kind)?;
     let kind_name = bilibili_dash_resource_kind_name(kind);
     let head = req.head;
-    let (_, claims) = verify_bilibili_access(
+    let (store, claims) = verify_bilibili_access(
         &deps,
         PlaybackProviderAccessRequest {
             version: &req.version,
@@ -291,13 +291,20 @@ pub async fn get_bilibili_dash_resource(
     let is_manifest = kind == BilibiliDashResourceKind::Manifest;
     let action = deps
         .playback_provider_service
-        .dash_resource_action(synctv_core::provider::BilibiliDashResourceRequest {
-            scope_url: &req.scope_url,
-            resource_path: &req.resource_path,
-            resource_query: req.resource_query.as_deref(),
-            is_manifest,
-            range_header: req.range.as_deref(),
-        })
+        .dash_resource_action(
+            synctv_core::provider::BilibiliDashResourceRequest {
+                version: &req.version,
+                mode_name: &req.mode_name,
+                scope_url: &req.scope_url,
+                resource_path: &req.resource_path,
+                resource_query: req.resource_query.as_deref(),
+                is_manifest,
+                range_header: req.range.as_deref(),
+            },
+            store,
+            deps.request_control,
+        )
+        .await
         .map_err(ApiError::from)?;
     let stream = if is_manifest {
         let resource_base = format!(

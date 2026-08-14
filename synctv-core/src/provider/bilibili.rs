@@ -75,6 +75,8 @@ pub struct BilibiliHlsResourceRequest<'a> {
 
 #[derive(Debug, Clone, Copy)]
 pub struct BilibiliDashResourceRequest<'a> {
+    pub version: &'a str,
+    pub mode_name: &'a str,
     pub scope_url: &'a str,
     pub resource_path: &'a str,
     pub resource_query: Option<&'a str>,
@@ -1783,6 +1785,52 @@ fn dash_playback_urls(
             })),
         context,
     )
+}
+
+fn bilibili_dash_resource_candidates(
+    dash: &BilibiliDashManifest,
+    scope_url: &str,
+    resource_path: &str,
+    resource_query: Option<&str>,
+) -> Result<Option<Vec<String>>, ProviderError> {
+    let streams = dash
+        .video_streams
+        .iter()
+        .map(|stream| (&stream.base_url, &stream.backup_urls))
+        .chain(
+            dash.audio_streams
+                .iter()
+                .map(|stream| (&stream.base_url, &stream.backup_urls)),
+        );
+
+    for (base_url, backup_urls) in streams {
+        let raw_candidates = std::iter::once(base_url.as_str())
+            .chain(backup_urls.iter().map(String::as_str))
+            .filter(|url| !url.trim().is_empty())
+            .collect::<Vec<_>>();
+        if !raw_candidates.contains(&scope_url) {
+            continue;
+        }
+
+        let mut candidates = Vec::with_capacity(raw_candidates.len());
+        for candidate in std::iter::once(scope_url).chain(
+            raw_candidates
+                .into_iter()
+                .filter(|candidate| *candidate != scope_url),
+        ) {
+            let target = super::playback_transport::resolve_dash_scope_target(
+                candidate,
+                resource_path,
+                resource_query,
+            )?;
+            if !candidates.contains(&target) {
+                candidates.push(target);
+            }
+        }
+        return Ok(Some(candidates));
+    }
+
+    Ok(None)
 }
 
 fn insert_dash_manifest_metadata(
@@ -4138,9 +4186,10 @@ impl DynamicPlaylistProvider for BilibiliProvider {
 #[cfg(test)]
 mod tests {
     use super::{
-        bilibili_durl_media, bilibili_durl_resource_candidates, bilibili_live_playback_infos,
-        build_bilibili_durl_manifest, default_bilibili_live_mode, mark_bilibili_playback_resources,
-        BilibiliProvider, BilibiliSmsLoginSession, BilibiliSmsLoginTokenCodec,
+        bilibili_dash_resource_candidates, bilibili_durl_media, bilibili_durl_resource_candidates,
+        bilibili_live_playback_infos, build_bilibili_durl_manifest, default_bilibili_live_mode,
+        mark_bilibili_playback_resources, BilibiliProvider, BilibiliSmsLoginSession,
+        BilibiliSmsLoginTokenCodec,
     };
     use crate::models::media::{
         BilibiliDashManifest, BilibiliDashManifests, BilibiliDashVideoStream, BilibiliDurlSegment,
@@ -4401,6 +4450,39 @@ mod tests {
         assert!(manifest.contains("#EXTINF:1.250,\nhttps://cdn.example/part-1.mp4"));
         assert!(manifest.contains("#EXTINF:2.500,\nhttps://cdn.example/part-2.mp4"));
         assert!(manifest.ends_with("#EXT-X-ENDLIST\n"));
+        Ok(())
+    }
+
+    #[test]
+    fn dash_resources_keep_server_side_backup_candidates() -> TestResult {
+        let primary = "https://primary.example/video.m4s?deadline=200";
+        let backup = "https://backup.example/video.m4s?deadline=200";
+        let dash = BilibiliDashManifest {
+            video_streams: vec![BilibiliDashVideoStream {
+                base_url: primary.to_string(),
+                backup_urls: vec![backup.to_string(), backup.to_string()],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            provider_ok(bilibili_dash_resource_candidates(&dash, primary, "", None))?,
+            Some(vec![primary.to_string(), backup.to_string()])
+        );
+        assert_eq!(
+            provider_ok(bilibili_dash_resource_candidates(&dash, backup, "", None))?,
+            Some(vec![backup.to_string(), primary.to_string()])
+        );
+        assert_eq!(
+            provider_ok(bilibili_dash_resource_candidates(
+                &dash,
+                "https://unknown.example/video.m4s",
+                "",
+                None
+            ))?,
+            None
+        );
         Ok(())
     }
 
@@ -4872,9 +4954,11 @@ impl BilibiliProvider {
         })
     }
 
-    pub fn get_dash_resource(
+    pub async fn get_dash_resource(
         &self,
+        store: Option<&std::sync::Arc<dyn super::store::ProviderStore>>,
         request: BilibiliDashResourceRequest<'_>,
+        request_context: Option<&super::ExecutionControl>,
     ) -> Result<super::playback_transport::PlaybackTransportAction, ProviderError> {
         let target_url = super::playback_transport::resolve_dash_scope_target(
             request.scope_url,
@@ -4889,9 +4973,23 @@ impl BilibiliProvider {
                 },
             )
         } else {
+            let versioned = super::playback_transport::lookup_versioned(
+                store,
+                request.version,
+                request_context,
+            )
+            .await?;
+            let dash = dash_manifest_from_metadata(&versioned.result, request.mode_name)?;
+            let urls = bilibili_dash_resource_candidates(
+                &dash,
+                request.scope_url,
+                request.resource_path,
+                request.resource_query,
+            )?
+            .unwrap_or_else(|| vec![target_url]);
             Ok(
-                super::playback_transport::PlaybackTransportAction::FetchAndForward {
-                    url: target_url,
+                super::playback_transport::PlaybackTransportAction::FetchAndForwardCandidates {
+                    urls,
                     headers: bilibili_headers(),
                     range_header: request.range_header.map(ToString::to_string),
                 },

@@ -338,12 +338,9 @@ fn test_video_page_info_with_ugc_season() {
     assert!(data.ugc_season.is_some());
     let ugc = data.ugc_season.unwrap();
     assert_eq!(ugc.title, "My UGC Season");
-    let sections = ugc.sections.expect("UGC sections should deserialize");
+    let sections = ugc.sections;
     assert_eq!(sections.len(), 1);
-    let episodes = sections[0]
-        .episodes
-        .as_deref()
-        .expect("UGC episodes should deserialize");
+    let episodes = &sections[0].episodes;
     assert_eq!(episodes.len(), 1);
     assert_eq!(episodes[0].bvid, "BV1ep1");
 }

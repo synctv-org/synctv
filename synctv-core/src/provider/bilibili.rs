@@ -1875,6 +1875,25 @@ fn available_dash_manifest_slots(result: &PlaybackResult) -> Vec<BilibiliDashMan
     .collect()
 }
 
+fn bilibili_dash_slot_from_upstream(
+    dash: &bilibili_upstream::DashInfo,
+) -> BilibiliDashManifestSlot {
+    if dash.video_streams.first().is_some_and(|stream| {
+        stream.codecs.starts_with("hev1") || stream.codecs.starts_with("hvc1")
+    }) {
+        BilibiliDashManifestSlot::Hevc
+    } else {
+        BilibiliDashManifestSlot::Dash
+    }
+}
+
+const fn bilibili_dash_label(slot: BilibiliDashManifestSlot) -> &'static str {
+    match slot {
+        BilibiliDashManifestSlot::Dash => "DASH",
+        BilibiliDashManifestSlot::Hevc => "HEVC",
+    }
+}
+
 fn dash_manifest_from_upstream(dash: &bilibili_upstream::DashInfo) -> BilibiliDashManifest {
     BilibiliDashManifest {
         duration: dash.duration,
@@ -4186,15 +4205,16 @@ impl DynamicPlaylistProvider for BilibiliProvider {
 #[cfg(test)]
 mod tests {
     use super::{
-        bilibili_dash_resource_candidates, bilibili_durl_media, bilibili_durl_resource_candidates,
-        bilibili_live_playback_infos, build_bilibili_durl_manifest, default_bilibili_live_mode,
+        bilibili_dash_label, bilibili_dash_resource_candidates, bilibili_dash_slot_from_upstream,
+        bilibili_durl_media, bilibili_durl_resource_candidates, bilibili_live_playback_infos,
+        bilibili_upstream, build_bilibili_durl_manifest, default_bilibili_live_mode,
         mark_bilibili_playback_resources, BilibiliProvider, BilibiliSmsLoginSession,
         BilibiliSmsLoginTokenCodec,
     };
     use crate::models::media::{
-        BilibiliDashManifest, BilibiliDashManifests, BilibiliDashVideoStream, BilibiliDurlSegment,
-        BilibiliPlaybackKind, BilibiliPlaybackMetadata, PlaybackBilibiliMedia,
-        PlaybackMediaProvider, PlaybackMetadata,
+        BilibiliDashManifest, BilibiliDashManifestSlot, BilibiliDashManifests,
+        BilibiliDashVideoStream, BilibiliDurlSegment, BilibiliPlaybackKind,
+        BilibiliPlaybackMetadata, PlaybackBilibiliMedia, PlaybackMediaProvider, PlaybackMetadata,
     };
     use crate::models::{BilibiliTarget, ProviderTarget};
     use crate::provider::{PlaybackInfo, PlaybackResult, ProviderActor, ProviderContext};
@@ -4551,6 +4571,31 @@ mod tests {
         assert!(!result.playback_infos.contains_key("durl"));
         assert_eq!(result.playback_infos["proxy_durl"].medias.len(), 1);
         Ok(())
+    }
+
+    #[test]
+    fn primary_dash_slot_preserves_hevc_only_metadata() {
+        let regular = bilibili_upstream::DashInfo {
+            video_streams: vec![bilibili_upstream::VideoStream::default()],
+            ..Default::default()
+        };
+        let hevc = bilibili_upstream::DashInfo {
+            video_streams: vec![bilibili_upstream::VideoStream {
+                codecs: "hev1.1.6.L120.90".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            bilibili_dash_slot_from_upstream(&regular),
+            BilibiliDashManifestSlot::Dash
+        );
+        assert_eq!(
+            bilibili_dash_slot_from_upstream(&hevc),
+            BilibiliDashManifestSlot::Hevc
+        );
+        assert_eq!(bilibili_dash_label(BilibiliDashManifestSlot::Hevc), "HEVC");
     }
 
     #[test]
@@ -5596,9 +5641,9 @@ impl BilibiliProvider {
                     .as_ref()
                     .and_then(|resp| resp.dash.as_ref())
                     .map(|dash| dash.duration);
-                if let Some(d) = dash_resp.as_ref().and_then(|resp| resp.dash.as_ref()) {
+                if let Some(dash) = dash_resp.as_ref().and_then(|resp| resp.dash.as_ref()) {
                     if let Some(metadata) = metadata.as_bilibili_mut() {
-                        metadata.min_buffer_time = Some(d.min_buffer_time);
+                        metadata.min_buffer_time = Some(dash.min_buffer_time);
                     }
                 }
 
@@ -5616,19 +5661,22 @@ impl BilibiliProvider {
                                 .to_string(),
                         )
                     })?;
+                    let primary_slot = bilibili_dash_slot_from_upstream(dash);
                     let dash = dash_manifest_from_upstream(dash);
-                    insert_dash_manifest_metadata(
-                        &mut metadata,
-                        BilibiliDashManifestSlot::Dash,
-                        dash.clone(),
-                    );
+                    insert_dash_manifest_metadata(&mut metadata, primary_slot, dash.clone());
                     let dash_swarm_id = bilibili_dash_swarm_id(
                         provider_instance_name,
                         &content_descriptor,
-                        BilibiliDashManifestSlot::Dash,
+                        primary_slot,
                         &dash,
                     );
-                    let dash_urls = dash_playback_urls(&dash, "video DASH")?;
+                    let dash_urls = dash_playback_urls(
+                        &dash,
+                        match primary_slot {
+                            BilibiliDashManifestSlot::Dash => "video DASH",
+                            BilibiliDashManifestSlot::Hevc => "video HEVC DASH",
+                        },
+                    )?;
                     let hevc_urls = dash_resp
                         .hevc_dash
                         .as_ref()
@@ -5653,7 +5701,7 @@ impl BilibiliProvider {
 
                     let mut dash_info = mode_info(
                         bilibili_direct_medias(
-                            "DASH",
+                            bilibili_dash_label(primary_slot),
                             dash_urls,
                             "mpd",
                             bilibili_headers(),
@@ -5768,9 +5816,9 @@ impl BilibiliProvider {
                     .as_ref()
                     .and_then(|resp| resp.dash.as_ref())
                     .map(|dash| dash.duration);
-                if let Some(d) = dash_resp.as_ref().and_then(|resp| resp.dash.as_ref()) {
+                if let Some(dash) = dash_resp.as_ref().and_then(|resp| resp.dash.as_ref()) {
                     if let Some(metadata) = metadata.as_bilibili_mut() {
-                        metadata.min_buffer_time = Some(d.min_buffer_time);
+                        metadata.min_buffer_time = Some(dash.min_buffer_time);
                     }
                 }
 
@@ -5788,19 +5836,22 @@ impl BilibiliProvider {
                                 .to_string(),
                         )
                     })?;
+                    let primary_slot = bilibili_dash_slot_from_upstream(dash);
                     let dash = dash_manifest_from_upstream(dash);
-                    insert_dash_manifest_metadata(
-                        &mut metadata,
-                        BilibiliDashManifestSlot::Dash,
-                        dash.clone(),
-                    );
+                    insert_dash_manifest_metadata(&mut metadata, primary_slot, dash.clone());
                     let dash_swarm_id = bilibili_dash_swarm_id(
                         provider_instance_name,
                         &content_descriptor,
-                        BilibiliDashManifestSlot::Dash,
+                        primary_slot,
                         &dash,
                     );
-                    let pgc_urls = dash_playback_urls(&dash, "PGC DASH")?;
+                    let pgc_urls = dash_playback_urls(
+                        &dash,
+                        match primary_slot {
+                            BilibiliDashManifestSlot::Dash => "PGC DASH",
+                            BilibiliDashManifestSlot::Hevc => "PGC HEVC DASH",
+                        },
+                    )?;
                     let hevc_urls = dash_resp
                         .hevc_dash
                         .as_ref()
@@ -5824,7 +5875,7 @@ impl BilibiliProvider {
 
                     let mut dash_info = mode_info(
                         bilibili_direct_medias(
-                            "DASH",
+                            bilibili_dash_label(primary_slot),
                             pgc_urls,
                             "mpd",
                             bilibili_headers(),

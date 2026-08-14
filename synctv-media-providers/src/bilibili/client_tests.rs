@@ -313,7 +313,7 @@ fn test_video_page_info_deserialize() -> TestResult {
     assert_eq!(data.title, "Test Video");
     assert_eq!(data.bvid, "BV1xx411c7XZ");
     assert_eq!(data.aid, 12345);
-    let pages = data.pages.expect("video pages should deserialize");
+    let pages = data.pages;
     assert_eq!(pages.len(), 1);
     assert_eq!(pages[0].duration, 120);
     assert_eq!(resp.code, 0);
@@ -355,9 +355,9 @@ fn test_video_url_resp_deserialize() -> TestResult {
         }"#;
     let resp: types::VideoUrlResp = serde_json::from_str(json)?;
     assert_eq!(resp.data.quality, 80);
-    let durls = resp.data.durl.expect("DURL entries should deserialize");
+    let durls = resp.data.durl;
     assert_eq!(durls.len(), 1);
-    assert_eq!(resp.data.accept_quality, Some(vec![80, 64, 32]));
+    assert_eq!(resp.data.accept_quality, vec![80, 64, 32]);
     let segments = video_segments_from_durls(&durls);
     assert_eq!(segments.len(), 1);
     assert_eq!(
@@ -1167,6 +1167,31 @@ fn parse_dash_info_includes_dolby_flac_and_backup_urls() -> TestResult {
     assert_eq!(dash.audio_streams[0].quality_name, "Dolby Atmos");
     assert_eq!(dash.audio_streams[1].quality_name, "Hi-Res FLAC");
     assert_eq!(dash.audio_streams[1].backup_urls.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn parse_dash_info_keeps_null_video_unplayable() -> TestResult {
+    let dash: types::DashInfo = serde_json::from_value(json!({
+        "duration": 60.0,
+        "minBufferTime": 1.5,
+        "video": null,
+        "audio": [{
+            "id": 30280,
+            "baseUrl": "https://cdn.example.com/audio.m4s",
+            "mimeType": "audio/mp4",
+            "codecs": "mp4a.40.2",
+            "bandwidth": 128_000,
+            "SegmentBase": {"Initialization": "0-1", "indexRange": "2-3"}
+        }]
+    }))?;
+
+    let (regular, hevc) = parse_dash_info(&dash, &[]);
+
+    assert!(regular.video_streams.is_empty());
+    assert!(hevc.video_streams.is_empty());
+    assert_eq!(regular.audio_streams.len(), 1);
+    assert_eq!(hevc.audio_streams.len(), 1);
     Ok(())
 }
 

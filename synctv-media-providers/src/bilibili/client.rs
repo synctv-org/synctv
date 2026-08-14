@@ -1559,6 +1559,7 @@ impl BilibiliClient {
             .ok_or_else(|| BilibiliError::Parse("Video parts response missing data".to_string()))?;
         let parts = data
             .pages
+            .unwrap_or_default()
             .into_iter()
             .map(|part| types::BilibiliVideoPart {
                 bvid: data.bvid.clone(),
@@ -1635,7 +1636,7 @@ impl BilibiliClient {
                 });
 
                 let mut video_infos = Vec::new();
-                for page in data.pages {
+                for page in data.pages.unwrap_or_default() {
                     video_infos.push(VideoInfoItem {
                         bvid: data.bvid.clone(),
                         aid,
@@ -1716,12 +1717,13 @@ impl BilibiliClient {
                 let data = json.data;
                 let accept_quality: Vec<u32> = data
                     .accept_quality
-                    .iter()
-                    .map(|&q| quality_to_u32(q, "video URL"))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|q| quality_to_u32(q, "video URL"))
                     .collect::<Result<_, _>>()?;
-                let accept_description = data.accept_description;
+                let accept_description = data.accept_description.unwrap_or_default();
                 let current_quality = quality_to_u32(data.quality, "video URL")?;
-                let segments = video_segments_from_durls(&data.durl);
+                let segments = video_segments_from_durls(data.durl.as_deref().unwrap_or_default());
                 let url = required_first_segment_url(&segments, "video URL")?;
 
                 Ok(VideoUrlInfo {
@@ -1816,7 +1818,10 @@ impl BilibiliClient {
                     code: i64::from(json.code),
                     message: "DASH video URL response did not include DASH streams".to_string(),
                 })?;
-                let (regular_dash, hevc_dash) = parse_dash_info(&dash_info, &data.support_formats);
+                let (regular_dash, hevc_dash) = parse_dash_info(
+                    &dash_info,
+                    data.support_formats.as_deref().unwrap_or_default(),
+                );
 
                 Ok((regular_dash, hevc_dash))
             }
@@ -1860,7 +1865,7 @@ impl BilibiliClient {
                 }
 
                 let mut subtitles = HashMap::new();
-                for sub in json.data.subtitle.subtitles {
+                for sub in json.data.subtitle.subtitles.unwrap_or_default() {
                     let name = sub.lan_doc;
                     let url = if sub.subtitle_url.starts_with("http") {
                         sub.subtitle_url
@@ -1958,7 +1963,7 @@ impl BilibiliClient {
                 };
 
                 let mut video_infos = Vec::new();
-                for (index, ep) in result.episodes.into_iter().enumerate() {
+                for (index, ep) in result.episodes.unwrap_or_default().into_iter().enumerate() {
                     video_infos.push(VideoInfoItem {
                         bvid: ep.bvid,
                         aid: ep.aid,
@@ -1977,8 +1982,8 @@ impl BilibiliClient {
                         height: 0,
                     });
                 }
-                for section in result.sections {
-                    for ep in section.episodes {
+                for section in result.sections.unwrap_or_default() {
+                    for ep in section.episodes.unwrap_or_default() {
                         let page = u32::try_from(video_infos.len() + 1).unwrap_or(u32::MAX);
                         let episode_title = if ep.long_title.is_empty() {
                             ep.title
@@ -2053,12 +2058,14 @@ impl BilibiliClient {
                 let result = json.result;
                 let accept_quality: Vec<u32> = result
                     .accept_quality
-                    .iter()
-                    .map(|&q| quality_to_u32(q, "PGC URL"))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|q| quality_to_u32(q, "PGC URL"))
                     .collect::<Result<_, _>>()?;
-                let accept_description = result.accept_description;
+                let accept_description = result.accept_description.unwrap_or_default();
                 let current_quality = quality_to_u32(result.quality, "PGC URL")?;
-                let segments = video_segments_from_durls(&result.durl);
+                let segments =
+                    video_segments_from_durls(result.durl.as_deref().unwrap_or_default());
                 let url = required_first_segment_url(&segments, "PGC URL")?;
 
                 Ok(VideoUrlInfo {
@@ -2104,8 +2111,10 @@ impl BilibiliClient {
                     code: i64::from(json.result.code),
                     message: "PGC playurl response did not include DASH streams".to_string(),
                 })?;
-                let (regular_dash, hevc_dash) =
-                    parse_dash_info(&dash_info, &json.result.support_formats);
+                let (regular_dash, hevc_dash) = parse_dash_info(
+                    &dash_info,
+                    json.result.support_formats.as_deref().unwrap_or_default(),
+                );
 
                 Ok((regular_dash, hevc_dash))
             }
@@ -4587,8 +4596,15 @@ fn parse_dash_info(
     // Parse audio streams (shared by both regular and HEVC)
     let parsed_audios: Vec<AudioStreamData> = dash_info
         .audio
+        .as_deref()
+        .unwrap_or_default()
         .iter()
-        .chain(dash_info.dolby.iter().flat_map(|dolby| dolby.audio.iter()))
+        .chain(
+            dash_info
+                .dolby
+                .iter()
+                .flat_map(|dolby| dolby.audio.as_deref().unwrap_or_default()),
+        )
         .chain(dash_info.flac.iter().filter_map(|flac| flac.audio.as_ref()))
         .map(|audio| AudioStreamData {
             id: audio.id,
@@ -4601,7 +4617,7 @@ fn parse_dash_info(
                 id => format!("Audio {id}"),
             },
             base_url: audio.base_url.clone(),
-            backup_urls: audio.backup_url.clone(),
+            backup_urls: audio.backup_url.clone().unwrap_or_default(),
             mime_type: audio.mime_type.clone(),
             codecs: audio.codecs.clone(),
             bandwidth: audio.bandwidth,
@@ -4618,7 +4634,7 @@ fn parse_dash_info(
     let mut regular_videos = Vec::new();
     let mut hevc_videos = Vec::new();
 
-    for video in &dash_info.video {
+    for video in dash_info.video.as_deref().unwrap_or_default() {
         let quality_name = quality_names
             .get(&video.id)
             .cloned()
@@ -4628,7 +4644,7 @@ fn parse_dash_info(
             id: video.id,
             quality_name,
             base_url: video.base_url.clone(),
-            backup_urls: video.backup_url.clone(),
+            backup_urls: video.backup_url.clone().unwrap_or_default(),
             mime_type: video.mime_type.clone(),
             codecs: video.codecs.clone(),
             width: video.width,

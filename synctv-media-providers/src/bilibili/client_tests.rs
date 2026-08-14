@@ -313,8 +313,9 @@ fn test_video_page_info_deserialize() -> TestResult {
     assert_eq!(data.title, "Test Video");
     assert_eq!(data.bvid, "BV1xx411c7XZ");
     assert_eq!(data.aid, 12345);
-    assert_eq!(data.pages.len(), 1);
-    assert_eq!(data.pages[0].duration, 120);
+    let pages = data.pages.expect("video pages should deserialize");
+    assert_eq!(pages.len(), 1);
+    assert_eq!(pages[0].duration, 120);
     assert_eq!(resp.code, 0);
     Ok(())
 }
@@ -354,9 +355,10 @@ fn test_video_url_resp_deserialize() -> TestResult {
         }"#;
     let resp: types::VideoUrlResp = serde_json::from_str(json)?;
     assert_eq!(resp.data.quality, 80);
-    assert_eq!(resp.data.durl.len(), 1);
-    assert_eq!(resp.data.accept_quality, vec![80, 64, 32]);
-    let segments = video_segments_from_durls(&resp.data.durl);
+    let durls = resp.data.durl.expect("DURL entries should deserialize");
+    assert_eq!(durls.len(), 1);
+    assert_eq!(resp.data.accept_quality, Some(vec![80, 64, 32]));
+    let segments = video_segments_from_durls(&durls);
     assert_eq!(segments.len(), 1);
     assert_eq!(
         segments[0].backup_urls,

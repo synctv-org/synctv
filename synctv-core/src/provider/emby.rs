@@ -1900,9 +1900,7 @@ impl MediaProvider for EmbyProvider {
                         .report_playback_stop(_ctx, &play_session_id, source_config, 0.0)
                         .await;
                     return Err(ProviderError::Internal(match cleanup {
-                        Ok(()) => format!(
-                            "failed to persist Emby playback session: {error}"
-                        ),
+                        Ok(()) => format!("failed to persist Emby playback session: {error}"),
                         Err(cleanup_error) => format!(
                             "failed to persist Emby playback session: {error}; compensation={cleanup_error}"
                         ),
@@ -2608,6 +2606,7 @@ impl DynamicPlaylistProvider for EmbyProvider {
             has_more: dynamic_page_has_more(total, page, page_size, returned_count),
             items,
             pagination: DynamicPagination::Page { page },
+            supports_search: true,
         })
     }
 

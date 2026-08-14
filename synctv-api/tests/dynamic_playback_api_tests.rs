@@ -353,6 +353,7 @@ impl DynamicPlaylistProvider for StubDynamicProvider {
             has_more: false,
             items,
             pagination: synctv_core::provider::DynamicPagination::Page { page: 1 },
+            supports_search: false,
         })
     }
 

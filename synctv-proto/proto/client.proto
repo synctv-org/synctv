@@ -2271,6 +2271,9 @@ message ListPlaylistItemsResponse {
     PagePagination page = 9;
     CursorPagination cursor = 10; // Cursor for the next page; empty at the end.
   }
+  // Whether the current playlist scope accepts the request search field.
+  // Static playlists always support search; dynamic playlists report the provider capability.
+  bool supports_search = 11;
 }
 
 enum ItemType {

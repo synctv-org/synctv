@@ -1587,6 +1587,12 @@ const fn playback_proxy_mode_to_proto(mode: synctv_core::models::PlaybackProxyMo
         synctv_core::models::PlaybackProxyMode::Only => {
             source_config_proto::PlaybackProxyMode::Only as i32
         }
+        synctv_core::models::PlaybackProxyMode::DirectPrefer => {
+            source_config_proto::PlaybackProxyMode::DirectPrefer as i32
+        }
+        synctv_core::models::PlaybackProxyMode::DirectOnly => {
+            source_config_proto::PlaybackProxyMode::DirectOnly as i32
+        }
     }
 }
 
@@ -3820,6 +3826,7 @@ fn playback_media_headers_for_proto(
         | PlaybackMediaProvider::Bilibili(
             PlaybackBilibiliMedia::Direct { headers, .. }
             | PlaybackBilibiliMedia::DirectDashManifest { headers, .. }
+            | PlaybackBilibiliMedia::DirectDurlManifest { headers, .. }
             | PlaybackBilibiliMedia::DurlManifest { headers, .. },
         )
         | PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::Direct { headers, .. })
@@ -4028,12 +4035,20 @@ fn playback_media_url(
             mode_name,
             ..
         }) => dash_manifest_resource(version, *expires_at, mode_name, "direct"),
-        PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::DurlManifest {
-            version,
-            expires_at,
-            mode_name,
-            ..
-        }) => versioned_indexed_resource(
+        PlaybackMediaProvider::Bilibili(
+            PlaybackBilibiliMedia::DirectDurlManifest {
+                version,
+                expires_at,
+                mode_name,
+                ..
+            }
+            | PlaybackBilibiliMedia::DurlManifest {
+                version,
+                expires_at,
+                mode_name,
+                ..
+            },
+        ) => versioned_indexed_resource(
             "bilibili",
             version,
             *expires_at,
@@ -5174,6 +5189,54 @@ mod playback_conversion_tests {
                 .url
                 .starts_with("/api/playback-providers/bilibili/v1/dash-manifests/dash/direct?"),
             "unexpected direct DASH URL: {}",
+            media.url
+        );
+        assert_eq!(media.headers, headers);
+    }
+
+    #[test]
+    fn direct_durl_manifest_preserves_bilibili_headers_for_clients() {
+        let key = signing_key();
+        let signing = signing_context(&key);
+        let mut headers = HashMap::new();
+        headers.insert(
+            "Referer".to_string(),
+            "https://www.bilibili.com".to_string(),
+        );
+        headers.insert("User-Agent".to_string(), "SyncTV".to_string());
+        let info = PlaybackInfo::builder()
+            .add_media(PlaybackMedia {
+                name: "MP4".to_string(),
+                format: "m3u8".to_string(),
+                expire_at: synctv_core::SystemClock
+                    .now()
+                    .checked_add_signed(chrono::Duration::minutes(30)),
+                metadata: None,
+                p2p_swarm_id: None,
+                provider: PlaybackMediaProvider::Bilibili(
+                    PlaybackBilibiliMedia::DirectDurlManifest {
+                        version: "v1".to_string(),
+                        expires_at: synctv_core::SystemClock.now().timestamp() + 1800,
+                        mode_name: "mp4".to_string(),
+                        segments: vec![synctv_core::models::media::BilibiliDurlSegment {
+                            url: "https://cdn.example/video.mp4".to_string(),
+                            backup_urls: Vec::new(),
+                            duration_millis: 1_000,
+                        }],
+                        headers: headers.clone(),
+                    },
+                ),
+            })
+            .build();
+
+        let proto = try_playback_to_proto(&playback_result(info), &codec(), Some(&signing))
+            .expect("playback should convert");
+        let media = &proto.playback_infos["dash"].medias[0];
+        assert!(
+            media
+                .url
+                .starts_with("/api/playback-providers/bilibili/v1/hls-manifests/mp4/0?"),
+            "unexpected direct DURL URL: {}",
             media.url
         );
         assert_eq!(media.headers, headers);

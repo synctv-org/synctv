@@ -151,7 +151,7 @@ impl MediaProvider for SeafileProvider {
             metadata: Some(PlaybackMetadata::Seafile(metadata)),
         };
         let mut result = result;
-        if config.proxy_mode == crate::models::PlaybackProxyMode::Prefer {
+        if super::playback_proxy_mode_includes_direct_routes(config.proxy_mode) {
             let url = auth
                 .client
                 .download_url(&auth.token, &config.repository_id, &config.path)
@@ -184,7 +184,7 @@ impl MediaProvider for SeafileProvider {
                 );
             }
         }
-        super::cached_versioned_playback_or_fill(
+        let result = super::cached_versioned_playback_or_fill(
             Self::NAME,
             &format!(
                 "playback:{owner}:{}:{}:room:{}:{}:proxy:{}",
@@ -203,7 +203,8 @@ impl MediaProvider for SeafileProvider {
             },
             || async { Ok(result) },
         )
-        .await
+        .await?;
+        super::require_direct_playback_route(result, config.proxy_mode)
     }
 
     async fn validate_source_config(
@@ -401,6 +402,11 @@ impl DynamicPlaylistProvider for SeafileProvider {
             items,
             pagination: DynamicPagination::Page { page },
             has_more,
+            supports_search: target.is_some()
+                || matches!(
+                    &config.source,
+                    SeafilePlaylistSource::Folder { .. } | SeafilePlaylistSource::Search { .. }
+                ),
         })
     }
 

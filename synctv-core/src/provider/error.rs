@@ -54,7 +54,9 @@ pub enum ProviderError {
     #[error("Credential expired: {0}")]
     CredentialExpired(String),
 
-    #[error("Credential encryption required for sensitive provider '{0}'. Configure credential_encryption in server settings.")]
+    #[error(
+        "Credential encryption required for sensitive provider '{0}'. Configure credential_encryption in server settings."
+    )]
     EncryptionRequired(&'static str),
 
     #[error("Route registration failed: {0}")]

@@ -451,6 +451,8 @@ pub struct DynamicListResult {
     pub items: Vec<DynamicPlaylistItem>,
     pub pagination: DynamicPagination,
     pub has_more: bool,
+    /// Whether this playlist scope supports the generic provider-side search query.
+    pub supports_search: bool,
 }
 
 impl std::ops::Deref for DynamicListResult {

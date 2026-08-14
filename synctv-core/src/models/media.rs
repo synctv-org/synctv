@@ -1228,6 +1228,18 @@ pub enum PlaybackBilibiliMedia {
         #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
         headers: std::collections::HashMap<String, String>,
     },
+    /// A SyncTV-generated HLS manifest whose Bilibili media segments are
+    /// fetched by the client directly.
+    DirectDurlManifest {
+        version: String,
+        expires_at: i64,
+        mode_name: String,
+        segments: Vec<BilibiliDurlSegment>,
+        #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+        headers: std::collections::HashMap<String, String>,
+    },
+    /// A SyncTV-generated HLS manifest whose media segments are forwarded by
+    /// the server so backup CDN candidates remain available.
     DurlManifest {
         version: String,
         expires_at: i64,
@@ -3015,6 +3027,7 @@ impl PlaybackMedia {
             | PlaybackMediaProvider::Bilibili(
                 PlaybackBilibiliMedia::Direct { headers, .. }
                 | PlaybackBilibiliMedia::DirectDashManifest { headers, .. }
+                | PlaybackBilibiliMedia::DirectDurlManifest { headers, .. }
                 | PlaybackBilibiliMedia::DurlManifest { headers, .. }
                 | PlaybackBilibiliMedia::ProxyMediaStream { headers, .. }
                 | PlaybackBilibiliMedia::ProxyHlsManifest { headers, .. },

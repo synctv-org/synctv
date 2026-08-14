@@ -852,6 +852,12 @@ fn playback_proxy_mode_from_proto(
         source_config_proto::PlaybackProxyMode::Only => {
             Ok(synctv_core::models::PlaybackProxyMode::Only)
         }
+        source_config_proto::PlaybackProxyMode::DirectPrefer => {
+            Ok(synctv_core::models::PlaybackProxyMode::DirectPrefer)
+        }
+        source_config_proto::PlaybackProxyMode::DirectOnly => {
+            Ok(synctv_core::models::PlaybackProxyMode::DirectOnly)
+        }
     }
 }
 
@@ -969,4 +975,27 @@ fn twitch_playlist_content_from_proto(
             }
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_direct_playback_proxy_modes() {
+        assert_eq!(
+            playback_proxy_mode_from_proto(
+                source_config_proto::PlaybackProxyMode::DirectPrefer as i32
+            )
+            .unwrap(),
+            synctv_core::models::PlaybackProxyMode::DirectPrefer,
+        );
+        assert_eq!(
+            playback_proxy_mode_from_proto(
+                source_config_proto::PlaybackProxyMode::DirectOnly as i32
+            )
+            .unwrap(),
+            synctv_core::models::PlaybackProxyMode::DirectOnly,
+        );
+    }
 }

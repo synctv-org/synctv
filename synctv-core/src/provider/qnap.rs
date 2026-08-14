@@ -869,7 +869,7 @@ impl MediaProvider for QnapProvider {
                 info.default_media_index = info.medias.len().checked_sub(1);
             }
         }
-        if config.proxy_mode == crate::models::PlaybackProxyMode::Prefer {
+        if super::playback_proxy_mode_includes_direct_routes(config.proxy_mode) {
             let original_modes = playback_infos
                 .iter()
                 .map(|(name, info)| (name.clone(), info.clone()))
@@ -918,7 +918,7 @@ impl MediaProvider for QnapProvider {
                 realtime_heights: Vec::new(),
             })),
         };
-        super::cached_versioned_playback_or_fill(
+        let result = super::cached_versioned_playback_or_fill(
             Self::NAME,
             &format!(
                 "playback:{owner}:{}:room:{}:{}:profile:{}:proxy:{}",
@@ -937,7 +937,8 @@ impl MediaProvider for QnapProvider {
             },
             || async { Ok(result) },
         )
-        .await
+        .await?;
+        super::require_direct_playback_route(result, config.proxy_mode)
     }
 
     async fn validate_source_config(
@@ -1099,6 +1100,7 @@ impl DynamicPlaylistProvider for QnapProvider {
                 page: response.page,
             },
             has_more: response.has_more,
+            supports_search: true,
         })
     }
 

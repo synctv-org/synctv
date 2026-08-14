@@ -696,6 +696,7 @@ fn empty_playlist_items_response(
         dynamic_items: Vec::new(),
         current_path: Vec::new(),
         pagination: None,
+        supports_search: true,
         version: version.into(),
     }
 }
@@ -5199,6 +5200,7 @@ async fn test_observe_playlist_items_without_cursor_sends_snapshot_immediately()
                 dynamic_items: Vec::new(),
                 current_path: Vec::new(),
                 pagination: None,
+                supports_search: true,
                 version: "items-v1".to_string(),
             },
         }));
@@ -5277,6 +5279,7 @@ async fn test_observed_playlist_items_batch_coalesces_identical_snapshot_loads()
             dynamic_items: Vec::new(),
             current_path: Vec::new(),
             pagination: None,
+            supports_search: true,
             version: "items-v1".to_string(),
         });
     let handler = test_message_handler_for_user_with_runtime(
@@ -5331,6 +5334,7 @@ async fn test_observed_playlist_items_batch_coalesces_identical_snapshot_loads()
         dynamic_items: Vec::new(),
         current_path: Vec::new(),
         pagination: None,
+        supports_search: true,
         version: "items-v2".to_string(),
     });
 
@@ -5527,6 +5531,7 @@ async fn test_observe_playlist_items_requires_inner_request() {
             dynamic_items: Vec::new(),
             current_path: Vec::new(),
             pagination: None,
+            supports_search: true,
             version: "items-v1".to_string(),
         });
     let handler = test_message_handler_for_user_with_runtime(
@@ -6128,6 +6133,7 @@ async fn test_media_resource_hub_coalesces_event_refresh_and_fans_out() {
             dynamic_items: Vec::new(),
             current_path: Vec::new(),
             pagination: None,
+            supports_search: true,
             version: "items-v1".to_string(),
         });
     let sender_a = RecordingMessageSender::new();
@@ -6217,6 +6223,7 @@ async fn test_media_resource_hub_coalesces_event_refresh_and_fans_out() {
         dynamic_items: Vec::new(),
         current_path: Vec::new(),
         pagination: None,
+        supports_search: true,
         version: "items-v2".to_string(),
     });
     let event = RealtimeEvent::MediaAdded {
@@ -6586,6 +6593,7 @@ async fn test_observe_playlist_items_sends_current_snapshot() {
             dynamic_items: Vec::new(),
             current_path: Vec::new(),
             pagination: None,
+            supports_search: true,
             version: "items-v1".to_string(),
         });
     let handler = handler
@@ -6662,6 +6670,7 @@ async fn test_observed_playlist_items_receive_future_media_updates() {
             dynamic_items: Vec::new(),
             current_path: Vec::new(),
             pagination: None,
+            supports_search: true,
             version: "items-v1".to_string(),
         });
     let handler = handler
@@ -6734,6 +6743,7 @@ async fn test_observed_playlist_items_receive_future_media_updates() {
         dynamic_items: Vec::new(),
         current_path: Vec::new(),
         pagination: None,
+        supports_search: true,
         version: "items-v2".to_string(),
     });
 

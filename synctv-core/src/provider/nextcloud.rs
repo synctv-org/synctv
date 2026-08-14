@@ -719,7 +719,7 @@ impl MediaProvider for NextcloudProvider {
                 default_danmaku_index: None,
             },
         );
-        if config.proxy_mode == crate::models::PlaybackProxyMode::Prefer {
+        if super::playback_proxy_mode_includes_direct_routes(config.proxy_mode) {
             let mut direct = playback_infos.get("original").cloned().ok_or_else(|| {
                 ProviderError::Internal("Nextcloud playback mode missing".to_string())
             })?;
@@ -748,7 +748,7 @@ impl MediaProvider for NextcloudProvider {
             playback_kind: Some(crate::models::PlaybackKind::Regular),
             metadata: Some(PlaybackMetadata::Nextcloud(metadata)),
         };
-        super::cached_versioned_playback_or_fill(
+        let result = super::cached_versioned_playback_or_fill(
             Self::NAME,
             &format!(
                 "playback:{owner}:{}:room:{}:{}:proxy:{}",
@@ -766,7 +766,8 @@ impl MediaProvider for NextcloudProvider {
             },
             || async { Ok(result) },
         )
-        .await
+        .await?;
+        super::require_direct_playback_route(result, config.proxy_mode)
     }
 
     async fn validate_source_config(
@@ -960,6 +961,7 @@ impl DynamicPlaylistProvider for NextcloudProvider {
             items,
             pagination: DynamicPagination::Page { page },
             has_more,
+            supports_search: true,
         })
     }
 

@@ -2890,6 +2890,7 @@ impl DynamicPlaylistProvider for AlistProvider {
             pagination: DynamicPagination::Page {
                 page: query.page().max(1),
             },
+            supports_search: true,
         })
     }
 

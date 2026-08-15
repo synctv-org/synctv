@@ -144,8 +144,8 @@ impl EmailBindRepository {
         email: &str,
         now: chrono::DateTime<Utc>,
     ) -> Result<bool> {
-        let exists = sqlx::query_scalar::<_, bool>(
-            r"
+        let exists = sqlx::query_scalar!(
+            r#"
             SELECT EXISTS (
                 SELECT 1
                 FROM auth_email_bind_requests
@@ -154,13 +154,13 @@ impl EmailBindRepository {
                   AND LOWER(email) = LOWER($3)
                   AND used_at IS NULL
                   AND expires_at > $4
-            )
-            ",
+            ) AS "exists!"
+            "#,
+            Self::hash_token(token),
+            user_id.as_i64(),
+            email,
+            now,
         )
-        .bind(Self::hash_token(token))
-        .bind(user_id)
-        .bind(email)
-        .bind(now)
         .fetch_one(&self.pool)
         .await?;
         Ok(exists)

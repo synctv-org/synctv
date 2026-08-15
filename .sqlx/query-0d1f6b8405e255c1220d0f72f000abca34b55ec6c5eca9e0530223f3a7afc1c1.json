@@ -1,0 +1,128 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            WITH picked AS (\n                SELECT id\n                FROM email_outbox\n                WHERE status = $2\n                  AND kind = ANY($5)\n                  AND next_attempt_at <= NOW()\n                  AND expires_at > NOW()\n                ORDER BY next_attempt_at, created_at, id\n                LIMIT $1\n                FOR UPDATE SKIP LOCKED\n            )\n            UPDATE email_outbox AS job\n            SET status = $3,\n                locked_by = $4,\n                locked_at = NOW(),\n                lock_version = lock_version + 1\n            FROM picked\n            WHERE job.id = picked.id\n            RETURNING job.id, job.kind, job.recipient, job.encrypted_payload,\n                      job.status, job.attempts, job.lock_version,\n                      job.expires_at, job.created_at\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "email_outbox",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "kind",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "email_outbox",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "recipient",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "email_outbox",
+            "name": "recipient"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "encrypted_payload",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "email_outbox",
+            "name": "encrypted_payload"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "status",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "email_outbox",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "attempts",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "email_outbox",
+            "name": "attempts"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "lock_version",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "email_outbox",
+            "name": "lock_version"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "expires_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "email_outbox",
+            "name": "expires_at"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "email_outbox",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int2",
+        "Int2",
+        "Text",
+        "Int2Array"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "0d1f6b8405e255c1220d0f72f000abca34b55ec6c5eca9e0530223f3a7afc1c1"
+}

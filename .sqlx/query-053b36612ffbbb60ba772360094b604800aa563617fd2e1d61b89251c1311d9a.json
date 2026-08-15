@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT EXISTS (\n                SELECT 1\n                FROM auth_email_tokens\n                WHERE token = $1\n                  AND user_id = $2\n                  AND token_type = $3\n                  AND used_at IS NULL\n                  AND expires_at > $4\n            ) AS \"exists!\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Int2",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "053b36612ffbbb60ba772360094b604800aa563617fd2e1d61b89251c1311d9a"
+}

@@ -2161,8 +2161,12 @@ impl BilibiliPlaybackMetadata {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BilibiliDashManifests {
+    /// H.264/AVC DASH representations.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dash: Option<BilibiliDashManifest>,
+    pub h264: Option<BilibiliDashManifest>,
+    /// AV1 DASH representations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub av1: Option<BilibiliDashManifest>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hevc: Option<BilibiliDashManifest>,
 }
@@ -2170,12 +2174,13 @@ pub struct BilibiliDashManifests {
 impl BilibiliDashManifests {
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        self.dash.is_none() && self.hevc.is_none()
+        self.h264.is_none() && self.av1.is_none() && self.hevc.is_none()
     }
 
     pub fn set(&mut self, mode: BilibiliDashManifestSlot, manifest: BilibiliDashManifest) {
         match mode {
-            BilibiliDashManifestSlot::Dash => self.dash = Some(manifest),
+            BilibiliDashManifestSlot::H264 => self.h264 = Some(manifest),
+            BilibiliDashManifestSlot::Av1 => self.av1 = Some(manifest),
             BilibiliDashManifestSlot::Hevc => self.hevc = Some(manifest),
         }
     }
@@ -2183,7 +2188,8 @@ impl BilibiliDashManifests {
     #[must_use]
     pub const fn get(&self, mode: BilibiliDashManifestSlot) -> Option<&BilibiliDashManifest> {
         match mode {
-            BilibiliDashManifestSlot::Dash => self.dash.as_ref(),
+            BilibiliDashManifestSlot::H264 => self.h264.as_ref(),
+            BilibiliDashManifestSlot::Av1 => self.av1.as_ref(),
             BilibiliDashManifestSlot::Hevc => self.hevc.as_ref(),
         }
     }
@@ -2245,10 +2251,11 @@ pub struct BilibiliDashSegmentBase {
     pub initialization_range: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum BilibiliDashManifestSlot {
-    Dash,
+    H264,
+    Av1,
     Hevc,
 }
 
@@ -2256,7 +2263,8 @@ impl BilibiliDashManifestSlot {
     #[must_use]
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim() {
-            "dash" => Some(Self::Dash),
+            "h264" => Some(Self::H264),
+            "av1" => Some(Self::Av1),
             "hevc" => Some(Self::Hevc),
             _ => None,
         }
@@ -2265,7 +2273,8 @@ impl BilibiliDashManifestSlot {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Dash => "dash",
+            Self::H264 => "h264",
+            Self::Av1 => "av1",
             Self::Hevc => "hevc",
         }
     }
@@ -3008,7 +3017,13 @@ impl PlaybackMedia {
                 PlaybackEmbyMedia::Direct { url, .. }
                 | PlaybackEmbyMedia::ProxyMediaStream { url, .. }
                 | PlaybackEmbyMedia::ProxyHlsManifest { url, .. },
-            ) => Some(url),
+            )
+            | PlaybackMediaProvider::Fnos(PlaybackFnosMedia::Direct { url, .. })
+            | PlaybackMediaProvider::Qnap(PlaybackQnapMedia::Direct { url, .. })
+            | PlaybackMediaProvider::Synology(PlaybackSynologyMedia::Direct { url, .. })
+            | PlaybackMediaProvider::Nextcloud(PlaybackNextcloudMedia::Direct { url, .. })
+            | PlaybackMediaProvider::Seafile(PlaybackSeafileMedia::Direct { url, .. })
+            | PlaybackMediaProvider::TrueNas(PlaybackTrueNasMedia::Direct { url, .. }) => Some(url),
             _ => None,
         }
     }
@@ -3042,7 +3057,17 @@ impl PlaybackMedia {
                 PlaybackEmbyMedia::Direct { headers, .. }
                 | PlaybackEmbyMedia::ProxyMediaStream { headers, .. }
                 | PlaybackEmbyMedia::ProxyHlsManifest { headers, .. },
-            ) => headers.clone(),
+            )
+            | PlaybackMediaProvider::Fnos(PlaybackFnosMedia::Direct { headers, .. })
+            | PlaybackMediaProvider::Qnap(PlaybackQnapMedia::Direct { headers, .. })
+            | PlaybackMediaProvider::Synology(PlaybackSynologyMedia::Direct { headers, .. })
+            | PlaybackMediaProvider::Nextcloud(PlaybackNextcloudMedia::Direct {
+                headers, ..
+            })
+            | PlaybackMediaProvider::Seafile(PlaybackSeafileMedia::Direct { headers, .. })
+            | PlaybackMediaProvider::TrueNas(PlaybackTrueNasMedia::Direct { headers, .. }) => {
+                headers.clone()
+            }
             _ => std::collections::HashMap::new(),
         }
     }
@@ -3056,6 +3081,12 @@ impl PlaybackMedia {
                 | PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::Direct { .. })
                 | PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::Direct { .. })
                 | PlaybackMediaProvider::Emby(PlaybackEmbyMedia::Direct { .. })
+                | PlaybackMediaProvider::Fnos(PlaybackFnosMedia::Direct { .. })
+                | PlaybackMediaProvider::Qnap(PlaybackQnapMedia::Direct { .. })
+                | PlaybackMediaProvider::Synology(PlaybackSynologyMedia::Direct { .. })
+                | PlaybackMediaProvider::Nextcloud(PlaybackNextcloudMedia::Direct { .. })
+                | PlaybackMediaProvider::Seafile(PlaybackSeafileMedia::Direct { .. })
+                | PlaybackMediaProvider::TrueNas(PlaybackTrueNasMedia::Direct { .. })
         )
     }
 }

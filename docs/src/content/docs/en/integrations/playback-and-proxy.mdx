@@ -34,6 +34,30 @@ SyncTV proxy uses only headers explicitly provided by the Provider. It does not 
 
 Alist playback URLs may be bound to a specific `User-Agent`. Bilibili commonly depends on `User-Agent`, `Referer`, cookies, and Range. When direct and proxy playback behave differently, compare the headers returned to the client with those sent upstream by the proxy. Browser clients that cannot set the required headers should select the proxy URL.
 
+## Playback Route Policy
+
+Each Provider interprets `PlaybackProxyMode`, evaluates credential exposure, and selects concrete routes while generating `PlaybackResult`. The effective `Auto` result can vary by Provider, media type, and media variant. The outer API resolves the Provider and transports its policy result.
+
+| Configured mode | Provider generation behavior |
+| --- | --- |
+| `Auto` | The Provider selects an effective mode for each media variant from its URL, headers, signature, and session requirements |
+| `Prefer` | Generate proxy and direct routes, with proxy selected by default |
+| `Only` | Generate proxy routes only |
+| `DirectPrefer` | Generate direct and proxy routes, with direct selected by default |
+| `DirectOnly` | Generate direct routes only |
+
+Credential protection is the primary `Auto` rule. Public resources use `DirectPrefer`. Credential headers, URL credentials, signed URLs, and Provider sessions use `Only`. A Provider can return a stricter result for protocol, transcoding, or server-transport requirements. Bilibili video, PGC, and live playback use signed resources, so their effective `Auto` mode is `Only`. NAS and cloud sources depend on Provider sessions, so their effective `Auto` mode is `Only`. Direct URL inspects media, subtitle, and danmaku resources individually, allowing public direct variants and protected proxy variants in one source.
+
+Providers calculate route selection before requesting upstream resources. Proxy-only generation skips direct URL acquisition and direct variant construction. Direct-only generation skips proxy resource construction. This order reduces upstream requests, signing work, transcoding preparation, and cache writes.
+
+Clients query a concrete `DiscoveredSource` through `POST /api/providers/playback-proxy-policy`. The response contains:
+
+- `supported_modes`: form options supported by this source.
+- `current_mode`: the source's stored configuration.
+- `auto_policies`: each media variant's effective Auto mode and reason.
+
+Clients build selectors and hints from this response. The same endpoint accepts an accessible persisted source for media-level inspection. A new Provider media variant must update both the policy response and playback generation tests.
+
 ## Client Selection Strategy
 
 | Client condition | Handling |
@@ -43,6 +67,18 @@ Alist playback URLs may be bound to a specific `User-Agent`. Bilibili commonly d
 | Mobile client lacks codec/container support | Declare capabilities in `PlaybackClientProfile` |
 | URL has `expires_at` | Request fresh playback info before expiry |
 | Subtitle has separate headers | Use subtitle-specific headers or proxy subtitle URL |
+
+## Live Transport Negotiation
+
+Clients declare player-supported live transports through `PlaybackClientProfile.supported_live_transports`. The protocol currently defines `PLAYBACK_LIVE_TRANSPORT_HLS` and `PLAYBACK_LIVE_TRANSPORT_FLV`. A Provider selects the transport before requesting upstream playback information and keeps the upstream parameters, `PlaybackMedia.format`, and returned URL aligned.
+
+| Client profile | Current declaration | Provider result |
+| --- | --- | --- |
+| Web | HLS | Request upstream HLS and return `m3u8` media |
+| Native desktop and mobile | FLV | Request upstream HTTP-FLV and return `flv` media |
+| Legacy client or empty list | Default HLS capability | Generate playback through the HLS compatibility path |
+
+Live Providers include the selected transport in their playback cache keys. HLS and FLV use separate cache entries, so a client-capability change generates the matching upstream resource. A new live Provider or transport must cover capability selection, upstream parameters, returned format, cache isolation, and real-client playback tests.
 
 ## Range and Slice Cache
 

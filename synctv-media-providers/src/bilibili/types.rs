@@ -1,7 +1,15 @@
 //! Bilibili API Data Structures
 #![allow(clippy::doc_markdown)]
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+
+fn deserialize_null_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Option::<T>::deserialize(deserializer).map(Option::unwrap_or_default)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BilibiliVideoListItem {
@@ -349,6 +357,7 @@ pub struct VideoPageData {
     pub aid: u64,
     pub cid: u64,
     pub owner: Owner,
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub pages: Vec<Page>,
     #[serde(default)]
     pub ugc_season: Option<UgcSeason>,
@@ -387,12 +396,14 @@ pub struct UgcSeason {
     pub mid: u64,
     pub title: String,
     pub cover: String,
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub sections: Vec<Section>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Section {
     pub title: String,
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub episodes: Vec<Episode>,
 }
 
@@ -415,7 +426,8 @@ pub struct EpisodePage {
 /// Video URL info response
 #[derive(Debug, Clone, Deserialize)]
 pub struct VideoUrlResp {
-    pub data: VideoUrlData,
+    #[serde(default)]
+    pub data: Option<VideoUrlData>,
     pub message: String,
     pub code: i32,
     pub ttl: i32,
@@ -423,9 +435,12 @@ pub struct VideoUrlResp {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct VideoUrlData {
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub accept_quality: Vec<u64>,
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub accept_description: Vec<String>,
     pub quality: u64,
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub durl: Vec<DurlInfo>,
 }
 
@@ -441,19 +456,21 @@ pub struct DurlInfo {
 /// Player v2 info with subtitles
 #[derive(Debug, Clone, Deserialize)]
 pub struct PlayerV2InfoResp {
-    pub data: PlayerV2Data,
+    pub data: Option<PlayerV2Data>,
     pub message: String,
     pub code: i32,
     pub ttl: i32,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct PlayerV2Data {
+    #[serde(default)]
     pub subtitle: SubtitleInfo,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct SubtitleInfo {
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub subtitles: Vec<SubtitleItem>,
 }
 
@@ -480,8 +497,13 @@ pub struct SeasonResult {
     pub title: String,
     pub cover: String,
     pub actors: String,
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub episodes: Vec<EpisodeInfo>,
-    #[serde(default, rename = "section")]
+    #[serde(
+        default,
+        rename = "section",
+        deserialize_with = "deserialize_null_default"
+    )]
     pub sections: Vec<PgcSection>,
 }
 
@@ -489,7 +511,7 @@ pub struct SeasonResult {
 pub struct PgcSection {
     #[serde(default)]
     pub title: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub episodes: Vec<EpisodeInfo>,
 }
 
@@ -508,16 +530,20 @@ pub struct EpisodeInfo {
 /// PGC URL info response
 #[derive(Debug, Clone, Deserialize)]
 pub struct PgcUrlResp {
-    pub result: PgcUrlResult,
+    #[serde(default)]
+    pub result: Option<PgcUrlResult>,
     pub message: String,
     pub code: i32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct PgcUrlResult {
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub accept_quality: Vec<u64>,
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub accept_description: Vec<String>,
     pub quality: u64,
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub durl: Vec<DurlInfo>,
 }
 
@@ -541,7 +567,7 @@ pub struct DashVideoResp {
 pub struct DashVideoData {
     #[serde(default)]
     pub dash: Option<DashInfo>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub support_formats: Vec<SupportFormat>,
 }
 
@@ -550,8 +576,9 @@ pub struct DashInfo {
     pub duration: f64,
     #[serde(rename = "minBufferTime")]
     pub min_buffer_time: f64,
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub video: Vec<DashVideo>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub audio: Vec<DashAudio>,
     #[serde(default)]
     pub dolby: Option<DashDolby>,
@@ -561,7 +588,7 @@ pub struct DashInfo {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct DashDolby {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub audio: Vec<DashAudio>,
 }
 
@@ -576,7 +603,11 @@ pub struct DashVideo {
     pub id: u64,
     #[serde(rename = "baseUrl")]
     pub base_url: String,
-    #[serde(default, rename = "backupUrl")]
+    #[serde(
+        default,
+        rename = "backupUrl",
+        deserialize_with = "deserialize_null_default"
+    )]
     pub backup_url: Vec<String>,
     #[serde(rename = "mimeType")]
     pub mime_type: String,
@@ -601,7 +632,11 @@ pub struct DashAudio {
     pub id: u64,
     #[serde(rename = "baseUrl")]
     pub base_url: String,
-    #[serde(default, rename = "backupUrl")]
+    #[serde(
+        default,
+        rename = "backupUrl",
+        deserialize_with = "deserialize_null_default"
+    )]
     pub backup_url: Vec<String>,
     #[serde(rename = "mimeType")]
     pub mime_type: String,
@@ -626,20 +661,20 @@ pub struct SegmentBase {
 /// DASH format PGC response
 #[derive(Debug, Clone, Deserialize)]
 pub struct DashPgcResp {
-    pub result: DashPgcResult,
+    pub result: Option<DashPgcResult>,
     pub message: String,
     pub code: i32,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct DashPgcResult {
     #[serde(default)]
     pub code: i32,
     #[serde(default)]
     pub dash: Option<DashInfo>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub durl: Vec<DurlInfo>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub support_formats: Vec<SupportFormat>,
 }
 
@@ -1063,13 +1098,13 @@ pub(crate) struct SeasonIndexDataDto {
 /// User info (Nav) response
 #[derive(Debug, Clone, Deserialize)]
 pub struct NavResp {
-    pub data: NavData,
+    pub data: Option<NavData>,
     pub message: String,
     pub code: i32,
     pub ttl: i32,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct NavData {
     #[serde(rename = "isLogin")]
     pub is_login: bool,
@@ -1217,6 +1252,94 @@ mod tests {
         let dash = data.dash.expect("DASH streams should deserialize");
         assert_eq!(dash.video[0].start_with_sap, 0);
         assert_eq!(dash.audio[0].start_with_sap, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn playback_responses_accept_null_collections() -> TestResult {
+        let response: DashVideoResp = serde_json::from_value(serde_json::json!({
+            "code": 0,
+            "ttl": 1,
+            "data": {
+                "support_formats": null,
+                "dash": {
+                    "duration": 120.0,
+                    "minBufferTime": 1.5,
+                    "video": [{
+                        "id": 80,
+                        "baseUrl": "https://upos.example/video.m4s",
+                        "backupUrl": null,
+                        "mimeType": "video/mp4",
+                        "codecs": "avc1.640028",
+                        "width": 1920,
+                        "height": 1080,
+                        "frameRate": "30",
+                        "bandwidth": 1_000_000,
+                        "SegmentBase": {
+                            "Initialization": "0-1000",
+                            "indexRange": "1001-2000"
+                        }
+                    }],
+                    "audio": null,
+                    "dolby": { "audio": null }
+                }
+            }
+        }))?;
+
+        let data = response.data.expect("DASH data should deserialize");
+        assert!(data.support_formats.is_empty());
+        let dash = data.dash.expect("DASH streams should deserialize");
+        let videos = dash.video;
+        assert_eq!(videos.len(), 1);
+        assert!(videos[0].backup_url.is_empty());
+        assert!(dash.audio.is_empty());
+        assert!(dash
+            .dolby
+            .expect("Dolby metadata should deserialize")
+            .audio
+            .is_empty());
+
+        let response: VideoUrlResp = serde_json::from_value(serde_json::json!({
+            "code": 0,
+            "message": "OK",
+            "ttl": 1,
+            "data": {
+                "accept_quality": null,
+                "accept_description": null,
+                "quality": 64,
+                "durl": null
+            }
+        }))?;
+        let data = response.data.expect("video URL response should have data");
+        assert!(data.accept_quality.is_empty());
+        assert!(data.accept_description.is_empty());
+        assert!(data.durl.is_empty());
+
+        let response: PlayerV2InfoResp = serde_json::from_value(serde_json::json!({
+            "code": 0,
+            "message": "OK",
+            "ttl": 1,
+            "data": { "subtitle": { "subtitles": null } }
+        }))?;
+        assert!(response
+            .data
+            .expect("subtitle response should have data")
+            .subtitle
+            .subtitles
+            .is_empty());
+
+        let response: VideoUrlResp = serde_json::from_value(serde_json::json!({
+            "code": -10403,
+            "message": "大会员专享限制",
+            "ttl": 1
+        }))?;
+        assert!(response.data.is_none());
+
+        let response: PgcUrlResp = serde_json::from_value(serde_json::json!({
+            "code": -10403,
+            "message": "大会员专享限制"
+        }))?;
+        assert!(response.result.is_none());
         Ok(())
     }
 

@@ -12,8 +12,9 @@ use sha2::{Digest, Sha256};
 use super::{
     DynamicBrowsePathSegment, DynamicListQuery, DynamicListResult, DynamicPagination,
     DynamicPlaylistItem, DynamicPlaylistItemThumbnail, DynamicPlaylistProvider, ItemType,
-    MediaProvider, NextPlayItem, PlaybackInfo, PlaybackResult, ProviderContext,
-    ProviderCredentialDependency, ProviderError, SourceConfig, SourceCover,
+    MediaProvider, NextPlayItem, PlaybackInfo, PlaybackProxyAutoPolicy, PlaybackProxyAutoReason,
+    PlaybackProxyPolicy, PlaybackResult, ProviderContext, ProviderCredentialDependency,
+    ProviderError, SourceConfig, SourceCover,
 };
 use crate::models::{
     detect_direct_url_format, normalize_provider_instance_name,
@@ -27,6 +28,21 @@ use crate::repository::UserProviderCredentialRepository;
 use synctv_media_providers::qnap::{
     QnapClient, QnapFile, QnapHardwareTranscode, QnapLogin, QnapTranscodeResolution,
 };
+
+fn qnap_route_selection(
+    proxy_mode: crate::models::PlaybackProxyMode,
+) -> super::PlaybackRouteSelection {
+    use crate::models::PlaybackProxyMode;
+
+    match proxy_mode {
+        PlaybackProxyMode::Auto | PlaybackProxyMode::Only => {
+            super::PlaybackRouteSelection::PROXY_ONLY
+        }
+        PlaybackProxyMode::Prefer => super::PlaybackRouteSelection::PROXY_PREFERRED,
+        PlaybackProxyMode::DirectPrefer => super::PlaybackRouteSelection::DIRECT_PREFERRED,
+        PlaybackProxyMode::DirectOnly => super::PlaybackRouteSelection::DIRECT_ONLY,
+    }
+}
 
 const PLAYBACK_CACHE_TTL: Duration = Duration::from_hours(2);
 const DYNAMIC_MAX_SHUFFLE_ITEMS: usize = 200;
@@ -758,6 +774,43 @@ impl MediaProvider for QnapProvider {
         Self::NAME
     }
 
+    fn playback_proxy_policy(
+        &self,
+        source_config: SourceConfig<'_>,
+    ) -> Result<Option<PlaybackProxyPolicy>, ProviderError> {
+        let current_mode = match source_config {
+            SourceConfig::Media(MediaSourceConfig::Qnap(config)) => config.proxy_mode,
+            SourceConfig::DynamicPlaylist(PlaylistSourceConfig::Qnap(config)) => config.proxy_mode,
+            _ => {
+                return Err(ProviderError::InvalidConfig(
+                    "QNAP requires QNAP source_config".to_string(),
+                ));
+            }
+        };
+        Ok(Some(PlaybackProxyPolicy::all_modes(
+            current_mode,
+            vec![PlaybackProxyAutoPolicy::new(
+                "file",
+                crate::models::PlaybackProxyMode::Only,
+                PlaybackProxyAutoReason::ProviderSession,
+            )],
+        )))
+    }
+
+    fn set_playback_proxy_mode(
+        &self,
+        source_config: &mut MediaSourceConfig,
+        mode: crate::models::PlaybackProxyMode,
+    ) -> Result<(), ProviderError> {
+        let MediaSourceConfig::Qnap(config) = source_config else {
+            return Err(ProviderError::InvalidConfig(
+                "QNAP requires QNAP media source_config".to_string(),
+            ));
+        };
+        config.proxy_mode = mode;
+        Ok(())
+    }
+
     async fn generate_playback(
         &self,
         ctx: &ProviderContext<'_>,
@@ -869,7 +922,7 @@ impl MediaProvider for QnapProvider {
                 info.default_media_index = info.medias.len().checked_sub(1);
             }
         }
-        if super::playback_proxy_mode_includes_direct_routes(config.proxy_mode) {
+        if qnap_route_selection(config.proxy_mode).direct {
             let original_modes = playback_infos
                 .iter()
                 .map(|(name, info)| (name.clone(), info.clone()))
@@ -932,8 +985,7 @@ impl MediaProvider for QnapProvider {
             PLAYBACK_CACHE_TTL,
             ctx,
             |result, version, expires_at| {
-                mark_qnap_playback_resources(result, version, expires_at);
-                super::apply_provider_playback_policy(result, config.proxy_mode, true);
+                mark_qnap_playback_resources(result, version, expires_at, config.proxy_mode);
             },
             || async { Ok(result) },
         )
@@ -1374,14 +1426,36 @@ fn insert_mode(
     });
 }
 
-fn mark_qnap_playback_resources(result: &mut PlaybackResult, version: &str, expires_at: i64) {
+fn mark_qnap_playback_resources(
+    result: &mut PlaybackResult,
+    version: &str,
+    expires_at: i64,
+    proxy_mode: crate::models::PlaybackProxyMode,
+) {
+    let original_default = result.default_mode.clone();
+    let prefer_proxy = matches!(
+        proxy_mode,
+        crate::models::PlaybackProxyMode::Prefer | crate::models::PlaybackProxyMode::Only
+    );
     let original_modes = result
         .playback_infos
         .iter()
         .map(|(name, info)| (name.clone(), info.clone()))
         .collect::<Vec<_>>();
+    let mut generated = std::collections::HashMap::new();
     for (mode_name, original_info) in original_modes {
-        if mode_name.starts_with("proxy_") || mode_name.starts_with("direct_") {
+        if mode_name.starts_with("proxy_") {
+            continue;
+        }
+        let selection = qnap_route_selection(proxy_mode);
+        let direct_available = original_info
+            .medias
+            .iter()
+            .any(|media| !media.requires_provider_url());
+        if selection.direct && direct_available {
+            generated.insert(mode_name.clone(), original_info.clone());
+        }
+        if !selection.proxy {
             continue;
         }
         let mut proxy_info = original_info.clone();
@@ -1422,11 +1496,10 @@ fn mark_qnap_playback_resources(result: &mut PlaybackResult, version: &str, expi
                 resource.subtitle_index = subtitle_index;
             }
         }
-        result
-            .playback_infos
-            .insert(format!("proxy_{mode_name}"), proxy_info);
-        result.playback_infos.remove(&mode_name);
+        generated.insert(format!("proxy_{mode_name}"), proxy_info);
     }
+    result.playback_infos = generated;
+    super::select_generated_playback_default(result, &original_default, prefer_proxy);
 }
 
 fn validate_path(path: &str) -> Result<(), ProviderError> {

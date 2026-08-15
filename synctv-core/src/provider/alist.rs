@@ -10,9 +10,10 @@ use super::{
     traits::dynamic_page_has_more,
     DynamicBrowsePathSegment, DynamicListQuery, DynamicListResult, DynamicPagination,
     DynamicPlaylistItem, DynamicPlaylistProvider, ItemType, MediaProvider, NextPlayItem,
-    PlaybackClientProfile, PlaybackInfo, PlaybackResult, PlaybackStreamPreference,
-    PlaybackSubtitlePreference, PreparedSourceConfig, ProviderContext,
-    ProviderCredentialDependency, ProviderError, SourceConfig, SourceCover,
+    PlaybackClientProfile, PlaybackInfo, PlaybackProxyAutoPolicy, PlaybackProxyAutoReason,
+    PlaybackProxyPolicy, PlaybackResult, PlaybackStreamPreference, PlaybackSubtitlePreference,
+    PreparedSourceConfig, ProviderContext, ProviderCredentialDependency, ProviderError,
+    SourceConfig, SourceCover,
 };
 use crate::cache::{SingleFlight, SingleFlightError};
 use crate::models::media::{
@@ -549,26 +550,55 @@ fn merge_subtitles(
     primary
 }
 
-fn mark_alist_playback_resources(result: &mut PlaybackResult, version: &str, expires_at: i64) {
+fn alist_route_selection(
+    proxy_mode: crate::models::PlaybackProxyMode,
+) -> super::PlaybackRouteSelection {
+    use crate::models::PlaybackProxyMode;
+
+    match proxy_mode {
+        PlaybackProxyMode::Auto | PlaybackProxyMode::Only => {
+            super::PlaybackRouteSelection::PROXY_ONLY
+        }
+        PlaybackProxyMode::Prefer => super::PlaybackRouteSelection::PROXY_PREFERRED,
+        PlaybackProxyMode::DirectPrefer => super::PlaybackRouteSelection::DIRECT_PREFERRED,
+        PlaybackProxyMode::DirectOnly => super::PlaybackRouteSelection::DIRECT_ONLY,
+    }
+}
+
+fn mark_alist_playback_resources(
+    result: &mut PlaybackResult,
+    version: &str,
+    expires_at: i64,
+    proxy_mode: crate::models::PlaybackProxyMode,
+) {
     // Alist returns upstream playback modes and SyncTV proxy siblings in the
     // same result. The proxy default keeps clients independent from upstream
     // auth headers and HLS segment rewriting details.
     let original_default_mode = result.default_mode.clone();
+    let mut default_selection = super::PlaybackRouteSelection::DIRECT_ONLY;
     let original_modes = result
         .playback_infos
         .iter()
         .map(|(mode_name, info)| (mode_name.clone(), info.clone()))
         .collect::<Vec<_>>();
+    let mut generated = std::collections::HashMap::new();
 
     for (mode_name, original_info) in original_modes {
         if original_info.medias.is_empty() || mode_name.starts_with("proxy_") {
             continue;
         }
-
-        let proxy_mode_name = format!("proxy_{mode_name}");
-        if result.playback_infos.contains_key(&proxy_mode_name) {
+        let selection = alist_route_selection(proxy_mode);
+        if mode_name == original_default_mode {
+            default_selection = selection;
+        }
+        if selection.direct {
+            generated.insert(mode_name.clone(), original_info.clone());
+        }
+        if !selection.proxy {
             continue;
         }
+
+        let proxy_mode_name = format!("proxy_{mode_name}");
 
         let mut proxy_info = original_info.clone();
         proxy_info.medias = original_info
@@ -637,10 +667,29 @@ fn mark_alist_playback_resources(result: &mut PlaybackResult, version: &str, exp
             })
             .collect();
 
-        result.playback_infos.insert(proxy_mode_name, proxy_info);
+        if !proxy_info.medias.is_empty() {
+            generated.insert(proxy_mode_name, proxy_info);
+        }
     }
 
-    result.default_mode = format!("proxy_{original_default_mode}");
+    result.playback_infos = generated;
+    let proxy_default_mode = format!("proxy_{original_default_mode}");
+    let direct_default_available = result.playback_infos.contains_key(&original_default_mode);
+    let proxy_default_available = result.playback_infos.contains_key(&proxy_default_mode);
+    result.default_mode = if default_selection.prefer_proxy && proxy_default_available {
+        proxy_default_mode
+    } else if direct_default_available {
+        original_default_mode
+    } else if proxy_default_available {
+        proxy_default_mode
+    } else {
+        result
+            .playback_infos
+            .keys()
+            .min()
+            .cloned()
+            .unwrap_or_default()
+    };
 }
 
 fn related_file_path(parent_path: &str, name: &str) -> Option<String> {
@@ -2330,6 +2379,45 @@ impl MediaProvider for AlistProvider {
         Self::NAME
     }
 
+    fn playback_proxy_policy(
+        &self,
+        source_config: SourceConfig<'_>,
+    ) -> Result<Option<PlaybackProxyPolicy>, ProviderError> {
+        let current_mode = match source_config {
+            SourceConfig::Media(MediaSourceConfig::Alist(config)) => config.proxy_mode,
+            SourceConfig::DynamicPlaylist(crate::models::PlaylistSourceConfig::Alist(config)) => {
+                config.proxy_mode
+            }
+            _ => {
+                return Err(ProviderError::InvalidConfig(
+                    "Alist requires Alist source_config".to_string(),
+                ));
+            }
+        };
+        Ok(Some(PlaybackProxyPolicy::all_modes(
+            current_mode,
+            vec![PlaybackProxyAutoPolicy::new(
+                "file",
+                crate::models::PlaybackProxyMode::Only,
+                PlaybackProxyAutoReason::ProviderSession,
+            )],
+        )))
+    }
+
+    fn set_playback_proxy_mode(
+        &self,
+        source_config: &mut MediaSourceConfig,
+        mode: crate::models::PlaybackProxyMode,
+    ) -> Result<(), ProviderError> {
+        let MediaSourceConfig::Alist(config) = source_config else {
+            return Err(ProviderError::InvalidConfig(
+                "Alist requires Alist media source_config".to_string(),
+            ));
+        };
+        config.proxy_mode = mode;
+        Ok(())
+    }
+
     async fn validate_source_config(
         &self,
         _ctx: &ProviderContext<'_>,
@@ -2478,8 +2566,7 @@ impl MediaProvider for AlistProvider {
             cache_ttl,
             _ctx,
             |result, version, expires_at| {
-                mark_alist_playback_resources(result, version, expires_at);
-                super::apply_provider_playback_policy(result, proxy_mode, true);
+                mark_alist_playback_resources(result, version, expires_at, proxy_mode);
             },
             || async {
                 let resolved = self.resolve_config(_ctx, config.clone()).await?;
@@ -3784,7 +3871,12 @@ mod tests {
             metadata: None,
         };
 
-        mark_alist_playback_resources(&mut result, "version", transport_expires_at);
+        mark_alist_playback_resources(
+            &mut result,
+            "version",
+            transport_expires_at,
+            crate::models::PlaybackProxyMode::Auto,
+        );
         let proxy = &result.playback_infos["proxy_direct"];
         assert_eq!(
             proxy.medias[0].expire_at.map(|value| value.timestamp()),

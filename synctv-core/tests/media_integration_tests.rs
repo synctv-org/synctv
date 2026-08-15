@@ -211,27 +211,6 @@ async fn test_media_get_by_id() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_media_update() {
-    let ctx = setup_test_context("3").await;
-    let media_repo = MediaRepository::new(ctx.pool.clone());
-
-    let media = make_media(&ctx.root_playlist.id, &ctx.room.id, "original.mp4", 0);
-    let created = media_repo
-        .create(&media)
-        .await
-        .checked("test operation should succeed");
-
-    let mut updated_media = created.clone();
-    updated_media.name = "renamed.mp4".to_string();
-    let updated = media_repo
-        .update(&updated_media)
-        .await
-        .checked("test operation should succeed");
-    assert_eq!(updated.name, "renamed.mp4");
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
 async fn test_media_delete() {
     let ctx = setup_test_context("4").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());

@@ -113,18 +113,19 @@ impl TimePartitionManager {
             let cutoff_name = format!("{}_{}", table_name, cutoff_date.format("%Y_%m_%d"));
             let like_pattern = format!("{table_name}_%");
             let regex_pattern = format!(r"^{table_name}_[0-9]{{4}}_[0-9]{{2}}_[0-9]{{2}}$");
-            let rows = sqlx::query_as::<_, PartitionNameRow>(
-                r"SELECT tablename
+            let rows = sqlx::query_as!(
+                PartitionNameRow,
+                r#"SELECT tablename AS "tablename!"
                    FROM pg_tables
                    WHERE schemaname = 'public'
                      AND tablename LIKE $1
                      AND tablename ~ $2
                      AND tablename < $3
-                   ORDER BY tablename",
+                   ORDER BY tablename"#,
+                like_pattern,
+                regex_pattern,
+                cutoff_name,
             )
-            .bind(like_pattern)
-            .bind(regex_pattern)
-            .bind(cutoff_name)
             .fetch_all(&mut *conn)
             .await
             .map_err(|e| Error::Internal(format!("Failed to list old partitions: {e}")))?;

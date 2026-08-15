@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE email_outbox\n            SET cleanup_completed_at = NOW()\n            WHERE id = $1\n              AND status = $2\n              AND cleanup_completed_at IS NULL\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "fe3b24f8378f1b2111067c1e4cc1185d28a6afcafd87cfc6ebe89aa7c3fd9771"
+}

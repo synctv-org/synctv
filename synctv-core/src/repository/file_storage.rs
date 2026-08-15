@@ -1051,9 +1051,9 @@ impl FileStorageRepository {
         .execute(&mut *tx)
         .await?;
 
-        let active_reference_count = sqlx::query_scalar::<_, i64>(
-            r"
-            SELECT COUNT(*)::BIGINT
+        let active_reference_count = sqlx::query_scalar!(
+            r#"
+            SELECT COUNT(*)::BIGINT AS "count!"
             FROM file_references
             WHERE storage_backend = $1
               AND object_key = $2
@@ -1078,11 +1078,11 @@ impl FileStorageRepository {
                         AND s.completed_at IS NOT NULL
                   )
               )
-            ",
+            "#,
+            storage_backend,
+            object_key,
+            ignore_completed_upload_session_references,
         )
-        .bind(storage_backend)
-        .bind(object_key)
-        .bind(ignore_completed_upload_session_references)
         .fetch_one(&mut *tx)
         .await?;
         if active_reference_count > 0 {

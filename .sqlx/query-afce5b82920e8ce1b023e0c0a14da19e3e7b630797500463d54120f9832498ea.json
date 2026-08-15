@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH ranked AS (\n                   SELECT h.room_id, h.id, h.sequence, h.created_at,\n                          ROW_NUMBER() OVER (PARTITION BY h.room_id ORDER BY h.sequence DESC) AS rank\n                   FROM room_playback_history h\n               ), candidate_rooms AS (\n                   SELECT r.room_id\n                   FROM ranked r\n                   WHERE (($1 > 0 AND r.created_at < CURRENT_TIMESTAMP - make_interval(days => $1))\n                       OR ($2::BIGINT > 0 AND r.rank > $2::BIGINT))\n                   GROUP BY r.room_id\n                   ORDER BY MIN(r.created_at), r.room_id\n               ), locked_cursors AS MATERIALIZED (\n                   SELECT c.room_id, c.history_cursor_id, c.history_cursor_created_at\n                   FROM room_playback_state c\n                   JOIN candidate_rooms rooms ON rooms.room_id = c.room_id\n                   FOR UPDATE OF c\n               ), protected AS (\n                   SELECT c.room_id, c.history_cursor_id AS id\n                   FROM locked_cursors c\n                   WHERE c.history_cursor_id IS NOT NULL\n                   UNION\n                   SELECT c.room_id, neighbor.id\n                   FROM locked_cursors c\n                   JOIN room_playback_history current\n                     ON current.room_id = c.room_id\n                    AND current.id = c.history_cursor_id\n                    AND current.created_at = c.history_cursor_created_at\n                   JOIN LATERAL (\n                       (SELECT h.id FROM room_playback_history h\n                        WHERE h.room_id = current.room_id AND h.sequence < current.sequence\n                        ORDER BY h.sequence DESC LIMIT 1)\n                       UNION ALL\n                       (SELECT h.id FROM room_playback_history h\n                        WHERE h.room_id = current.room_id AND h.sequence > current.sequence\n                        ORDER BY h.sequence ASC LIMIT 1)\n                   ) neighbor ON TRUE\n               ), candidates AS (\n                   SELECT r.room_id, r.id, r.created_at\n                   FROM ranked r\n                   JOIN candidate_rooms rooms ON rooms.room_id = r.room_id\n                   WHERE (($1 > 0 AND r.created_at < CURRENT_TIMESTAMP - make_interval(days => $1))\n                       OR ($2::BIGINT > 0 AND r.rank > $2::BIGINT))\n                     AND NOT EXISTS (\n                         SELECT 1 FROM protected p WHERE p.room_id = r.room_id AND p.id = r.id\n                     )\n                   ORDER BY r.created_at ASC, r.room_id, r.id\n                   LIMIT 5000\n               )\n               DELETE FROM room_playback_history h\n               USING candidates c\n               WHERE h.room_id = c.room_id AND h.id = c.id AND h.created_at = c.created_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "afce5b82920e8ce1b023e0c0a14da19e3e7b630797500463d54120f9832498ea"
+}

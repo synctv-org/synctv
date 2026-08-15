@@ -112,6 +112,11 @@ fn test_build_get_playback_request_parses_generic_profile_query() -> TestResult 
             synctv_proto::client::PlaybackContainer::Mp4 as i32,
             synctv_proto::client::PlaybackContainer::Webm as i32
         )),
+        live_transports: Some(format!(
+            "{},{}",
+            synctv_proto::client::PlaybackLiveTransport::Hls as i32,
+            synctv_proto::client::PlaybackLiveTransport::Flv as i32
+        )),
         audio_capability: Some(synctv_proto::client::PlaybackAudioCapability::Surround as i32),
         subtitle_preference: Some(
             synctv_proto::client::PlaybackSubtitlePreference::EmbeddedOrExternal as i32,
@@ -139,6 +144,13 @@ fn test_build_get_playback_request_parses_generic_profile_query() -> TestResult 
         vec![
             synctv_proto::client::PlaybackContainer::Mp4 as i32,
             synctv_proto::client::PlaybackContainer::Webm as i32,
+        ]
+    );
+    assert_eq!(
+        profile.supported_live_transports,
+        vec![
+            synctv_proto::client::PlaybackLiveTransport::Hls as i32,
+            synctv_proto::client::PlaybackLiveTransport::Flv as i32,
         ]
     );
     assert_eq!(
@@ -233,6 +245,7 @@ fn test_build_get_playback_request_rejects_invalid_video_codec() {
         max_audio_channels: None,
         video_codecs: Some("1,999".to_string()),
         containers: None,
+        live_transports: None,
         audio_capability: None,
         subtitle_preference: None,
     })
@@ -249,6 +262,7 @@ fn test_build_get_playback_request_rejects_invalid_stream_preference() {
         max_audio_channels: None,
         video_codecs: None,
         containers: None,
+        live_transports: None,
         audio_capability: None,
         subtitle_preference: None,
     })
@@ -265,6 +279,7 @@ fn test_build_get_playback_request_rejects_invalid_container() {
         max_audio_channels: None,
         video_codecs: None,
         containers: Some("1,999".to_string()),
+        live_transports: None,
         audio_capability: None,
         subtitle_preference: None,
     })
@@ -281,6 +296,7 @@ fn test_build_get_playback_request_rejects_invalid_audio_capability() {
         max_audio_channels: None,
         video_codecs: None,
         containers: None,
+        live_transports: None,
         audio_capability: Some(999),
         subtitle_preference: None,
     })
@@ -297,6 +313,7 @@ fn test_build_get_playback_request_rejects_invalid_subtitle_preference() -> Test
         max_audio_channels: None,
         video_codecs: None,
         containers: None,
+        live_transports: None,
         audio_capability: None,
         subtitle_preference: Some(999),
     }))?;

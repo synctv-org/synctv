@@ -34,6 +34,30 @@ SyncTV proxy 只使用 Provider 明确给出的 header。它不会把浏览器�
 
 Alist 播放 URL 可能绑定特定 `User-Agent`。Bilibili 常依赖 `User-Agent`、`Referer`、Cookie 和 Range。直连与代理表现不一致时，对比 Provider 返回给客户端的 header 与代理发往上游的 header；客户端受浏览器限制时选择代理 URL。
 
+## 播放线路策略
+
+每个 Provider 负责解释 `PlaybackProxyMode`、判断认证信息暴露风险，并在生成 `PlaybackResult` 时决定具体线路。`Auto` 的结果可以随 Provider、媒体类型和媒体变体变化。外层 API 负责找到 Provider 并透传策略结果。
+
+| 配置模式 | Provider 生成行为 |
+| --- | --- |
+| `Auto` | Provider 根据每个媒体变体的 URL、header、签名和会话要求选择实际模式 |
+| `Prefer` | 生成代理与直连线路，默认选择代理 |
+| `Only` | 只生成代理线路 |
+| `DirectPrefer` | 生成直连与代理线路，默认选择直连 |
+| `DirectOnly` | 只生成直连线路 |
+
+`Auto` 以认证信息保护为主要规则：公开资源使用 `DirectPrefer`；认证 header、URL 认证参数、签名 URL 和 Provider 会话使用 `Only`。Provider 可以为协议、转码或服务端传输需求返回更严格的结果。Bilibili 视频、PGC 和直播使用签名资源，因此 `Auto` 返回 `Only`。NAS 和云盘来源依赖 Provider 会话，因此 `Auto` 返回 `Only`。Direct URL 会逐项检查媒体、字幕和弹幕资源，混合来源可以同时包含公开直连变体和受保护代理变体。
+
+Provider 在请求上游资源前计算线路选择。只代理模式跳过直连 URL 获取或直连变体构建，只直连模式跳过代理资源构建。这个顺序减少上游请求、签名生成、转码准备和缓存写入。
+
+客户端使用 `POST /api/providers/playback-proxy-policy` 查询具体 `DiscoveredSource`。响应包含：
+
+- `supported_modes`：该来源支持的表单选项。
+- `current_mode`：来源当前保存的配置。
+- `auto_policies`：每个媒体变体的 Auto 实际模式和原因。
+
+客户端根据响应动态生成选择器和提示，也可以对已保存来源查询同一策略。Provider 新增媒体变体时同步更新策略返回值和播放生成测试。
+
 ## 客户端选择策略
 
 客户端应根据环境和能力选择播放结果：
@@ -45,6 +69,18 @@ Alist 播放 URL 可能绑定特定 `User-Agent`。Bilibili 常依赖 `User-Agen
 | 移动端不支持某些 codec/container | 在 `PlaybackClientProfile` 中声明能力，选择转码或兼容模式 |
 | URL 有 `expires_at` | 到期前重新获取播放信息 |
 | 字幕有独立 header | 使用字幕 URL 自带 header；proxy 字幕时 header 会合并 |
+
+## 直播传输协商
+
+客户端通过 `PlaybackClientProfile.supported_live_transports` 声明播放器支持的直播传输。当前协议定义 `PLAYBACK_LIVE_TRANSPORT_HLS` 和 `PLAYBACK_LIVE_TRANSPORT_FLV`。Provider 在请求上游播放信息前选择传输，并让上游请求参数、`PlaybackMedia.format` 和实际 URL 保持一致。
+
+| 客户端配置 | 当前声明 | Provider 结果 |
+| --- | --- | --- |
+| Web | HLS | 请求 HLS 上游资源，返回 `m3u8` 媒体 |
+| 原生桌面和移动端 | FLV | 请求 HTTP-FLV 上游资源，返回 `flv` 媒体 |
+| 旧客户端或空列表 | HLS 默认能力 | 按 HLS 兼容路径生成播放信息 |
+
+直播 Provider 将最终传输类型写入播放缓存键。HLS 和 FLV 使用独立缓存条目，因此客户端能力变化会触发对应上游资源生成。新增直播 Provider 或传输类型时，需要同时覆盖能力选择、上游参数、返回 format、缓存隔离和客户端实际播放测试。
 
 ## Range 与 slice cache
 

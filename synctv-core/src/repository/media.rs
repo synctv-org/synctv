@@ -492,43 +492,6 @@ impl MediaRepository {
         Ok(all_results)
     }
 
-    /// Update media
-    pub async fn update(&self, media: &Media) -> Result<Media> {
-        let row = sqlx::query_as!(
-            MediaRow,
-            r#"
-            UPDATE media
-            SET name = $2, description = $3, position = $4
-             WHERE id = $1
-               AND deleted_at IS NULL
-               AND (creator_id IS NULL OR EXISTS (
-                   SELECT 1 FROM users WHERE users.id = media.creator_id AND users.deleted_at IS NULL
-               ))
-             RETURNING id as "id: MediaId",
-                       playlist_id as "playlist_id: PlaylistId",
-                       room_id as "room_id: RoomId",
-                       creator_id as "creator_id: UserId",
-                       name,
-                       description,
-                       position,
-                       source_provider as "source_provider: ProviderTypeName",
-                       source_config as "source_config: crate::models::MediaSourceConfig",
-                       NULLIF(provider_instance_name, '') AS "provider_instance_name?",
-                       cover_file_reference_id,
-    thumbnail_file_reference_id,
-                       added_at, updated_at, version
-            "#,
-            media.id as MediaId,
-            media.name,
-            media.description,
-            media.position,
-        )
-        .fetch_one(&self.pool)
-        .await?;
-
-        Ok(row.into())
-    }
-
     /// Optimistic locking update: only succeeds if the row's version matches
     /// the provided `expected_version`. Returns `Ok(Some(Media))` with the updated
     /// row (version incremented) on success, or `Ok(None)` if the version doesn't
@@ -563,14 +526,16 @@ impl MediaRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
+        let source_config = serde_json::to_value(&media.source_config)?;
         let row = sqlx::query_as!(
             MediaRow,
             r#"
             UPDATE media
-            SET name = $2, description = $3, position = $4, version = version + 1
+            SET name = $2, description = $3, position = $4, source_config = $5,
+                version = version + 1
              WHERE id = $1
                AND deleted_at IS NULL
-               AND version = $5
+               AND version = $6
                AND (creator_id IS NULL OR EXISTS (
                    SELECT 1 FROM users u
                    WHERE u.id = media.creator_id AND u.deleted_at IS NULL
@@ -593,6 +558,7 @@ impl MediaRepository {
             media.name,
             media.description,
             media.position,
+            source_config,
             expected_version,
         )
         .fetch_optional(executor)

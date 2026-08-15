@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{PgPool, Postgres, Row, Transaction};
+use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::{Error, Result};
 
@@ -122,6 +122,18 @@ pub struct EmailOutboxJob {
     pub created_at: DateTime<Utc>,
 }
 
+struct EmailOutboxRow {
+    id: String,
+    kind: i16,
+    recipient: String,
+    encrypted_payload: String,
+    status: i16,
+    attempts: i32,
+    lock_version: i64,
+    expires_at: DateTime<Utc>,
+    created_at: DateTime<Utc>,
+}
+
 #[derive(Clone)]
 pub struct EmailOutboxRepository {
     pool: PgPool,
@@ -150,8 +162,8 @@ impl EmailOutboxRepository {
         job: &NewEmailOutboxJob,
         tx: &mut Transaction<'_, Postgres>,
     ) -> Result<bool> {
-        let inserted = sqlx::query_scalar::<_, String>(
-            r"
+        let inserted = sqlx::query_scalar!(
+            r#"
             INSERT INTO email_outbox (
                 id, kind, recipient, encrypted_payload, dedupe_key,
                 status, attempts, next_attempt_at, lock_version,
@@ -159,27 +171,25 @@ impl EmailOutboxRepository {
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             ON CONFLICT (dedupe_key) DO NOTHING
-            RETURNING id
-            ",
+            RETURNING id AS "id!"
+            "#,
+            &job.id,
+            job.kind.as_i16(),
+            &job.recipient,
+            &job.encrypted_payload,
+            &job.dedupe_key,
+            EmailOutboxStatus::Pending.as_i16(),
+            job.attempts,
+            job.next_attempt_at,
+            job.lock_version,
+            job.expires_at,
+            job.created_at,
         )
-        .bind(&job.id)
-        .bind(job.kind.as_i16())
-        .bind(&job.recipient)
-        .bind(&job.encrypted_payload)
-        .bind(&job.dedupe_key)
-        .bind(EmailOutboxStatus::Pending.as_i16())
-        .bind(job.attempts)
-        .bind(job.next_attempt_at)
-        .bind(job.lock_version)
-        .bind(job.expires_at)
-        .bind(job.created_at)
         .fetch_optional(&mut **tx)
         .await?;
 
         if let Some(id) = inserted {
-            sqlx::query("SELECT pg_notify($1, $2)")
-                .bind(EMAIL_OUTBOX_CHANNEL)
-                .bind(id)
+            sqlx::query!("SELECT pg_notify($1, $2)", EMAIL_OUTBOX_CHANNEL, id,)
                 .execute(&mut **tx)
                 .await?;
             Ok(true)
@@ -189,8 +199,9 @@ impl EmailOutboxRepository {
     }
 
     pub async fn claim_batch(&self, worker_id: &str, limit: i64) -> Result<Vec<EmailOutboxJob>> {
-        let rows = sqlx::query(
-            r"
+        let rows = sqlx::query_as!(
+            EmailOutboxRow,
+            r#"
             WITH picked AS (
                 SELECT id
                 FROM email_outbox
@@ -212,38 +223,24 @@ impl EmailOutboxRepository {
             RETURNING job.id, job.kind, job.recipient, job.encrypted_payload,
                       job.status, job.attempts, job.lock_version,
                       job.expires_at, job.created_at
-            ",
+            "#,
+            limit,
+            EmailOutboxStatus::Pending.as_i16(),
+            EmailOutboxStatus::Processing.as_i16(),
+            worker_id,
+            EmailOutboxKind::known_database_values(),
         )
-        .bind(limit)
-        .bind(EmailOutboxStatus::Pending.as_i16())
-        .bind(EmailOutboxStatus::Processing.as_i16())
-        .bind(worker_id)
-        .bind(EmailOutboxKind::known_database_values())
         .fetch_all(&self.pool)
         .await?;
 
-        rows.into_iter()
-            .map(|row| {
-                Ok(EmailOutboxJob {
-                    id: row.try_get("id")?,
-                    kind: EmailOutboxKind::try_from(row.try_get::<i16, _>("kind")?)?,
-                    recipient: row.try_get("recipient")?,
-                    encrypted_payload: row.try_get("encrypted_payload")?,
-                    status: EmailOutboxStatus::try_from(row.try_get::<i16, _>("status")?)?,
-                    attempts: row.try_get("attempts")?,
-                    lock_version: row.try_get("lock_version")?,
-                    expires_at: row.try_get("expires_at")?,
-                    created_at: row.try_get("created_at")?,
-                })
-            })
-            .collect()
+        rows.into_iter().map(row_to_job).collect()
     }
 
     pub async fn mark_sent(&self, id: &str, worker_id: &str, lock_version: i64) -> Result<bool> {
-        let result = sqlx::query(
-            r"
+        let result = sqlx::query!(
+            r#"
             UPDATE email_outbox
-            SET status = $4,
+            SET status = $4::SMALLINT,
                 sent_at = NOW(),
                 locked_by = NULL,
                 locked_at = NULL,
@@ -252,33 +249,33 @@ impl EmailOutboxRepository {
               AND locked_by = $2
               AND lock_version = $3
               AND status = $5
-            ",
+            "#,
+            id,
+            worker_id,
+            lock_version,
+            EmailOutboxStatus::Sent.as_i16(),
+            EmailOutboxStatus::Processing.as_i16(),
         )
-        .bind(id)
-        .bind(worker_id)
-        .bind(lock_version)
-        .bind(EmailOutboxStatus::Sent.as_i16())
-        .bind(EmailOutboxStatus::Processing.as_i16())
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected() == 1)
     }
 
     pub async fn renew_lease(&self, id: &str, worker_id: &str, lock_version: i64) -> Result<bool> {
-        let result = sqlx::query(
-            r"
+        let result = sqlx::query!(
+            r#"
             UPDATE email_outbox
             SET locked_at = NOW()
             WHERE id = $1
               AND locked_by = $2
               AND lock_version = $3
               AND status = $4
-            ",
+            "#,
+            id,
+            worker_id,
+            lock_version,
+            EmailOutboxStatus::Processing.as_i16(),
         )
-        .bind(id)
-        .bind(worker_id)
-        .bind(lock_version)
-        .bind(EmailOutboxStatus::Processing.as_i16())
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected() == 1)
@@ -300,13 +297,13 @@ impl EmailOutboxRepository {
         };
         let retry_delay = retry_delay_seconds(next_attempt, &job.id);
 
-        let updated = sqlx::query_scalar::<_, i16>(
-            r"
+        let updated = sqlx::query_scalar!(
+            r#"
             UPDATE email_outbox
-            SET status = $4,
+            SET status = $4::SMALLINT,
                 attempts = $5,
                 next_attempt_at = CASE
-                    WHEN $4 = $8 THEN NOW() + make_interval(secs => $6::DOUBLE PRECISION)
+                    WHEN $4::SMALLINT = $8::SMALLINT THEN NOW() + make_interval(secs => $6::DOUBLE PRECISION)
                     ELSE next_attempt_at
                 END,
                 locked_by = NULL,
@@ -315,19 +312,19 @@ impl EmailOutboxRepository {
             WHERE id = $1
               AND locked_by = $2
               AND lock_version = $3
-              AND status = $9
-            RETURNING status
-            ",
+              AND status = $9::SMALLINT
+            RETURNING status AS "status!"
+            "#,
+            &job.id,
+            worker_id,
+            job.lock_version,
+            status.as_i16(),
+            next_attempt,
+            f64::from(retry_delay),
+            error,
+            EmailOutboxStatus::Pending.as_i16(),
+            EmailOutboxStatus::Processing.as_i16(),
         )
-        .bind(&job.id)
-        .bind(worker_id)
-        .bind(job.lock_version)
-        .bind(status.as_i16())
-        .bind(next_attempt)
-        .bind(retry_delay)
-        .bind(error)
-        .bind(EmailOutboxStatus::Pending.as_i16())
-        .bind(EmailOutboxStatus::Processing.as_i16())
         .fetch_optional(&self.pool)
         .await?;
 
@@ -335,28 +332,28 @@ impl EmailOutboxRepository {
     }
 
     pub async fn requeue_stale_processing(&self, stale_after_seconds: i64) -> Result<u64> {
-        let result = sqlx::query(
-            r"
+        let result = sqlx::query!(
+            r#"
             UPDATE email_outbox
             SET status = $2,
                 locked_by = NULL,
                 locked_at = NULL,
                 next_attempt_at = NOW()
             WHERE status = $3
-              AND locked_at < NOW() - make_interval(secs => $1::DOUBLE PRECISION)
-            ",
+              AND locked_at < NOW() - make_interval(secs => ($1::BIGINT)::DOUBLE PRECISION)
+            "#,
+            stale_after_seconds,
+            EmailOutboxStatus::Pending.as_i16(),
+            EmailOutboxStatus::Processing.as_i16(),
         )
-        .bind(stale_after_seconds)
-        .bind(EmailOutboxStatus::Pending.as_i16())
-        .bind(EmailOutboxStatus::Processing.as_i16())
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected())
     }
 
     pub async fn expire_pending(&self) -> Result<u64> {
-        let result = sqlx::query(
-            r"
+        let result = sqlx::query!(
+            r#"
             UPDATE email_outbox
             SET status = $1,
                 cleanup_completed_at = CASE
@@ -366,19 +363,20 @@ impl EmailOutboxRepository {
                 last_error = 'delivery job expired before it could be sent'
             WHERE status = $2
               AND expires_at <= NOW()
-            ",
+            "#,
+            EmailOutboxStatus::Dead.as_i16(),
+            EmailOutboxStatus::Pending.as_i16(),
+            EmailOutboxKind::known_database_values(),
         )
-        .bind(EmailOutboxStatus::Dead.as_i16())
-        .bind(EmailOutboxStatus::Pending.as_i16())
-        .bind(EmailOutboxKind::known_database_values())
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected())
     }
 
     pub async fn load_cleanup_pending(&self, limit: i64) -> Result<Vec<EmailOutboxJob>> {
-        let rows = sqlx::query(
-            r"
+        let rows = sqlx::query_as!(
+            EmailOutboxRow,
+            r#"
             SELECT id, kind, recipient, encrypted_payload, status, attempts,
                    lock_version, expires_at, created_at
             FROM email_outbox
@@ -387,89 +385,90 @@ impl EmailOutboxRepository {
               AND kind = ANY($3)
             ORDER BY created_at, id
             LIMIT $2
-            ",
+            "#,
+            EmailOutboxStatus::Dead.as_i16(),
+            limit,
+            EmailOutboxKind::known_database_values(),
         )
-        .bind(EmailOutboxStatus::Dead.as_i16())
-        .bind(limit)
-        .bind(EmailOutboxKind::known_database_values())
         .fetch_all(&self.pool)
         .await?;
-        rows.iter().map(row_to_job).collect()
+        rows.into_iter().map(row_to_job).collect()
     }
 
     pub async fn close_unknown_dead_cleanup(&self) -> Result<u64> {
-        let result = sqlx::query(
-            r"
+        let result = sqlx::query!(
+            r#"
             UPDATE email_outbox
             SET cleanup_completed_at = NOW(),
                 last_error = COALESCE(last_error, 'unknown email outbox kind')
             WHERE status = $1
               AND cleanup_completed_at IS NULL
               AND kind <> ALL($2)
-            ",
+            "#,
+            EmailOutboxStatus::Dead.as_i16(),
+            EmailOutboxKind::known_database_values(),
         )
-        .bind(EmailOutboxStatus::Dead.as_i16())
-        .bind(EmailOutboxKind::known_database_values())
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected())
     }
 
     pub async fn mark_cleanup_completed(&self, id: &str) -> Result<bool> {
-        let result = sqlx::query(
-            r"
+        let result = sqlx::query!(
+            r#"
             UPDATE email_outbox
             SET cleanup_completed_at = NOW()
             WHERE id = $1
               AND status = $2
               AND cleanup_completed_at IS NULL
-            ",
+            "#,
+            id,
+            EmailOutboxStatus::Dead.as_i16(),
         )
-        .bind(id)
-        .bind(EmailOutboxStatus::Dead.as_i16())
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected() == 1)
     }
 
     pub async fn purge_terminal(&self, retention_seconds: i64) -> Result<u64> {
-        let result = sqlx::query(
-            r"
+        let result = sqlx::query!(
+            r#"
             DELETE FROM email_outbox
             WHERE (status = $2 OR (status = $3 AND cleanup_completed_at IS NOT NULL))
               AND COALESCE(sent_at, created_at)
-                  < NOW() - make_interval(secs => $1::DOUBLE PRECISION)
-            ",
+                  < NOW() - make_interval(secs => ($1::BIGINT)::DOUBLE PRECISION)
+            "#,
+            retention_seconds,
+            EmailOutboxStatus::Sent.as_i16(),
+            EmailOutboxStatus::Dead.as_i16(),
         )
-        .bind(retention_seconds)
-        .bind(EmailOutboxStatus::Sent.as_i16())
-        .bind(EmailOutboxStatus::Dead.as_i16())
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected())
     }
 
     pub async fn pending_count(&self) -> Result<i64> {
-        let count =
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM email_outbox WHERE status = $1")
-                .bind(EmailOutboxStatus::Pending.as_i16())
-                .fetch_one(&self.pool)
-                .await?;
+        let count = sqlx::query_scalar!(
+            r#"SELECT COUNT(*)::BIGINT AS "count!" FROM email_outbox WHERE status = $1"#,
+            EmailOutboxStatus::Pending.as_i16(),
+        )
+        .fetch_one(&self.pool)
+        .await?;
         Ok(count)
     }
 }
 
-fn row_to_job(row: &sqlx::postgres::PgRow) -> Result<EmailOutboxJob> {
+fn row_to_job(row: EmailOutboxRow) -> Result<EmailOutboxJob> {
     Ok(EmailOutboxJob {
-        id: row.try_get("id")?,
-        kind: EmailOutboxKind::try_from(row.try_get::<i16, _>("kind")?)?,
-        recipient: row.try_get("recipient")?,
-        encrypted_payload: row.try_get("encrypted_payload")?,
-        status: EmailOutboxStatus::try_from(row.try_get::<i16, _>("status")?)?,
-        attempts: row.try_get("attempts")?,
-        lock_version: row.try_get("lock_version")?,
-        expires_at: row.try_get("expires_at")?,
-        created_at: row.try_get("created_at")?,
+        id: row.id,
+        kind: EmailOutboxKind::try_from(row.kind)?,
+        recipient: row.recipient,
+        encrypted_payload: row.encrypted_payload,
+        status: EmailOutboxStatus::try_from(row.status)?,
+        attempts: row.attempts,
+        lock_version: row.lock_version,
+        expires_at: row.expires_at,
+        created_at: row.created_at,
     })
 }
 
@@ -547,7 +546,7 @@ mod tests {
             .await
             .expect("first claim")
             .remove(0);
-        sqlx::query("UPDATE email_outbox SET locked_at = NOW() - INTERVAL '3 minutes'")
+        sqlx::query!("UPDATE email_outbox SET locked_at = NOW() - INTERVAL '3 minutes'")
             .execute(&pool)
             .await
             .expect("age lease");
@@ -588,7 +587,7 @@ mod tests {
             .await
             .expect("claim job")
             .remove(0);
-        sqlx::query("UPDATE email_outbox SET locked_at = NOW() - INTERVAL '3 minutes'")
+        sqlx::query!("UPDATE email_outbox SET locked_at = NOW() - INTERVAL '3 minutes'")
             .execute(&pool)
             .await
             .expect("age lease");
@@ -617,8 +616,8 @@ mod tests {
             .await
             .expect("insert job"));
         tx.rollback().await.expect("rollback transaction");
-        let count = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM email_outbox WHERE id = 'rolled-back'",
+        let count = sqlx::query_scalar!(
+            r#"SELECT COUNT(*)::BIGINT AS "count!" FROM email_outbox WHERE id = 'rolled-back'"#,
         )
         .fetch_one(&pool)
         .await
@@ -648,7 +647,7 @@ mod tests {
                 .expect("record retry")
                 .expect("lease should remain valid");
             assert_eq!(status, EmailOutboxStatus::Pending);
-            sqlx::query(
+            sqlx::query!(
                 "UPDATE email_outbox SET next_attempt_at = NOW() WHERE id = 'retry-budget'",
             )
             .execute(&pool)
@@ -656,7 +655,7 @@ mod tests {
             .expect("make retry due");
         }
 
-        sqlx::query("UPDATE email_outbox SET expires_at = NOW() WHERE id = 'retry-budget'")
+        sqlx::query!("UPDATE email_outbox SET expires_at = NOW() WHERE id = 'retry-budget'")
             .execute(&pool)
             .await
             .expect("expire job");
@@ -684,7 +683,7 @@ mod tests {
             .insert(&job("known-job"))
             .await
             .expect("insert known job");
-        sqlx::query(
+        sqlx::query!(
             r"
             INSERT INTO email_outbox (
                 id, kind, recipient, encrypted_payload, dedupe_key,
@@ -709,7 +708,7 @@ mod tests {
         assert_eq!(claimed.len(), 1);
         assert_eq!(claimed[0].id, "known-job");
 
-        sqlx::query(
+        sqlx::query!(
             "UPDATE email_outbox SET status = 4, cleanup_completed_at = NULL WHERE id = 'future-job'",
         )
         .execute(&pool)

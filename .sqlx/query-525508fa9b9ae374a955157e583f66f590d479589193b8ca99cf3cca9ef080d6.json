@@ -1,0 +1,38 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO email_outbox (\n                id, kind, recipient, encrypted_payload, dedupe_key,\n                status, attempts, next_attempt_at, lock_version,\n                expires_at, created_at\n            )\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)\n            ON CONFLICT (dedupe_key) DO NOTHING\n            RETURNING id AS \"id!\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "email_outbox",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int2",
+        "Text",
+        "Text",
+        "Text",
+        "Int2",
+        "Int4",
+        "Timestamptz",
+        "Int8",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "525508fa9b9ae374a955157e583f66f590d479589193b8ca99cf3cca9ef080d6"
+}

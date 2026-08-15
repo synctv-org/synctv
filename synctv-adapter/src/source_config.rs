@@ -837,7 +837,7 @@ fn emby_playlist_source_config_from_proto(
     })
 }
 
-fn playback_proxy_mode_from_proto(
+pub fn playback_proxy_mode_from_proto(
     mode: i32,
 ) -> AdapterResult<synctv_core::models::PlaybackProxyMode> {
     match source_config_proto::PlaybackProxyMode::try_from(mode)

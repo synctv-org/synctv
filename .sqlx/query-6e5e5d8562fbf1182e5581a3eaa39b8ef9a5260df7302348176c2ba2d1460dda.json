@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE email_outbox\n            SET status = $1,\n                cleanup_completed_at = CASE\n                    WHEN kind = ANY($3) THEN cleanup_completed_at\n                    ELSE NOW()\n                END,\n                last_error = 'delivery job expired before it could be sent'\n            WHERE status = $2\n              AND expires_at <= NOW()\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int2",
+        "Int2",
+        "Int2Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6e5e5d8562fbf1182e5581a3eaa39b8ef9a5260df7302348176c2ba2d1460dda"
+}

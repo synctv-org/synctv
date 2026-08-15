@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT tablename AS \"tablename!\"\n                   FROM pg_tables\n                   WHERE schemaname = 'public'\n                     AND tablename LIKE $1\n                     AND tablename ~ $2\n                     AND tablename < $3\n                   ORDER BY tablename",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tablename!",
+        "type_info": "Name",
+        "origin": {
+          "Table": {
+            "table": "pg_tables",
+            "name": "tablename"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Name"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "e59a1091343d758f57f87b1ff7b2343e539d65036ce58a928dd1cb4807b42bfe"
+}

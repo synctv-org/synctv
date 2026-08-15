@@ -18,10 +18,11 @@ use synctv_proto::providers::common::{
     DeleteProviderInstanceResponse, DisableProviderInstanceRequest,
     DisableProviderInstanceResponse, EnableProviderInstanceRequest, EnableProviderInstanceResponse,
     ListAvailableProviderInstancesRequest, ListProviderBackendsRequest,
-    ListProviderInstancesRequest, ListProviderInstancesResponse, PrepareDirectUrlRequest,
-    PrepareLiveProxyRequest, PrepareRtmpRequest, PreparedMediaSource, ProviderBackendsResponse,
-    ProviderInstanceQuery, ProviderInstancesResponse, ReconnectProviderInstanceRequest,
-    ReconnectProviderInstanceResponse, UpdateProviderInstanceRequest,
+    ListProviderInstancesRequest, ListProviderInstancesResponse, PlaybackProxyPolicy,
+    PrepareDirectUrlRequest, PrepareLiveProxyRequest, PrepareRtmpRequest, PreparedMediaSource,
+    ProviderBackendsResponse, ProviderInstanceQuery, ProviderInstancesResponse,
+    ReconnectProviderInstanceRequest, ReconnectProviderInstanceResponse,
+    ResolvePlaybackProxyPolicyRequest, UpdateProviderInstanceRequest,
     UpdateProviderInstanceResponse,
 };
 
@@ -81,6 +82,10 @@ pub(crate) fn register_common_routes() -> Router<AppState> {
         .route("/prepare/direct-url", post(prepare_direct_url))
         .route("/prepare/live-proxy", post(prepare_live_proxy))
         .route("/prepare/rtmp", post(prepare_rtmp))
+        .route(
+            "/playback-proxy-policy",
+            post(resolve_playback_proxy_policy),
+        )
         .route("/instances/available", get(list_instances))
         .route("/instances", get(list_provider_instances))
         .route("/instances", post(add_provider_instance))
@@ -145,6 +150,24 @@ pub(crate) async fn prepare_rtmp(
             &request_meta.0,
             EndpointRateLimitCategory::Read,
             move |_| async move { api.prepare_rtmp(req) },
+        )
+        .await
+        .map(Json)
+        .map_err(map_api_error)
+}
+
+pub(crate) async fn resolve_playback_proxy_policy(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Json(req): Json<ResolvePlaybackProxyPolicyRequest>,
+) -> AppResult<Json<PlaybackProxyPolicy>> {
+    let api = state.shared_api_runtime.provider_common_api.clone();
+    let executor = api.clone();
+    executor
+        .execute_user_endpoint(
+            &request_meta.0,
+            EndpointRateLimitCategory::Read,
+            move |_| async move { api.resolve_playback_proxy_policy(req).await },
         )
         .await
         .map(Json)

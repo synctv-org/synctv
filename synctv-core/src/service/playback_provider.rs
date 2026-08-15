@@ -223,11 +223,17 @@ impl BilibiliPlaybackProviderService {
             .await
     }
 
-    pub fn dash_resource_action(
+    pub async fn dash_resource_action(
         &self,
         request: BilibiliDashResourceRequest<'_>,
+        store: Arc<dyn ProviderStore>,
+        request_control: Option<&ExecutionControl>,
     ) -> Result<PlaybackTransportAction, ProviderError> {
-        self.runtime.providers.bilibili.get_dash_resource(request)
+        self.runtime
+            .providers
+            .bilibili
+            .get_dash_resource(Some(&store), request, request_control)
+            .await
     }
 
     pub async fn subtitle_action(

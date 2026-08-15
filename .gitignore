@@ -9,6 +9,7 @@ target/
 .tmp/
 logs/
 .dev-data/
+/.serena
 
 # Secrets and configuration
 *.pem

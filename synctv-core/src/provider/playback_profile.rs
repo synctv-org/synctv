@@ -76,6 +76,22 @@ impl PlaybackContainer {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PlaybackLiveTransport {
+    Hls,
+    Flv,
+}
+
+impl PlaybackLiveTransport {
+    #[must_use]
+    pub const fn cache_token(self) -> &'static str {
+        match self {
+            Self::Hls => "hls",
+            Self::Flv => "flv",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum PlaybackAudioCapability {
     Stereo,
@@ -109,6 +125,7 @@ pub struct PlaybackClientProfile {
     pub supported_containers: Vec<PlaybackContainer>,
     pub audio_capability: PlaybackAudioCapability,
     pub subtitle_preference: PlaybackSubtitlePreference,
+    pub supported_live_transports: Vec<PlaybackLiveTransport>,
 }
 
 impl Default for PlaybackClientProfile {
@@ -130,6 +147,7 @@ impl Default for PlaybackClientProfile {
             ],
             audio_capability: PlaybackAudioCapability::LosslessSurround,
             subtitle_preference: PlaybackSubtitlePreference::External,
+            supported_live_transports: vec![PlaybackLiveTransport::Hls],
         }
     }
 }
@@ -138,7 +156,7 @@ impl PlaybackClientProfile {
     #[must_use]
     pub fn cache_fingerprint(&self) -> String {
         format!(
-            "stream={}:bitrate={}:channels={}:video_codecs={}:containers={}:audio={}:subtitle={}",
+            "stream={}:bitrate={}:channels={}:video_codecs={}:containers={}:audio={}:subtitle={}:live_transports={}",
             self.stream_preference.cache_token(),
             self.max_streaming_bitrate
                 .map_or_else(|| "none".to_string(), |value| value.to_string()),
@@ -156,6 +174,11 @@ impl PlaybackClientProfile {
                 .join(","),
             self.audio_capability.cache_token(),
             self.subtitle_preference.cache_token(),
+            self.supported_live_transports
+                .iter()
+                .map(|transport| transport.cache_token())
+                .collect::<Vec<_>>()
+                .join(","),
         )
     }
 }
@@ -196,6 +219,10 @@ mod tests {
             profile.subtitle_preference,
             PlaybackSubtitlePreference::External
         );
+        assert_eq!(
+            profile.supported_live_transports,
+            vec![PlaybackLiveTransport::Hls]
+        );
     }
 
     #[test]
@@ -208,11 +235,12 @@ mod tests {
             supported_containers: vec![PlaybackContainer::Mp4, PlaybackContainer::Webm],
             audio_capability: PlaybackAudioCapability::Surround,
             subtitle_preference: PlaybackSubtitlePreference::EmbeddedOrExternal,
+            supported_live_transports: vec![PlaybackLiveTransport::Hls, PlaybackLiveTransport::Flv],
         };
 
         assert_eq!(
             profile.cache_fingerprint(),
-            "stream=transcode:bitrate=8000000:channels=2:video_codecs=h264,av1:containers=mp4,webm:audio=surround:subtitle=embedded_or_external"
+            "stream=transcode:bitrate=8000000:channels=2:video_codecs=h264,av1:containers=mp4,webm:audio=surround:subtitle=embedded_or_external:live_transports=hls,flv"
         );
     }
 }

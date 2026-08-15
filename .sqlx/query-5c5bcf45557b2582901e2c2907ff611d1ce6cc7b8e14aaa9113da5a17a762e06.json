@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE email_outbox SET next_attempt_at = NOW() WHERE id = 'retry-budget'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "5c5bcf45557b2582901e2c2907ff611d1ce6cc7b8e14aaa9113da5a17a762e06"
+}

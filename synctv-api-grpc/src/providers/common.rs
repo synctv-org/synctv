@@ -11,9 +11,10 @@ use synctv_proto::providers::common::{
     DeleteProviderInstanceResponse, DisableProviderInstanceRequest,
     DisableProviderInstanceResponse, EnableProviderInstanceRequest, EnableProviderInstanceResponse,
     ListAvailableProviderInstancesRequest, ListProviderBackendsRequest,
-    ListProviderInstancesRequest, ListProviderInstancesResponse, PrepareDirectUrlRequest,
-    PrepareLiveProxyRequest, PrepareRtmpRequest, PreparedMediaSource, ProviderBackendsResponse,
-    ProviderInstancesResponse, ReconnectProviderInstanceRequest, ReconnectProviderInstanceResponse,
+    ListProviderInstancesRequest, ListProviderInstancesResponse, PlaybackProxyPolicy,
+    PrepareDirectUrlRequest, PrepareLiveProxyRequest, PrepareRtmpRequest, PreparedMediaSource,
+    ProviderBackendsResponse, ProviderInstancesResponse, ReconnectProviderInstanceRequest,
+    ReconnectProviderInstanceResponse, ResolvePlaybackProxyPolicyRequest,
     UpdateProviderInstanceRequest, UpdateProviderInstanceResponse,
 };
 
@@ -102,6 +103,25 @@ impl ProviderCommonService for ProviderCommonGrpcService {
                 &metadata,
                 synctv_api_common::impls::EndpointRateLimitCategory::Read,
                 move |_| async move { api.prepare_rtmp(req) },
+            )
+            .await
+            .map(Response::new)
+            .map_err(map_api_error)
+    }
+
+    async fn resolve_playback_proxy_policy(
+        &self,
+        request: Request<ResolvePlaybackProxyPolicyRequest>,
+    ) -> Result<Response<PlaybackProxyPolicy>, Status> {
+        let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
+        let req = request.into_inner();
+        let api = self.api.clone();
+        let executor_api = api.clone();
+        executor_api
+            .execute_user_endpoint(
+                &metadata,
+                synctv_api_common::impls::EndpointRateLimitCategory::Read,
+                move |_| async move { api.resolve_playback_proxy_policy(req).await },
             )
             .await
             .map(Response::new)

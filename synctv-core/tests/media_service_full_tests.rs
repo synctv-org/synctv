@@ -922,6 +922,7 @@ async fn test_edit_media_optimistic_lock_retry_exhaustion() {
         media_id: media.id,
         name: Some("Updated Name".to_string()),
         description: None,
+        playback_proxy_mode: None,
     };
 
     let result = media_service
@@ -953,6 +954,100 @@ async fn test_edit_media_optimistic_lock_retry_exhaustion() {
             std::panic::panic_any(format!("unexpected edit media error: {other:?}"));
         }
     }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_edit_media_persists_playback_proxy_mode_and_preserves_source_config() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let creator = user_repo
+        .create(&make_user("edit_proxy_mode_creator"))
+        .await
+        .checked("test operation should succeed");
+    let (room, _) = room_service
+        .create_room(
+            "Edit Proxy Mode Room".to_string(),
+            String::new(),
+            creator.id,
+            None,
+            None,
+        )
+        .await
+        .checked("test operation should succeed");
+
+    register_direct_url_provider(&room_service).await;
+    let playlist = create_top_level_playlist(&pool, &room.id).await;
+    let media_service = room_service.media_service();
+    let created = media_service
+        .add_media(
+            room.id,
+            creator.id,
+            AddMediaRequest {
+                playlist_id: Some(playlist.id),
+                name: "Original Name".to_string(),
+                description: "Original Description".to_string(),
+                source_provider: SourceProvider::DirectUrl,
+                provider_instance_name: None,
+                source_config: synctv_core_testing::direct_url_media_source_config(
+                    "https://example.com/edit-proxy-mode.mp4",
+                ),
+            },
+        )
+        .await
+        .checked("test operation should succeed");
+    let original_source_config = created.source_config.clone();
+
+    let metadata_only = media_service
+        .edit_media(
+            room.id,
+            creator.id,
+            EditMediaRequest {
+                media_id: created.id,
+                name: Some("Metadata Only".to_string()),
+                description: None,
+                playback_proxy_mode: None,
+            },
+        )
+        .await
+        .checked("metadata edit should succeed");
+    assert_eq!(metadata_only.source_config, original_source_config);
+    assert_eq!(metadata_only.version, created.version + 1);
+
+    let mode_updated = media_service
+        .edit_media(
+            room.id,
+            creator.id,
+            EditMediaRequest {
+                media_id: created.id,
+                name: None,
+                description: None,
+                playback_proxy_mode: Some(synctv_core::models::PlaybackProxyMode::DirectOnly),
+            },
+        )
+        .await
+        .checked("playback proxy mode edit should succeed");
+    assert_eq!(mode_updated.name, "Metadata Only");
+    assert_eq!(mode_updated.version, metadata_only.version + 1);
+    let MediaSourceConfig::DirectUrl(updated_config) = &mode_updated.source_config else {
+        std::panic::panic_any("expected DirectUrl source config".to_string());
+    };
+    assert_eq!(
+        updated_config.proxy_mode,
+        synctv_core::models::PlaybackProxyMode::DirectOnly
+    );
+
+    let persisted = synctv_core::repository::MediaRepository::new(pool)
+        .get_by_id(&created.id)
+        .await
+        .checked("persisted media lookup should succeed")
+        .checked("persisted media should exist");
+    assert_eq!(persisted.id, mode_updated.id);
+    assert_eq!(persisted.name, mode_updated.name);
+    assert_eq!(persisted.version, mode_updated.version);
+    assert_eq!(persisted.source_config, mode_updated.source_config);
 }
 
 #[tokio::test]

@@ -6,17 +6,17 @@
 use super::{client::BilibiliClient, BilibiliError};
 use super::{DanmakuMessage, HeartbeatConfig, ReconnectConfig, ReconnectResult};
 use crate::transport_dto::bilibili::{
-    Empty, GetDashPgcurlReq, GetDashPgcurlResp, GetDashVideoUrlReq, GetDashVideoUrlResp,
-    GetLiveDanmuInfoReq, GetLiveDanmuInfoResp, GetLiveStreamsReq, GetLiveStreamsResp, GetPgcurlReq,
-    GetSubtitlesReq, GetSubtitlesResp, GetVideoUrlReq, ListFavoriteFoldersReq,
-    ListFavoriteFoldersResp, ListFollowedPgcReq, ListFollowedPgcResp, ListHistoryReq,
-    ListHistoryResp, ListLiveAreasReq, ListLiveAreasResp, ListLiveRoomsReq, ListLiveRoomsResp,
-    ListPgcSeasonsReq, ListPgcSeasonsResp, ListPgcTimelineReq, ListPgcTimelineResp,
-    ListVideoPartsReq, ListVideoPartsResp, ListVideosReq, ListVideosResp, LoginWithQrCodeReq,
-    LoginWithQrCodeResp, LoginWithSmsReq, LoginWithSmsResp, MatchReq, MatchResp, NewCaptchaResp,
-    NewQrCodeResp, NewSmsReq, NewSmsResp, ParseLivePageReq, ParsePgcPageReq, ParseVideoPageReq,
-    UserInfoReq, UserInfoResp, VideoInfo, VideoPageInfo, VideoSegment as ProtoVideoSegment,
-    VideoUrl, WatchBilibiliLiveDanmakuReq,
+    DashInfo as ProtoDashInfo, Empty, GetDashPgcurlReq, GetDashPgcurlResp, GetDashVideoUrlReq,
+    GetDashVideoUrlResp, GetLiveDanmuInfoReq, GetLiveDanmuInfoResp, GetLiveStreamsReq,
+    GetLiveStreamsResp, GetPgcurlReq, GetSubtitlesReq, GetSubtitlesResp, GetVideoUrlReq,
+    ListFavoriteFoldersReq, ListFavoriteFoldersResp, ListFollowedPgcReq, ListFollowedPgcResp,
+    ListHistoryReq, ListHistoryResp, ListLiveAreasReq, ListLiveAreasResp, ListLiveRoomsReq,
+    ListLiveRoomsResp, ListPgcSeasonsReq, ListPgcSeasonsResp, ListPgcTimelineReq,
+    ListPgcTimelineResp, ListVideoPartsReq, ListVideoPartsResp, ListVideosReq, ListVideosResp,
+    LoginWithQrCodeReq, LoginWithQrCodeResp, LoginWithSmsReq, LoginWithSmsResp, MatchReq,
+    MatchResp, NewCaptchaResp, NewQrCodeResp, NewSmsReq, NewSmsResp, ParseLivePageReq,
+    ParsePgcPageReq, ParseVideoPageReq, UserInfoReq, UserInfoResp, VideoInfo, VideoPageInfo,
+    VideoSegment as ProtoVideoSegment, VideoUrl, WatchBilibiliLiveDanmakuReq,
 };
 use async_trait::async_trait;
 use futures_util::{stream, Stream, StreamExt};
@@ -27,6 +27,22 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub const BILIBILI_LIVE_DANMAKU_FORMAT: &str = "synctv-bilibili-live";
+
+fn playable_dash_infos(
+    dash: &super::client::DashData,
+    hevc_dash: &super::client::DashData,
+) -> (Option<ProtoDashInfo>, Option<ProtoDashInfo>) {
+    if !dash.video_streams.is_empty() {
+        return (
+            Some(dash.into()),
+            (!hevc_dash.video_streams.is_empty()).then(|| hevc_dash.into()),
+        );
+    }
+    if !hevc_dash.video_streams.is_empty() {
+        return (Some(hevc_dash.into()), None);
+    }
+    (None, None)
+}
 
 fn checked_u32(value: i32, field: &str) -> Result<u32, BilibiliError> {
     u32::try_from(value)
@@ -529,15 +545,9 @@ impl BilibiliInterface for BilibiliService {
         let (dash, hevc_dash) = client
             .get_dash_video_url(request.aid, &request.bvid, request.cid)
             .await?;
+        let (dash, hevc_dash) = playable_dash_infos(&dash, &hevc_dash);
 
-        Ok(GetDashVideoUrlResp {
-            dash: Some((&dash).into()),
-            hevc_dash: if hevc_dash.video_streams.is_empty() {
-                None
-            } else {
-                Some((&hevc_dash).into())
-            },
-        })
+        Ok(GetDashVideoUrlResp { dash, hevc_dash })
     }
 
     async fn get_subtitles(
@@ -596,15 +606,9 @@ impl BilibiliInterface for BilibiliService {
             self.ssrf_guard.clone(),
         );
         let (dash, hevc_dash) = client.get_dash_pgc_url(request.epid, request.cid).await?;
+        let (dash, hevc_dash) = playable_dash_infos(&dash, &hevc_dash);
 
-        Ok(GetDashPgcurlResp {
-            dash: Some((&dash).into()),
-            hevc_dash: if hevc_dash.video_streams.is_empty() {
-                None
-            } else {
-                Some((&hevc_dash).into())
-            },
-        })
+        Ok(GetDashPgcurlResp { dash, hevc_dash })
     }
 
     async fn user_info(&self, request: UserInfoReq) -> Result<UserInfoResp, BilibiliError> {
@@ -1283,7 +1287,61 @@ pub(crate) const fn map_qr_status(raw: u32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bilibili::client::{DashData, SegmentBaseData, VideoStreamData};
     use crate::transport_dto::bilibili::QrCodeStatus;
+
+    fn dash_data(codecs: Option<&str>) -> DashData {
+        DashData {
+            duration: 60.0,
+            min_buffer_time: 1.5,
+            video_streams: codecs
+                .map(|codecs| VideoStreamData {
+                    id: 80,
+                    quality_name: "1080P".to_string(),
+                    base_url: "https://cdn.example/video.m4s".to_string(),
+                    backup_urls: Vec::new(),
+                    mime_type: "video/mp4".to_string(),
+                    codecs: codecs.to_string(),
+                    width: 1920,
+                    height: 1080,
+                    frame_rate: "30".to_string(),
+                    bandwidth: 1_000_000,
+                    codecid: 7,
+                    sar: "1:1".to_string(),
+                    start_with_sap: 1,
+                    segment_base: SegmentBaseData {
+                        index_range: "100-199".to_string(),
+                        initialization_range: "0-99".to_string(),
+                    },
+                })
+                .into_iter()
+                .collect(),
+            audio_streams: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn audio_only_dash_is_not_marked_playable() {
+        let empty = dash_data(None);
+
+        let (dash, hevc_dash) = playable_dash_infos(&empty, &empty);
+
+        assert!(dash.is_none());
+        assert!(hevc_dash.is_none());
+    }
+
+    #[test]
+    fn hevc_only_dash_remains_available_as_hevc() {
+        let empty = dash_data(None);
+        let hevc = dash_data(Some("hev1.1.6.L120.90"));
+
+        let (dash, hevc_dash) = playable_dash_infos(&empty, &hevc);
+
+        let dash = dash.expect("HEVC DASH should become the playable primary");
+        assert_eq!(dash.video_streams.len(), 1);
+        assert!(dash.video_streams[0].codecs.starts_with("hev1"));
+        assert!(hevc_dash.is_none());
+    }
 
     #[test]
     fn test_qr_status_success() {

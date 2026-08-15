@@ -2367,6 +2367,33 @@ pub fn playback_client_profile_from_proto(
         }
     };
 
+    let supported_live_transports = if profile.supported_live_transports.is_empty() {
+        default_profile.supported_live_transports.clone()
+    } else {
+        profile
+            .supported_live_transports
+            .iter()
+            .filter_map(|transport| {
+                Some(
+                    match synctv_proto::client::PlaybackLiveTransport::try_from(*transport) {
+                        Ok(synctv_proto::client::PlaybackLiveTransport::Unspecified) => {
+                            return None
+                        }
+                        Ok(synctv_proto::client::PlaybackLiveTransport::Hls) => {
+                            Ok(synctv_core::provider::PlaybackLiveTransport::Hls)
+                        }
+                        Ok(synctv_proto::client::PlaybackLiveTransport::Flv) => {
+                            Ok(synctv_core::provider::PlaybackLiveTransport::Flv)
+                        }
+                        Err(_) => Err(crate::impls::ApiError::InvalidInput(
+                            "Unsupported playback live transport".to_string(),
+                        )),
+                    },
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    };
+
     Ok(Some(synctv_core::provider::PlaybackClientProfile {
         stream_preference,
         max_streaming_bitrate: profile.max_streaming_bitrate,
@@ -2377,6 +2404,7 @@ pub fn playback_client_profile_from_proto(
         supported_containers,
         audio_capability,
         subtitle_preference,
+        supported_live_transports,
     }))
 }
 
@@ -5007,26 +5035,6 @@ mod playback_conversion_tests {
         );
     }
 
-    fn playback_result(info: PlaybackInfo) -> PlaybackResult {
-        let mut playback_infos = HashMap::new();
-        playback_infos.insert("dash".to_string(), info);
-        PlaybackResult {
-            id: None,
-            playlist_id: None,
-            room_id: synctv_core::models::RoomId::new(),
-            name: "media".to_string(),
-            provider: synctv_core::models::SourceProvider::Bilibili,
-            provider_instance_name: None,
-            position: 0.0,
-            playback_infos,
-            default_mode: "dash".to_string(),
-            duration_seconds: None,
-            playback_kind: synctv_core::models::PlaybackKind::Regular,
-            target: None,
-            metadata: None,
-        }
-    }
-
     fn playback_result_with_mode(mode: &str, info: PlaybackInfo) -> PlaybackResult {
         let mut playback_infos = HashMap::new();
         playback_infos.insert(mode.to_string(), info);
@@ -5174,20 +5182,24 @@ mod playback_conversion_tests {
                     PlaybackBilibiliMedia::DirectDashManifest {
                         version: "v1".to_string(),
                         expires_at: synctv_core::SystemClock.now().timestamp() + 1800,
-                        mode_name: "dash".to_string(),
+                        mode_name: "h264".to_string(),
                         headers: headers.clone(),
                     },
                 ),
             })
             .build();
 
-        let proto = try_playback_to_proto(&playback_result(info), &codec(), Some(&signing))
-            .expect("playback should convert");
-        let media = &proto.playback_infos["dash"].medias[0];
+        let proto = try_playback_to_proto(
+            &playback_result_with_mode("h264", info),
+            &codec(),
+            Some(&signing),
+        )
+        .expect("playback should convert");
+        let media = &proto.playback_infos["h264"].medias[0];
         assert!(
             media
                 .url
-                .starts_with("/api/playback-providers/bilibili/v1/dash-manifests/dash/direct?"),
+                .starts_with("/api/playback-providers/bilibili/v1/dash-manifests/h264/direct?"),
             "unexpected direct DASH URL: {}",
             media.url
         );
@@ -5229,9 +5241,13 @@ mod playback_conversion_tests {
             })
             .build();
 
-        let proto = try_playback_to_proto(&playback_result(info), &codec(), Some(&signing))
-            .expect("playback should convert");
-        let media = &proto.playback_infos["dash"].medias[0];
+        let proto = try_playback_to_proto(
+            &playback_result_with_mode("mp4", info),
+            &codec(),
+            Some(&signing),
+        )
+        .expect("playback should convert");
+        let media = &proto.playback_infos["mp4"].medias[0];
         assert!(
             media
                 .url
@@ -5273,9 +5289,13 @@ mod playback_conversion_tests {
             .default_danmaku_index(0)
             .build();
 
-        let proto = try_playback_to_proto(&playback_result(info), &codec, Some(&signing))
-            .expect("playback should convert");
-        let danmaku = &proto.playback_infos["dash"].danmakus[0];
+        let proto = try_playback_to_proto(
+            &playback_result_with_mode("hls", info),
+            &codec,
+            Some(&signing),
+        )
+        .expect("playback should convert");
+        let danmaku = &proto.playback_infos["hls"].danmakus[0];
         let public_media_id = codec
             .encode_media_id(media_id)
             .expect("media id should encode");
@@ -5367,9 +5387,13 @@ mod playback_conversion_tests {
             .default_subtitle_index(1)
             .build();
 
-        let proto = try_playback_to_proto(&playback_result(info), &codec(), Some(&signing))
-            .expect("playback should convert");
-        let info = &proto.playback_infos["dash"];
+        let proto = try_playback_to_proto(
+            &playback_result_with_mode("direct", info),
+            &codec(),
+            Some(&signing),
+        )
+        .expect("playback should convert");
+        let info = &proto.playback_infos["direct"];
 
         assert_eq!(info.default_media_index, Some(1));
         assert_eq!(info.default_subtitle_index, Some(1));
@@ -5607,9 +5631,13 @@ mod playback_conversion_tests {
             })
             .build();
 
-        let proto = try_playback_to_proto(&playback_result(info), &codec(), Some(&signing))
-            .expect("playback should convert");
-        let media = &proto.playback_infos["dash"].medias[0];
+        let proto = try_playback_to_proto(
+            &playback_result_with_mode("hls", info),
+            &codec(),
+            Some(&signing),
+        )
+        .expect("playback should convert");
+        let media = &proto.playback_infos["hls"].medias[0];
 
         assert_eq!(media.expire_at, Some(expires_at));
 
@@ -5639,7 +5667,8 @@ mod playback_conversion_tests {
         let key = signing_key();
         let signing = signing_context(&key);
         let expires_at = synctv_core::SystemClock.now().timestamp() + 1800;
-        let mut result = playback_result(
+        let mut result = playback_result_with_mode(
+            "default",
             PlaybackInfo::builder()
                 .thumbnail(Some("https://alist.example.com/thumb.jpg".to_string()))
                 .add_media(PlaybackMedia {
@@ -5665,7 +5694,7 @@ mod playback_conversion_tests {
             .expect("playback should convert");
         let thumbnail = proto
             .playback_infos
-            .get("dash")
+            .get("default")
             .as_ref()
             .and_then(|info| info.thumbnail.as_deref())
             .expect("playback info thumbnail should exist");

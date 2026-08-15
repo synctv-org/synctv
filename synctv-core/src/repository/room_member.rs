@@ -453,8 +453,8 @@ impl RoomMemberRepository {
         counted_before: chrono::DateTime<chrono::Utc>,
         visited_at: chrono::DateTime<chrono::Utc>,
     ) -> Result<bool> {
-        let result = sqlx::query(
-            r"UPDATE room_members
+        let result = sqlx::query!(
+            r#"UPDATE room_members
               SET visit_count = visit_count + CASE
                       WHEN last_counted_visit_at IS NULL OR last_counted_visit_at <= $3 THEN 1
                       ELSE 0
@@ -464,12 +464,12 @@ impl RoomMemberRepository {
                       ELSE last_counted_visit_at
                   END,
                   last_visited_at = $4
-              WHERE room_id = $1 AND user_id = $2",
+              WHERE room_id = $1 AND user_id = $2"#,
+            room_id.as_i64(),
+            user_id.as_i64(),
+            counted_before,
+            visited_at,
         )
-        .bind(room_id)
-        .bind(user_id)
-        .bind(counted_before)
-        .bind(visited_at)
         .execute(self.pools.primary())
         .await?;
 

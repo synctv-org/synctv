@@ -810,7 +810,7 @@ mod tests {
         heartbeat.abort();
         heartbeat.await.expect_err("heartbeat should be cancelled");
 
-        sqlx::query("UPDATE email_outbox SET locked_at = NOW() - INTERVAL '3 minutes'")
+        sqlx::query!("UPDATE email_outbox SET locked_at = NOW() - INTERVAL '3 minutes'")
             .execute(&pool)
             .await
             .expect("age lease");

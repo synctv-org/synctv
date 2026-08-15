@@ -313,8 +313,9 @@ fn test_video_page_info_deserialize() -> TestResult {
     assert_eq!(data.title, "Test Video");
     assert_eq!(data.bvid, "BV1xx411c7XZ");
     assert_eq!(data.aid, 12345);
-    assert_eq!(data.pages.len(), 1);
-    assert_eq!(data.pages[0].duration, 120);
+    let pages = data.pages;
+    assert_eq!(pages.len(), 1);
+    assert_eq!(pages[0].duration, 120);
     assert_eq!(resp.code, 0);
     Ok(())
 }
@@ -328,9 +329,10 @@ fn test_nav_resp_deserialize() -> TestResult {
             "ttl": 1
         }"#;
     let resp: types::NavResp = serde_json::from_str(json)?;
-    assert!(resp.data.is_login);
-    assert_eq!(resp.data.uname, "TestUser");
-    assert_eq!(resp.data.mid, 12345);
+    let data = resp.data.expect("nav response should have data");
+    assert!(data.is_login);
+    assert_eq!(data.uname, "TestUser");
+    assert_eq!(data.mid, 12345);
     Ok(())
 }
 
@@ -353,10 +355,12 @@ fn test_video_url_resp_deserialize() -> TestResult {
             "ttl": 1
         }"#;
     let resp: types::VideoUrlResp = serde_json::from_str(json)?;
-    assert_eq!(resp.data.quality, 80);
-    assert_eq!(resp.data.durl.len(), 1);
-    assert_eq!(resp.data.accept_quality, vec![80, 64, 32]);
-    let segments = video_segments_from_durls(&resp.data.durl);
+    let data = resp.data.expect("video URL response should have data");
+    assert_eq!(data.quality, 80);
+    let durls = data.durl;
+    assert_eq!(durls.len(), 1);
+    assert_eq!(data.accept_quality, vec![80, 64, 32]);
+    let segments = video_segments_from_durls(&durls);
     assert_eq!(segments.len(), 1);
     assert_eq!(
         segments[0].backup_urls,
@@ -570,9 +574,9 @@ fn test_nav_resp_with_wbi_img_deserialize() -> TestResult {
             "ttl": 1
         }"#;
     let resp: types::NavResp = serde_json::from_str(json)?;
-    assert!(resp.data.wbi_img.is_some());
-    let wbi_img = resp
-        .data
+    let data = resp.data.expect("nav response should have data");
+    assert!(data.wbi_img.is_some());
+    let wbi_img = data
         .wbi_img
         .ok_or_else(|| missing("wbi_img should deserialize"))?;
     assert!(wbi_img.img_url.contains("7cd084941338484aae1ad9425b84077c"));
@@ -592,11 +596,39 @@ fn test_nav_resp_without_wbi_img_deserialize() -> TestResult {
         }"#;
     let resp: types::NavResp = serde_json::from_str(json)?;
     assert_eq!(resp.code, -101);
-    assert_eq!(resp.data.uname, "");
-    assert_eq!(resp.data.face, "");
-    assert_eq!(resp.data.vip_status, 0);
-    assert_eq!(resp.data.mid, 0);
-    assert!(resp.data.wbi_img.is_none());
+    let data = resp.data.expect("nav response should have data");
+    assert_eq!(data.uname, "");
+    assert_eq!(data.face, "");
+    assert_eq!(data.vip_status, 0);
+    assert_eq!(data.mid, 0);
+    assert!(data.wbi_img.is_none());
+    Ok(())
+}
+
+#[test]
+fn test_error_responses_without_payload_deserialize_before_code_check() -> TestResult {
+    let nav: types::NavResp = serde_json::from_value(serde_json::json!({
+        "code": -412,
+        "message": "请求被拦截",
+        "ttl": 1
+    }))?;
+    assert_eq!(nav.code, -412);
+    assert!(nav.data.is_none());
+
+    let subtitle: types::PlayerV2InfoResp = serde_json::from_value(serde_json::json!({
+        "code": -101,
+        "message": "账号未登录",
+        "ttl": 1
+    }))?;
+    assert_eq!(subtitle.code, -101);
+    assert!(subtitle.data.is_none());
+
+    let pgc: types::DashPgcResp = serde_json::from_value(serde_json::json!({
+        "code": -10403,
+        "message": "大会员专享限制"
+    }))?;
+    assert_eq!(pgc.code, -10403);
+    assert!(pgc.result.is_none());
     Ok(())
 }
 
@@ -1165,6 +1197,31 @@ fn parse_dash_info_includes_dolby_flac_and_backup_urls() -> TestResult {
     assert_eq!(dash.audio_streams[0].quality_name, "Dolby Atmos");
     assert_eq!(dash.audio_streams[1].quality_name, "Hi-Res FLAC");
     assert_eq!(dash.audio_streams[1].backup_urls.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn parse_dash_info_keeps_null_video_unplayable() -> TestResult {
+    let dash: types::DashInfo = serde_json::from_value(json!({
+        "duration": 60.0,
+        "minBufferTime": 1.5,
+        "video": null,
+        "audio": [{
+            "id": 30280,
+            "baseUrl": "https://cdn.example.com/audio.m4s",
+            "mimeType": "audio/mp4",
+            "codecs": "mp4a.40.2",
+            "bandwidth": 128_000,
+            "SegmentBase": {"Initialization": "0-1", "indexRange": "2-3"}
+        }]
+    }))?;
+
+    let (regular, hevc) = parse_dash_info(&dash, &[]);
+
+    assert!(regular.video_streams.is_empty());
+    assert!(hevc.video_streams.is_empty());
+    assert_eq!(regular.audio_streams.len(), 1);
+    assert_eq!(hevc.audio_streams.len(), 1);
     Ok(())
 }
 

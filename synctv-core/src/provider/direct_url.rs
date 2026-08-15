@@ -5,7 +5,8 @@
 use super::{
     playback_transport::PlaybackTransportAction,
     store::{ProviderStoreExt, VersionedPlayback},
-    MediaProvider, PlaybackInfo, PlaybackResult, ProviderContext, ProviderError, SourceConfig,
+    MediaProvider, PlaybackInfo, PlaybackProxyAutoPolicy, PlaybackProxyAutoReason,
+    PlaybackProxyPolicy, PlaybackResult, ProviderContext, ProviderError, SourceConfig,
 };
 use crate::models::media::{
     DirectUrlPlaybackMetadata, PlaybackDanmaku, PlaybackDanmakuProvider, PlaybackDirectUrlDanmaku,
@@ -309,6 +310,131 @@ fn direct_url_expiration(explicit: Option<i64>, url: &str) -> Option<i64> {
         .min()
 }
 
+fn direct_url_has_credential_header(headers: &HashMap<String, String>) -> bool {
+    headers.keys().any(|name| {
+        matches!(
+            name.trim().to_ascii_lowercase().as_str(),
+            "authorization"
+                | "proxy-authorization"
+                | "cookie"
+                | "x-api-key"
+                | "api-key"
+                | "x-auth-token"
+                | "x-emby-token"
+                | "x-plex-token"
+        )
+    })
+}
+
+fn direct_url_url_auto_reason(url: &str) -> Option<PlaybackProxyAutoReason> {
+    let Ok(url) = Url::parse(url) else {
+        return None;
+    };
+    if !url.username().is_empty() || url.password().is_some() {
+        return Some(PlaybackProxyAutoReason::RequestCredentials);
+    }
+    url.query_pairs()
+        .any(|(name, _)| {
+            let name = name.to_ascii_lowercase();
+            name == "token"
+                || name == "access_token"
+                || name == "auth"
+                || name == "authorization"
+                || name == "signature"
+                || name == "sig"
+                || name == "policy"
+                || name == "api_key"
+                || name == "apikey"
+                || name == "key-pair-id"
+                || name.starts_with("x-amz-")
+                || name.starts_with("x-goog-")
+                || name.starts_with("x-oss-")
+        })
+        .then_some(PlaybackProxyAutoReason::SignedResource)
+}
+
+fn direct_url_resource_auto_reason(
+    url: &str,
+    headers: &HashMap<String, String>,
+    expires_at: Option<i64>,
+) -> PlaybackProxyAutoReason {
+    if direct_url_has_credential_header(headers) {
+        return PlaybackProxyAutoReason::RequestCredentials;
+    }
+    direct_url_url_auto_reason(url)
+        .or_else(|| expires_at.map(|_| PlaybackProxyAutoReason::SignedResource))
+        .unwrap_or(PlaybackProxyAutoReason::PublicResource)
+}
+
+fn direct_url_route_selection(
+    config: &DirectUrlMediaSourceConfig,
+) -> super::PlaybackRouteSelection {
+    use crate::models::PlaybackProxyMode;
+
+    match config.proxy_mode {
+        PlaybackProxyMode::Auto | PlaybackProxyMode::DirectPrefer => {
+            super::PlaybackRouteSelection::DIRECT_PREFERRED
+        }
+        PlaybackProxyMode::Prefer => super::PlaybackRouteSelection::PROXY_PREFERRED,
+        PlaybackProxyMode::Only => super::PlaybackRouteSelection::PROXY_ONLY,
+        PlaybackProxyMode::DirectOnly => super::PlaybackRouteSelection::DIRECT_ONLY,
+    }
+}
+
+fn direct_url_auto_mode(reason: PlaybackProxyAutoReason) -> crate::models::PlaybackProxyMode {
+    if reason == PlaybackProxyAutoReason::PublicResource {
+        crate::models::PlaybackProxyMode::DirectPrefer
+    } else {
+        crate::models::PlaybackProxyMode::Only
+    }
+}
+
+fn direct_url_variant_name(prefix: &str, index: usize, name: &str) -> String {
+    let name = name.trim();
+    if name.is_empty() {
+        format!("{prefix} {}", index + 1)
+    } else {
+        name.to_string()
+    }
+}
+
+fn direct_url_auto_policies(config: &DirectUrlMediaSourceConfig) -> Vec<PlaybackProxyAutoPolicy> {
+    let medias = config.medias.iter().enumerate().map(|(index, media)| {
+        let reason = direct_url_resource_auto_reason(&media.url, &media.headers, media.expires_at);
+        PlaybackProxyAutoPolicy::new(
+            direct_url_variant_name("media", index, &media.name),
+            direct_url_auto_mode(reason),
+            reason,
+        )
+    });
+    let subtitles = config
+        .subtitles
+        .iter()
+        .enumerate()
+        .map(|(index, subtitle)| {
+            let reason = direct_url_resource_auto_reason(
+                &subtitle.url,
+                &subtitle.headers,
+                subtitle.expires_at,
+            );
+            PlaybackProxyAutoPolicy::new(
+                direct_url_variant_name("subtitle", index, &subtitle.name),
+                direct_url_auto_mode(reason),
+                reason,
+            )
+        });
+    let danmakus = config.danmakus.iter().enumerate().map(|(index, danmaku)| {
+        let reason =
+            direct_url_resource_auto_reason(&danmaku.url, &danmaku.headers, danmaku.expires_at);
+        PlaybackProxyAutoPolicy::new(
+            direct_url_variant_name("danmaku", index, &danmaku.name),
+            direct_url_auto_mode(reason),
+            reason,
+        )
+    });
+    medias.chain(subtitles).chain(danmakus).collect()
+}
+
 fn remap_filtered_default_index<T>(
     resources: &[(usize, T)],
     default_index: Option<usize>,
@@ -324,23 +450,124 @@ fn mark_direct_url_playback_resources(
     result: &mut PlaybackResult,
     version: &str,
     expires_at: i64,
-    proxy_mode: crate::models::PlaybackProxyMode,
+    selection: super::PlaybackRouteSelection,
+    auto_mode: bool,
 ) {
+    let original_default_mode = result.default_mode.clone();
+    let auto_default_prefers_proxy = auto_mode
+        && result
+            .playback_infos
+            .get(&original_default_mode)
+            .and_then(|info| {
+                info.medias
+                    .get(info.default_media_index.unwrap_or(0))
+                    .or_else(|| info.medias.first())
+            })
+            .is_some_and(|media| {
+                direct_url_resource_auto_reason(
+                    media.upstream_url().unwrap_or_default(),
+                    &media.upstream_headers(),
+                    media.expire_at.map(|value| value.timestamp()),
+                ) != PlaybackProxyAutoReason::PublicResource
+            });
     let original_modes = result
         .playback_infos
         .iter()
         .map(|(mode_name, info)| (mode_name.clone(), info.clone()))
         .collect::<Vec<_>>();
+    let mut generated = std::collections::HashMap::new();
 
     for (mode_name, original_info) in original_modes {
         if original_info.medias.is_empty() || mode_name.starts_with("proxy_") {
             continue;
         }
+        if selection.direct {
+            let mut direct_info = original_info.clone();
+            if auto_mode {
+                let direct_medias = original_info
+                    .medias
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, media)| {
+                        direct_url_resource_auto_reason(
+                            media.upstream_url().unwrap_or_default(),
+                            &media.upstream_headers(),
+                            media.expire_at.map(|value| value.timestamp()),
+                        ) == PlaybackProxyAutoReason::PublicResource
+                    })
+                    .collect::<Vec<_>>();
+                direct_info.default_media_index =
+                    original_info.default_media_index.and_then(|default_index| {
+                        direct_medias
+                            .iter()
+                            .position(|(source_index, _)| *source_index == default_index)
+                    });
+                direct_info.medias = direct_medias
+                    .into_iter()
+                    .map(|(_, media)| media.clone())
+                    .collect();
 
-        let proxy_mode_name = format!("proxy_{mode_name}");
-        if result.playback_infos.contains_key(&proxy_mode_name) {
+                let direct_subtitles = original_info
+                    .subtitles
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, subtitle)| {
+                        direct_url_resource_auto_reason(
+                            subtitle.upstream_url(),
+                            &subtitle.upstream_headers(),
+                            subtitle.expiration_timestamp(),
+                        ) == PlaybackProxyAutoReason::PublicResource
+                    })
+                    .collect::<Vec<_>>();
+                direct_info.default_subtitle_index =
+                    original_info
+                        .default_subtitle_index
+                        .and_then(|default_index| {
+                            direct_subtitles
+                                .iter()
+                                .position(|(source_index, _)| *source_index == default_index)
+                        });
+                direct_info.subtitles = direct_subtitles
+                    .into_iter()
+                    .map(|(_, subtitle)| subtitle.clone())
+                    .collect();
+
+                let direct_danmakus = original_info
+                    .danmakus
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, danmaku)| {
+                        danmaku.upstream_url().is_some_and(|url| {
+                            direct_url_resource_auto_reason(
+                                url,
+                                &danmaku.upstream_headers(),
+                                danmaku.expiration_timestamp(),
+                            ) == PlaybackProxyAutoReason::PublicResource
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                direct_info.default_danmaku_index =
+                    original_info
+                        .default_danmaku_index
+                        .and_then(|default_index| {
+                            direct_danmakus
+                                .iter()
+                                .position(|(source_index, _)| *source_index == default_index)
+                        });
+                direct_info.danmakus = direct_danmakus
+                    .into_iter()
+                    .map(|(_, danmaku)| danmaku.clone())
+                    .collect();
+            }
+            if !direct_info.medias.is_empty() {
+                generated.insert(mode_name.clone(), direct_info);
+            }
+        }
+        if !selection.proxy {
             continue;
         }
+
+        let proxy_mode_name = format!("proxy_{mode_name}");
 
         let mut proxy_info = original_info.clone();
         let proxy_medias = original_info
@@ -425,9 +652,27 @@ fn mark_direct_url_playback_resources(
             })
             .collect();
 
-        result.playback_infos.insert(proxy_mode_name, proxy_info);
+        generated.insert(proxy_mode_name, proxy_info);
     }
-    super::apply_provider_playback_policy(result, proxy_mode, false);
+    result.playback_infos = generated;
+    let proxy_default_mode = format!("proxy_{original_default_mode}");
+    let direct_default_available = result.playback_infos.contains_key(&original_default_mode);
+    let proxy_default_available = result.playback_infos.contains_key(&proxy_default_mode);
+    result.default_mode =
+        if (selection.prefer_proxy || auto_default_prefers_proxy) && proxy_default_available {
+            proxy_default_mode
+        } else if direct_default_available {
+            original_default_mode
+        } else if proxy_default_available {
+            proxy_default_mode
+        } else {
+            result
+                .playback_infos
+                .keys()
+                .min()
+                .cloned()
+                .unwrap_or_default()
+        };
 }
 
 impl DirectUrlProvider {
@@ -618,6 +863,37 @@ impl MediaProvider for DirectUrlProvider {
         Self::NAME
     }
 
+    fn playback_proxy_policy(
+        &self,
+        source_config: SourceConfig<'_>,
+    ) -> Result<Option<PlaybackProxyPolicy>, ProviderError> {
+        let SourceConfig::Media(crate::models::MediaSourceConfig::DirectUrl(config)) =
+            source_config
+        else {
+            return Err(ProviderError::InvalidConfig(
+                "DirectUrl requires DirectUrl media source_config".to_string(),
+            ));
+        };
+        Ok(Some(PlaybackProxyPolicy::all_modes(
+            config.proxy_mode,
+            direct_url_auto_policies(config),
+        )))
+    }
+
+    fn set_playback_proxy_mode(
+        &self,
+        source_config: &mut crate::models::MediaSourceConfig,
+        mode: crate::models::PlaybackProxyMode,
+    ) -> Result<(), ProviderError> {
+        let crate::models::MediaSourceConfig::DirectUrl(config) = source_config else {
+            return Err(ProviderError::InvalidConfig(
+                "DirectUrl requires DirectUrl media source_config".to_string(),
+            ));
+        };
+        config.proxy_mode = mode;
+        Ok(())
+    }
+
     async fn validate_source_config(
         &self,
         _ctx: &ProviderContext<'_>,
@@ -643,6 +919,8 @@ impl MediaProvider for DirectUrlProvider {
                 "DirectUrl requires DirectUrl media source_config".to_string(),
             ));
         };
+        let route_selection = direct_url_route_selection(config);
+        let auto_mode = config.proxy_mode == crate::models::PlaybackProxyMode::Auto;
         Self::validate_config_shape(config)?;
         for media in &config.medias {
             Self::validate_source_url(&media.url, &self.ssrf_guard)?;
@@ -706,7 +984,8 @@ impl MediaProvider for DirectUrlProvider {
                                     result,
                                     version,
                                     expires_at,
-                                    config.proxy_mode,
+                                    route_selection,
+                                    auto_mode,
                                 );
                             },
                         )
@@ -920,7 +1199,13 @@ impl MediaProvider for DirectUrlProvider {
             cache_ttl,
             _ctx,
             |result, version, expires_at| {
-                mark_direct_url_playback_resources(result, version, expires_at, config.proxy_mode);
+                mark_direct_url_playback_resources(
+                    result,
+                    version,
+                    expires_at,
+                    route_selection,
+                    auto_mode,
+                );
             },
         )
         .await
@@ -1142,11 +1427,12 @@ mod tests {
             .generate_playback(&ctx, &crate::models::MediaSourceConfig::DirectUrl(config))
             .await
             .expect("DirectUrl should retain an active fallback media");
-        let direct = &result.playback_infos["direct"];
+        let proxy = &result.playback_infos["proxy_direct"];
 
-        assert_eq!(direct.medias.len(), 1);
-        assert_eq!(direct.medias[0].name, "active");
-        assert_eq!(direct.default_media_index, Some(0));
+        assert_eq!(result.default_mode, "proxy_direct");
+        assert_eq!(proxy.medias.len(), 1);
+        assert_eq!(proxy.medias[0].name, "active");
+        assert_eq!(proxy.default_media_index, Some(0));
     }
 
     #[tokio::test]
@@ -1269,7 +1555,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn generate_playback_keeps_direct_and_proxy_modes_with_transport_headers() {
+    async fn generate_playback_auto_routes_each_media_variant_by_credential_exposure() {
         let provider = DirectUrlProvider::new();
         let ctx = test_context();
         let source_config = crate::models::MediaSourceConfig::DirectUrl(
@@ -1311,14 +1597,8 @@ mod tests {
 
         assert_eq!(result.default_mode, "direct");
         let direct = &result.playback_infos["direct"];
-        assert_eq!(direct.default_media_index, Some(1));
-        assert_eq!(direct.medias.len(), 2);
-        assert_eq!(direct.medias[0].format, "mp4");
-        assert_eq!(
-            direct.medias[0].upstream_headers()["authorization"],
-            "Bearer secret"
-        );
-        assert_eq!(direct.medias[1].format, "dash");
+        assert_eq!(direct.medias.len(), 1);
+        assert_eq!(direct.medias[0].name, "Public DASH");
         let proxy = &result.playback_infos["proxy_direct"];
         assert_eq!(proxy.medias.len(), 2);
         assert_eq!(proxy.medias[0].format, "mp4");
@@ -1327,6 +1607,80 @@ mod tests {
             proxy.medias[1].provider,
             PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::ProxyDashManifest { .. })
         ));
+    }
+
+    #[test]
+    fn playback_policy_reports_public_header_and_signed_url_variants() {
+        let provider = DirectUrlProvider::new();
+        let config = crate::models::MediaSourceConfig::DirectUrl(
+            crate::models::DirectUrlMediaSourceConfig {
+                playback_kind: Some(crate::models::PlaybackKind::Regular),
+                duration_seconds: None,
+                proxy_mode: crate::models::PlaybackProxyMode::Auto,
+                medias: vec![
+                    crate::models::DirectUrlMediaResourceConfig {
+                        name: "Public".to_string(),
+                        url: "https://example.com/public.mp4".to_string(),
+                        headers: HashMap::new(),
+                        format: "mp4".to_string(),
+                        expires_at: None,
+                    },
+                    crate::models::DirectUrlMediaResourceConfig {
+                        name: "Header protected".to_string(),
+                        url: "https://example.com/header.mp4".to_string(),
+                        headers: HashMap::from([(
+                            "Authorization".to_string(),
+                            "Bearer secret".to_string(),
+                        )]),
+                        format: "mp4".to_string(),
+                        expires_at: None,
+                    },
+                    crate::models::DirectUrlMediaResourceConfig {
+                        name: "Signed".to_string(),
+                        url: "https://example.com/signed.mp4?token=secret".to_string(),
+                        headers: HashMap::new(),
+                        format: "mp4".to_string(),
+                        expires_at: None,
+                    },
+                ],
+                default_media_index: Some(0),
+                subtitles: Vec::new(),
+                default_subtitle_index: None,
+                danmakus: Vec::new(),
+                default_danmaku_index: None,
+            },
+        );
+
+        let policy = provider
+            .playback_proxy_policy(SourceConfig::media(&config))
+            .expect("DirectUrl policy should resolve")
+            .expect("DirectUrl should expose a policy");
+
+        assert_eq!(policy.auto_policies.len(), 3);
+        assert_eq!(
+            policy.auto_policies[0],
+            PlaybackProxyAutoPolicy::new(
+                "Public",
+                crate::models::PlaybackProxyMode::DirectPrefer,
+                PlaybackProxyAutoReason::PublicResource,
+            )
+        );
+        assert_eq!(
+            policy.auto_policies[1],
+            PlaybackProxyAutoPolicy::new(
+                "Header protected",
+                crate::models::PlaybackProxyMode::Only,
+                PlaybackProxyAutoReason::RequestCredentials,
+            )
+        );
+        assert_eq!(
+            policy.auto_policies[2],
+            PlaybackProxyAutoPolicy::new(
+                "Signed",
+                crate::models::PlaybackProxyMode::Only,
+                PlaybackProxyAutoReason::SignedResource,
+            )
+        );
     }
 
     #[tokio::test]

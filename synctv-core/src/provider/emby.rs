@@ -9,9 +9,9 @@ use super::{
     DynamicBrowsePathSegment, DynamicListQuery, DynamicListResult, DynamicPagination,
     DynamicPlaylistItem, DynamicPlaylistItemSourceConfig, DynamicPlaylistItemThumbnail,
     DynamicPlaylistProvider, ItemType, MediaProvider, NextPlayItem, PlaybackClientProfile,
-    PlaybackInfo, PlaybackResult, PreparedSourceConfig, ProviderContext,
-    ProviderCredentialDependency, ProviderError, ProviderPlaybackSessionLifecycle, SourceConfig,
-    SourceCover,
+    PlaybackInfo, PlaybackProxyAutoPolicy, PlaybackProxyAutoReason, PlaybackProxyPolicy,
+    PlaybackResult, PreparedSourceConfig, ProviderContext, ProviderCredentialDependency,
+    ProviderError, ProviderPlaybackSessionLifecycle, SourceConfig, SourceCover,
 };
 use crate::models::media::{
     EmbyPlaybackKind, EmbyPlaybackMetadata, PlaybackEmbyMedia, PlaybackEmbySubtitle, PlaybackMedia,
@@ -35,6 +35,21 @@ use std::time::Duration;
 use super::upstream_transport::emby as emby_upstream;
 
 const EMBY_TICKS_PER_SECOND: u128 = 10_000_000;
+
+fn emby_route_selection(
+    proxy_mode: crate::models::PlaybackProxyMode,
+) -> super::PlaybackRouteSelection {
+    use crate::models::PlaybackProxyMode;
+
+    match proxy_mode {
+        PlaybackProxyMode::Auto | PlaybackProxyMode::Only => {
+            super::PlaybackRouteSelection::PROXY_ONLY
+        }
+        PlaybackProxyMode::Prefer => super::PlaybackRouteSelection::PROXY_PREFERRED,
+        PlaybackProxyMode::DirectPrefer => super::PlaybackRouteSelection::DIRECT_PREFERRED,
+        PlaybackProxyMode::DirectOnly => super::PlaybackRouteSelection::DIRECT_ONLY,
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct EmbyHlsResourceRequest<'a> {
@@ -136,25 +151,40 @@ fn playback_media(
     }
 }
 
-fn mark_emby_playback_resources(result: &mut PlaybackResult, version: &str, expires_at: i64) {
+fn mark_emby_playback_resources(
+    result: &mut PlaybackResult,
+    version: &str,
+    expires_at: i64,
+    proxy_mode: crate::models::PlaybackProxyMode,
+) {
     // Emby exposes upstream modes and SyncTV proxy siblings together.
     // Upstream token headers remain visible by product policy; administrators
     // are warned that direct playback can disclose those credentials.
+    let original_default_mode = result.default_mode.clone();
+    let mut default_selection = super::PlaybackRouteSelection::DIRECT_ONLY;
     let original_modes = result
         .playback_infos
         .iter()
         .map(|(mode_name, info)| (mode_name.clone(), info.clone()))
         .collect::<Vec<_>>();
+    let mut generated = std::collections::HashMap::new();
 
     for (mode_name, original_info) in original_modes {
         if original_info.medias.is_empty() || mode_name.starts_with("proxy_") {
             continue;
         }
-
-        let proxy_mode_name = format!("proxy_{mode_name}");
-        if result.playback_infos.contains_key(&proxy_mode_name) {
+        let selection = emby_route_selection(proxy_mode);
+        if mode_name == original_default_mode {
+            default_selection = selection;
+        }
+        if selection.direct {
+            generated.insert(mode_name.clone(), original_info.clone());
+        }
+        if !selection.proxy {
             continue;
         }
+
+        let proxy_mode_name = format!("proxy_{mode_name}");
 
         let mut proxy_info = original_info.clone();
         proxy_info.medias = original_info
@@ -213,8 +243,28 @@ fn mark_emby_playback_resources(result: &mut PlaybackResult, version: &str, expi
             })
             .collect();
 
-        result.playback_infos.insert(proxy_mode_name, proxy_info);
+        if !proxy_info.medias.is_empty() {
+            generated.insert(proxy_mode_name, proxy_info);
+        }
     }
+    result.playback_infos = generated;
+    let proxy_default_mode = format!("proxy_{original_default_mode}");
+    let direct_default_available = result.playback_infos.contains_key(&original_default_mode);
+    let proxy_default_available = result.playback_infos.contains_key(&proxy_default_mode);
+    result.default_mode = if default_selection.prefer_proxy && proxy_default_available {
+        proxy_default_mode
+    } else if direct_default_available {
+        original_default_mode
+    } else if proxy_default_available {
+        proxy_default_mode
+    } else {
+        result
+            .playback_infos
+            .keys()
+            .min()
+            .cloned()
+            .unwrap_or_default()
+    };
 }
 
 /// Build an absolute Emby upstream URL from a configured server URL and item path.
@@ -1712,6 +1762,43 @@ impl MediaProvider for EmbyProvider {
         Self::NAME
     }
 
+    fn playback_proxy_policy(
+        &self,
+        source_config: SourceConfig<'_>,
+    ) -> Result<Option<PlaybackProxyPolicy>, ProviderError> {
+        let current_mode = match source_config {
+            SourceConfig::Media(MediaSourceConfig::Emby(config)) => config.proxy_mode,
+            SourceConfig::DynamicPlaylist(PlaylistSourceConfig::Emby(config)) => config.proxy_mode,
+            _ => {
+                return Err(ProviderError::InvalidConfig(
+                    "Emby requires Emby source_config".to_string(),
+                ));
+            }
+        };
+        Ok(Some(PlaybackProxyPolicy::all_modes(
+            current_mode,
+            vec![PlaybackProxyAutoPolicy::new(
+                "media",
+                crate::models::PlaybackProxyMode::Only,
+                PlaybackProxyAutoReason::ProviderSession,
+            )],
+        )))
+    }
+
+    fn set_playback_proxy_mode(
+        &self,
+        source_config: &mut MediaSourceConfig,
+        mode: crate::models::PlaybackProxyMode,
+    ) -> Result<(), ProviderError> {
+        let MediaSourceConfig::Emby(config) = source_config else {
+            return Err(ProviderError::InvalidConfig(
+                "Emby requires Emby media source_config".to_string(),
+            ));
+        };
+        config.proxy_mode = mode;
+        Ok(())
+    }
+
     async fn validate_source_config(
         &self,
         _ctx: &ProviderContext<'_>,
@@ -1866,8 +1953,7 @@ impl MediaProvider for EmbyProvider {
             cache_ttl,
             _ctx,
             |result, version, expires_at| {
-                mark_emby_playback_resources(result, version, expires_at);
-                super::apply_provider_playback_policy(result, proxy_mode, true);
+                mark_emby_playback_resources(result, version, expires_at, proxy_mode);
             },
             || async {
                 self.resolve_from_api(&resolved, _ctx.request_context(), playback_client_profile)
@@ -3053,7 +3139,12 @@ mod tests {
             metadata: None,
         };
 
-        mark_emby_playback_resources(&mut result, "version-1", 1234);
+        mark_emby_playback_resources(
+            &mut result,
+            "version-1",
+            1234,
+            crate::models::PlaybackProxyMode::Prefer,
+        );
 
         assert!(matches!(
             result.playback_infos["source"].subtitles[0].provider,

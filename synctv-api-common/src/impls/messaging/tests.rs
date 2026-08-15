@@ -590,6 +590,7 @@ fn watch_playback_observe_builds_playback_resource_only() {
                 max_audio_channels: None,
                 supported_video_codecs: Vec::new(),
                 supported_containers: Vec::new(),
+                supported_live_transports: Vec::new(),
                 audio_capability: synctv_proto::client::PlaybackAudioCapability::Unspecified as i32,
                 subtitle_preference: synctv_proto::client::PlaybackSubtitlePreference::Unspecified
                     as i32,

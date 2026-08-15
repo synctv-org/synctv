@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT history_cursor_id AS \"history_cursor_id?\"\n               FROM room_playback_state WHERE room_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "history_cursor_id?",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_state",
+            "name": "history_cursor_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "fe42e90cd5ca97674175155cd8ec4e0c7968f43e1803d294b7acb9e59e5f4ab7"
+}

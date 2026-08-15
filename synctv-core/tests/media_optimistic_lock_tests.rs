@@ -308,7 +308,7 @@ async fn test_concurrent_updates_detect_conflict() {
     assert_eq!(
         direct_url_first_media_url(&current.source_config),
         "https://example.com/video.mp4",
-        "source_config is immutable after media creation"
+        "the stale update cannot overwrite source_config"
     );
     assert_eq!(current.version, 1);
 }
@@ -388,7 +388,7 @@ async fn test_sequential_updates_increment_version() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_update_with_version_preserves_source_config() {
+async fn test_update_with_version_replaces_source_config() {
     let ctx = setup_test_context("v5").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
@@ -404,8 +404,7 @@ async fn test_update_with_version_preserves_source_config() {
         "media should be created",
     );
 
-    // Attempting to alter source_config through optimistic updates should not
-    // persist because source_config is creation-time provider state.
+    // Optimistic updates atomically replace the complete source configuration.
     let mut updated = media.clone();
     updated.name = "config_test_updated.mp4".to_string();
     updated.source_config =
@@ -423,7 +422,7 @@ async fn test_update_with_version_preserves_source_config() {
     assert_eq!(result.name, "config_test_updated.mp4");
     assert_eq!(
         direct_url_first_media_url(&result.source_config),
-        "https://example.com/video.mp4"
+        "https://example.com/new.mp4"
     );
 
     // Concurrent update with old version should fail
@@ -436,6 +435,17 @@ async fn test_update_with_version_preserves_source_config() {
         "stale metadata media update should be evaluated",
     );
     assert!(stale_result.is_none(), "Stale metadata update should fail");
+    let persisted = some(
+        ok(
+            media_repo.get_by_id(&media.id).await,
+            "updated media should be fetched after the stale update",
+        ),
+        "updated media should still exist",
+    );
+    assert_eq!(
+        direct_url_first_media_url(&persisted.source_config),
+        "https://example.com/new.mp4"
+    );
 }
 
 #[tokio::test]

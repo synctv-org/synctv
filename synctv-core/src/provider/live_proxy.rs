@@ -276,6 +276,18 @@ fn mark_live_proxy_playback_resources(result: &mut PlaybackResult, version: &str
     }
 }
 
+fn default_live_proxy_mode(profile: Option<&super::PlaybackClientProfile>) -> &'static str {
+    if profile.is_some_and(|profile| {
+        profile
+            .supported_live_transports
+            .contains(&super::PlaybackLiveTransport::Flv)
+    }) {
+        "flv"
+    } else {
+        "hls"
+    }
+}
+
 #[async_trait]
 impl MediaProvider for LiveProxyProvider {
     fn name(&self) -> &'static str {
@@ -297,6 +309,7 @@ impl MediaProvider for LiveProxyProvider {
         let source_url = source_config.source.url().to_string();
         Self::validate_external_source(&source_config.source, &self.ssrf_guard).await?;
         let mut result = super::build_live_playback(*media_id, *room_id);
+        result.default_mode = default_live_proxy_mode(ctx.playback_client_profile()).to_string();
         let parsed_source_url = url::Url::parse(&source_url).map_err(|error| {
             ProviderError::InvalidConfig(format!(
                 "Invalid LiveProxy source URL '{source_url}': {error}"
@@ -401,6 +414,22 @@ impl LiveProxyProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_proxy_uses_the_low_latency_transport_advertised_by_the_client() {
+        let hls_profile = super::super::PlaybackClientProfile::default();
+        assert_eq!(default_live_proxy_mode(Some(&hls_profile)), "hls");
+
+        let native_profile = super::super::PlaybackClientProfile {
+            supported_live_transports: vec![
+                super::super::PlaybackLiveTransport::Hls,
+                super::super::PlaybackLiveTransport::Flv,
+            ],
+            ..Default::default()
+        };
+        assert_eq!(default_live_proxy_mode(Some(&native_profile)), "flv");
+        assert_eq!(default_live_proxy_mode(None), "hls");
+    }
 
     #[tokio::test]
     async fn validate_live_source_url_allows_custom_port_for_allowed_host() {

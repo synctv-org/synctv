@@ -678,7 +678,7 @@ impl BilibiliClient {
         let resp = check_response(req.send().await?).await?;
         let json: types::NavResp = json_with_limit(resp).await?;
 
-        let wbi_img = match json.data.wbi_img {
+        let wbi_img = match json.data.and_then(|data| data.wbi_img) {
             Some(wbi_img) => wbi_img,
             None if json.code != 0 => {
                 return Err(bilibili_api_error(i64::from(json.code), "nav"));
@@ -1713,11 +1713,13 @@ impl BilibiliClient {
                     return Err(bilibili_api_error(i64::from(json.code), "video URL"));
                 }
 
-                let data = json.data;
+                let data = json.data.ok_or_else(|| {
+                    BilibiliError::Parse("video URL response missing data".to_string())
+                })?;
                 let accept_quality: Vec<u32> = data
                     .accept_quality
-                    .iter()
-                    .map(|&q| quality_to_u32(q, "video URL"))
+                    .into_iter()
+                    .map(|q| quality_to_u32(q, "video URL"))
                     .collect::<Result<_, _>>()?;
                 let accept_description = data.accept_description;
                 let current_quality = quality_to_u32(data.quality, "video URL")?;
@@ -1860,7 +1862,10 @@ impl BilibiliClient {
                 }
 
                 let mut subtitles = HashMap::new();
-                for sub in json.data.subtitle.subtitles {
+                let data = json.data.ok_or_else(|| {
+                    BilibiliError::Parse("subtitle response missing data".to_string())
+                })?;
+                for sub in data.subtitle.subtitles {
                     let name = sub.lan_doc;
                     let url = if sub.subtitle_url.starts_with("http") {
                         sub.subtitle_url
@@ -1901,7 +1906,9 @@ impl BilibiliClient {
                     return Err(bilibili_api_error(i64::from(json.code), "user info"));
                 }
 
-                let data = json.data;
+                let data = json.data.ok_or_else(|| {
+                    BilibiliError::Parse("user info response missing data".to_string())
+                })?;
                 Ok(UserInfo {
                     is_login: data.is_login,
                     user_id: data.mid,
@@ -2050,11 +2057,13 @@ impl BilibiliClient {
                     return Err(bilibili_api_error(i64::from(json.code), "PGC URL"));
                 }
 
-                let result = json.result;
+                let result = json.result.ok_or_else(|| {
+                    BilibiliError::Parse("PGC URL response missing result".to_string())
+                })?;
                 let accept_quality: Vec<u32> = result
                     .accept_quality
-                    .iter()
-                    .map(|&q| quality_to_u32(q, "PGC URL"))
+                    .into_iter()
+                    .map(|q| quality_to_u32(q, "PGC URL"))
                     .collect::<Result<_, _>>()?;
                 let accept_description = result.accept_description;
                 let current_quality = quality_to_u32(result.quality, "PGC URL")?;
@@ -2100,12 +2109,15 @@ impl BilibiliClient {
                     return Err(bilibili_api_error(i64::from(json.code), "DASH PGC URL"));
                 }
 
-                let dash_info = json.result.dash.ok_or_else(|| BilibiliError::Api {
-                    code: i64::from(json.result.code),
+                let result = json.result.ok_or_else(|| {
+                    BilibiliError::Parse("PGC playurl response missing result".to_string())
+                })?;
+                let dash_info = result.dash.ok_or_else(|| BilibiliError::Api {
+                    code: i64::from(result.code),
                     message: "PGC playurl response did not include DASH streams".to_string(),
                 })?;
                 let (regular_dash, hevc_dash) =
-                    parse_dash_info(&dash_info, &json.result.support_formats);
+                    parse_dash_info(&dash_info, &result.support_formats);
 
                 Ok((regular_dash, hevc_dash))
             }
@@ -4588,7 +4600,7 @@ fn parse_dash_info(
     let parsed_audios: Vec<AudioStreamData> = dash_info
         .audio
         .iter()
-        .chain(dash_info.dolby.iter().flat_map(|dolby| dolby.audio.iter()))
+        .chain(dash_info.dolby.iter().flat_map(|dolby| &dolby.audio))
         .chain(dash_info.flac.iter().filter_map(|flac| flac.audio.as_ref()))
         .map(|audio| AudioStreamData {
             id: audio.id,

@@ -54,7 +54,7 @@ const SMS_LOGIN_SESSION_TTL_SECONDS: i64 = 10 * 60;
 const SMS_LOGIN_SESSION_VERSION: &str = "v2";
 const SMS_LOGIN_DOMAIN_SEPARATOR: &[u8] = b"synctv-bilibili-sms-login";
 const SMS_LOGIN_TOKEN_NONCE_SIZE: usize = 12;
-const BILIBILI_PLAYBACK_CACHE_SCHEMA_VERSION: &str = "v2";
+const BILIBILI_PLAYBACK_CACHE_SCHEMA_VERSION: &str = "v3";
 type HmacSha256 = Hmac<sha2::Sha256>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1755,39 +1755,6 @@ fn resolve_bilibili_video_identifier(
     Ok((identifier.bvid, identifier.aid))
 }
 
-fn non_empty_playback_urls<I>(urls: I, context: &str) -> Result<Vec<String>, ProviderError>
-where
-    I: IntoIterator<Item = String>,
-{
-    let urls = urls
-        .into_iter()
-        .filter(|url| !url.trim().is_empty())
-        .collect::<Vec<_>>();
-    if urls.is_empty() {
-        return Err(ProviderError::ApiError(format!(
-            "Bilibili {context} playback response did not include playable URLs"
-        )));
-    }
-    Ok(urls)
-}
-
-fn dash_playback_urls(
-    dash: &BilibiliDashManifest,
-    context: &str,
-) -> Result<Vec<String>, ProviderError> {
-    non_empty_playback_urls(
-        dash.video_streams
-            .iter()
-            .flat_map(|stream| {
-                std::iter::once(stream.base_url.clone()).chain(stream.backup_urls.clone())
-            })
-            .chain(dash.audio_streams.iter().flat_map(|stream| {
-                std::iter::once(stream.base_url.clone()).chain(stream.backup_urls.clone())
-            })),
-        context,
-    )
-}
-
 fn bilibili_dash_resource_candidates(
     dash: &BilibiliDashManifest,
     scope_url: &str,
@@ -1995,26 +1962,27 @@ fn bilibili_dash_playback_infos(
         insert_dash_manifest_metadata(metadata, slot, dash.clone());
         let swarm_id =
             bilibili_dash_swarm_id(provider_instance_name, content_descriptor, slot, &dash);
-        let urls = dash_playback_urls(&dash, bilibili_dash_label(slot))?;
-        let mut info = PlaybackInfo {
+        let manifest_expires_at = dash_manifest_expiration(&dash);
+        let info = PlaybackInfo {
             thumbnail: None,
-            medias: bilibili_direct_medias(
-                bilibili_dash_label(slot),
-                urls,
-                "mpd",
-                bilibili_headers(),
-                swarm_id,
-            ),
+            medias: vec![playback_media(
+                bilibili_dash_label(slot).to_string(),
+                "mpd".to_string(),
+                manifest_expires_at,
+                Some(swarm_id),
+                PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::DirectDashManifest {
+                    version: String::new(),
+                    expires_at: manifest_expires_at.unwrap_or_default(),
+                    mode_name: mode_name.clone(),
+                    headers: bilibili_headers(),
+                }),
+            )],
             default_media_index: Some(0),
             subtitles: subtitles.to_vec(),
             default_subtitle_index: None,
             danmakus: danmakus.to_vec(),
             default_danmaku_index: (!danmakus.is_empty()).then_some(0),
         };
-        if info.medias.is_empty() {
-            continue;
-        }
-        info.default_media_index = Some(0);
         playback_infos.insert(mode_name, info);
     }
 
@@ -4476,7 +4444,7 @@ mod tests {
     }
 
     #[test]
-    fn playback_cache_key_uses_the_durl_transport_schema_version() -> TestResult {
+    fn playback_cache_key_uses_the_codec_route_schema_version() -> TestResult {
         let config = super::BilibiliSourceConfig::Video(crate::models::BilibiliVideoSourceConfig {
             bvid: Some("BV1test12345".to_string()),
             aid: None,
@@ -4487,7 +4455,7 @@ mod tests {
 
         let (key, _) = provider_ok(super::playback_cache_entry(&config, "anonymous", None))?;
 
-        assert!(key.starts_with("playback:v2:video:"));
+        assert!(key.starts_with("playback:v3:video:"));
         Ok(())
     }
 
@@ -5020,10 +4988,21 @@ mod tests {
         assert!(infos.contains_key("h264"));
         assert!(infos.contains_key("av1"));
         assert!(infos.contains_key("hevc"));
-        assert!(infos["h264"]
-            .medias
-            .iter()
-            .all(|media| media.format == "mpd"));
+        for (mode_name, label) in [("h264", "H.264"), ("av1", "AV1"), ("hevc", "HEVC")] {
+            let medias = &infos[mode_name].medias;
+            assert_eq!(medias.len(), 1);
+            assert_eq!(medias[0].name, label);
+            assert_eq!(medias[0].format, "mpd");
+            assert!(matches!(
+                &medias[0].provider,
+                PlaybackMediaProvider::Bilibili(
+                    PlaybackBilibiliMedia::DirectDashManifest {
+                        mode_name: manifest_mode,
+                        ..
+                    }
+                ) if manifest_mode == mode_name
+            ));
+        }
         let PlaybackMetadata::Bilibili(metadata) = metadata else {
             anyhow::bail!("expected Bilibili metadata");
         };
@@ -5681,40 +5660,6 @@ fn bilibili_subtitle_track(
             expire_at,
         }),
     }
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn bilibili_direct_medias(
-    name_prefix: &str,
-    urls: Vec<String>,
-    format: &str,
-    headers: HashMap<String, String>,
-    p2p_swarm_id: String,
-) -> Vec<PlaybackMedia> {
-    let expires_at = urls
-        .iter()
-        .filter_map(|url| bilibili_url_expiration_timestamp(url))
-        .min();
-    urls.into_iter()
-        .enumerate()
-        .map(|(index, url)| {
-            let name = if index == 0 {
-                name_prefix.to_string()
-            } else {
-                format!("{name_prefix} {}", index + 1)
-            };
-            playback_media(
-                name,
-                format.to_string(),
-                expires_at,
-                Some(p2p_swarm_id.clone()),
-                PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::Direct {
-                    url,
-                    headers: headers.clone(),
-                }),
-            )
-        })
-        .collect()
 }
 
 fn dash_manifest_expiration(dash: &BilibiliDashManifest) -> Option<i64> {

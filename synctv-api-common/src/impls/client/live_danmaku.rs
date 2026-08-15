@@ -51,18 +51,67 @@ fn live_danmaku_event_to_proto(
     }
 }
 
+fn guest_is_current_bilibili_live_media(
+    state: &synctv_core::models::RoomPlaybackState,
+    media_id: &synctv_core::models::MediaId,
+) -> bool {
+    state.playing_media_id.as_ref() == Some(media_id)
+}
+
+fn guest_is_current_bilibili_dynamic_live(
+    state: &synctv_core::models::RoomPlaybackState,
+    playlist_id: &synctv_core::models::PlaylistId,
+    target: &synctv_core::models::ProviderTarget,
+) -> bool {
+    state.playing_playlist_id.as_ref() == Some(playlist_id) && state.target.as_ref() == Some(target)
+}
+
 impl ClientApiImpl {
+    async fn authorize_bilibili_live_danmaku_access(
+        &self,
+        actor: &RoomActor,
+        guest_target_is_current: impl FnOnce(&synctv_core::models::RoomPlaybackState) -> bool,
+    ) -> Result<(), ApiError> {
+        match actor {
+            RoomActor::User { .. } => {
+                self.require_room_permission(
+                    actor,
+                    synctv_core::models::RoomPermission::BROWSE_LIBRARY,
+                )
+                .await
+            }
+            RoomActor::Guest(_) => {
+                let room_id = actor.room_id();
+                let state = self
+                    .room_service
+                    .get_playback_state(&room_id)
+                    .await
+                    .map_err(ApiError::from)?;
+                if guest_target_is_current(&state) {
+                    Ok(())
+                } else {
+                    Err(ApiError::Authorization(
+                        "Guests can watch Bilibili live danmaku only for the current playback"
+                            .to_string(),
+                    ))
+                }
+            }
+        }
+    }
+
     pub async fn watch_bilibili_live_danmaku_for_actor(
         &self,
         actor: &RoomActor,
         req: synctv_proto::playback_provider::bilibili::WatchBilibiliLiveDanmakuRequest,
     ) -> Result<BilibiliLiveDanmakuStream, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        self.require_room_permission(actor, synctv_core::models::RoomPermission::BROWSE_LIBRARY)
-            .await?;
-        let user_id = actor.require_user_id()?;
         let room_id = actor.room_id();
         let media_id = crate::impls::proto_validated_media_id(req.media_id, &self.public_id_codec)?;
+        self.authorize_bilibili_live_danmaku_access(actor, |state| {
+            guest_is_current_bilibili_live_media(state, &media_id)
+        })
+        .await?;
+        let provider_actor = super::provider_actor_for_viewer(actor.user_id());
         let media = self
             .room_service
             .media_service()
@@ -100,7 +149,7 @@ impl ClientApiImpl {
                 })?;
         let ctx = self.attach_provider_store(
             self.build_provider_context(
-                synctv_core::provider::ProviderActor::User(user_id),
+                provider_actor,
                 media.creator_id.as_ref(),
                 &room_id,
                 Some(media.id),
@@ -128,18 +177,21 @@ impl ClientApiImpl {
         playlist_id: &str,
         live_room_id: u64,
     ) -> Result<BilibiliLiveDanmakuStream, ApiError> {
-        self.require_room_permission(actor, synctv_core::models::RoomPermission::BROWSE_LIBRARY)
-            .await?;
         if live_room_id == 0 {
             return Err(ApiError::InvalidInput(
                 "Bilibili live room_id must be non-zero".to_string(),
             ));
         }
 
-        let user_id = actor.require_user_id()?;
         let room_id = actor.room_id();
         let playlist_id =
             crate::impls::proto_validated_playlist_id(playlist_id, &self.public_id_codec)?;
+        let target = synctv_core::models::ProviderTarget::bilibili_live(live_room_id);
+        self.authorize_bilibili_live_danmaku_access(actor, |state| {
+            guest_is_current_bilibili_dynamic_live(state, &playlist_id, &target)
+        })
+        .await?;
+        let provider_actor = super::provider_actor_for_viewer(actor.user_id());
         let playlist = self
             .room_service
             .playlist_service()
@@ -159,16 +211,10 @@ impl ClientApiImpl {
             ));
         }
 
-        let target = synctv_core::models::ProviderTarget::bilibili_live(live_room_id);
         let item = self
             .room_service
             .media_service()
-            .resolve_dynamic_playlist_item(
-                room_id,
-                synctv_core::provider::ProviderActor::User(user_id),
-                &playlist_id,
-                &target,
-            )
+            .resolve_dynamic_playlist_item(room_id, provider_actor, &playlist_id, &target)
             .await
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::NotFound("Dynamic playlist item not found".to_string()))?;
@@ -203,7 +249,7 @@ impl ClientApiImpl {
                 })?;
         let ctx = self.attach_provider_store(
             self.build_provider_context(
-                synctv_core::provider::ProviderActor::User(user_id),
+                provider_actor,
                 playlist.creator_id.as_ref(),
                 &room_id,
                 None,
@@ -224,5 +270,40 @@ impl ClientApiImpl {
                     .map_err(ApiError::from)
             });
         Ok(Box::pin(stream))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{guest_is_current_bilibili_dynamic_live, guest_is_current_bilibili_live_media};
+
+    #[test]
+    fn guest_live_danmaku_access_is_limited_to_the_current_playback() {
+        let room_id = synctv_core::models::RoomId::expect_positive(1);
+        let media_id = synctv_core::models::MediaId::expect_positive(2);
+        let playlist_id = synctv_core::models::PlaylistId::expect_positive(3);
+        let target = synctv_core::models::ProviderTarget::bilibili_live(21_292_831);
+        let mut state = synctv_core::models::RoomPlaybackState::new(room_id);
+
+        state.playing_media_id = Some(media_id);
+        assert!(guest_is_current_bilibili_live_media(&state, &media_id));
+        assert!(!guest_is_current_bilibili_live_media(
+            &state,
+            &synctv_core::models::MediaId::expect_positive(4),
+        ));
+
+        state.playing_media_id = None;
+        state.playing_playlist_id = Some(playlist_id);
+        state.target = Some(target.clone());
+        assert!(guest_is_current_bilibili_dynamic_live(
+            &state,
+            &playlist_id,
+            &target,
+        ));
+        assert!(!guest_is_current_bilibili_dynamic_live(
+            &state,
+            &playlist_id,
+            &synctv_core::models::ProviderTarget::bilibili_live(2),
+        ));
     }
 }

@@ -1439,7 +1439,7 @@ impl BilibiliProvider {
     }
 
     pub fn anonymous_access() -> BilibiliAccess {
-        BilibiliAccess::anonymous("anon", None)
+        BilibiliAccess::anonymous("anonymous", None)
     }
 
     pub fn access_from_stored_credential(
@@ -4457,6 +4457,15 @@ mod tests {
 
         assert!(key.starts_with("playback:v3:video:"));
         Ok(())
+    }
+
+    #[test]
+    fn anonymous_access_uses_the_canonical_playback_cache_partition() {
+        let (cookies, partition) =
+            BilibiliProvider::anonymous_access().into_cookies_and_partition();
+
+        assert!(cookies.is_empty());
+        assert_eq!(partition, "anonymous");
     }
 
     #[test]

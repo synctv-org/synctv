@@ -2601,8 +2601,8 @@ mod websocket_e2e {
     async fn test_ws_cross_replica_same_user_partial_disconnect_does_not_emit_user_left() {
         let infra = TestInfra::new().await;
 
-        let server1 = setup_e2e_server_with_node(&infra, "presence_replica_1").await;
-        let server2 = setup_e2e_server_with_node(&infra, "presence_replica_2").await;
+        let mut server1 = setup_e2e_server_with_node(&infra, "presence_replica_1").await;
+        let mut server2 = setup_e2e_server_with_node(&infra, "presence_replica_2").await;
 
         let (owner_id, owner_token) = register_test_user(
             &server1.user_service,
@@ -2705,6 +2705,9 @@ mod websocket_e2e {
             .close(None)
             .await
             .expect("close remaining replica-2 connection");
+        server1.shutdown().await;
+        server2.shutdown().await;
+        infra.cleanup().await;
     }
 
     #[tokio::test]

@@ -1517,25 +1517,6 @@ impl StreamMessageHandler {
                                 break;
                             }
                         }
-                        Ok(RealtimeEvent::UserLeft { ref user_id, ref room_id, .. }) => {
-                            if self.principal.user_id() == Some(*user_id) && *room_id == self.room_id {
-                                tracing::info!(
-                                    actor = %self.username,
-                                    room_id = %self.room_id,
-                                    "Received cross-replica UserLeft event, disconnecting"
-                                );
-                                // UserLeft was already published by the leave_room
-                                // or delete_room API call. Skip the redundant
-                                // broadcast in cleanup().
-                                self.send_realtime_termination(
-                                    stream,
-                                    "Your room membership has ended",
-                                    RealtimeTerminationCode::RoomMembershipRevoked,
-                                );
-                                self.skip_cleanup_user_left.store(true, std::sync::atomic::Ordering::Relaxed);
-                                break;
-                            }
-                        }
                         Ok(RealtimeEvent::RoomDeleted { ref room_id, .. }) => {
                             if *room_id == self.room_id {
                                 self.send_realtime_termination(
@@ -2618,11 +2599,6 @@ impl StreamMessageHandler {
                                         RealtimeTerminationCode::UserAccessRevoked,
                                     )),
                                 Ok(RealtimeEvent::KickUserFromRoom { user_id: uid, room_id: rid, .. })
-                                    if user_id == Some(*uid) && *rid == room_id => Some(realtime_termination_server_message(
-                                        "Your room membership has ended",
-                                        RealtimeTerminationCode::RoomMembershipRevoked,
-                                    )),
-                                Ok(RealtimeEvent::UserLeft { user_id: uid, room_id: rid, .. })
                                     if user_id == Some(*uid) && *rid == room_id => Some(realtime_termination_server_message(
                                         "Your room membership has ended",
                                         RealtimeTerminationCode::RoomMembershipRevoked,

@@ -51,11 +51,6 @@ pub fn admin_event_requires_skip_cleanup(
             user_id: uid,
             room_id: rid,
             ..
-        }
-        | RealtimeEvent::UserLeft {
-            user_id: uid,
-            room_id: rid,
-            ..
         } => user_id == Some(*uid) && rid == room_id,
         _ => false,
     }
@@ -88,11 +83,6 @@ pub fn watch_admin_event_matches(
     match event {
         RealtimeEvent::KickUser { user_id: uid, .. } => user_id == Some(*uid),
         RealtimeEvent::KickUserFromRoom {
-            user_id: uid,
-            room_id: rid,
-            ..
-        }
-        | RealtimeEvent::UserLeft {
             user_id: uid,
             room_id: rid,
             ..

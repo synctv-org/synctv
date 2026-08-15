@@ -1764,16 +1764,14 @@ impl RedisPubSub {
 
             self.handle_remote_event(Some(room_id), &event).await;
 
-            // Forward kick/leave events to admin channel for cross-replica disconnect handling.
-            // UserLeft is included so other replicas disconnect the user's connections
-            // from the room (same behavior as KickUserFromRoom but with correct semantics).
+            // Forward access-revocation events to the admin channel for cross-replica
+            // disconnect handling. UserLeft remains room-scoped presence state.
             if matches!(
                 &event,
                 RealtimeEvent::KickPublisher { .. }
                     | RealtimeEvent::KickUserFromRoom { .. }
                     | RealtimeEvent::RoomBanned { .. }
                     | RealtimeEvent::RoomOwnerInactive { .. }
-                    | RealtimeEvent::UserLeft { .. }
             ) {
                 super::events::publish_admin_event(
                     &self.admin_event_tx,

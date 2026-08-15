@@ -2542,6 +2542,19 @@ fn mark_bilibili_playback_resources(
                             room_id: *room_id,
                             media_id: *media_id,
                         }),
+                        PlaybackDanmakuProvider::Bilibili(
+                            PlaybackBilibiliDanmaku::DynamicLive {
+                                room_id,
+                                playlist_id,
+                                live_room_id,
+                            },
+                        ) => PlaybackDanmakuProvider::Bilibili(
+                            PlaybackBilibiliDanmaku::DynamicLive {
+                                room_id: *room_id,
+                                playlist_id: *playlist_id,
+                                live_room_id: *live_room_id,
+                            },
+                        ),
                         _ => {
                             PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::FileProxy {
                                 version: version.to_string(),
@@ -4422,16 +4435,16 @@ mod tests {
     use super::{
         bilibili_dash_codec_slot, bilibili_dash_label, bilibili_dash_playback_infos,
         bilibili_dash_resource_candidates, bilibili_durl_media, bilibili_durl_resource_candidates,
-        bilibili_live_playback_infos, bilibili_upstream, build_bilibili_durl_manifest,
-        default_bilibili_live_mode, mark_bilibili_playback_resources, BilibiliProvider,
-        BilibiliSmsLoginSession, BilibiliSmsLoginTokenCodec,
+        bilibili_live_danmaku_track, bilibili_live_playback_infos, bilibili_upstream,
+        build_bilibili_durl_manifest, default_bilibili_live_mode, mark_bilibili_playback_resources,
+        BilibiliProvider, BilibiliSmsLoginSession, BilibiliSmsLoginTokenCodec,
     };
     use crate::models::media::{
         BilibiliDashAudioStream, BilibiliDashManifest, BilibiliDashManifestSlot,
         BilibiliDashManifests, BilibiliDashVideoStream, BilibiliDurlSegment, BilibiliPlaybackKind,
         BilibiliPlaybackMetadata, PlaybackBilibiliMedia, PlaybackMediaProvider, PlaybackMetadata,
     };
-    use crate::models::{BilibiliTarget, ProviderTarget};
+    use crate::models::{BilibiliTarget, PlaylistId, ProviderTarget, RoomId};
     use crate::provider::{
         PlaybackInfo, PlaybackResult, ProviderActor, ProviderContext, SourceConfig,
     };
@@ -4726,6 +4739,28 @@ mod tests {
         .collect();
 
         assert_eq!(default_bilibili_live_mode(&playback_infos), "main");
+    }
+
+    #[test]
+    fn dynamic_live_playback_has_a_live_danmaku_track() {
+        let room_id = RoomId::new();
+        let playlist_id = PlaylistId::new();
+        let context = ProviderContext::new("test", ProviderActor::Guest)
+            .with_room_id(room_id)
+            .with_playlist_id(playlist_id);
+        let track = bilibili_live_danmaku_track(&context, 21_292_831)
+            .expect("dynamic live playback should expose a danmaku track");
+
+        assert!(matches!(
+            track.provider,
+            crate::models::media::PlaybackDanmakuProvider::Bilibili(
+                crate::models::media::PlaybackBilibiliDanmaku::DynamicLive {
+                    room_id: track_room_id,
+                    playlist_id: track_playlist_id,
+                    live_room_id: 21_292_831,
+                }
+            ) if track_room_id == room_id && track_playlist_id == playlist_id
+        ));
     }
 
     #[test]
@@ -5858,17 +5893,28 @@ fn bilibili_live_headers() -> HashMap<String, String> {
     headers
 }
 
-fn bilibili_live_danmaku_track(ctx: &ProviderContext<'_>) -> Option<PlaybackDanmaku> {
+fn bilibili_live_danmaku_track(
+    ctx: &ProviderContext<'_>,
+    live_room_id: u64,
+) -> Option<PlaybackDanmaku> {
     let room_id = ctx.room_id()?;
-    let media_id = ctx.media_id()?;
+    let provider = match (ctx.media_id(), ctx.playlist_id()) {
+        (Some(media_id), _) => PlaybackBilibiliDanmaku::Live {
+            room_id: *room_id,
+            media_id: *media_id,
+        },
+        (None, Some(playlist_id)) => PlaybackBilibiliDanmaku::DynamicLive {
+            room_id: *room_id,
+            playlist_id: *playlist_id,
+            live_room_id,
+        },
+        (None, None) => return None,
+    };
     Some(PlaybackDanmaku {
         name: LIVE_DANMAKU_TRACK_NAME.to_string(),
         format: Some(LIVE_DANMAKU_FORMAT.to_string()),
         p2p_swarm_id: None,
-        provider: PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::Live {
-            room_id: *room_id,
-            media_id: *media_id,
-        }),
+        provider: PlaybackDanmakuProvider::Bilibili(provider),
     })
 }
 
@@ -6332,7 +6378,9 @@ impl BilibiliProvider {
                     is_currently_live: Some(true),
                     ..BilibiliPlaybackMetadata::new(BilibiliPlaybackKind::Live)
                 });
-                let danmakus: Vec<_> = bilibili_live_danmaku_track(ctx).into_iter().collect();
+                let danmakus: Vec<_> = bilibili_live_danmaku_track(ctx, room_id)
+                    .into_iter()
+                    .collect();
                 let playback_infos =
                     bilibili_live_playback_infos(live_resp.live_streams, &danmakus);
 

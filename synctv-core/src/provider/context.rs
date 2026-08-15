@@ -6,7 +6,7 @@ use std::sync::Arc;
 use synctv_common::ExecutionControl;
 
 use crate::credential_encryption::CredentialEncryption;
-use crate::models::{MediaId, RoomId, UserId};
+use crate::models::{MediaId, PlaylistId, RoomId, UserId};
 use crate::repository::UserProviderCredentialRepository;
 
 use super::{PlaybackClientProfile, ProviderAccessService};
@@ -56,6 +56,9 @@ pub struct ProviderContext<'a> {
     /// Media ID currently being resolved (optional)
     pub media_id: Option<MediaId>,
 
+    /// Dynamic playlist ID currently being resolved (optional).
+    pub playlist_id: Option<PlaylistId>,
+
     /// Playback generation that owns provider-side resources allocated by this request.
     pub playback_generation: Option<i64>,
 
@@ -99,6 +102,7 @@ impl<'a> ProviderContext<'a> {
             credential_owner_id: None,
             room_id: None,
             media_id: None,
+            playlist_id: None,
             playback_generation: None,
             playback_is_playing: None,
             provider_instance_name: None,
@@ -131,6 +135,13 @@ impl<'a> ProviderContext<'a> {
     #[must_use]
     pub const fn with_media_id(mut self, media_id: MediaId) -> Self {
         self.media_id = Some(media_id);
+        self
+    }
+
+    /// Set the dynamic playlist ID.
+    #[must_use]
+    pub const fn with_playlist_id(mut self, playlist_id: PlaylistId) -> Self {
+        self.playlist_id = Some(playlist_id);
         self
     }
 
@@ -260,6 +271,11 @@ impl<'a> ProviderContext<'a> {
     #[must_use]
     pub const fn media_id(&self) -> Option<&MediaId> {
         self.media_id.as_ref()
+    }
+
+    #[must_use]
+    pub const fn playlist_id(&self) -> Option<&PlaylistId> {
+        self.playlist_id.as_ref()
     }
 
     #[must_use]

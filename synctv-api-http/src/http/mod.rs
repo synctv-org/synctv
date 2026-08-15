@@ -682,6 +682,10 @@ fn register_read_routes() -> Router<AppState> {
             get(room::watch_bilibili_live_danmaku),
         )
         .route(
+            "/api/rooms/{roomId}/playlists/{playlistId}/danmaku/bilibili-live",
+            get(room::watch_bilibili_dynamic_live_danmaku),
+        )
+        .route(
             "/api/rooms/{roomId}/watch/room-settings",
             get(room::watch_room_settings),
         )

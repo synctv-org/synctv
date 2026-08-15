@@ -1879,6 +1879,11 @@ pub enum PlaybackBilibiliDanmaku {
         room_id: RoomId,
         media_id: MediaId,
     },
+    DynamicLive {
+        room_id: RoomId,
+        playlist_id: PlaylistId,
+        live_room_id: u64,
+    },
 }
 
 /// Media-level metadata
@@ -3295,7 +3300,9 @@ impl PlaybackDanmaku {
                 PlaybackAcFunDanmaku::FileProxy { expires_at, .. }
                 | PlaybackAcFunDanmaku::LiveProxy { expires_at, .. },
             ) => Some(*expires_at),
-            PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::Live { .. })
+            PlaybackDanmakuProvider::Bilibili(
+                PlaybackBilibiliDanmaku::Live { .. } | PlaybackBilibiliDanmaku::DynamicLive { .. },
+            )
             | PlaybackDanmakuProvider::Twitch(PlaybackTwitchDanmaku::Refresh { .. })
             | PlaybackDanmakuProvider::Douyin(PlaybackDouyinDanmaku::Refresh { .. })
             | PlaybackDanmakuProvider::Huya(PlaybackHuyaDanmaku::Refresh { .. })
@@ -3314,7 +3321,9 @@ impl PlaybackDanmaku {
                 PlaybackBilibiliDanmaku::FileDirect { url, .. }
                 | PlaybackBilibiliDanmaku::FileProxy { url, .. },
             ) => Some(url),
-            PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::Live { .. })
+            PlaybackDanmakuProvider::Bilibili(
+                PlaybackBilibiliDanmaku::Live { .. } | PlaybackBilibiliDanmaku::DynamicLive { .. },
+            )
             | PlaybackDanmakuProvider::Twitch(_)
             | PlaybackDanmakuProvider::Huya(_)
             | PlaybackDanmakuProvider::Douyu(_)
@@ -3331,7 +3340,9 @@ impl PlaybackDanmaku {
                 PlaybackBilibiliDanmaku::FileDirect { headers, .. }
                 | PlaybackBilibiliDanmaku::FileProxy { headers, .. },
             ) => headers.clone(),
-            PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::Live { .. })
+            PlaybackDanmakuProvider::Bilibili(
+                PlaybackBilibiliDanmaku::Live { .. } | PlaybackBilibiliDanmaku::DynamicLive { .. },
+            )
             | PlaybackDanmakuProvider::Twitch(_)
             | PlaybackDanmakuProvider::Huya(_)
             | PlaybackDanmakuProvider::Douyu(_)

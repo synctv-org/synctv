@@ -27,6 +27,19 @@ use synctv_proto::client::{
 };
 use synctv_proto::playback_provider::bilibili::WatchBilibiliLiveDanmakuRequest;
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BilibiliDynamicLiveDanmakuPath {
+    pub room_id: String,
+    pub playlist_id: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BilibiliDynamicLiveDanmakuQuery {
+    pub live_room_id: u64,
+}
+
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
@@ -365,6 +378,41 @@ pub async fn watch_bilibili_live_danmaku(
                 .watch_bilibili_live_danmaku_for_actor(
                     &actor,
                     WatchBilibiliLiveDanmakuRequest { media_id },
+                )
+                .await
+        },
+    )
+    .await?;
+    let stream = stream
+        .map(crate::providers::playback_provider::transport::bilibili_danmaku_sse_event)
+        .boxed();
+    Ok(Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response())
+}
+
+pub async fn watch_bilibili_dynamic_live_danmaku(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<BilibiliDynamicLiveDanmakuPath>,
+    Query(query): Query<BilibiliDynamicLiveDanmakuQuery>,
+) -> AppResult<Response> {
+    let BilibiliDynamicLiveDanmakuPath {
+        room_id,
+        playlist_id,
+    } = path;
+    let stream = super::execute::execute_room_actor_endpoint(
+        &state,
+        request_meta,
+        room_id,
+        EndpointRateLimitCategory::WebSocket,
+        EndpointRateLimitScope::RoomPlayback,
+        move |client_api, actor| async move {
+            client_api
+                .watch_bilibili_dynamic_live_danmaku_for_actor(
+                    &actor,
+                    &playlist_id,
+                    query.live_room_id,
                 )
                 .await
         },

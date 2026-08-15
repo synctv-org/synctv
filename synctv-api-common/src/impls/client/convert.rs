@@ -4786,6 +4786,19 @@ fn playback_danmaku_url(
                 "/api/playback-providers/bilibili/live-danmaku/{media_id}"
             ))
         }
+        PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::DynamicLive {
+            room_id,
+            playlist_id,
+            live_room_id,
+        }) => {
+            let room_id = public_id_codec
+                .encode_room_id(*room_id)
+                .map_err(|error| proto_encode_error("room", &error))?;
+            let playlist_id = encode_playlist_id_for_proto(*playlist_id, public_id_codec)?;
+            Ok(format!(
+                "/api/rooms/{room_id}/playlists/{playlist_id}/danmaku/bilibili-live?liveRoomId={live_room_id}"
+            ))
+        }
         PlaybackDanmakuProvider::Twitch(PlaybackTwitchDanmaku::Proxy {
             version,
             expires_at,
@@ -5302,6 +5315,60 @@ mod playback_conversion_tests {
         assert_eq!(
             danmaku.url,
             format!("/api/playback-providers/bilibili/live-danmaku/{public_media_id}")
+        );
+        assert!(danmaku.headers.is_empty());
+    }
+
+    #[test]
+    fn dynamic_live_danmaku_provider_converts_to_room_scoped_endpoint() {
+        let key = signing_key();
+        let signing = signing_context(&key);
+        let room_id = synctv_core::models::RoomId::new();
+        let playlist_id = synctv_core::models::PlaylistId::new();
+        let codec = codec();
+        let info = PlaybackInfo::builder()
+            .add_media(PlaybackMedia {
+                name: "Live HLS".to_string(),
+                format: "hls".to_string(),
+                expire_at: None,
+                metadata: None,
+                p2p_swarm_id: None,
+                provider: PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::Direct {
+                    url: "https://example.com/live.m3u8".to_string(),
+                    headers: HashMap::new(),
+                }),
+            })
+            .add_danmaku(PlaybackDanmaku {
+                name: "Bilibili Live Danmaku".to_string(),
+                format: Some("synctv-bilibili-live".to_string()),
+                p2p_swarm_id: None,
+                provider: PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::DynamicLive {
+                    room_id,
+                    playlist_id,
+                    live_room_id: 21_292_831,
+                }),
+            })
+            .default_danmaku_index(0)
+            .build();
+
+        let proto = try_playback_to_proto(
+            &playback_result_with_mode("hls", info),
+            &codec,
+            Some(&signing),
+        )
+        .expect("playback should convert");
+        let danmaku = &proto.playback_infos["hls"].danmakus[0];
+        let public_room_id = codec
+            .encode_room_id(room_id)
+            .expect("room id should encode");
+        let public_playlist_id = codec
+            .encode_playlist_id(playlist_id)
+            .expect("playlist id should encode");
+        assert_eq!(
+            danmaku.url,
+            format!(
+                "/api/rooms/{public_room_id}/playlists/{public_playlist_id}/danmaku/bilibili-live?liveRoomId=21292831"
+            )
         );
         assert!(danmaku.headers.is_empty());
     }

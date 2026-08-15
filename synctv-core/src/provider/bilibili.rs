@@ -5015,41 +5015,19 @@ mod tests {
         let PlaybackMetadata::Bilibili(metadata) = metadata else {
             anyhow::bail!("expected Bilibili metadata");
         };
-        assert_eq!(
-            metadata
-                .dash_manifests
-                .h264
-                .as_ref()
-                .unwrap()
-                .video_streams
-                .len(),
-            1
-        );
-        assert_eq!(
-            metadata
-                .dash_manifests
-                .av1
-                .as_ref()
-                .unwrap()
-                .video_streams
-                .len(),
-            1
-        );
-        assert_eq!(
-            metadata
-                .dash_manifests
-                .hevc
-                .as_ref()
-                .unwrap()
-                .video_streams
-                .len(),
-            1
-        );
-        assert!(metadata
-            .dash_manifests
-            .av1
-            .as_ref()
-            .unwrap()
+        let Some(h264_manifest) = metadata.dash_manifests.h264.as_ref() else {
+            anyhow::bail!("expected H.264 DASH manifest");
+        };
+        let Some(av1_manifest) = metadata.dash_manifests.av1.as_ref() else {
+            anyhow::bail!("expected AV1 DASH manifest");
+        };
+        let Some(hevc_manifest) = metadata.dash_manifests.hevc.as_ref() else {
+            anyhow::bail!("expected HEVC DASH manifest");
+        };
+        assert_eq!(h264_manifest.video_streams.len(), 1);
+        assert_eq!(av1_manifest.video_streams.len(), 1);
+        assert_eq!(hevc_manifest.video_streams.len(), 1);
+        assert!(av1_manifest
             .audio_streams
             .iter()
             .any(|stream| stream.base_url.contains("audio.m4s")));

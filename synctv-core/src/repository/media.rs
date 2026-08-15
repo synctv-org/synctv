@@ -563,40 +563,38 @@ impl MediaRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let source_config = sqlx::types::Json(&media.source_config);
-        let row = sqlx::query_as::<_, MediaRow>(
-            "
+        let row = sqlx::query_as!(
+            MediaRow,
+            r#"
             UPDATE media
-            SET name = $2, description = $3, position = $4, source_config = $5,
-                version = version + 1
+            SET name = $2, description = $3, position = $4, version = version + 1
              WHERE id = $1
                AND deleted_at IS NULL
-               AND version = $6
+               AND version = $5
                AND (creator_id IS NULL OR EXISTS (
                    SELECT 1 FROM users u
                    WHERE u.id = media.creator_id AND u.deleted_at IS NULL
                ))
-             RETURNING id,
-                       playlist_id,
-                       room_id,
-                       creator_id,
+             RETURNING id as "id: MediaId",
+                       playlist_id as "playlist_id: PlaylistId",
+                       room_id as "room_id: RoomId",
+                       creator_id as "creator_id: UserId",
                        name,
                        description,
                        position,
-                       source_provider,
-                       source_config,
-                       NULLIF(provider_instance_name, '') AS provider_instance_name,
+                       source_provider as "source_provider: ProviderTypeName",
+                       source_config as "source_config: crate::models::MediaSourceConfig",
+                       NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                        cover_file_reference_id,
     thumbnail_file_reference_id,
                        added_at, updated_at, version
-            ",
+            "#,
+            media.id as MediaId,
+            media.name,
+            media.description,
+            media.position,
+            expected_version,
         )
-        .bind(media.id)
-        .bind(&media.name)
-        .bind(&media.description)
-        .bind(media.position)
-        .bind(source_config)
-        .bind(expected_version)
         .fetch_optional(executor)
         .await?;
 

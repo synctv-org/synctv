@@ -2367,6 +2367,33 @@ pub fn playback_client_profile_from_proto(
         }
     };
 
+    let supported_live_transports = if profile.supported_live_transports.is_empty() {
+        default_profile.supported_live_transports.clone()
+    } else {
+        profile
+            .supported_live_transports
+            .iter()
+            .filter_map(|transport| {
+                Some(
+                    match synctv_proto::client::PlaybackLiveTransport::try_from(*transport) {
+                        Ok(synctv_proto::client::PlaybackLiveTransport::Unspecified) => {
+                            return None
+                        }
+                        Ok(synctv_proto::client::PlaybackLiveTransport::Hls) => {
+                            Ok(synctv_core::provider::PlaybackLiveTransport::Hls)
+                        }
+                        Ok(synctv_proto::client::PlaybackLiveTransport::Flv) => {
+                            Ok(synctv_core::provider::PlaybackLiveTransport::Flv)
+                        }
+                        Err(_) => Err(crate::impls::ApiError::InvalidInput(
+                            "Unsupported playback live transport".to_string(),
+                        )),
+                    },
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    };
+
     Ok(Some(synctv_core::provider::PlaybackClientProfile {
         stream_preference,
         max_streaming_bitrate: profile.max_streaming_bitrate,
@@ -2377,6 +2404,7 @@ pub fn playback_client_profile_from_proto(
         supported_containers,
         audio_capability,
         subtitle_preference,
+        supported_live_transports,
     }))
 }
 

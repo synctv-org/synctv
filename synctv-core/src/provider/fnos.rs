@@ -13,7 +13,8 @@ use sha2::{Digest, Sha256};
 use super::{
     DynamicBrowsePathSegment, DynamicListQuery, DynamicListResult, DynamicPagination,
     DynamicPlaylistItem, DynamicPlaylistProvider, ItemType, MediaProvider, NextPlayItem,
-    PlaybackInfo, PlaybackResult, ProviderContext, ProviderCredentialDependency, ProviderError,
+    PlaybackInfo, PlaybackProxyAutoPolicy, PlaybackProxyAutoReason, PlaybackProxyPolicy,
+    PlaybackResult, ProviderContext, ProviderCredentialDependency, ProviderError,
     ProviderPlaybackSessionLifecycle, SourceConfig, SourceCover,
 };
 use crate::models::{
@@ -1605,14 +1606,45 @@ fn paginate_media_items(
     (items, has_more)
 }
 
-fn mark_fnos_playback_resources(result: &mut PlaybackResult, version: &str, expires_at: i64) {
+fn fnos_route_selection(
+    proxy_mode: crate::models::PlaybackProxyMode,
+) -> super::PlaybackRouteSelection {
+    use crate::models::PlaybackProxyMode;
+
+    match proxy_mode {
+        PlaybackProxyMode::Auto | PlaybackProxyMode::Only => {
+            super::PlaybackRouteSelection::PROXY_ONLY
+        }
+        PlaybackProxyMode::Prefer => super::PlaybackRouteSelection::PROXY_PREFERRED,
+        PlaybackProxyMode::DirectPrefer => super::PlaybackRouteSelection::DIRECT_PREFERRED,
+        PlaybackProxyMode::DirectOnly => super::PlaybackRouteSelection::DIRECT_ONLY,
+    }
+}
+
+fn mark_fnos_playback_resources(
+    result: &mut PlaybackResult,
+    version: &str,
+    expires_at: i64,
+    selection: super::PlaybackRouteSelection,
+) {
+    let original_default_mode = result.default_mode.clone();
     let original_modes = result
         .playback_infos
         .iter()
         .map(|(name, info)| (name.clone(), info.clone()))
         .collect::<Vec<_>>();
+    let mut generated = std::collections::HashMap::new();
     for (mode_name, original_info) in original_modes {
-        if mode_name.starts_with("proxy_") || mode_name.starts_with("direct_") {
+        if mode_name.starts_with("proxy_") {
+            continue;
+        }
+        if mode_name.starts_with("direct_") {
+            if selection.direct {
+                generated.insert(mode_name, original_info);
+            }
+            continue;
+        }
+        if !selection.proxy {
             continue;
         }
         let mut proxy_info = original_info.clone();
@@ -1703,10 +1735,21 @@ fn mark_fnos_playback_resources(result: &mut PlaybackResult, version: &str, expi
                 }),
             })
             .collect();
-        result
-            .playback_infos
-            .insert(format!("proxy_{mode_name}"), proxy_info);
-        result.playback_infos.remove(&mode_name);
+        generated.insert(format!("proxy_{mode_name}"), proxy_info);
+    }
+    result.playback_infos = generated;
+    let direct_default = "direct_url".to_string();
+    let proxy_default = format!("proxy_{original_default_mode}");
+    if selection.prefer_proxy && result.playback_infos.contains_key(&proxy_default) {
+        result.default_mode = proxy_default;
+    } else if result.playback_infos.contains_key(&direct_default) {
+        result.default_mode = direct_default;
+    } else if result.playback_infos.contains_key(&proxy_default) {
+        result.default_mode = proxy_default;
+    } else if let Some(mode_name) = result.playback_infos.keys().min() {
+        result.default_mode = mode_name.clone();
+    } else {
+        result.default_mode.clear();
     }
 }
 
@@ -1729,12 +1772,64 @@ impl MediaProvider for FnosProvider {
         Self::NAME
     }
 
+    fn playback_proxy_policy(
+        &self,
+        source_config: SourceConfig<'_>,
+    ) -> Result<Option<PlaybackProxyPolicy>, ProviderError> {
+        let (current_mode, variant) = match source_config {
+            SourceConfig::Media(MediaSourceConfig::Fnos(config)) => (
+                config.proxy_mode,
+                match config.source {
+                    FnosMediaSource::File { .. } => "file",
+                    FnosMediaSource::LibraryItem { .. } => "library_item",
+                },
+            ),
+            SourceConfig::DynamicPlaylist(PlaylistSourceConfig::Fnos(config)) => (
+                config.proxy_mode,
+                match config.source {
+                    FnosPlaylistSource::Files { .. } => "file",
+                    FnosPlaylistSource::MediaLibrary { .. }
+                    | FnosPlaylistSource::Favorites { .. }
+                    | FnosPlaylistSource::History => "library_item",
+                },
+            ),
+            _ => {
+                return Err(ProviderError::InvalidConfig(
+                    "FNOS requires FNOS source_config".to_string(),
+                ));
+            }
+        };
+        Ok(Some(PlaybackProxyPolicy::all_modes(
+            current_mode,
+            vec![PlaybackProxyAutoPolicy::new(
+                variant,
+                crate::models::PlaybackProxyMode::Only,
+                PlaybackProxyAutoReason::ProviderSession,
+            )],
+        )))
+    }
+
+    fn set_playback_proxy_mode(
+        &self,
+        source_config: &mut MediaSourceConfig,
+        mode: crate::models::PlaybackProxyMode,
+    ) -> Result<(), ProviderError> {
+        let MediaSourceConfig::Fnos(config) = source_config else {
+            return Err(ProviderError::InvalidConfig(
+                "FNOS requires FNOS media source_config".to_string(),
+            ));
+        };
+        config.proxy_mode = mode;
+        Ok(())
+    }
+
     async fn generate_playback(
         &self,
         ctx: &ProviderContext<'_>,
         source_config: &MediaSourceConfig,
     ) -> Result<PlaybackResult, ProviderError> {
         let config = Self::media_config(source_config)?;
+        let selection = fnos_route_selection(config.proxy_mode);
         let owner = *ctx
             .credential_owner_or_user_id()
             .ok_or(ProviderError::CredentialRequired)?;
@@ -1825,7 +1920,7 @@ impl MediaProvider for FnosProvider {
                         },
                     ))),
                 };
-                if super::playback_proxy_mode_includes_direct_routes(config.proxy_mode) {
+                if selection.direct {
                     if let Ok(webdav) = self.client.webdav_config(&endpoints, &credential).await {
                         if let Ok(url) = FnosClient::webdav_file_url(&webdav, path) {
                             let headers = webdav_headers(&credential);
@@ -2242,7 +2337,7 @@ impl MediaProvider for FnosProvider {
                         },
                     ))),
                 };
-                if super::playback_proxy_mode_includes_direct_routes(config.proxy_mode) {
+                if selection.direct {
                     let webdav = match self
                         .credential_with_repo(repo, owner, &config.server_id)
                         .await
@@ -2330,13 +2425,18 @@ impl MediaProvider for FnosProvider {
             Duration::from_hours(2),
             ctx,
             |result, version, expires_at| {
-                mark_fnos_playback_resources(result, version, expires_at);
-                super::apply_provider_playback_policy(result, config.proxy_mode, true);
+                mark_fnos_playback_resources(result, version, expires_at, selection);
             },
             || async { Ok(result) },
         )
         .await?;
-        let result = super::require_direct_playback_route(result, config.proxy_mode)?;
+        if config.proxy_mode == crate::models::PlaybackProxyMode::DirectOnly
+            && result.playback_infos.is_empty()
+        {
+            return Err(ProviderError::UnsupportedFormat(
+                "This FNOS media source cannot provide a direct playback route".to_string(),
+            ));
+        }
 
         let media = result
             .metadata
@@ -3345,7 +3445,12 @@ mod tests {
             metadata: None,
         };
 
-        mark_fnos_playback_resources(&mut result, "version", 123);
+        mark_fnos_playback_resources(
+            &mut result,
+            "version",
+            123,
+            fnos_route_selection(crate::models::PlaybackProxyMode::Auto),
+        );
 
         assert!(matches!(
             &result.playback_infos["proxy_direct"].medias[0].provider,
@@ -3410,7 +3515,12 @@ mod tests {
             ))),
         };
 
-        mark_fnos_playback_resources(&mut result, "version", 123);
+        mark_fnos_playback_resources(
+            &mut result,
+            "version",
+            123,
+            fnos_route_selection(crate::models::PlaybackProxyMode::Auto),
+        );
 
         let info = &result.playback_infos["proxy_direct"];
         assert!(matches!(

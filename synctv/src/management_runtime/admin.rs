@@ -1331,6 +1331,7 @@ impl AdminRuntime for ManagementAdminRuntime {
             media_id: command.media_id,
             name: command.name,
             description: command.description,
+            playback_proxy_mode: None,
         };
         self.inner
             .edit_media(&command.room_id, req, admin_user_id)

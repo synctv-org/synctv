@@ -1414,6 +1414,11 @@ pub fn build_edit_media_request(
         media_id: crate::impls::proto_validated_media_id(req.media_id, public_id_codec)?,
         name,
         description: (!req.description.trim().is_empty()).then_some(req.description),
+        playback_proxy_mode: req
+            .playback_proxy_mode
+            .map(synctv_adapter::source_config::playback_proxy_mode_from_proto)
+            .transpose()
+            .map_err(|error| ApiError::InvalidInput(error.to_string()))?,
     })
 }
 
@@ -3443,6 +3448,7 @@ mod tests {
                 media_id: "bad-media".to_string(),
                 name: "Episode 1".to_string(),
                 description: String::new(),
+                playback_proxy_mode: None,
             },
             &codec,
         ));
@@ -3459,12 +3465,19 @@ mod tests {
                 media_id: codec_ok(codec.encode_media_id(media_id))?,
                 name: "Episode 1".to_string(),
                 description: String::new(),
+                playback_proxy_mode: Some(
+                    synctv_proto::source_config::PlaybackProxyMode::DirectPrefer as i32,
+                ),
             },
             &codec,
         ))?;
 
         assert_eq!(request.media_id, media_id);
         assert_eq!(request.name.as_deref(), Some("Episode 1"));
+        assert_eq!(
+            request.playback_proxy_mode,
+            Some(synctv_core::models::PlaybackProxyMode::DirectPrefer)
+        );
         Ok(())
     }
 

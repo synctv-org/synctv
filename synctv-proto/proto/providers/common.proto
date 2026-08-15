@@ -21,6 +21,44 @@ message PreparedMediaSource {
   synctv.source_config.PlaybackKind playback_kind = 3 [(buf.validate.field).enum.defined_only = true];
 }
 
+enum PlaybackProxyAutoReason {
+  PLAYBACK_PROXY_AUTO_REASON_UNSPECIFIED = 0;
+  PLAYBACK_PROXY_AUTO_REASON_PUBLIC_RESOURCE = 1;
+  PLAYBACK_PROXY_AUTO_REASON_REQUEST_CREDENTIALS = 2;
+  PLAYBACK_PROXY_AUTO_REASON_SIGNED_RESOURCE = 3;
+  PLAYBACK_PROXY_AUTO_REASON_PROVIDER_SESSION = 4;
+  PLAYBACK_PROXY_AUTO_REASON_SERVER_TRANSPORT = 5;
+}
+
+message PlaybackProxyAutoPolicy {
+  string variant = 1;
+  synctv.source_config.PlaybackProxyMode mode = 2 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  PlaybackProxyAutoReason reason = 3 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+}
+
+message PlaybackProxyPolicy {
+  repeated synctv.source_config.PlaybackProxyMode supported_modes = 1
+      [(buf.validate.field).repeated = {
+        min_items: 1
+        unique: true
+        items: { enum: { defined_only: true } }
+      }];
+  synctv.source_config.PlaybackProxyMode current_mode = 2
+      [(buf.validate.field).enum.defined_only = true];
+  repeated PlaybackProxyAutoPolicy auto_policies = 3
+      [(buf.validate.field).repeated.min_items = 1];
+}
+
+message ResolvePlaybackProxyPolicyRequest {
+  DiscoveredSource source = 1 [(buf.validate.field).required = true];
+}
+
 message PrepareDirectUrlRequest {
   string url = 1 [(buf.validate.field).string.min_len = 1];
   map<string, string> headers = 2;

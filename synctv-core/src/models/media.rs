@@ -3008,7 +3008,13 @@ impl PlaybackMedia {
                 PlaybackEmbyMedia::Direct { url, .. }
                 | PlaybackEmbyMedia::ProxyMediaStream { url, .. }
                 | PlaybackEmbyMedia::ProxyHlsManifest { url, .. },
-            ) => Some(url),
+            )
+            | PlaybackMediaProvider::Fnos(PlaybackFnosMedia::Direct { url, .. })
+            | PlaybackMediaProvider::Qnap(PlaybackQnapMedia::Direct { url, .. })
+            | PlaybackMediaProvider::Synology(PlaybackSynologyMedia::Direct { url, .. })
+            | PlaybackMediaProvider::Nextcloud(PlaybackNextcloudMedia::Direct { url, .. })
+            | PlaybackMediaProvider::Seafile(PlaybackSeafileMedia::Direct { url, .. })
+            | PlaybackMediaProvider::TrueNas(PlaybackTrueNasMedia::Direct { url, .. }) => Some(url),
             _ => None,
         }
     }
@@ -3042,7 +3048,17 @@ impl PlaybackMedia {
                 PlaybackEmbyMedia::Direct { headers, .. }
                 | PlaybackEmbyMedia::ProxyMediaStream { headers, .. }
                 | PlaybackEmbyMedia::ProxyHlsManifest { headers, .. },
-            ) => headers.clone(),
+            )
+            | PlaybackMediaProvider::Fnos(PlaybackFnosMedia::Direct { headers, .. })
+            | PlaybackMediaProvider::Qnap(PlaybackQnapMedia::Direct { headers, .. })
+            | PlaybackMediaProvider::Synology(PlaybackSynologyMedia::Direct { headers, .. })
+            | PlaybackMediaProvider::Nextcloud(PlaybackNextcloudMedia::Direct {
+                headers, ..
+            })
+            | PlaybackMediaProvider::Seafile(PlaybackSeafileMedia::Direct { headers, .. })
+            | PlaybackMediaProvider::TrueNas(PlaybackTrueNasMedia::Direct { headers, .. }) => {
+                headers.clone()
+            }
             _ => std::collections::HashMap::new(),
         }
     }
@@ -3056,6 +3072,12 @@ impl PlaybackMedia {
                 | PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::Direct { .. })
                 | PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::Direct { .. })
                 | PlaybackMediaProvider::Emby(PlaybackEmbyMedia::Direct { .. })
+                | PlaybackMediaProvider::Fnos(PlaybackFnosMedia::Direct { .. })
+                | PlaybackMediaProvider::Qnap(PlaybackQnapMedia::Direct { .. })
+                | PlaybackMediaProvider::Synology(PlaybackSynologyMedia::Direct { .. })
+                | PlaybackMediaProvider::Nextcloud(PlaybackNextcloudMedia::Direct { .. })
+                | PlaybackMediaProvider::Seafile(PlaybackSeafileMedia::Direct { .. })
+                | PlaybackMediaProvider::TrueNas(PlaybackTrueNasMedia::Direct { .. })
         )
     }
 }

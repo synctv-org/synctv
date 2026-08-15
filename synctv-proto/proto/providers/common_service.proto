@@ -8,6 +8,7 @@ service ProviderCommonService {
   rpc PrepareDirectUrl(PrepareDirectUrlRequest) returns (PreparedMediaSource);
   rpc PrepareLiveProxy(PrepareLiveProxyRequest) returns (PreparedMediaSource);
   rpc PrepareRtmp(PrepareRtmpRequest) returns (PreparedMediaSource);
+  rpc ResolvePlaybackProxyPolicy(ResolvePlaybackProxyPolicyRequest) returns (PlaybackProxyPolicy);
   rpc ListAvailableProviderInstances(ListAvailableProviderInstancesRequest) returns (ProviderInstancesResponse);
   rpc ListProviderBackends(ListProviderBackendsRequest) returns (ProviderBackendsResponse);
   rpc ListProviderInstances(ListProviderInstancesRequest) returns (ListProviderInstancesResponse);

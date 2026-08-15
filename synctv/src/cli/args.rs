@@ -407,6 +407,7 @@ impl PlaybackClientProfileArgs {
             subtitle_preference: self
                 .subtitle_preference
                 .map_or(0, CliPlaybackSubtitlePreference::to_proto),
+            supported_live_transports: Vec::new(),
         })
     }
 }

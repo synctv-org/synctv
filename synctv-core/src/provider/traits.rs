@@ -8,7 +8,82 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::pin::Pin;
 
-use crate::models::{SourceProvider, UserId};
+use crate::models::{PlaybackProxyMode, SourceProvider, UserId};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaybackProxyAutoReason {
+    PublicResource,
+    RequestCredentials,
+    SignedResource,
+    ProviderSession,
+    ServerTransport,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlaybackProxyAutoPolicy {
+    pub variant: String,
+    pub mode: PlaybackProxyMode,
+    pub reason: PlaybackProxyAutoReason,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlaybackProxyPolicy {
+    pub current_mode: PlaybackProxyMode,
+    pub supported_modes: Vec<PlaybackProxyMode>,
+    pub auto_policies: Vec<PlaybackProxyAutoPolicy>,
+}
+
+impl PlaybackProxyPolicy {
+    #[must_use]
+    pub fn all_modes(
+        current_mode: PlaybackProxyMode,
+        auto_policies: Vec<PlaybackProxyAutoPolicy>,
+    ) -> Self {
+        Self {
+            current_mode,
+            supported_modes: vec![
+                PlaybackProxyMode::Auto,
+                PlaybackProxyMode::Prefer,
+                PlaybackProxyMode::Only,
+                PlaybackProxyMode::DirectPrefer,
+                PlaybackProxyMode::DirectOnly,
+            ],
+            auto_policies,
+        }
+    }
+
+    #[must_use]
+    pub fn proxy_with_direct_fallback(
+        current_mode: PlaybackProxyMode,
+        auto_policies: Vec<PlaybackProxyAutoPolicy>,
+    ) -> Self {
+        Self {
+            current_mode,
+            supported_modes: vec![
+                PlaybackProxyMode::Auto,
+                PlaybackProxyMode::Prefer,
+                PlaybackProxyMode::Only,
+            ],
+            auto_policies,
+        }
+    }
+}
+
+impl PlaybackProxyAutoPolicy {
+    #[must_use]
+    pub fn new(
+        variant: impl Into<String>,
+        mode: PlaybackProxyMode,
+        reason: PlaybackProxyAutoReason,
+    ) -> Self {
+        Self {
+            variant: variant.into(),
+            mode,
+            reason,
+        }
+    }
+}
 
 /// Playback information for a single mode
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -550,6 +625,31 @@ pub trait MediaProvider: Send + Sync {
         ctx: &ProviderContext<'_>,
         source_config: &crate::models::MediaSourceConfig,
     ) -> Result<PlaybackResult, ProviderError>;
+
+    /// Describe the route modes accepted by this concrete source and the
+    /// provider-owned result of `auto` for every media variant it can yield.
+    fn playback_proxy_policy(
+        &self,
+        source_config: SourceConfig<'_>,
+    ) -> Result<Option<PlaybackProxyPolicy>, ProviderError> {
+        let _ = source_config;
+        Ok(None)
+    }
+
+    /// Update the playback route mode inside this provider's media source.
+    ///
+    /// Providers own this mutation so API and service layers never inspect
+    /// provider-specific source fields.
+    fn set_playback_proxy_mode(
+        &self,
+        source_config: &mut crate::models::MediaSourceConfig,
+        mode: PlaybackProxyMode,
+    ) -> Result<(), ProviderError> {
+        let _ = (source_config, mode);
+        Err(ProviderError::UnsupportedFormat(
+            "This provider does not expose configurable playback proxy modes".to_string(),
+        ))
+    }
 
     /// Return lightweight provider metadata for a persisted media resource.
     ///

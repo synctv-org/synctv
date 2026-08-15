@@ -2372,6 +2372,8 @@ message EditMediaRequest {
   }];
   string name = 2 [(buf.validate.field).string.max_len = 500];
   string description = 3 [(buf.validate.field).string.max_len = 5000];
+  optional synctv.source_config.PlaybackProxyMode playback_proxy_mode = 4
+      [(buf.validate.field).enum.defined_only = true];
 }
 
 // Clear Playlist
@@ -2464,6 +2466,12 @@ enum PlaybackContainer {
   PLAYBACK_CONTAINER_WEBM = 3;
 }
 
+enum PlaybackLiveTransport {
+  PLAYBACK_LIVE_TRANSPORT_UNSPECIFIED = 0;
+  PLAYBACK_LIVE_TRANSPORT_HLS = 1;
+  PLAYBACK_LIVE_TRANSPORT_FLV = 2;
+}
+
 enum PlaybackAudioCapability {
   PLAYBACK_AUDIO_CAPABILITY_UNSPECIFIED = 0;
   PLAYBACK_AUDIO_CAPABILITY_STEREO = 1;
@@ -2479,6 +2487,7 @@ message PlaybackClientProfile {
   repeated PlaybackContainer supported_containers = 5 [(buf.validate.field).repeated.items.enum.defined_only = true];
   PlaybackAudioCapability audio_capability = 6 [(buf.validate.field).enum.defined_only = true];
   PlaybackSubtitlePreference subtitle_preference = 7 [(buf.validate.field).enum.defined_only = true];
+  repeated PlaybackLiveTransport supported_live_transports = 8 [(buf.validate.field).repeated.items.enum.defined_only = true];
 }
 
 message GetPlaybackRequest {

@@ -12,9 +12,9 @@ use sha2::{Digest, Sha256};
 use super::{
     DynamicBrowsePathSegment, DynamicListQuery, DynamicListResult, DynamicPagination,
     DynamicPlaylistItem, DynamicPlaylistItemThumbnail, DynamicPlaylistProvider, ItemType,
-    MediaProvider, NextPlayItem, PlaybackInfo, PlaybackResult, ProviderContext,
-    ProviderCredentialDependency, ProviderError, ProviderPlaybackSessionLifecycle, SourceConfig,
-    SourceCover,
+    MediaProvider, NextPlayItem, PlaybackInfo, PlaybackProxyAutoPolicy, PlaybackProxyAutoReason,
+    PlaybackProxyPolicy, PlaybackResult, ProviderContext, ProviderCredentialDependency,
+    ProviderError, ProviderPlaybackSessionLifecycle, SourceConfig, SourceCover,
 };
 use crate::models::{
     detect_direct_url_format, normalize_provider_instance_name,
@@ -32,6 +32,21 @@ use synctv_media_providers::synology::{
     SynologyApiInfo, SynologyApiMap, SynologyClient, SynologyFile, SynologyFileList,
     SynologyLibraryList, SynologyStreamProfile, SynologyVideoItemKind,
 };
+
+fn synology_route_selection(
+    proxy_mode: crate::models::PlaybackProxyMode,
+) -> super::PlaybackRouteSelection {
+    use crate::models::PlaybackProxyMode;
+
+    match proxy_mode {
+        PlaybackProxyMode::Auto | PlaybackProxyMode::Only => {
+            super::PlaybackRouteSelection::PROXY_ONLY
+        }
+        PlaybackProxyMode::Prefer => super::PlaybackRouteSelection::PROXY_PREFERRED,
+        PlaybackProxyMode::DirectPrefer => super::PlaybackRouteSelection::DIRECT_PREFERRED,
+        PlaybackProxyMode::DirectOnly => super::PlaybackRouteSelection::DIRECT_ONLY,
+    }
+}
 
 const DISCOVERY_QUERY: &[&str] = &[
     "SYNO.API.Auth",
@@ -916,12 +931,90 @@ impl SynologyProvider {
             SourceConfig::DynamicPlaylist(config) => Ok(&Self::playlist_config(config)?.server_id),
         }
     }
+
+    fn ensure_playback_proxy_mode_supported(
+        &self,
+        source_config: SourceConfig<'_>,
+        mode: crate::models::PlaybackProxyMode,
+    ) -> Result<(), ProviderError> {
+        let policy = self.playback_proxy_policy(source_config)?.ok_or_else(|| {
+            ProviderError::InvalidConfig(
+                "Synology playback proxy policy is unavailable".to_string(),
+            )
+        })?;
+        if policy.supported_modes.contains(&mode) {
+            Ok(())
+        } else {
+            Err(ProviderError::InvalidConfig(format!(
+                "Synology source does not support playback proxy mode '{}'",
+                mode.as_str()
+            )))
+        }
+    }
 }
 
 #[async_trait]
 impl MediaProvider for SynologyProvider {
     fn name(&self) -> &'static str {
         Self::NAME
+    }
+
+    fn playback_proxy_policy(
+        &self,
+        source_config: SourceConfig<'_>,
+    ) -> Result<Option<PlaybackProxyPolicy>, ProviderError> {
+        let (current_mode, variant, supports_direct) = match source_config {
+            SourceConfig::Media(MediaSourceConfig::Synology(config)) => (
+                config.proxy_mode,
+                match config.source {
+                    SynologyMediaSource::File { .. } => "file",
+                    SynologyMediaSource::LibraryItem { .. } => "library_item",
+                },
+                matches!(config.source, SynologyMediaSource::File { .. }),
+            ),
+            SourceConfig::DynamicPlaylist(PlaylistSourceConfig::Synology(config)) => (
+                config.proxy_mode,
+                match config.source {
+                    SynologyPlaylistSource::Files { .. } => "file",
+                    SynologyPlaylistSource::Movies { .. }
+                    | SynologyPlaylistSource::TvShows { .. }
+                    | SynologyPlaylistSource::Episodes { .. }
+                    | SynologyPlaylistSource::HomeVideos { .. }
+                    | SynologyPlaylistSource::TvRecordings { .. } => "library_item",
+                },
+                matches!(config.source, SynologyPlaylistSource::Files { .. }),
+            ),
+            _ => {
+                return Err(ProviderError::InvalidConfig(
+                    "Synology requires Synology source_config".to_string(),
+                ));
+            }
+        };
+        let auto_policies = vec![PlaybackProxyAutoPolicy::new(
+            variant,
+            crate::models::PlaybackProxyMode::Only,
+            PlaybackProxyAutoReason::ProviderSession,
+        )];
+        Ok(Some(if supports_direct {
+            PlaybackProxyPolicy::all_modes(current_mode, auto_policies)
+        } else {
+            PlaybackProxyPolicy::proxy_with_direct_fallback(current_mode, auto_policies)
+        }))
+    }
+
+    fn set_playback_proxy_mode(
+        &self,
+        source_config: &mut MediaSourceConfig,
+        mode: crate::models::PlaybackProxyMode,
+    ) -> Result<(), ProviderError> {
+        self.ensure_playback_proxy_mode_supported(SourceConfig::media(source_config), mode)?;
+        let MediaSourceConfig::Synology(config) = source_config else {
+            return Err(ProviderError::InvalidConfig(
+                "Synology requires Synology media source_config".to_string(),
+            ));
+        };
+        config.proxy_mode = mode;
+        Ok(())
     }
 
     fn as_dynamic_playlist_provider(&self) -> Option<&dyn DynamicPlaylistProvider> {
@@ -966,7 +1059,7 @@ impl MediaProvider for SynologyProvider {
                 .await
             }
         }?;
-        if super::playback_proxy_mode_includes_direct_routes(config.proxy_mode) {
+        if synology_route_selection(config.proxy_mode).direct {
             if let SynologyMediaSource::File { path } = &config.source {
                 let direct_url = auth.client.download_url(
                     required_api(&auth.apis, "SYNO.FileStation.Download")?,
@@ -1004,8 +1097,7 @@ impl MediaProvider for SynologyProvider {
             PLAYBACK_CACHE_TTL,
             ctx,
             |result, version, expires_at| {
-                mark_synology_playback_resources(result, version, expires_at);
-                super::apply_provider_playback_policy(result, config.proxy_mode, true);
+                mark_synology_playback_resources(result, version, expires_at, config.proxy_mode);
             },
             || async { Ok(result) },
         )
@@ -1045,6 +1137,15 @@ impl MediaProvider for SynologyProvider {
         ctx: &ProviderContext<'_>,
         source_config: SourceConfig<'_>,
     ) -> Result<(), ProviderError> {
+        let current_mode = self
+            .playback_proxy_policy(source_config)?
+            .ok_or_else(|| {
+                ProviderError::InvalidConfig(
+                    "Synology playback proxy policy is unavailable".to_string(),
+                )
+            })?
+            .current_mode;
+        self.ensure_playback_proxy_mode_supported(source_config, current_mode)?;
         let owner = *ctx.user_id().ok_or(ProviderError::CredentialRequired)?;
         let server_id = Self::source_server_id(source_config)?;
         let repo = self.credential_repo_or(ctx.credential_repo)?;
@@ -2151,14 +2252,36 @@ fn single_result(
     }
 }
 
-fn mark_synology_playback_resources(result: &mut PlaybackResult, version: &str, expires_at: i64) {
+fn mark_synology_playback_resources(
+    result: &mut PlaybackResult,
+    version: &str,
+    expires_at: i64,
+    proxy_mode: crate::models::PlaybackProxyMode,
+) {
+    let original_default = result.default_mode.clone();
+    let prefer_proxy = matches!(
+        proxy_mode,
+        crate::models::PlaybackProxyMode::Prefer | crate::models::PlaybackProxyMode::Only
+    );
     let original_modes = result
         .playback_infos
         .iter()
         .map(|(name, info)| (name.clone(), info.clone()))
         .collect::<Vec<_>>();
+    let mut generated = std::collections::HashMap::new();
     for (mode_name, original_info) in original_modes {
-        if mode_name.starts_with("proxy_") || mode_name == "direct" {
+        if mode_name.starts_with("proxy_") {
+            continue;
+        }
+        let selection = synology_route_selection(proxy_mode);
+        let direct_available = original_info
+            .medias
+            .iter()
+            .any(|media| !media.requires_provider_url());
+        if selection.direct && direct_available {
+            generated.insert(mode_name.clone(), original_info.clone());
+        }
+        if !selection.proxy {
             continue;
         }
         let mut proxy_info = original_info.clone();
@@ -2219,11 +2342,10 @@ fn mark_synology_playback_resources(result: &mut PlaybackResult, version: &str, 
                 }
             }
         }
-        result
-            .playback_infos
-            .insert(format!("proxy_{mode_name}"), proxy_info);
-        result.playback_infos.remove(&mode_name);
+        generated.insert(format!("proxy_{mode_name}"), proxy_info);
     }
+    result.playback_infos = generated;
+    super::select_generated_playback_default(result, &original_default, prefer_proxy);
 }
 
 fn synology_swarm_id(
@@ -2516,15 +2638,59 @@ mod tests {
         let mut result =
             single_result("original", media, Vec::new(), None, None, Some(false), None);
 
-        mark_synology_playback_resources(&mut result, "version", 1_900_000_000);
-        super::super::apply_provider_playback_policy(
+        mark_synology_playback_resources(
             &mut result,
+            "version",
+            1_900_000_000,
             crate::models::PlaybackProxyMode::Prefer,
-            true,
         );
 
         assert_eq!(result.default_mode, "proxy_original");
         assert_eq!(result.playback_infos.len(), 1);
         assert!(result.playback_infos.contains_key("proxy_original"));
+    }
+
+    #[test]
+    fn library_policy_excludes_direct_only_modes() {
+        let provider = SynologyProvider::with_http_client(reqwest::Client::new());
+        let mut source_config = MediaSourceConfig::Synology(SynologyMediaSourceConfig {
+            server_id: "synology-main".to_string(),
+            proxy_mode: crate::models::PlaybackProxyMode::Auto,
+            source: SynologyMediaSource::LibraryItem {
+                kind: SynologyLibraryItemKind::Movie,
+                item_id: 7,
+                file_id: 11,
+            },
+        });
+
+        let policy = provider
+            .playback_proxy_policy(SourceConfig::media(&source_config))
+            .expect("Synology policy should resolve")
+            .expect("Synology should expose a policy");
+
+        assert_eq!(
+            policy.supported_modes,
+            vec![
+                crate::models::PlaybackProxyMode::Auto,
+                crate::models::PlaybackProxyMode::Prefer,
+                crate::models::PlaybackProxyMode::Only,
+            ]
+        );
+        assert_eq!(
+            policy.auto_policies,
+            vec![PlaybackProxyAutoPolicy::new(
+                "library_item",
+                crate::models::PlaybackProxyMode::Only,
+                PlaybackProxyAutoReason::ProviderSession,
+            )]
+        );
+
+        let error = provider
+            .set_playback_proxy_mode(
+                &mut source_config,
+                crate::models::PlaybackProxyMode::DirectOnly,
+            )
+            .expect_err("Synology library items should reject direct-only mode");
+        assert!(error.to_string().contains("does not support"));
     }
 }

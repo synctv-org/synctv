@@ -87,6 +87,7 @@ pub struct EditMediaRequest {
     pub media_id: MediaId,
     pub name: Option<String>,
     pub description: Option<String>,
+    pub playback_proxy_mode: Option<crate::models::PlaybackProxyMode>,
 }
 
 #[derive(Debug, Clone)]
@@ -899,6 +900,15 @@ impl MediaService {
                         )));
                     }
                     media.description = description.clone();
+                }
+                if let Some(mode) = request.playback_proxy_mode {
+                    let provider = self
+                        .resolve_media_provider(
+                            media.source_provider,
+                            media.provider_instance_name.as_deref(),
+                        )
+                        .await?;
+                    provider.set_playback_proxy_mode(&mut media.source_config, mode)?;
                 }
                 let mut tx = self.media_repo.pool().begin().await?;
                 // Conditional update: only succeed if no other edit changed the row

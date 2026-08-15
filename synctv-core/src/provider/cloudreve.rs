@@ -12,8 +12,9 @@ use sha2::{Digest, Sha256};
 use super::{
     DynamicBrowsePathSegment, DynamicListQuery, DynamicListResult, DynamicPagination,
     DynamicPlaylistItem, DynamicPlaylistItemThumbnail, DynamicPlaylistProvider, ItemType,
-    MediaProvider, NextPlayItem, PlaybackInfo, PlaybackResult, ProviderContext,
-    ProviderCredentialDependency, ProviderError, SourceConfig, SourceCover,
+    MediaProvider, NextPlayItem, PlaybackInfo, PlaybackProxyAutoPolicy, PlaybackProxyAutoReason,
+    PlaybackProxyPolicy, PlaybackResult, ProviderContext, ProviderCredentialDependency,
+    ProviderError, SourceConfig, SourceCover,
 };
 use crate::models::media::{
     PlaybackCloudreveMedia, PlaybackCloudreveSubtitle, PlaybackMedia, PlaybackMediaProvider,
@@ -831,22 +832,51 @@ impl CloudreveProvider {
     }
 }
 
-fn mark_cloudreve_playback_resources(result: &mut PlaybackResult, version: &str, expires_at: i64) {
+fn cloudreve_route_selection(
+    proxy_mode: crate::models::PlaybackProxyMode,
+) -> super::PlaybackRouteSelection {
+    use crate::models::PlaybackProxyMode;
+
+    match proxy_mode {
+        PlaybackProxyMode::Auto | PlaybackProxyMode::Only => {
+            super::PlaybackRouteSelection::PROXY_ONLY
+        }
+        PlaybackProxyMode::Prefer => super::PlaybackRouteSelection::PROXY_PREFERRED,
+        PlaybackProxyMode::DirectPrefer => super::PlaybackRouteSelection::DIRECT_PREFERRED,
+        PlaybackProxyMode::DirectOnly => super::PlaybackRouteSelection::DIRECT_ONLY,
+    }
+}
+
+fn mark_cloudreve_playback_resources(
+    result: &mut PlaybackResult,
+    version: &str,
+    expires_at: i64,
+    proxy_mode: crate::models::PlaybackProxyMode,
+) {
     let original_default_mode = result.default_mode.clone();
+    let mut default_selection = super::PlaybackRouteSelection::DIRECT_ONLY;
     let original_modes = result
         .playback_infos
         .iter()
         .map(|(mode_name, info)| (mode_name.clone(), info.clone()))
         .collect::<Vec<_>>();
+    let mut generated = std::collections::HashMap::new();
 
     for (mode_name, original_info) in original_modes {
         if original_info.medias.is_empty() || mode_name.starts_with("proxy_") {
             continue;
         }
-        let proxy_mode_name = format!("proxy_{mode_name}");
-        if result.playback_infos.contains_key(&proxy_mode_name) {
+        let selection = cloudreve_route_selection(proxy_mode);
+        if mode_name == original_default_mode {
+            default_selection = selection;
+        }
+        if selection.direct {
+            generated.insert(mode_name.clone(), original_info.clone());
+        }
+        if !selection.proxy {
             continue;
         }
+        let proxy_mode_name = format!("proxy_{mode_name}");
 
         let mut proxy_info = original_info.clone();
         proxy_info.medias = original_info
@@ -905,16 +935,74 @@ fn mark_cloudreve_playback_resources(result: &mut PlaybackResult, version: &str,
                 }),
             })
             .collect();
-        result.playback_infos.insert(proxy_mode_name, proxy_info);
+        if !proxy_info.medias.is_empty() {
+            generated.insert(proxy_mode_name, proxy_info);
+        }
     }
 
-    result.default_mode = original_default_mode;
+    result.playback_infos = generated;
+    let proxy_default_mode = format!("proxy_{original_default_mode}");
+    let direct_default_available = result.playback_infos.contains_key(&original_default_mode);
+    let proxy_default_available = result.playback_infos.contains_key(&proxy_default_mode);
+    result.default_mode = if default_selection.prefer_proxy && proxy_default_available {
+        proxy_default_mode
+    } else if direct_default_available {
+        original_default_mode
+    } else if proxy_default_available {
+        proxy_default_mode
+    } else {
+        result
+            .playback_infos
+            .keys()
+            .min()
+            .cloned()
+            .unwrap_or_default()
+    };
 }
 
 #[async_trait]
 impl MediaProvider for CloudreveProvider {
     fn name(&self) -> &'static str {
         Self::NAME
+    }
+
+    fn playback_proxy_policy(
+        &self,
+        source_config: SourceConfig<'_>,
+    ) -> Result<Option<PlaybackProxyPolicy>, ProviderError> {
+        let current_mode = match source_config {
+            SourceConfig::Media(MediaSourceConfig::Cloudreve(config)) => config.proxy_mode,
+            SourceConfig::DynamicPlaylist(PlaylistSourceConfig::Cloudreve(config)) => {
+                config.proxy_mode
+            }
+            _ => {
+                return Err(ProviderError::InvalidConfig(
+                    "Cloudreve requires Cloudreve source_config".to_string(),
+                ));
+            }
+        };
+        Ok(Some(PlaybackProxyPolicy::all_modes(
+            current_mode,
+            vec![PlaybackProxyAutoPolicy::new(
+                "file",
+                crate::models::PlaybackProxyMode::Only,
+                PlaybackProxyAutoReason::SignedResource,
+            )],
+        )))
+    }
+
+    fn set_playback_proxy_mode(
+        &self,
+        source_config: &mut MediaSourceConfig,
+        mode: crate::models::PlaybackProxyMode,
+    ) -> Result<(), ProviderError> {
+        let MediaSourceConfig::Cloudreve(config) = source_config else {
+            return Err(ProviderError::InvalidConfig(
+                "Cloudreve requires Cloudreve media source_config".to_string(),
+            ));
+        };
+        config.proxy_mode = mode;
+        Ok(())
     }
 
     async fn generate_playback(
@@ -1016,8 +1104,7 @@ impl MediaProvider for CloudreveProvider {
             PLAYBACK_CACHE_TTL,
             ctx,
             |result, version, expires_at| {
-                mark_cloudreve_playback_resources(result, version, expires_at);
-                super::apply_provider_playback_policy(result, proxy_mode, true);
+                mark_cloudreve_playback_resources(result, version, expires_at, proxy_mode);
             },
             || async { Ok(result) },
         )
@@ -1736,7 +1823,12 @@ mod tests {
     #[test]
     fn proxy_resources_keep_the_direct_cache_and_hide_upstream_urls() {
         let mut result = playback_result("mp4");
-        mark_cloudreve_playback_resources(&mut result, "version-1", 1_900_000_000);
+        mark_cloudreve_playback_resources(
+            &mut result,
+            "version-1",
+            1_900_000_000,
+            crate::models::PlaybackProxyMode::Prefer,
+        );
 
         let direct = &result.playback_infos["direct"];
         assert!(matches!(
@@ -1765,7 +1857,12 @@ mod tests {
     #[test]
     fn hls_media_uses_the_manifest_proxy_route() {
         let mut result = playback_result("hls");
-        mark_cloudreve_playback_resources(&mut result, "version-1", 1_900_000_000);
+        mark_cloudreve_playback_resources(
+            &mut result,
+            "version-1",
+            1_900_000_000,
+            crate::models::PlaybackProxyMode::Auto,
+        );
 
         assert!(matches!(
             result.playback_infos["proxy_direct"].medias[0].provider,
@@ -1776,29 +1873,24 @@ mod tests {
     #[test]
     fn playback_proxy_modes_choose_and_lock_the_proxy_sibling() {
         let mut preferred = playback_result("mp4");
-        mark_cloudreve_playback_resources(&mut preferred, "version-1", 1_900_000_000);
-        super::super::apply_provider_playback_policy(
+        mark_cloudreve_playback_resources(
             &mut preferred,
+            "version-1",
+            1_900_000_000,
             crate::models::PlaybackProxyMode::Prefer,
-            true,
         );
         assert_eq!(preferred.default_mode, "proxy_direct");
         assert!(preferred.playback_infos.contains_key("direct"));
 
         let mut proxy_only = playback_result("mp4");
-        mark_cloudreve_playback_resources(&mut proxy_only, "version-1", 1_900_000_000);
-        proxy_only.playback_infos.insert(
-            "orphan_direct".to_string(),
-            proxy_only.playback_infos["direct"].clone(),
-        );
-        super::super::apply_provider_playback_policy(
+        mark_cloudreve_playback_resources(
             &mut proxy_only,
+            "version-1",
+            1_900_000_000,
             crate::models::PlaybackProxyMode::Only,
-            true,
         );
         assert_eq!(proxy_only.default_mode, "proxy_direct");
         assert!(!proxy_only.playback_infos.contains_key("direct"));
-        assert!(!proxy_only.playback_infos.contains_key("orphan_direct"));
         assert!(proxy_only
             .playback_infos
             .keys()

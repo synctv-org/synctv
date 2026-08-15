@@ -6,7 +6,10 @@ use synctv_core::models::{
 };
 use synctv_core::models::{SortDirection as CoreSortDirection, UserId};
 use synctv_core::provider::ExecutionControl;
-use synctv_core::provider::{DirectUrlProvider, LiveProxyProvider, ProviderError};
+use synctv_core::provider::{
+    DirectUrlProvider, LiveProxyProvider, PlaybackProxyAutoReason, PlaybackProxyPolicy,
+    ProviderError, SourceConfig,
+};
 use synctv_core::service::{
     AuditEventParams, AuditService, ProvidersManager, RemoteProviderManager, UserService,
 };
@@ -39,6 +42,55 @@ fn prepared_playback_kind(value: Option<synctv_core::models::PlaybackKind>) -> i
             synctv_proto::source_config::PlaybackKind::Live as i32
         }
         None => synctv_proto::source_config::PlaybackKind::Unspecified as i32,
+    }
+}
+
+const fn playback_proxy_mode_to_proto(mode: synctv_core::models::PlaybackProxyMode) -> i32 {
+    use synctv_core::models::PlaybackProxyMode;
+    use synctv_proto::source_config::PlaybackProxyMode as ProtoMode;
+
+    match mode {
+        PlaybackProxyMode::Auto => ProtoMode::Auto as i32,
+        PlaybackProxyMode::Prefer => ProtoMode::Prefer as i32,
+        PlaybackProxyMode::Only => ProtoMode::Only as i32,
+        PlaybackProxyMode::DirectPrefer => ProtoMode::DirectPrefer as i32,
+        PlaybackProxyMode::DirectOnly => ProtoMode::DirectOnly as i32,
+    }
+}
+
+const fn playback_proxy_auto_reason_to_proto(reason: PlaybackProxyAutoReason) -> i32 {
+    use synctv_proto::providers::common::PlaybackProxyAutoReason as ProtoReason;
+
+    match reason {
+        PlaybackProxyAutoReason::PublicResource => ProtoReason::PublicResource as i32,
+        PlaybackProxyAutoReason::RequestCredentials => ProtoReason::RequestCredentials as i32,
+        PlaybackProxyAutoReason::SignedResource => ProtoReason::SignedResource as i32,
+        PlaybackProxyAutoReason::ProviderSession => ProtoReason::ProviderSession as i32,
+        PlaybackProxyAutoReason::ServerTransport => ProtoReason::ServerTransport as i32,
+    }
+}
+
+fn playback_proxy_policy_to_proto(
+    policy: PlaybackProxyPolicy,
+) -> synctv_proto::providers::common::PlaybackProxyPolicy {
+    synctv_proto::providers::common::PlaybackProxyPolicy {
+        supported_modes: policy
+            .supported_modes
+            .into_iter()
+            .map(playback_proxy_mode_to_proto)
+            .collect(),
+        current_mode: playback_proxy_mode_to_proto(policy.current_mode),
+        auto_policies: policy
+            .auto_policies
+            .into_iter()
+            .map(
+                |policy| synctv_proto::providers::common::PlaybackProxyAutoPolicy {
+                    variant: policy.variant,
+                    mode: playback_proxy_mode_to_proto(policy.mode),
+                    reason: playback_proxy_auto_reason_to_proto(policy.reason),
+                },
+            )
+            .collect(),
     }
 }
 
@@ -485,6 +537,60 @@ impl ProviderCommonApiImpl {
             suggested_name: "RTMP live stream".to_string(),
             playback_kind: synctv_proto::source_config::PlaybackKind::Live as i32,
         })
+    }
+
+    pub async fn resolve_playback_proxy_policy(
+        &self,
+        req: synctv_proto::providers::common::ResolvePlaybackProxyPolicyRequest,
+    ) -> Result<synctv_proto::providers::common::PlaybackProxyPolicy, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let source = req
+            .source
+            .ok_or_else(|| ApiError::InvalidInput("source is required".to_string()))?;
+        let instance_name =
+            normalize_provider_instance_name(Some(source.provider_instance_name.as_str()));
+        let source_config = source
+            .source_config
+            .ok_or_else(|| ApiError::InvalidInput("source_config is required".to_string()))?;
+
+        let (provider_type, policy) = match source_config {
+            synctv_proto::providers::common::discovered_source::SourceConfig::Media(config) => {
+                let (provider_type, config) =
+                    synctv_adapter::source_config::media_source_config_from_proto(Some(config))
+                        .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
+                let provider = self
+                    .providers_manager
+                    .resolve_provider(provider_type, instance_name)
+                    .await
+                    .map_err(ApiError::from)?;
+                let policy = provider
+                    .playback_proxy_policy(SourceConfig::media(&config))
+                    .map_err(ApiError::from)?;
+                (provider_type, policy)
+            }
+            synctv_proto::providers::common::discovered_source::SourceConfig::Playlist(config) => {
+                let (provider_type, config) =
+                    synctv_adapter::source_config::playlist_source_config_from_proto(Some(config))
+                        .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
+                let provider = self
+                    .providers_manager
+                    .resolve_provider(provider_type, instance_name)
+                    .await
+                    .map_err(ApiError::from)?;
+                let policy = provider
+                    .playback_proxy_policy(SourceConfig::dynamic_playlist(&config))
+                    .map_err(ApiError::from)?;
+                (provider_type, policy)
+            }
+        };
+
+        let policy = policy.ok_or_else(|| {
+            ApiError::InvalidInput(format!(
+                "Provider '{}' does not expose configurable playback proxy modes",
+                provider_type.as_str()
+            ))
+        })?;
+        Ok(playback_proxy_policy_to_proto(policy))
     }
 
     pub fn execute_admin_endpoint<'a, T, F, Fut>(

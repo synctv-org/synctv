@@ -994,6 +994,14 @@ async fn fetch_and_forward_candidates_to_chunk_stream(
                 ));
             }
             Ok(None) => {
+                if candidate_index + 1 < candidate_count {
+                    tracing::warn!(
+                        candidate_index,
+                        candidate_count,
+                        "Playback upstream candidate ended before first body data"
+                    );
+                    continue;
+                }
                 return Ok(prefetched_axum_body_to_chunk_stream(
                     status,
                     metadata,
@@ -2331,6 +2339,83 @@ mod tests {
         let action = PlaybackTransportAction::FetchAndForwardCandidates {
             urls: vec![
                 mock_public_url(&mock_server, "/primary.mp4"),
+                mock_public_url(&mock_server, "/backup.mp4"),
+            ],
+            headers: HashMap::new(),
+            range_header: None,
+        };
+
+        let mut stream = playback_transport_action_to_chunk_stream(deps, action, false)
+            .await
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        let metadata = stream
+            .next()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("stream should emit metadata"))?
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        assert_eq!(metadata.status, 200);
+        assert_eq!(metadata.content_type.as_deref(), Some("video/mp4"));
+
+        let mut body = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            body.extend(chunk.map_err(|error| anyhow::anyhow!("{error:?}"))?.data);
+        }
+        assert_eq!(body, vec![7, 8, 9]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fetch_and_forward_candidates_switches_on_empty_first_body() -> anyhow::Result<()> {
+        let Some(mock_server) = start_mock_server_or_skip().await? else {
+            return Ok(());
+        };
+
+        Mock::given(method("GET"))
+            .and(path("/empty.mp4"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes([])
+                    .insert_header("Content-Type", "video/mp4"),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/backup.mp4"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes([7_u8, 8, 9])
+                    .insert_header("Content-Type", "video/mp4"),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = mock_proxy_client(&mock_server)?;
+        let ssrf_guard = test_ssrf_guard();
+        let proxy_slice_cache =
+            synctv_proxy::slice_cache::SliceCache::new_with_client_and_ssrf_guard(
+                synctv_proxy::slice_cache::SliceCacheConfig {
+                    enabled: false,
+                    ..Default::default()
+                },
+                client.clone(),
+                ssrf_guard.clone(),
+            )?;
+        let signing_key = crate::proxy_signature::ProxySigningKey::try_derive_from(
+            b"test-secret-key-for-playback-provider-empty-body-failover",
+        )?;
+        let deps = PlaybackTransportExecutorDeps {
+            proxy_signing_key: &signing_key,
+            proxy_http_client: &client,
+            ssrf_guard: &ssrf_guard,
+            proxy_slice_cache: &proxy_slice_cache,
+            request_control: None,
+            hls_rewrite: None,
+        };
+        let action = PlaybackTransportAction::FetchAndForwardCandidates {
+            urls: vec![
+                mock_public_url(&mock_server, "/empty.mp4"),
                 mock_public_url(&mock_server, "/backup.mp4"),
             ],
             headers: HashMap::new(),

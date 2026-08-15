@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE playback_source_metadata\n               SET media_name = COALESCE($5, media_name),\n                   playlist_name = COALESCE($6, playlist_name),\n                   updated_at = CURRENT_TIMESTAMP,\n                   version = version + 1\n               WHERE room_id = $1\n                 AND media_id IS NOT DISTINCT FROM $2\n                 AND playlist_id IS NOT DISTINCT FROM $3\n                 AND target_hash = $4\n                 AND (media_name IS DISTINCT FROM COALESCE($5, media_name)\n                   OR playlist_name IS DISTINCT FROM COALESCE($6, playlist_name))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0ad1b26b4dce7572be0a7b50500cecbd1a4f24adfa38ecb6df81e5b925a80e56"
+}

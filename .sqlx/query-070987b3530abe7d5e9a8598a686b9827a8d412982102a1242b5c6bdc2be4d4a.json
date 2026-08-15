@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            DELETE FROM email_outbox\n            WHERE (status = $2 OR (status = $3 AND cleanup_completed_at IS NOT NULL))\n              AND COALESCE(sent_at, created_at)\n                  < NOW() - make_interval(secs => ($1::BIGINT)::DOUBLE PRECISION)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int2",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "070987b3530abe7d5e9a8598a686b9827a8d412982102a1242b5c6bdc2be4d4a"
+}

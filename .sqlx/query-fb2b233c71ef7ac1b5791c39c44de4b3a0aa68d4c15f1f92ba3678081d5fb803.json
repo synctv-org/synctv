@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT room_id AS \"room_id!: RoomId\" FROM (\n                SELECT id AS room_id\n                FROM rooms\n                WHERE deleted_owner_id = $1\n                  AND deletion_source = $2\n                UNION\n                SELECT room_id\n                FROM playlists\n                WHERE deleted_owner_id = $1\n                  AND deletion_source = $2\n                UNION\n                SELECT room_id\n                FROM media\n                WHERE deleted_owner_id = $1\n                  AND deletion_source = $2\n                UNION\n                SELECT room_id\n                FROM chat_messages\n                WHERE deleted_owner_id = $1\n                  AND deletion_source = $2\n            ) affected\n            ORDER BY room_id\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "room_id!: RoomId",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int2"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "fb2b233c71ef7ac1b5791c39c44de4b3a0aa68d4c15f1f92ba3678081d5fb803"
+}

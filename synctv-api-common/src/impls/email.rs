@@ -817,19 +817,19 @@ mod tests {
         assert_eq!(missing.message, GENERIC_PASSWORD_RESET_MESSAGE);
         assert!(existing_elapsed >= std::time::Duration::from_millis(490));
         assert!(missing_elapsed >= std::time::Duration::from_millis(490));
-        let token_count = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM auth_email_tokens WHERE user_id = $1 AND token_type = $2",
+        let token_count = sqlx::query_scalar!(
+            r#"SELECT COUNT(*)::BIGINT AS "count!"
+               FROM auth_email_tokens WHERE user_id = $1 AND token_type = $2"#,
+            created.id.as_i64(),
+            i16::from(synctv_core::models::EmailTokenType::PasswordReset),
         )
-        .bind(created.id)
-        .bind(i16::from(
-            synctv_core::models::EmailTokenType::PasswordReset,
-        ))
         .fetch_one(&pool)
         .await?;
-        let outbox_count = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM email_outbox WHERE kind = $1 AND status = 1",
+        let outbox_count = sqlx::query_scalar!(
+            r#"SELECT COUNT(*)::BIGINT AS "count!"
+               FROM email_outbox WHERE kind = $1 AND status = 1"#,
+            synctv_core::repository::EmailOutboxKind::PasswordReset.as_i16(),
         )
-        .bind(synctv_core::repository::EmailOutboxKind::PasswordReset.as_i16())
         .fetch_one(&pool)
         .await?;
         assert_eq!(token_count, 1);
@@ -1085,10 +1085,11 @@ mod tests {
         )?;
         assert_eq!(real.message, GENERIC_EMAIL_LOGIN_MESSAGE);
         assert_eq!(decoy.message, GENERIC_EMAIL_LOGIN_MESSAGE);
-        let outbox_jobs = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM email_outbox WHERE recipient = $1 AND status = 1",
+        let outbox_jobs = sqlx::query_scalar!(
+            r#"SELECT COUNT(*)::BIGINT AS "count!"
+               FROM email_outbox WHERE recipient = $1 AND status = 1"#,
+            email,
         )
-        .bind(email)
         .fetch_one(&pool)
         .await?;
         assert_eq!(outbox_jobs, 1);

@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT created_by AS \"created_by: UserId\" FROM rooms WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "created_by: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rooms",
+            "name": "created_by"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "457fca56c00da1fcee06269e4c45e7c476792ac866d42ec37d10f3224aa2d754"
+}

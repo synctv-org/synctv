@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE room_members\n              SET visit_count = visit_count + CASE\n                      WHEN last_counted_visit_at IS NULL OR last_counted_visit_at <= $3 THEN 1\n                      ELSE 0\n                  END,\n                  last_counted_visit_at = CASE\n                      WHEN last_counted_visit_at IS NULL OR last_counted_visit_at <= $3 THEN $4\n                      ELSE last_counted_visit_at\n                  END,\n                  last_visited_at = $4\n              WHERE room_id = $1 AND user_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0c3961c4a78b4ec388d0ac9af296187f715729ce4fe5f01b1338b38b5465dc15"
+}

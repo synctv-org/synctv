@@ -138,19 +138,19 @@ impl EmailRegistrationTokenRepository {
     }
 
     pub async fn is_unused_and_valid(&self, token: &str, now: DateTime<Utc>) -> Result<bool> {
-        let exists = sqlx::query_scalar::<_, bool>(
-            r"
+        let exists = sqlx::query_scalar!(
+            r#"
             SELECT EXISTS (
                 SELECT 1
                 FROM auth_email_registration_tokens
                 WHERE token_hash = $1
                   AND used_at IS NULL
                   AND expires_at > $2
-            )
-            ",
+            ) AS "exists!"
+            "#,
+            Self::hash_token(token),
+            now,
         )
-        .bind(Self::hash_token(token))
-        .bind(now)
         .fetch_one(&self.pool)
         .await?;
         Ok(exists)

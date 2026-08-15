@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE email_outbox SET locked_at = NOW() - INTERVAL '3 minutes'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "8353d7f0b639c6f6fc00bf2dbb4e450c7fc8ca683f96b9a41a7eeac3e1273900"
+}

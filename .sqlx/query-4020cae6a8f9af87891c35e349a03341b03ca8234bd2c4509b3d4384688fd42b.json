@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE email_outbox\n            SET cleanup_completed_at = NOW(),\n                last_error = COALESCE(last_error, 'unknown email outbox kind')\n            WHERE status = $1\n              AND cleanup_completed_at IS NULL\n              AND kind <> ALL($2)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int2",
+        "Int2Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4020cae6a8f9af87891c35e349a03341b03ca8234bd2c4509b3d4384688fd42b"
+}

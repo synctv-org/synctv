@@ -216,9 +216,9 @@ impl UserService {
         // Account deletion also marks resources created in rooms owned by
         // other users. Capture every affected room before restoring rows so
         // room caches and live subscriptions observe the full aggregate.
-        let affected_room_ids = sqlx::query_scalar::<_, i64>(
-            r"
-            SELECT room_id FROM (
+        let affected_room_ids = sqlx::query_scalar!(
+            r#"
+            SELECT room_id AS "room_id!: RoomId" FROM (
                 SELECT id AS room_id
                 FROM rooms
                 WHERE deleted_owner_id = $1
@@ -240,16 +240,12 @@ impl UserService {
                   AND deletion_source = $2
             ) affected
             ORDER BY room_id
-            ",
+            "#,
+            user_id.as_i64(),
+            DeletionSource::Account as DeletionSource,
         )
-        .bind(user_id.as_i64())
-        .bind(DeletionSource::Account)
         .fetch_all(&mut *tx)
-        .await?
-        .into_iter()
-        .map(RoomId::try_from)
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|error| Error::Internal(format!("Invalid restored room id: {error}")))?;
+        .await?;
 
         // Creator membership is part of the recoverable owned-room aggregate.
         // Other former members use the normal admission flow after recovery.

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE room_playback_state\n               SET history_cursor_id = $2, history_cursor_created_at = $3\n               WHERE room_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b3a4c933d63bcad2c3e4f1bb3a36d29f8cad539afe0ed151b9b3f1e5dd25edce"
+}

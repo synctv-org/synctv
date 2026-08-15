@@ -3165,7 +3165,7 @@ async fn test_runtime_settings_import_rolls_back_and_releases_fences_on_database
         )
         .await;
     assert!(result.is_err());
-    let stored_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM settings")
+    let stored_count = sqlx::query_scalar!(r#"SELECT COUNT(*)::BIGINT AS "count!" FROM settings"#)
         .fetch_one(&pool)
         .await
         .map_err(|error| test_error(error.to_string()))?;

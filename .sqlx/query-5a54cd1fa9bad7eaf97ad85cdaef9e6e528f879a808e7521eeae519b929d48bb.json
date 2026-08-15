@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE room_playback_history h SET position_seconds = $2\n               FROM room_playback_state c\n               WHERE c.room_id = $1\n                 AND h.room_id = c.room_id\n                 AND h.id = c.history_cursor_id\n                 AND h.created_at = c.history_cursor_created_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Float8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5a54cd1fa9bad7eaf97ad85cdaef9e6e528f879a808e7521eeae519b929d48bb"
+}

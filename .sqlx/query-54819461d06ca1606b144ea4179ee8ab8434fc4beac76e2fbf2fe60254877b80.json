@@ -1,0 +1,175 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT candidate.id AS \"id!\", candidate.room_id AS \"room_id!: RoomId\", candidate.sequence AS \"sequence!\",\n                      candidate.media_id AS \"media_id?: MediaId\", candidate.playlist_id AS \"playlist_id?: PlaylistId\",\n                      candidate.target AS \"target?: crate::models::ProviderTarget\",\n                      candidate.media_name, candidate.playlist_name, candidate.position_seconds,\n                      candidate.selected_by_user_id AS \"selected_by_user_id?: UserId\", candidate.created_at,\n                      candidate.updated_at,\n                      NULL::smallint AS \"source_provider?: crate::models::SourceProvider\",\n                      NULL::text AS \"provider_instance_name?\"\n               FROM room_playback_history current\n               JOIN LATERAL (\n                   SELECT h.* FROM room_playback_history h\n                   WHERE h.room_id = current.room_id AND h.sequence > current.sequence\n                   ORDER BY h.sequence ASC LIMIT 1\n               ) candidate ON TRUE\n               WHERE current.room_id = $1 AND current.id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_history",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "room_id!: RoomId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_history",
+            "name": "room_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "sequence!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_history",
+            "name": "sequence"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "media_id?: MediaId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_history",
+            "name": "media_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "playlist_id?: PlaylistId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_history",
+            "name": "playlist_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "target?: crate::models::ProviderTarget",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "room_playback_history",
+            "name": "target"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "media_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "room_playback_history",
+            "name": "media_name"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "playlist_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "room_playback_history",
+            "name": "playlist_name"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "position_seconds",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_history",
+            "name": "position_seconds"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "selected_by_user_id?: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_history",
+            "name": "selected_by_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "room_playback_history",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "room_playback_history",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "source_provider?: crate::models::SourceProvider",
+        "type_info": "Int2",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 13,
+        "name": "provider_instance_name?",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      false,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "54819461d06ca1606b144ea4179ee8ab8434fc4beac76e2fbf2fe60254877b80"
+}

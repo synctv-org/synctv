@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM room_playback_history WHERE room_id = $1 AND sequence > $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "338b17310e211a38e0feeee6f2237727c577357947213516aa78f5b09e14d978"
+}

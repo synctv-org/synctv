@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE email_outbox\n            SET status = $2,\n                locked_by = NULL,\n                locked_at = NULL,\n                next_attempt_at = NOW()\n            WHERE status = $3\n              AND locked_at < NOW() - make_interval(secs => ($1::BIGINT)::DOUBLE PRECISION)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int2",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "805a76e498fd9b4e307e8fc83e30428b13a2e91ee568928b38c685e1f2696a53"
+}

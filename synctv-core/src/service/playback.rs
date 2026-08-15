@@ -778,10 +778,12 @@ impl PlaybackService {
         let event_actor = if let Some(actor) = metadata.actor_user_id {
             actor
         } else {
-            sqlx::query_scalar::<_, UserId>("SELECT created_by FROM rooms WHERE id = $1")
-                .bind(current.room_id.as_i64())
-                .fetch_one(&mut **tx)
-                .await?
+            sqlx::query_scalar!(
+                r#"SELECT created_by AS "created_by: UserId" FROM rooms WHERE id = $1"#,
+                current.room_id.as_i64(),
+            )
+            .fetch_one(&mut **tx)
+            .await?
         };
         let destination_name = metadata
             .to

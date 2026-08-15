@@ -365,8 +365,9 @@ impl UserService {
             // recovery aggregate as well. Keep their body and author for
             // restoration, while account-level visibility filters hide them
             // until the account is restored or permanently purged.
-            let deleted_chat_messages = sqlx::query_as::<_, AccountDeletedChatMessageRow>(
-                r"
+            let deleted_chat_messages = sqlx::query_as!(
+                AccountDeletedChatMessageRow,
+                r#"
                 UPDATE chat_messages
                 SET deleted_at = CURRENT_TIMESTAMP,
                     deletion_source = $2,
@@ -374,11 +375,11 @@ impl UserService {
                     version = version + 1
                 WHERE user_id = $1
                   AND deleted_at IS NULL
-                RETURNING id, room_id, message_type, version, created_at, deleted_at
-                ",
+                RETURNING id, room_id AS "room_id!: RoomId", message_type AS "message_type!: ChatMessageType", version, created_at, deleted_at
+                "#,
+                user_id.as_i64(),
+                DeletionSource::Account as DeletionSource,
             )
-            .bind(user_id.as_i64())
-            .bind(DeletionSource::Account)
             .fetch_all(&mut **tx)
             .await?
             .into_iter()

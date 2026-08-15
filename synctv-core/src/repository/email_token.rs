@@ -172,8 +172,8 @@ impl EmailTokenRepository {
         token_type: EmailTokenType,
         now: chrono::DateTime<Utc>,
     ) -> Result<bool> {
-        let exists = sqlx::query_scalar::<_, bool>(
-            r"
+        let exists = sqlx::query_scalar!(
+            r#"
             SELECT EXISTS (
                 SELECT 1
                 FROM auth_email_tokens
@@ -182,13 +182,13 @@ impl EmailTokenRepository {
                   AND token_type = $3
                   AND used_at IS NULL
                   AND expires_at > $4
-            )
-            ",
+            ) AS "exists!"
+            "#,
+            Self::hash_token(token),
+            user_id.as_i64(),
+            i16::from(token_type),
+            now,
         )
-        .bind(Self::hash_token(token))
-        .bind(user_id)
-        .bind(i16::from(token_type))
-        .bind(now)
         .fetch_one(&self.pool)
         .await?;
         Ok(exists)

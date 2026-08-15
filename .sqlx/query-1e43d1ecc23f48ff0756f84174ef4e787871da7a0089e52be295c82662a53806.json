@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO email_outbox (\n                id, kind, recipient, encrypted_payload, dedupe_key,\n                status, attempts, next_attempt_at, lock_version,\n                expires_at, created_at\n            )\n            VALUES (\n                'future-job', 99, 'future@example.com', 'enc:future',\n                'future-dedupe', 1, 0, NOW(), 0,\n                NOW() + INTERVAL '15 minutes', NOW()\n            )\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "1e43d1ecc23f48ff0756f84174ef4e787871da7a0089e52be295c82662a53806"
+}

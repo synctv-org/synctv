@@ -426,7 +426,8 @@ pub struct EpisodePage {
 /// Video URL info response
 #[derive(Debug, Clone, Deserialize)]
 pub struct VideoUrlResp {
-    pub data: VideoUrlData,
+    #[serde(default)]
+    pub data: Option<VideoUrlData>,
     pub message: String,
     pub code: i32,
     pub ttl: i32,
@@ -455,18 +456,19 @@ pub struct DurlInfo {
 /// Player v2 info with subtitles
 #[derive(Debug, Clone, Deserialize)]
 pub struct PlayerV2InfoResp {
-    pub data: PlayerV2Data,
+    pub data: Option<PlayerV2Data>,
     pub message: String,
     pub code: i32,
     pub ttl: i32,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct PlayerV2Data {
+    #[serde(default)]
     pub subtitle: SubtitleInfo,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct SubtitleInfo {
     #[serde(default, deserialize_with = "deserialize_null_default")]
     pub subtitles: Vec<SubtitleItem>,
@@ -528,7 +530,8 @@ pub struct EpisodeInfo {
 /// PGC URL info response
 #[derive(Debug, Clone, Deserialize)]
 pub struct PgcUrlResp {
-    pub result: PgcUrlResult,
+    #[serde(default)]
+    pub result: Option<PgcUrlResult>,
     pub message: String,
     pub code: i32,
 }
@@ -658,12 +661,12 @@ pub struct SegmentBase {
 /// DASH format PGC response
 #[derive(Debug, Clone, Deserialize)]
 pub struct DashPgcResp {
-    pub result: DashPgcResult,
+    pub result: Option<DashPgcResult>,
     pub message: String,
     pub code: i32,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct DashPgcResult {
     #[serde(default)]
     pub code: i32,
@@ -1095,13 +1098,13 @@ pub(crate) struct SeasonIndexDataDto {
 /// User info (Nav) response
 #[derive(Debug, Clone, Deserialize)]
 pub struct NavResp {
-    pub data: NavData,
+    pub data: Option<NavData>,
     pub message: String,
     pub code: i32,
     pub ttl: i32,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct NavData {
     #[serde(rename = "isLogin")]
     pub is_login: bool,
@@ -1307,9 +1310,10 @@ mod tests {
                 "durl": null
             }
         }))?;
-        assert!(response.data.accept_quality.is_empty());
-        assert!(response.data.accept_description.is_empty());
-        assert!(response.data.durl.is_empty());
+        let data = response.data.expect("video URL response should have data");
+        assert!(data.accept_quality.is_empty());
+        assert!(data.accept_description.is_empty());
+        assert!(data.durl.is_empty());
 
         let response: PlayerV2InfoResp = serde_json::from_value(serde_json::json!({
             "code": 0,
@@ -1317,7 +1321,25 @@ mod tests {
             "ttl": 1,
             "data": { "subtitle": { "subtitles": null } }
         }))?;
-        assert!(response.data.subtitle.subtitles.is_empty());
+        assert!(response
+            .data
+            .expect("subtitle response should have data")
+            .subtitle
+            .subtitles
+            .is_empty());
+
+        let response: VideoUrlResp = serde_json::from_value(serde_json::json!({
+            "code": -10403,
+            "message": "大会员专享限制",
+            "ttl": 1
+        }))?;
+        assert!(response.data.is_none());
+
+        let response: PgcUrlResp = serde_json::from_value(serde_json::json!({
+            "code": -10403,
+            "message": "大会员专享限制"
+        }))?;
+        assert!(response.result.is_none());
         Ok(())
     }
 

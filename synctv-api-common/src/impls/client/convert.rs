@@ -5202,7 +5202,7 @@ mod playback_conversion_tests {
                     PlaybackBilibiliMedia::DirectDashManifest {
                         version: "v1".to_string(),
                         expires_at: synctv_core::SystemClock.now().timestamp() + 1800,
-                        mode_name: "dash".to_string(),
+                        mode_name: "h264".to_string(),
                         headers: headers.clone(),
                     },
                 ),
@@ -5211,11 +5211,11 @@ mod playback_conversion_tests {
 
         let proto = try_playback_to_proto(&playback_result(info), &codec(), Some(&signing))
             .expect("playback should convert");
-        let media = &proto.playback_infos["dash"].medias[0];
+        let media = &proto.playback_infos["h264"].medias[0];
         assert!(
             media
                 .url
-                .starts_with("/api/playback-providers/bilibili/v1/dash-manifests/dash/direct?"),
+                .starts_with("/api/playback-providers/bilibili/v1/dash-manifests/h264/direct?"),
             "unexpected direct DASH URL: {}",
             media.url
         );

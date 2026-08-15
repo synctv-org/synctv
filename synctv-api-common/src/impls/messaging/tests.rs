@@ -9624,7 +9624,7 @@ fn test_disconnect_signal_requires_skip_cleanup_only_for_room_scoped_or_redundan
 }
 
 #[test]
-fn test_admin_event_requires_skip_cleanup_only_for_room_scoped_or_redundant_exits() {
+fn test_admin_event_requires_skip_cleanup_only_for_room_scoped_revocations() {
     let rid = room_id();
     let uid = user_id();
     let now = synctv_core::SystemClock.now();
@@ -9650,7 +9650,7 @@ fn test_admin_event_requires_skip_cleanup_only_for_room_scoped_or_redundant_exit
         Some(uid),
         &rid,
     ));
-    assert!(super::admin_event_requires_skip_cleanup(
+    assert!(!super::admin_event_requires_skip_cleanup(
         &RealtimeEvent::UserLeft {
             event_id: "evt-3".to_string(),
             room_id: rid,
@@ -9760,7 +9760,7 @@ fn test_watch_admin_event_matches_access_revocation_events() {
         Some(uid),
         &rid,
     ));
-    assert!(super::watch_admin_event_matches(
+    assert!(!super::watch_admin_event_matches(
         &RealtimeEvent::UserLeft {
             event_id: "evt-3".to_string(),
             room_id: rid,

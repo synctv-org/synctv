@@ -4796,7 +4796,7 @@ fn playback_danmaku_url(
                 .map_err(|error| proto_encode_error("room", &error))?;
             let playlist_id = encode_playlist_id_for_proto(*playlist_id, public_id_codec)?;
             Ok(format!(
-                "/api/rooms/{room_id}/playlists/{playlist_id}/danmaku/bilibili-live?liveRoomId={live_room_id}"
+                "/api/playback-providers/bilibili/live-danmaku/dynamic/{room_id}/{playlist_id}?liveRoomId={live_room_id}"
             ))
         }
         PlaybackDanmakuProvider::Twitch(PlaybackTwitchDanmaku::Proxy {
@@ -5320,7 +5320,7 @@ mod playback_conversion_tests {
     }
 
     #[test]
-    fn dynamic_live_danmaku_provider_converts_to_room_scoped_endpoint() {
+    fn dynamic_live_danmaku_provider_converts_to_playback_provider_endpoint() {
         let key = signing_key();
         let signing = signing_context(&key);
         let room_id = synctv_core::models::RoomId::new();
@@ -5367,7 +5367,7 @@ mod playback_conversion_tests {
         assert_eq!(
             danmaku.url,
             format!(
-                "/api/rooms/{public_room_id}/playlists/{public_playlist_id}/danmaku/bilibili-live?liveRoomId=21292831"
+                "/api/playback-providers/bilibili/live-danmaku/dynamic/{public_room_id}/{public_playlist_id}?liveRoomId=21292831"
             )
         );
         assert!(danmaku.headers.is_empty());

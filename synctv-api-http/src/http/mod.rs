@@ -682,10 +682,6 @@ fn register_read_routes() -> Router<AppState> {
             get(room::watch_bilibili_live_danmaku),
         )
         .route(
-            "/api/rooms/{roomId}/playlists/{playlistId}/danmaku/bilibili-live",
-            get(room::watch_bilibili_dynamic_live_danmaku),
-        )
-        .route(
             "/api/rooms/{roomId}/watch/room-settings",
             get(room::watch_room_settings),
         )
@@ -986,6 +982,11 @@ fn register_all_routes() -> Router<AppState> {
         .route(
             "/api/playback-providers/bilibili/live-danmaku/{mediaId}",
             get(crate::providers::playback_provider::bilibili::watch_bilibili_live_danmaku)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/bilibili/live-danmaku/dynamic/{roomId}/{playlistId}",
+            get(room::watch_bilibili_dynamic_live_danmaku)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(

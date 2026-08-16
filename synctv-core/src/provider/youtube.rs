@@ -422,7 +422,7 @@ impl YoutubeProvider {
             })
             .ok_or(ProviderError::NotFound)?;
         let url = youtube_caption_url(&track.base_url, target_language_code.as_deref())?;
-        super::playback_transport::transport_action_for_target_url(
+        super::playback_transport::full_response_cache_action_for_target_url(
             url.into(),
             youtube_headers(session.cookie.as_deref()),
             range_header,

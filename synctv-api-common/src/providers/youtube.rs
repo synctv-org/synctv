@@ -6,7 +6,7 @@ use synctv_core::provider::{ProviderError, YoutubeProvider};
 use synctv_media_providers::youtube::{normalize_channel_id, normalize_playlist_id};
 use synctv_proto::providers::youtube::{
     list_request, BindInfo, BindRequest, BindResponse, Format, GetBindsResponse, ListItem,
-    ListRequest, ListResponse, Metadata, ResolveRequest, ResolveResponse, Subtitle, UnbindRequest,
+    ListRequest, ListResponse, Metadata, ResolveRequest, ResolveResponse, UnbindRequest,
     UnbindResponse,
 };
 use synctv_proto::source_config as source_proto;
@@ -295,16 +295,10 @@ fn youtube_resolve_response(
                 .map(|format| youtube_format(format, true)),
         )
         .collect();
-    let subtitles = tracklist
-        .into_iter()
-        .flat_map(|value| &value.caption_tracks)
-        .map(|track| Subtitle {
-            name: track.name.value(),
-            language: track.language_code.clone(),
-            automatic: track.is_automatic(),
-            translatable: track.is_translatable,
-        })
-        .collect();
+    let subtitle_count = tracklist
+        .map_or(0, |value| value.caption_tracks.len())
+        .try_into()
+        .unwrap_or(u32::MAX);
     let thumbnail_url = details
         .thumbnail
         .as_ref()
@@ -331,12 +325,7 @@ fn youtube_resolve_response(
             live_end: live.and_then(|value| value.end_timestamp.clone()),
         }),
         formats,
-        subtitles,
-        storyboard_spec: player
-            .storyboards
-            .as_ref()
-            .and_then(|value| value.player_storyboard_spec_renderer.as_ref())
-            .map(|value| value.spec.clone()),
+        subtitle_count,
         source: Some(discovered_media(
             synctv_proto::source_config::media_source_config::Provider::Youtube(
                 synctv_proto::source_config::YoutubeMediaSourceConfig {
@@ -377,7 +366,7 @@ mod tests {
     };
 
     #[test]
-    fn resolve_response_contains_native_details_and_neutral_config() {
+    fn resolve_response_contains_discovery_details_and_source_config() {
         let response = youtube_resolve_response(
             &YoutubePlayerResponse {
                 streaming_data: Some(YoutubeStreamingData {
@@ -431,7 +420,7 @@ mod tests {
         assert_eq!(metadata.title, "Example");
         assert_eq!(metadata.duration_seconds, Some(212));
         assert_eq!(response.formats.len(), 1);
-        assert_eq!(response.subtitles.len(), 1);
+        assert_eq!(response.subtitle_count, 1);
         let discovered = response.source.expect("discovered source");
         assert_eq!(discovered.provider_instance_name, "remote");
         let Some(synctv_proto::providers::common::discovered_source::SourceConfig::Media(config)) =

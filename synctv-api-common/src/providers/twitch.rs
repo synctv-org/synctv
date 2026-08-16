@@ -527,7 +527,6 @@ fn resolve_response(
             .into_iter()
             .map(|quality| Quality {
                 name: quality.name,
-                url: quality.url,
                 bandwidth: quality.bandwidth,
                 width: quality.width,
                 height: quality.height,
@@ -560,7 +559,6 @@ fn metadata_message(metadata: TwitchMetadata) -> Metadata {
                 end_seconds: chapter.end_seconds,
             })
             .collect(),
-        storyboard_url: metadata.storyboard_url,
     }
 }
 

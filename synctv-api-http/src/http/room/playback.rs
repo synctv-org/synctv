@@ -1,12 +1,8 @@
 use axum::{
     extract::{Path, Query, State},
-    response::{
-        sse::{Event, KeepAlive, Sse},
-        IntoResponse, Response,
-    },
+    response::sse::{Event, Sse},
     Json,
 };
-use futures::StreamExt as _;
 use std::convert::Infallible;
 
 use super::execute::{execute_room_actor_endpoint_with_control, execute_user_endpoint};
@@ -25,20 +21,6 @@ use synctv_proto::client::{
     StartPlaybackRequest, StopPlaybackRequest, UpdatePlaybackStateRequest, WatchPlaybackRequest,
     WatchPlaybackStateRequest,
 };
-use synctv_proto::playback_provider::bilibili::WatchBilibiliLiveDanmakuRequest;
-
-#[derive(Debug, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BilibiliDynamicLiveDanmakuPath {
-    pub room_id: String,
-    pub playlist_id: String,
-}
-
-#[derive(Debug, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BilibiliDynamicLiveDanmakuQuery {
-    pub live_room_id: u64,
-}
 
 #[cfg_attr(
     feature = "openapi",
@@ -359,71 +341,6 @@ pub async fn watch_playback(
     let observe = synctv_api_common::impls::messaging::watch_playback_observe(request)
         .map_err(super::super::AppError::bad_request)?;
     open_resource_watch_sse(state, request_meta, room_id, observe, format).await
-}
-
-pub async fn watch_bilibili_live_danmaku(
-    request_meta: RequestMetadata,
-    State(state): State<AppState>,
-    Path(path): Path<synctv_proto::client::RoomMediaTargetPathRequest>,
-) -> AppResult<Response> {
-    let synctv_proto::client::RoomMediaTargetPathRequest { room_id, media_id } = path;
-    let stream = super::execute::execute_room_actor_endpoint(
-        &state,
-        request_meta,
-        room_id,
-        EndpointRateLimitCategory::WebSocket,
-        EndpointRateLimitScope::RoomPlayback,
-        move |client_api, actor| async move {
-            client_api
-                .watch_bilibili_live_danmaku_for_actor(
-                    &actor,
-                    WatchBilibiliLiveDanmakuRequest { media_id },
-                )
-                .await
-        },
-    )
-    .await?;
-    let stream = stream
-        .map(crate::providers::playback_provider::transport::bilibili_danmaku_sse_event)
-        .boxed();
-    Ok(Sse::new(stream)
-        .keep_alive(KeepAlive::default())
-        .into_response())
-}
-
-pub async fn watch_bilibili_dynamic_live_danmaku(
-    request_meta: RequestMetadata,
-    State(state): State<AppState>,
-    Path(path): Path<BilibiliDynamicLiveDanmakuPath>,
-    Query(query): Query<BilibiliDynamicLiveDanmakuQuery>,
-) -> AppResult<Response> {
-    let BilibiliDynamicLiveDanmakuPath {
-        room_id,
-        playlist_id,
-    } = path;
-    let stream = super::execute::execute_room_actor_endpoint(
-        &state,
-        request_meta,
-        room_id,
-        EndpointRateLimitCategory::WebSocket,
-        EndpointRateLimitScope::RoomPlayback,
-        move |client_api, actor| async move {
-            client_api
-                .watch_bilibili_dynamic_live_danmaku_for_actor(
-                    &actor,
-                    &playlist_id,
-                    query.live_room_id,
-                )
-                .await
-        },
-    )
-    .await?;
-    let stream = stream
-        .map(crate::providers::playback_provider::transport::bilibili_danmaku_sse_event)
-        .boxed();
-    Ok(Sse::new(stream)
-        .keep_alive(KeepAlive::default())
-        .into_response())
 }
 
 #[cfg_attr(

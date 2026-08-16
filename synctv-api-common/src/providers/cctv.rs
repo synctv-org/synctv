@@ -17,7 +17,6 @@ pub fn resolve_response(
             .into_iter()
             .map(|stream| Stream {
                 name: stream.name,
-                url: stream.url,
                 kind: stream_kind(stream.kind),
             })
             .collect(),

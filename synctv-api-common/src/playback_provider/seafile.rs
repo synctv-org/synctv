@@ -3,13 +3,15 @@ use synctv_core::provider::{ExecutionControl, SeafileHlsResourceRequest};
 use synctv_core::service::SeafilePlaybackProviderService;
 use synctv_proto::playback_provider::seafile::{
     GetSeafileHlsManifestRequest, GetSeafileHlsResourceRequest, GetSeafileResourceRequest,
-    GetSeafileSubtitleRequest, SeafileHlsManifestResponse, SeafileHlsResourceKind,
-    SeafileHlsResourceResponse, SeafileResourceResponse, SeafileSubtitleResponse,
+    GetSeafileSubtitleRequest, GetSeafileThumbnailResourceRequest, SeafileHlsManifestResponse,
+    SeafileHlsResourceKind, SeafileHlsResourceResponse, SeafileResourceResponse,
+    SeafileSubtitleResponse, SeafileThumbnailResourceResponse,
 };
 
 use super::common::{
-    playback_provider_route_base, playback_transport_action_to_chunk_stream,
-    verify_playback_provider_access_with_deps, HasPlaybackProviderAccessFields, HlsRewriteSigning,
+    decode_playback_resource_owner, playback_provider_route_base,
+    playback_transport_action_to_chunk_stream, verify_playback_provider_access_with_deps,
+    verify_playback_resource_access_with_deps, HasPlaybackProviderAccessFields, HlsRewriteSigning,
     PlaybackProviderAccessRequest, PlaybackProviderApiRuntime, PlaybackTransportExecutorDeps,
 };
 use crate::impls::ApiError;
@@ -34,6 +36,13 @@ pub type SeafileHlsResourceResponseStream = std::pin::Pin<
 
 pub type SeafileSubtitleResponseStream = std::pin::Pin<
     Box<dyn futures::Stream<Item = Result<SeafileSubtitleResponse, ApiError>> + Send + 'static>,
+>;
+pub type SeafileThumbnailResourceResponseStream = std::pin::Pin<
+    Box<
+        dyn futures::Stream<Item = Result<SeafileThumbnailResourceResponse, ApiError>>
+            + Send
+            + 'static,
+    >,
 >;
 
 pub async fn get_seafile_resource(
@@ -106,7 +115,7 @@ pub async fn get_seafile_hls_manifest(
         .map_err(ApiError::from)?;
     let resource_base = format!(
         "{}/{}/{}",
-        playback_provider_route_base(PROVIDER, &req.version, "hls-resources"),
+        playback_provider_route_base(&req.rid, PROVIDER, &req.version, "hls-resources"),
         urlencoding::encode(&req.mode_name),
         req.media_index
     );
@@ -166,7 +175,7 @@ pub async fn get_seafile_hls_resource(
     let stream = if is_manifest {
         let resource_base = format!(
             "{}/{}/{}",
-            playback_provider_route_base(PROVIDER, &req.version, "hls-resources"),
+            playback_provider_route_base(&req.rid, PROVIDER, &req.version, "hls-resources"),
             urlencoding::encode(&req.mode_name),
             req.media_index
         );
@@ -238,6 +247,53 @@ pub async fn get_seafile_subtitle(
         playback_transport_action_to_chunk_stream(deps.chunk_deps(), action, false).await?;
     Ok(Box::pin(stream.map(|chunk| {
         chunk.map(|chunk| SeafileSubtitleResponse { chunk: Some(chunk) })
+    })))
+}
+
+pub async fn get_seafile_thumbnail_resource(
+    deps: SeafilePlaybackProviderDeps<'_>,
+    req: GetSeafileThumbnailResourceRequest,
+) -> Result<SeafileThumbnailResourceResponseStream, ApiError> {
+    crate::impls::validate_proto_request(&req)?;
+    let scope = crate::seafile_thumbnail_urls::SeafileThumbnailScope {
+        server_id: &req.server_id,
+        credential_owner_id: &req.credential_owner_id,
+        repository_id: &req.repository_id,
+        path: &req.path,
+        size: req.size,
+    };
+    let version = crate::seafile_thumbnail_urls::signature_version(scope);
+    verify_playback_resource_access_with_deps(
+        &deps.access_deps(),
+        PROVIDER,
+        PlaybackProviderAccessRequest {
+            version: &version,
+            resource: "thumbnail".to_string(),
+            signature: &req.sig,
+            user_id: &req.uid,
+            room_id: &req.rid,
+            expires_at: req.exp,
+            target_url: None,
+        },
+    )
+    .await?;
+    let credential_owner_id =
+        decode_playback_resource_owner(deps.runtime.public_id_codec, &req.credential_owner_id)?;
+    let action = deps
+        .playback_provider_service
+        .thumbnail_resource_action(
+            credential_owner_id,
+            &req.server_id,
+            &req.repository_id,
+            &req.path,
+            req.size,
+        )
+        .await
+        .map_err(ApiError::from)?;
+    let stream =
+        playback_transport_action_to_chunk_stream(deps.chunk_deps(), action, false).await?;
+    Ok(Box::pin(stream.map(|chunk| {
+        chunk.map(|chunk| SeafileThumbnailResourceResponse { chunk: Some(chunk) })
     })))
 }
 

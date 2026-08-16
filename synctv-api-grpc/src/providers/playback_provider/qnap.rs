@@ -4,8 +4,9 @@ use futures::FutureExt;
 use synctv_proto::playback_provider::qnap::qnap_playback_provider_service_server::QnapPlaybackProviderService;
 use synctv_proto::playback_provider::qnap::{
     GetQnapHlsManifestRequest, GetQnapHlsResourceRequest, GetQnapResourceRequest,
-    GetQnapSubtitleRequest, GetQnapThumbnailRequest, QnapHlsManifestResponse,
-    QnapHlsResourceResponse, QnapResourceResponse, QnapSubtitleResponse, QnapThumbnailResponse,
+    GetQnapSubtitleRequest, GetQnapThumbnailRequest, GetQnapThumbnailResourceRequest,
+    QnapHlsManifestResponse, QnapHlsResourceResponse, QnapResourceResponse, QnapSubtitleResponse,
+    QnapThumbnailResourceResponse, QnapThumbnailResponse,
 };
 use tonic::{Request, Response, Status};
 
@@ -41,6 +42,7 @@ impl QnapPlaybackProviderService for QnapPlaybackProviderGrpcService {
     type GetHlsResourceStream = GrpcResponseStream<QnapHlsResourceResponse>;
     type GetSubtitleStream = GrpcResponseStream<QnapSubtitleResponse>;
     type GetThumbnailStream = GrpcResponseStream<QnapThumbnailResponse>;
+    type GetThumbnailResourceStream = GrpcResponseStream<QnapThumbnailResourceResponse>;
 
     async fn get_resource(
         &self,
@@ -137,6 +139,27 @@ impl QnapPlaybackProviderService for QnapPlaybackProviderGrpcService {
             let state = state.clone();
             async move {
                 synctv_api_common::playback_provider::qnap::get_qnap_thumbnail(
+                    deps(&state, Some(&control)),
+                    req,
+                )
+                .await
+            }
+            .boxed()
+        })
+        .await
+    }
+
+    async fn get_thumbnail_resource(
+        &self,
+        request: Request<GetQnapThumbnailResourceRequest>,
+    ) -> Result<Response<Self::GetThumbnailResourceStream>, Status> {
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
+        let req = request.into_inner();
+        let state = self.state.clone();
+        execute_playback_provider_stream(state.clone(), metadata, move |control| {
+            let state = state.clone();
+            async move {
+                synctv_api_common::playback_provider::qnap::get_qnap_thumbnail_resource(
                     deps(&state, Some(&control)),
                     req,
                 )

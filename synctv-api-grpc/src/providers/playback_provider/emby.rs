@@ -4,8 +4,9 @@ use futures::FutureExt;
 use synctv_proto::playback_provider::emby::emby_playback_provider_service_server::EmbyPlaybackProviderService;
 use synctv_proto::playback_provider::emby::{
     EmbyHlsManifestResponse, EmbyHlsResourceResponse, EmbyMediaStreamResponse,
-    EmbySubtitleResponse, GetEmbyHlsManifestRequest, GetEmbyHlsResourceRequest,
-    GetEmbyMediaStreamRequest, GetEmbySubtitleRequest,
+    EmbySubtitleResponse, EmbyThumbnailResourceResponse, GetEmbyHlsManifestRequest,
+    GetEmbyHlsResourceRequest, GetEmbyMediaStreamRequest, GetEmbySubtitleRequest,
+    GetEmbyThumbnailResourceRequest,
 };
 use tonic::{Request, Response, Status};
 
@@ -40,6 +41,7 @@ impl EmbyPlaybackProviderService for EmbyPlaybackProviderGrpcService {
     type GetHlsManifestStream = GrpcResponseStream<EmbyHlsManifestResponse>;
     type GetHlsResourceStream = GrpcResponseStream<EmbyHlsResourceResponse>;
     type GetSubtitleStream = GrpcResponseStream<EmbySubtitleResponse>;
+    type GetThumbnailResourceStream = GrpcResponseStream<EmbyThumbnailResourceResponse>;
 
     async fn get_media_stream(
         &self,
@@ -119,6 +121,27 @@ impl EmbyPlaybackProviderService for EmbyPlaybackProviderGrpcService {
             let state = state.clone();
             async move {
                 synctv_api_common::playback_provider::emby::get_emby_subtitle(
+                    emby_deps(&state, Some(&request_control)),
+                    req,
+                )
+                .await
+            }
+            .boxed()
+        })
+        .await
+    }
+
+    async fn get_thumbnail_resource(
+        &self,
+        request: Request<GetEmbyThumbnailResourceRequest>,
+    ) -> Result<Response<Self::GetThumbnailResourceStream>, Status> {
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
+        let req = request.into_inner();
+        let state = self.state.clone();
+        execute_playback_provider_stream(state.clone(), metadata, move |request_control| {
+            let state = state.clone();
+            async move {
+                synctv_api_common::playback_provider::emby::get_emby_thumbnail_resource(
                     emby_deps(&state, Some(&request_control)),
                     req,
                 )

@@ -69,8 +69,8 @@ pub use playback_profile::{
     PlaybackStreamPreference, PlaybackSubtitlePreference, PlaybackVideoCodec,
 };
 pub use playback_transport::{
-    HlsResourceRequest, LiveFlvAccess, PlaybackTransportAction, PlaybackTransportServices,
-    StatefulPlaybackResourceRequest,
+    HlsResourceRequest, LiveFlvAccess, PlaybackResourceProxyStrategy, PlaybackTransportAction,
+    PlaybackTransportServices, StatefulPlaybackResourceRequest,
 };
 pub use provider_client::ProviderClientManager;
 pub use store::{

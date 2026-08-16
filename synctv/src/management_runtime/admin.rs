@@ -28,10 +28,7 @@ use synctv_management::admin_runtime::{
 };
 use synctv_management::request_context::RequestContext;
 use synctv_management::runtime_error::RuntimeError;
-use synctv_proto::{
-    admin as admin_proto, client as client_proto, common as common_proto,
-    providers::rtmp as rtmp_proto,
-};
+use synctv_proto::{admin as admin_proto, client as client_proto, common as common_proto};
 
 use super::map_runtime_error;
 
@@ -1148,7 +1145,7 @@ impl AdminRuntime for ManagementAdminRuntime {
         actor_user_id: &UserId,
         admin_user_id: &UserId,
         ctx: &RequestContext,
-    ) -> Result<rtmp_proto::CreatePublishKeyResponse, RuntimeError> {
+    ) -> Result<client_proto::CreateRoomPublishKeyResponse, RuntimeError> {
         self.inner
             .create_publish_key_for_actor(
                 room_id,
@@ -1165,7 +1162,7 @@ impl AdminRuntime for ManagementAdminRuntime {
         &self,
         room_id: &str,
         media_id: &str,
-    ) -> Result<rtmp_proto::GetStreamInfoResponse, RuntimeError> {
+    ) -> Result<client_proto::GetRoomStreamInfoResponse, RuntimeError> {
         self.inner
             .get_stream_info(room_id, media_id)
             .await
@@ -1253,6 +1250,7 @@ impl AdminRuntime for ManagementAdminRuntime {
             playlist_id: command.playlist_id,
             name: command.name,
             description: command.description,
+            source_config: None,
         };
         self.inner
             .update_playlist(&command.room_id, req, admin_user_id)

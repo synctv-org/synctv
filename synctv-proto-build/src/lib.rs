@@ -25,7 +25,7 @@ const MAIN_PBJSON_PREFIXES: [&str; 5] = [
     ".synctv.admin",
 ];
 
-const PROVIDER_PROTO_FILES: [&str; 40] = [
+const PROVIDER_PROTO_FILES: [&str; 38] = [
     "proto/providers/bilibili.proto",
     "proto/providers/bilibili_service.proto",
     "proto/providers/alist.proto",
@@ -34,8 +34,6 @@ const PROVIDER_PROTO_FILES: [&str; 40] = [
     "proto/providers/emby_service.proto",
     "proto/providers/common.proto",
     "proto/providers/common_service.proto",
-    "proto/providers/rtmp.proto",
-    "proto/providers/rtmp_service.proto",
     "proto/providers/cloudreve.proto",
     "proto/providers/cloudreve_service.proto",
     "proto/providers/twitch.proto",
@@ -68,9 +66,8 @@ const PROVIDER_PROTO_FILES: [&str; 40] = [
     "proto/providers/truenas_service.proto",
 ];
 const PROVIDER_PROTO_INCLUDES: [&str; 1] = ["."];
-const PROVIDER_PBJSON_PREFIXES: [&str; 20] = [
+const PROVIDER_PBJSON_PREFIXES: [&str; 19] = [
     ".synctv.provider.common",
-    ".synctv.provider.rtmp",
     ".synctv.provider.bilibili",
     ".synctv.provider.alist",
     ".synctv.provider.emby",
@@ -992,7 +989,6 @@ fn build_provider_protos(out_dir: &Path) -> Result<(), Box<dyn std::error::Error
         &aliases,
         &[
             ".synctv.provider.common",
-            ".synctv.provider.rtmp",
             ".synctv.provider.bilibili",
             ".synctv.provider.alist",
             ".synctv.provider.emby",

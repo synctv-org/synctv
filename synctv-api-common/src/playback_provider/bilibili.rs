@@ -1,22 +1,20 @@
 use futures::StreamExt;
 use synctv_core::provider::ExecutionControl;
-use synctv_core::service::{BilibiliLiveDanmakuRequest, BilibiliPlaybackProviderService};
+use synctv_core::service::BilibiliPlaybackProviderService;
 use synctv_proto::playback_provider::bilibili::{
     BilibiliDanmakuFileResponse, BilibiliDashManifestMode, BilibiliDashManifestResponse,
     BilibiliDashResourceKind, BilibiliDashResourceResponse, BilibiliHlsManifestResponse,
-    BilibiliHlsResourceKind, BilibiliHlsResourceResponse, BilibiliLiveDanmakuEvent,
-    BilibiliLiveDanmakuEventType, BilibiliMediaStreamResponse, BilibiliSubtitleResponse,
-    GetBilibiliDanmakuFileRequest, GetBilibiliDashManifestRequest, GetBilibiliDashResourceRequest,
-    GetBilibiliHlsManifestRequest, GetBilibiliHlsResourceRequest, GetBilibiliMediaStreamRequest,
-    GetBilibiliSubtitleRequest, WatchBilibiliLiveDanmakuRequest,
+    BilibiliHlsResourceKind, BilibiliHlsResourceResponse, BilibiliMediaStreamResponse,
+    BilibiliSubtitleResponse, GetBilibiliDanmakuFileRequest, GetBilibiliDashManifestRequest,
+    GetBilibiliDashResourceRequest, GetBilibiliHlsManifestRequest, GetBilibiliHlsResourceRequest,
+    GetBilibiliMediaStreamRequest, GetBilibiliSubtitleRequest,
 };
 
 use super::common::{
     dash_transport_action_to_chunk_stream, playback_provider_route_base,
     playback_transport_action_to_chunk_stream, verify_playback_provider_access_with_deps,
     DashRewriteSigning, HasPlaybackProviderAccessFields, HlsRewriteSigning,
-    PlaybackProviderAccessRequest, PlaybackProviderApiRuntime, PlaybackProviderIdentityRuntime,
-    PlaybackTransportExecutorDeps,
+    PlaybackProviderAccessRequest, PlaybackProviderApiRuntime, PlaybackTransportExecutorDeps,
 };
 use crate::impls::ApiError;
 
@@ -25,13 +23,6 @@ const PROVIDER: &str = synctv_core::provider::BilibiliProvider::NAME;
 pub struct BilibiliPlaybackProviderDeps<'a> {
     pub playback_provider_service: &'a BilibiliPlaybackProviderService,
     pub runtime: PlaybackProviderApiRuntime<'a>,
-    pub request_control: Option<&'a ExecutionControl>,
-}
-
-pub struct BilibiliLiveDanmakuDeps<'a> {
-    pub playback_provider_service: &'a BilibiliPlaybackProviderService,
-    pub identity_runtime: PlaybackProviderIdentityRuntime<'a>,
-    pub actor_user_id: synctv_core::models::UserId,
     pub request_control: Option<&'a ExecutionControl>,
 }
 
@@ -60,10 +51,6 @@ pub type BilibiliSubtitleResponseStream = std::pin::Pin<
 pub type BilibiliDanmakuFileResponseStream = std::pin::Pin<
     Box<dyn futures::Stream<Item = Result<BilibiliDanmakuFileResponse, ApiError>> + Send + 'static>,
 >;
-pub type BilibiliLiveDanmakuStream = std::pin::Pin<
-    Box<dyn futures::Stream<Item = Result<BilibiliLiveDanmakuEvent, ApiError>> + Send + 'static>,
->;
-
 pub async fn get_bilibili_media_stream(
     deps: BilibiliPlaybackProviderDeps<'_>,
     req: GetBilibiliMediaStreamRequest,
@@ -132,7 +119,7 @@ pub async fn get_bilibili_hls_manifest(
         .map_err(ApiError::from)?;
     let segment_base = format!(
         "{}/{}/{}",
-        playback_provider_route_base("bilibili", &req.version, "hls-resources"),
+        playback_provider_route_base(&req.rid, "bilibili", &req.version, "hls-resources"),
         urlencoding::encode(&req.mode_name),
         req.url_index
     );
@@ -191,7 +178,7 @@ pub async fn get_bilibili_hls_resource(
     let stream = if kind == BilibiliHlsResourceKind::Manifest {
         let segment_base = format!(
             "{}/{}/{}",
-            playback_provider_route_base("bilibili", &req.version, "hls-resources"),
+            playback_provider_route_base(&req.rid, "bilibili", &req.version, "hls-resources"),
             urlencoding::encode(&req.mode_name),
             req.media_index
         );
@@ -244,7 +231,7 @@ pub async fn get_bilibili_dash_manifest(
     let stream = if mode == synctv_core::provider::BilibiliDashManifestMode::Proxy {
         let resource_base = format!(
             "{}/{}",
-            playback_provider_route_base("bilibili", &req.version, "dash-resources"),
+            playback_provider_route_base(&req.rid, "bilibili", &req.version, "dash-resources"),
             urlencoding::encode(&req.mode_name)
         );
         let resource_prefix = format!("dash-resources/{}", req.mode_name);
@@ -309,7 +296,7 @@ pub async fn get_bilibili_dash_resource(
     let stream = if is_manifest {
         let resource_base = format!(
             "{}/{}",
-            playback_provider_route_base("bilibili", &req.version, "dash-resources"),
+            playback_provider_route_base(&req.rid, "bilibili", &req.version, "dash-resources"),
             urlencoding::encode(&req.mode_name)
         );
         let resource_prefix = format!("dash-resources/{}", req.mode_name);
@@ -441,32 +428,6 @@ pub async fn get_bilibili_danmaku_file(
     })))
 }
 
-pub async fn watch_bilibili_live_danmaku(
-    deps: BilibiliLiveDanmakuDeps<'_>,
-    req: WatchBilibiliLiveDanmakuRequest,
-) -> Result<BilibiliLiveDanmakuStream, ApiError> {
-    crate::impls::validate_proto_request(&req)?;
-    let media_id = crate::impls::proto_validated_media_id(
-        &req.media_id,
-        deps.identity_runtime.public_id_codec,
-    )?;
-    let stream = deps
-        .playback_provider_service
-        .watch_live_danmaku(BilibiliLiveDanmakuRequest {
-            media_id,
-            actor_user_id: deps.actor_user_id,
-            request_control: deps.request_control,
-        })
-        .await
-        .map_err(ApiError::from)?
-        .map(|event| {
-            event
-                .map(live_danmaku_event_to_proto)
-                .map_err(ApiError::from)
-        });
-    Ok(Box::pin(stream))
-}
-
 fn bilibili_dash_manifest_mode(
     value: i32,
 ) -> Result<synctv_core::provider::BilibiliDashManifestMode, ApiError> {
@@ -502,42 +463,6 @@ async fn verify_bilibili_access(
     ApiError,
 > {
     verify_playback_provider_access_with_deps(&deps.access_deps(), PROVIDER, request).await
-}
-
-pub fn live_danmaku_event_to_proto(
-    event: synctv_core::provider::BilibiliLiveDanmakuEvent,
-) -> BilibiliLiveDanmakuEvent {
-    let r#type = match event.kind {
-        synctv_core::provider::BilibiliLiveDanmakuEventKind::Unspecified => {
-            BilibiliLiveDanmakuEventType::Unspecified
-        }
-        synctv_core::provider::BilibiliLiveDanmakuEventKind::Chat => {
-            BilibiliLiveDanmakuEventType::Chat
-        }
-        synctv_core::provider::BilibiliLiveDanmakuEventKind::UserEnter => {
-            BilibiliLiveDanmakuEventType::UserEnter
-        }
-        synctv_core::provider::BilibiliLiveDanmakuEventKind::Gift => {
-            BilibiliLiveDanmakuEventType::Gift
-        }
-        synctv_core::provider::BilibiliLiveDanmakuEventKind::Heartbeat => {
-            BilibiliLiveDanmakuEventType::Heartbeat
-        }
-        synctv_core::provider::BilibiliLiveDanmakuEventKind::Unknown => {
-            BilibiliLiveDanmakuEventType::Unknown
-        }
-    };
-    BilibiliLiveDanmakuEvent {
-        format: event.format,
-        event_type: event.event_type,
-        user: event.user,
-        message: event.message,
-        timestamp: event.timestamp,
-        gift_name: event.gift_name,
-        gift_count: event.gift_count,
-        online_count: event.online_count,
-        r#type: r#type as i32,
-    }
 }
 
 crate::impl_has_playback_provider_access_fields!(BilibiliPlaybackProviderDeps<'a>);

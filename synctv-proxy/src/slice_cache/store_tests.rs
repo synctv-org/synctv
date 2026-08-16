@@ -15,6 +15,7 @@ fn cleanup_stale_meta_evicts_oldest_entries() -> TestResult {
         cache.meta.insert(
             format!("meta-{index}"),
             CachedResourceMeta {
+                status: None,
                 etag: None,
                 last_modified: None,
                 total_size: None,
@@ -48,6 +49,7 @@ fn cleanup_stale_meta_skips_when_within_limit() -> TestResult {
         cache.meta.insert(
             format!("meta-{index}"),
             CachedResourceMeta {
+                status: None,
                 etag: None,
                 last_modified: None,
                 total_size: None,
@@ -75,6 +77,7 @@ fn put_resource_meta_applies_metadata_cap() -> TestResult {
         cache.put_resource_meta_by_key_with_limit(
             format!("meta-{index}"),
             CachedResourceMeta {
+                status: None,
                 etag: None,
                 last_modified: None,
                 total_size: None,
@@ -112,6 +115,7 @@ async fn stats_reports_backend_and_runtime_counters() -> TestResult {
     cache.meta.insert(
         "meta-1".to_string(),
         CachedResourceMeta {
+            status: None,
             etag: Some("etag".to_string()),
             last_modified: None,
             total_size: Some(6),
@@ -154,6 +158,7 @@ async fn purge_all_removes_entries_and_runtime_metadata() -> TestResult {
     cache.meta.insert(
         "meta-1".to_string(),
         CachedResourceMeta {
+            status: None,
             etag: None,
             last_modified: None,
             total_size: None,

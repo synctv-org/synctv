@@ -2,13 +2,16 @@ use futures::StreamExt;
 use synctv_core::provider::ExecutionControl;
 use synctv_core::service::SynologyPlaybackProviderService;
 use synctv_proto::playback_provider::synology::{
+    get_synology_image_resource_request, GetSynologyImageResourceRequest,
     GetSynologyResourceRequest, GetSynologySegmentRequest, GetSynologySubtitleRequest,
-    SynologyResourceResponse, SynologySegmentResponse, SynologySubtitleResponse,
+    SynologyImageResourceResponse, SynologyResourceResponse, SynologySegmentResponse,
+    SynologySubtitleResponse,
 };
 
 use super::common::{
-    playback_provider_route_base, playback_transport_action_to_chunk_stream,
-    verify_playback_provider_access_with_deps, HasPlaybackProviderAccessFields, HlsRewriteSigning,
+    decode_playback_resource_owner, playback_provider_route_base,
+    playback_transport_action_to_chunk_stream, verify_playback_provider_access_with_deps,
+    verify_playback_resource_access_with_deps, HasPlaybackProviderAccessFields, HlsRewriteSigning,
     PlaybackProviderAccessRequest, PlaybackProviderApiRuntime, PlaybackTransportExecutorDeps,
 };
 use crate::impls::ApiError;
@@ -29,6 +32,13 @@ pub type SynologySubtitleResponseStream = std::pin::Pin<
 >;
 pub type SynologySegmentResponseStream = std::pin::Pin<
     Box<dyn futures::Stream<Item = Result<SynologySegmentResponse, ApiError>> + Send + 'static>,
+>;
+pub type SynologyImageResourceResponseStream = std::pin::Pin<
+    Box<
+        dyn futures::Stream<Item = Result<SynologyImageResourceResponse, ApiError>>
+            + Send
+            + 'static,
+    >,
 >;
 
 pub async fn get_synology_resource(
@@ -62,7 +72,7 @@ pub async fn get_synology_resource(
         )
         .await
         .map_err(ApiError::from)?;
-    let segment_base = playback_provider_route_base(PROVIDER, &req.version, "segments");
+    let segment_base = playback_provider_route_base(&req.rid, PROVIDER, &req.version, "segments");
     let stream = playback_transport_action_to_chunk_stream(
         deps.chunk_deps_with_hls(&segment_base, &claims),
         action,
@@ -104,7 +114,7 @@ pub async fn get_synology_segment(
         )
         .await
         .map_err(ApiError::from)?;
-    let segment_base = playback_provider_route_base(PROVIDER, &req.version, "segments");
+    let segment_base = playback_provider_route_base(&req.rid, PROVIDER, &req.version, "segments");
     let stream = playback_transport_action_to_chunk_stream(
         deps.chunk_deps_with_hls(&segment_base, &claims),
         action,
@@ -150,6 +160,81 @@ pub async fn get_synology_subtitle(
         playback_transport_action_to_chunk_stream(deps.chunk_deps(), action, false).await?;
     Ok(Box::pin(stream.map(|chunk| {
         chunk.map(|chunk| SynologySubtitleResponse { chunk: Some(chunk) })
+    })))
+}
+
+pub async fn get_synology_image_resource(
+    deps: SynologyPlaybackProviderDeps<'_>,
+    req: GetSynologyImageResourceRequest,
+) -> Result<SynologyImageResourceResponseStream, ApiError> {
+    crate::impls::validate_proto_request(&req)?;
+    let image = req
+        .image
+        .ok_or_else(|| ApiError::InvalidInput("Synology image resource is required".to_string()))?;
+    let scope = match &image {
+        get_synology_image_resource_request::Image::File(file) => {
+            crate::synology_image_urls::SynologyImageScope::File {
+                server_id: &req.server_id,
+                credential_owner_id: &req.credential_owner_id,
+                path: &file.path,
+                size: &file.size,
+            }
+        }
+        get_synology_image_resource_request::Image::Poster(poster) => {
+            crate::synology_image_urls::SynologyImageScope::Poster {
+                server_id: &req.server_id,
+                credential_owner_id: &req.credential_owner_id,
+                item_id: poster.item_id,
+                media_type: &poster.media_type,
+                poster_mtime: poster.poster_mtime.as_deref(),
+            }
+        }
+    };
+    let version = crate::synology_image_urls::signature_version(scope);
+    verify_playback_resource_access_with_deps(
+        &deps.access_deps(),
+        PROVIDER,
+        PlaybackProviderAccessRequest {
+            version: &version,
+            resource: "image".to_string(),
+            signature: &req.sig,
+            user_id: &req.uid,
+            room_id: &req.rid,
+            expires_at: req.exp,
+            target_url: None,
+        },
+    )
+    .await?;
+    let credential_owner_id =
+        decode_playback_resource_owner(deps.runtime.public_id_codec, &req.credential_owner_id)?;
+    let action = match image {
+        get_synology_image_resource_request::Image::File(file) => {
+            deps.playback_provider_service
+                .file_image_resource_action(
+                    credential_owner_id,
+                    &req.server_id,
+                    &file.path,
+                    &file.size,
+                )
+                .await
+        }
+        get_synology_image_resource_request::Image::Poster(poster) => {
+            deps.playback_provider_service
+                .poster_image_resource_action(
+                    credential_owner_id,
+                    &req.server_id,
+                    poster.item_id,
+                    &poster.media_type,
+                    poster.poster_mtime.as_deref(),
+                )
+                .await
+        }
+    }
+    .map_err(ApiError::from)?;
+    let stream =
+        playback_transport_action_to_chunk_stream(deps.chunk_deps(), action, false).await?;
+    Ok(Box::pin(stream.map(|chunk| {
+        chunk.map(|chunk| SynologyImageResourceResponse { chunk: Some(chunk) })
     })))
 }
 

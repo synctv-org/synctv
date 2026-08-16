@@ -6,12 +6,18 @@ fn synology_services_are_registered_in_descriptor_pools() {
     let provider = synctv_proto::PROVIDERS_DESCRIPTOR_POOL
         .get_service_by_name("synctv.provider.synology.SynologyProviderService")
         .expect("Synology provider service descriptor");
-    assert_eq!(provider.methods().count(), 10);
+    assert_eq!(provider.methods().count(), 11);
+    assert!(provider
+        .methods()
+        .any(|method| method.name() == "GetImage" && method.is_server_streaming()));
 
     let playback = synctv_proto::PLAYBACK_PROVIDER_DESCRIPTOR_POOL
         .get_service_by_name("synctv.playback_provider.synology.SynologyPlaybackProviderService")
         .expect("Synology playback provider service descriptor");
-    assert_eq!(playback.methods().count(), 3);
+    assert_eq!(playback.methods().count(), 4);
+    assert!(playback
+        .methods()
+        .any(|method| method.name() == "GetImageResource"));
 }
 
 #[test]

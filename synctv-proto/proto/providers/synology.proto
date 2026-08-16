@@ -200,3 +200,23 @@ message BindInfo {
 message GetBindsResponse {
   repeated BindInfo binds = 1;
 }
+
+message FileImageRequest {
+  string path = 1 [(buf.validate.field).string.min_len = 1];
+  string size = 2 [(buf.validate.field).string.min_len = 1];
+}
+
+message PosterImageRequest {
+  int64 item_id = 1 [(buf.validate.field).int64.gt = 0];
+  string media_type = 2 [(buf.validate.field).string.min_len = 1];
+  optional string poster_mtime = 3;
+}
+
+message GetImageRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  oneof image {
+    option (buf.validate.oneof).required = true;
+    FileImageRequest file = 2;
+    PosterImageRequest poster = 3;
+  }
+}

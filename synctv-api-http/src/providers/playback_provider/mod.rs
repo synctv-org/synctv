@@ -36,14 +36,6 @@ pub(crate) fn playback_provider_api_runtime(
     }
 }
 
-pub(crate) fn playback_provider_identity_runtime(
-    state: &crate::http::AppState,
-) -> synctv_api_common::playback_provider::common::PlaybackProviderIdentityRuntime<'_> {
-    synctv_api_common::playback_provider::common::PlaybackProviderIdentityRuntime {
-        public_id_codec: &state.shared_api_runtime.public_id_codec,
-    }
-}
-
 pub(crate) fn live_playback_api_runtime(
     state: &crate::http::AppState,
 ) -> synctv_api_common::playback_provider::common::LivePlaybackApiRuntime<'_> {

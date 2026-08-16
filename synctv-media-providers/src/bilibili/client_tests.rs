@@ -1,6 +1,5 @@
 use super::*;
 use crate::bilibili::Quality;
-use prost::Message as ProstMessage;
 use serde_json::json;
 use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -233,28 +232,24 @@ async fn live_danmaku_info_reports_wbi_errors_before_deserializing_data() -> Tes
 }
 
 #[tokio::test]
-async fn subtitles_use_the_web_view_endpoint() -> TestResult {
+async fn subtitles_use_the_player_endpoint() -> TestResult {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/x/v2/subtitle/web/view"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_bytes(
-                SubtitleWebViewReply {
-                    subtitle: Some(SubtitleWebView {
-                        _lan: "zh-CN".to_string(),
-                        _lan_doc: "中文".to_string(),
-                        subtitles: vec![SubtitleWebViewItem {
-                            _id: 1,
-                            _id_str: "1".to_string(),
-                            _lan: "zh-CN".to_string(),
-                            lan_doc: "中文".to_string(),
-                            subtitle_url: "//subtitle.example.com/track.json".to_string(),
-                        }],
-                    }),
+        .and(path("/x/player/v2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": 0,
+            "message": "OK",
+            "data": {
+                "subtitle": {
+                    "subtitles": [{
+                        "id": 1,
+                        "lan": "zh-CN",
+                        "lan_doc": "中文",
+                        "subtitle_url": "//subtitle.example.com/track.json"
+                    }]
                 }
-                .encode_to_vec(),
-            ),
-        )
+            }
+        })))
         .mount(&server)
         .await;
     let client = BilibiliClient::new_with_transport(
@@ -277,12 +272,11 @@ async fn subtitles_use_the_web_view_endpoint() -> TestResult {
         .ok_or_else(|| missing("requests should be recorded"))?;
     let request = requests
         .iter()
-        .find(|request| request.url.path() == "/x/v2/subtitle/web/view")
-        .ok_or_else(|| missing("subtitle web view request"))?;
+        .find(|request| request.url.path() == "/x/player/v2")
+        .ok_or_else(|| missing("subtitle player request"))?;
     let query = request.url.query_pairs().collect::<HashMap<_, _>>();
-    assert_eq!(query.get("type").map(AsRef::as_ref), Some("1"));
-    assert_eq!(query.get("oid").map(AsRef::as_ref), Some("62131"));
-    assert_eq!(query.get("pid").map(AsRef::as_ref), Some("2"));
+    assert_eq!(query.get("cid").map(AsRef::as_ref), Some("62131"));
+    assert_eq!(query.get("bvid").map(AsRef::as_ref), Some("BV1xx411c7mD"));
     assert_eq!(
         request
             .headers
@@ -290,47 +284,23 @@ async fn subtitles_use_the_web_view_endpoint() -> TestResult {
             .and_then(|value| value.to_str().ok()),
         Some(server.uri().as_str())
     );
-    assert_eq!(
-        request
-            .headers
-            .get("user-agent")
-            .and_then(|value| value.to_str().ok()),
-        Some("BiliDroid/7.57.0 os/android model/Pixel")
-    );
+    assert!(!requests
+        .iter()
+        .any(|request| request.url.path() == "/x/web-interface/nav"));
     Ok(())
 }
 
 #[tokio::test]
-async fn empty_web_view_subtitles_use_the_player_fallback() -> TestResult {
+async fn subtitles_return_an_empty_list_when_the_player_has_no_tracks() -> TestResult {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/x/v2/subtitle/web/view"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![0x0a, 0x00]))
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/x/web-interface/nav"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(nav_response_with_wbi_keys(
-                "7cd084941338484aae1ad9425b84077c",
-                "4932caff0ff746eab6f01bf08b70ac45",
-            )),
-        )
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/x/player/wbi/v2"))
+        .and(path("/x/player/v2"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "code": 0,
             "message": "OK",
             "data": {
                 "subtitle": {
-                    "subtitles": [{
-                        "id": 1,
-                        "lan": "zh-CN",
-                        "lan_doc": "中文",
-                        "subtitle_url": "//subtitle.example.com/track.json"
-                    }]
+                    "subtitles": []
                 }
             }
         })))
@@ -345,72 +315,17 @@ async fn empty_web_view_subtitles_use_the_player_fallback() -> TestResult {
     );
 
     let subtitles = client.get_subtitles(2, "BV1xx411c7mD", 62_131).await?;
-    assert_eq!(
-        subtitles.get("中文").map(String::as_str),
-        Some("https://subtitle.example.com/track.json")
-    );
+    assert!(subtitles.is_empty());
     let requests = server
         .received_requests()
         .await
         .ok_or_else(|| missing("requests should be recorded"))?;
     assert!(requests
         .iter()
-        .any(|request| request.url.path() == "/x/v2/subtitle/web/view"));
-    assert!(requests
+        .any(|request| request.url.path() == "/x/player/v2"));
+    assert!(!requests
         .iter()
-        .any(|request| request.url.path() == "/x/player/wbi/v2"));
-    Ok(())
-}
-
-#[tokio::test]
-async fn subtitle_web_view_failure_uses_the_wbi_player_fallback() -> TestResult {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/x/v2/subtitle/web/view"))
-        .respond_with(ResponseTemplate::new(404))
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/x/web-interface/nav"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(nav_response_with_wbi_keys(
-                "7cd084941338484aae1ad9425b84077c",
-                "4932caff0ff746eab6f01bf08b70ac45",
-            )),
-        )
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/x/player/wbi/v2"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "code": 0,
-            "message": "OK",
-            "data": {
-                "subtitle": {
-                    "subtitles": [{
-                        "id": 1,
-                        "lan": "zh-CN",
-                        "lan_doc": "中文",
-                        "subtitle_url": "//subtitle.example.com/track.json"
-                    }]
-                }
-            }
-        })))
-        .mount(&server)
-        .await;
-    let client = BilibiliClient::new_with_transport(
-        test_http_client(),
-        test_http_client(),
-        test_endpoints(server.uri()),
-        Arc::new(WbiState::default()),
-        SsrfGuard::strict_policy(),
-    );
-
-    let subtitles = client.get_subtitles(2, "BV1xx411c7mD", 62_131).await?;
-    assert_eq!(
-        subtitles.get("中文").map(String::as_str),
-        Some("https://subtitle.example.com/track.json")
-    );
+        .any(|request| request.url.path() == "/x/v2/subtitle/web/view"));
     Ok(())
 }
 

@@ -1719,6 +1719,12 @@ pub struct PlaybackDanmaku {
     pub provider: PlaybackDanmakuProvider,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaybackDanmakuDelivery {
+    Document,
+    EventStream,
+}
+
 impl PlaybackDanmaku {
     #[must_use]
     pub fn with_p2p_swarm_id(mut self, swarm_id: String) -> Self {
@@ -3354,6 +3360,30 @@ impl PlaybackDanmaku {
     #[must_use]
     pub fn format(&self) -> Option<&str> {
         self.format.as_deref()
+    }
+
+    #[must_use]
+    pub const fn delivery(&self) -> PlaybackDanmakuDelivery {
+        match &self.provider {
+            PlaybackDanmakuProvider::Bilibili(
+                PlaybackBilibiliDanmaku::Live { .. } | PlaybackBilibiliDanmaku::DynamicLive { .. },
+            )
+            | PlaybackDanmakuProvider::Twitch(_)
+            | PlaybackDanmakuProvider::Douyin(_)
+            | PlaybackDanmakuProvider::Huya(_)
+            | PlaybackDanmakuProvider::Douyu(_)
+            | PlaybackDanmakuProvider::AcFun(
+                PlaybackAcFunDanmaku::LiveRefresh { .. } | PlaybackAcFunDanmaku::LiveProxy { .. },
+            ) => PlaybackDanmakuDelivery::EventStream,
+            PlaybackDanmakuProvider::Bilibili(
+                PlaybackBilibiliDanmaku::FileDirect { .. }
+                | PlaybackBilibiliDanmaku::FileProxy { .. },
+            )
+            | PlaybackDanmakuProvider::DirectUrl(_)
+            | PlaybackDanmakuProvider::AcFun(
+                PlaybackAcFunDanmaku::FileRefresh { .. } | PlaybackAcFunDanmaku::FileProxy { .. },
+            ) => PlaybackDanmakuDelivery::Document,
+        }
     }
 }
 

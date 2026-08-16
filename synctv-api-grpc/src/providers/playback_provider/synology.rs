@@ -3,8 +3,9 @@ use std::sync::Arc;
 use futures::FutureExt;
 use synctv_proto::playback_provider::synology::synology_playback_provider_service_server::SynologyPlaybackProviderService;
 use synctv_proto::playback_provider::synology::{
-    GetSynologyResourceRequest, GetSynologySegmentRequest, GetSynologySubtitleRequest,
-    SynologyResourceResponse, SynologySegmentResponse, SynologySubtitleResponse,
+    GetSynologyImageResourceRequest, GetSynologyResourceRequest, GetSynologySegmentRequest,
+    GetSynologySubtitleRequest, SynologyImageResourceResponse, SynologyResourceResponse,
+    SynologySegmentResponse, SynologySubtitleResponse,
 };
 use tonic::{Request, Response, Status};
 
@@ -38,6 +39,7 @@ impl SynologyPlaybackProviderService for SynologyPlaybackProviderGrpcService {
     type GetResourceStream = GrpcResponseStream<SynologyResourceResponse>;
     type GetSegmentStream = GrpcResponseStream<SynologySegmentResponse>;
     type GetSubtitleStream = GrpcResponseStream<SynologySubtitleResponse>;
+    type GetImageResourceStream = GrpcResponseStream<SynologyImageResourceResponse>;
 
     async fn get_resource(
         &self,
@@ -92,6 +94,27 @@ impl SynologyPlaybackProviderService for SynologyPlaybackProviderGrpcService {
             let state = state.clone();
             async move {
                 synctv_api_common::playback_provider::synology::get_synology_subtitle(
+                    deps(&state, Some(&control)),
+                    req,
+                )
+                .await
+            }
+            .boxed()
+        })
+        .await
+    }
+
+    async fn get_image_resource(
+        &self,
+        request: Request<GetSynologyImageResourceRequest>,
+    ) -> Result<Response<Self::GetImageResourceStream>, Status> {
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
+        let req = request.into_inner();
+        let state = self.state.clone();
+        execute_playback_provider_stream(state.clone(), metadata, move |control| {
+            let state = state.clone();
+            async move {
+                synctv_api_common::playback_provider::synology::get_synology_image_resource(
                     deps(&state, Some(&control)),
                     req,
                 )

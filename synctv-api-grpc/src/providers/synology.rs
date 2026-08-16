@@ -1,11 +1,12 @@
+use futures::FutureExt;
 use std::sync::Arc;
 
 use synctv_proto::providers::synology::synology_provider_service_server::SynologyProviderService;
 use synctv_proto::providers::synology::{
-    GetBindsRequest, GetBindsResponse, ListEpisodesRequest, ListFilesRequest, ListFilesResponse,
-    ListHomeVideosRequest, ListLibrariesRequest, ListLibrariesResponse, ListMoviesRequest,
-    ListTvRecordingsRequest, ListTvShowsRequest, ListVideoItemsResponse, LoginRequest,
-    LoginResponse, LogoutRequest, LogoutResponse,
+    GetBindsRequest, GetBindsResponse, GetImageRequest, ListEpisodesRequest, ListFilesRequest,
+    ListFilesResponse, ListHomeVideosRequest, ListLibrariesRequest, ListLibrariesResponse,
+    ListMoviesRequest, ListTvRecordingsRequest, ListTvShowsRequest, ListVideoItemsResponse,
+    LoginRequest, LoginResponse, LogoutRequest, LogoutResponse,
 };
 use tonic::{Request, Response, Status};
 
@@ -18,6 +19,7 @@ pub struct SynologyProviderGrpcService {
     api: Arc<SynologyApiImpl>,
     request_executor: Arc<RequestExecutor>,
     runtime_settings: Arc<synctv_api_common::ApiRuntimeSettings>,
+    resource_state: Arc<super::playback_provider::PlaybackProviderGrpcState>,
 }
 
 impl SynologyProviderGrpcService {
@@ -26,11 +28,13 @@ impl SynologyProviderGrpcService {
         shared: &Arc<SharedApiRuntime>,
         request_executor: Arc<RequestExecutor>,
         runtime_settings: Arc<synctv_api_common::ApiRuntimeSettings>,
+        resource_state: Arc<super::playback_provider::PlaybackProviderGrpcState>,
     ) -> Self {
         Self {
             api: shared.synology_api.clone(),
             request_executor,
             runtime_settings,
+            resource_state,
         }
     }
 }
@@ -40,6 +44,8 @@ macro_rules! impl_synology_provider_service {
         #[tonic::async_trait]
         #[allow(clippy::result_large_err)]
         impl SynologyProviderService for SynologyProviderGrpcService {
+            type GetImageStream = super::ProviderResourceResponseStream;
+
             async fn login(
                 &self,
                 request: Request<LoginRequest>,
@@ -135,6 +141,25 @@ macro_rules! impl_synology_provider_service {
                     .await
                     .map(Response::new)
                     .map_err(crate::grpc::map_api_error)
+            }
+
+            async fn get_image(
+                &self,
+                request: Request<GetImageRequest>,
+            ) -> Result<Response<Self::GetImageStream>, Status> {
+                let metadata =
+                    super::provider_stream_request_metadata(&request, &self.runtime_settings)?;
+                let req = request.into_inner();
+                let api = self.api.clone();
+
+                super::execute_provider_resource_stream(
+                    self.resource_state.clone(),
+                    metadata,
+                    move |_control, authenticated| {
+                        async move { api.image_action(authenticated.user_id(), req).await }.boxed()
+                    },
+                )
+                .await
             }
         }
     };

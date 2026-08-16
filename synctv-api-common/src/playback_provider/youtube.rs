@@ -62,7 +62,7 @@ pub async fn get_youtube_resource(
         )
         .await
         .map_err(ApiError::from)?;
-    let segment_base = playback_provider_route_base("youtube", &req.version, "segments");
+    let segment_base = playback_provider_route_base(&req.rid, "youtube", &req.version, "segments");
     let stream = playback_transport_action_to_chunk_stream(
         deps.chunk_deps_with_hls(&segment_base, &claims),
         action,
@@ -97,7 +97,7 @@ pub async fn get_youtube_segment(
         .playback_provider_service
         .segment_action(req.target_url, req.range.as_deref())
         .map_err(ApiError::from)?;
-    let segment_base = playback_provider_route_base("youtube", &req.version, "segments");
+    let segment_base = playback_provider_route_base(&req.rid, "youtube", &req.version, "segments");
     let stream = playback_transport_action_to_chunk_stream(
         deps.chunk_deps_with_hls(&segment_base, &claims),
         action,

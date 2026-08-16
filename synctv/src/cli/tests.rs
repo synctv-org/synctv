@@ -688,15 +688,10 @@ fn cli_room_stream_help_exposes_room_scoped_stream_management_only() {
         stream_help.contains("kick"),
         "room stream help should show the room-scoped kick command: {stream_help}"
     );
-    assert!(
-        !stream_help.contains("publish-key") && !stream_help.contains("get"),
-        "room stream should not duplicate provider rtmp key/info commands: {stream_help}"
-    );
-    assert!(
-        stream.find_subcommand_mut("publish-key").is_none()
-            && stream.find_subcommand_mut("get").is_none(),
-        "room stream should only expose room-owned stream operations"
-    );
+    assert!(stream_help.contains("publish-key"));
+    assert!(stream_help.contains("get"));
+    assert!(stream.find_subcommand_mut("publish-key").is_some());
+    assert!(stream.find_subcommand_mut("get").is_some());
 }
 
 #[test]
@@ -3955,87 +3950,75 @@ fn cli_rejects_instance_name_for_credential_removal_commands() {
 }
 
 #[test]
-fn cli_parses_provider_rtmp_create_publish_key_and_get_stream_info() {
+fn cli_parses_room_stream_publish_key_and_get() {
     let cli_publish_key = Cli::parse_from([
         "synctv",
-        "provider",
-        "rtmp",
-        "create-publish-key",
-        "--room-id",
+        "room",
+        "stream",
+        "publish-key",
         "room-1",
         "--username",
         "alice",
+        "--media-id",
         "media-1",
     ]);
     match cli_publish_key.command {
-        Commands::Provider(ProviderCommand {
+        Commands::Room(RoomCommand {
             command:
-                ProviderSubcommand::Rtmp(ProviderRtmpCommand {
-                    command: ProviderRtmpSubcommand::CreatePublishKey(args),
+                RoomSubcommand::Stream(RoomStreamCommand {
+                    command: RoomStreamSubcommand::PublishKey(args),
                 }),
         }) => {
-            assert_eq!(args.room_id, "room-1");
-            assert_eq!(args.access.actor.username.as_deref(), Some("alice"));
-            assert_eq!(
-                args.resolved_media_id().expect("media id should resolve"),
-                "media-1"
-            );
+            assert_eq!(args.room.room_id, "room-1");
+            assert_eq!(args.actor.username.as_deref(), Some("alice"));
+            assert_eq!(args.media_id, "media-1");
         }
         other => panic!("unexpected command parsed: {other:?}"),
     }
 
     let cli_info = Cli::parse_from([
         "synctv",
-        "provider",
-        "rtmp",
-        "get-stream-info",
-        "--room-id",
+        "room",
+        "stream",
+        "get",
         "room-1",
+        "--media-id",
         "media-1",
     ]);
     match cli_info.command {
-        Commands::Provider(ProviderCommand {
+        Commands::Room(RoomCommand {
             command:
-                ProviderSubcommand::Rtmp(ProviderRtmpCommand {
-                    command: ProviderRtmpSubcommand::GetStreamInfo(args),
+                RoomSubcommand::Stream(RoomStreamCommand {
+                    command: RoomStreamSubcommand::Get(args),
                 }),
-            ..
         }) => {
-            assert_eq!(args.room_id, "room-1");
-            assert_eq!(
-                args.resolved_media_id().expect("media id should resolve"),
-                "media-1"
-            );
+            assert_eq!(args.room.room_id, "room-1");
+            assert_eq!(args.media_id, "media-1");
         }
         other => panic!("unexpected command parsed: {other:?}"),
     }
 }
 
 #[test]
-fn cli_parses_provider_rtmp_get_stream_info_media_id_flag() {
+fn cli_parses_room_stream_get_media_id_flag() {
     let cli_info = Cli::parse_from([
         "synctv",
-        "provider",
-        "rtmp",
-        "get-stream-info",
-        "--room-id",
+        "room",
+        "stream",
+        "get",
         "room-1",
         "--media-id",
         "media-1",
     ]);
     match cli_info.command {
-        Commands::Provider(ProviderCommand {
+        Commands::Room(RoomCommand {
             command:
-                ProviderSubcommand::Rtmp(ProviderRtmpCommand {
-                    command: ProviderRtmpSubcommand::GetStreamInfo(args),
+                RoomSubcommand::Stream(RoomStreamCommand {
+                    command: RoomStreamSubcommand::Get(args),
                 }),
-            ..
         }) => {
-            assert_eq!(args.room_id, "room-1");
-            assert_eq!(
-                args.resolved_media_id().expect("media id should resolve"),
-                "media-1"
-            );
+            assert_eq!(args.room.room_id, "room-1");
+            assert_eq!(args.media_id, "media-1");
         }
         other => panic!("unexpected command parsed: {other:?}"),
     }
@@ -5006,30 +4989,26 @@ fn cli_parses_room_get_with_hyphen_prefixed_room_id() {
 }
 
 #[test]
-fn cli_parses_provider_rtmp_get_stream_info_with_hyphen_prefixed_media_id() {
+fn cli_parses_room_stream_get_with_hyphen_prefixed_media_id() {
     let cli = Cli::try_parse_from([
         "synctv",
-        "provider",
-        "rtmp",
-        "get-stream-info",
-        "--room-id",
+        "room",
+        "stream",
+        "get",
         "room-123",
+        "--media-id",
         "-99tNxdXRosK",
     ])
-    .expect("hyphen-prefixed media ids should be accepted as positional values");
+    .expect("hyphen-prefixed media ids should be accepted as option values");
     match cli.command {
-        Commands::Provider(ProviderCommand {
+        Commands::Room(RoomCommand {
             command:
-                ProviderSubcommand::Rtmp(ProviderRtmpCommand {
-                    command: ProviderRtmpSubcommand::GetStreamInfo(args),
+                RoomSubcommand::Stream(RoomStreamCommand {
+                    command: RoomStreamSubcommand::Get(args),
                 }),
-            ..
         }) => {
-            assert_eq!(args.room_id, "room-123");
-            assert_eq!(
-                args.resolved_media_id().expect("media id should resolve"),
-                "-99tNxdXRosK"
-            );
+            assert_eq!(args.room.room_id, "room-123");
+            assert_eq!(args.media_id, "-99tNxdXRosK");
         }
         other => panic!("unexpected command parsed: {other:?}"),
     }
@@ -6117,7 +6096,8 @@ fn build_get_playback_cli_output_omits_absolute_urls_for_explicit_endpoint_mode(
                         thumbnail: None,
                         medias: vec![synctv_proto::client::PlaybackMedia {
                             name: String::new(),
-                            url: "/api/playback-providers/direct-url/abc/streams/direct/0".into(),
+                            url: "/api/playback-providers/room-1/direct-url/abc/streams/direct/0"
+                                .into(),
                             headers: std::collections::HashMap::new(),
                             format: "mp4".into(),
                             expire_at: None,
@@ -6147,7 +6127,7 @@ fn build_get_playback_cli_output_omits_absolute_urls_for_explicit_endpoint_mode(
 
     assert_eq!(
         output.default_pull_url.as_deref(),
-        Some("/api/playback-providers/direct-url/abc/streams/direct/0")
+        Some("/api/playback-providers/room-1/direct-url/abc/streams/direct/0")
     );
     assert_eq!(output.default_absolute_pull_url, None);
     assert_eq!(output.pull_urls.len(), 1);

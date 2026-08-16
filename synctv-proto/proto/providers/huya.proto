@@ -3,7 +3,6 @@ syntax = "proto3";
 package synctv.provider.huya;
 
 import "proto/buf/validate/validate.proto";
-import "proto/source_config.proto";
 import "proto/providers/common.proto";
 
 enum ResourceKind {
@@ -44,10 +43,9 @@ message Quality {
   string name = 1;
   string cdn = 2;
   StreamFormat format = 3;
-  string url = 4;
-  optional uint64 bitrate = 5;
-  optional uint32 width = 6;
-  optional uint32 height = 7;
+  optional uint64 bitrate = 4;
+  optional uint32 width = 5;
+  optional uint32 height = 6;
 }
 
 message ResolveResponse {

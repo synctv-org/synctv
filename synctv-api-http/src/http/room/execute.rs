@@ -103,7 +103,7 @@ where
     .boxed()
 }
 
-pub(in crate::http::room) fn execute_room_actor_endpoint_with_control<'a, T, F, Fut>(
+pub(crate) fn execute_room_actor_endpoint_with_control<'a, T, F, Fut>(
     state: &'a AppState,
     request_meta: RequestMetadata,
     public_room_id: String,

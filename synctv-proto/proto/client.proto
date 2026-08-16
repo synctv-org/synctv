@@ -114,6 +114,7 @@ service RoomService {
   // Member Management (room-scoped operations)
   rpc GetRoomMembers(GetRoomMembersRequest) returns (GetRoomMembersResponse);
   rpc ListRoomStreams(ListRoomStreamsRequest) returns (ListRoomStreamsResponse);
+  rpc CreateRoomPublishKey(CreateRoomPublishKeyRequest) returns (CreateRoomPublishKeyResponse);
   rpc GetRoomStreamInfo(GetRoomStreamInfoRequest) returns (GetRoomStreamInfoResponse);
   rpc KickRoomStream(KickRoomStreamRequest) returns (KickRoomStreamResponse);
   rpc AddMember(AddMemberRequest) returns (synctv.common.RoomMember);
@@ -1751,6 +1752,21 @@ message ListRoomStreamsResponse {
   int32 total = 2;
 }
 
+message CreateRoomPublishKeyRequest {
+  string media_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^med_[A-Za-z0-9]+$"
+  }];
+}
+
+message CreateRoomPublishKeyResponse {
+  string publish_key = 1;
+  string rtmp_url = 2;
+  string stream_key = 3;
+  int64 expires_at = 4;
+}
+
 message GetRoomStreamInfoRequest {
   string media_id = 1 [(buf.validate.field).string = {
     min_len: 1
@@ -1948,6 +1964,9 @@ message UpdatePlaylistRequest {
     (buf.validate.field).string = {max_len: 255}
   ]; // Optional new name
   string description = 3 [(buf.validate.field).string = {max_len: 5000}];
+  // Replaces the complete source configuration of an existing dynamic
+  // playlist. The provider is derived from this config.
+  optional synctv.source_config.PlaylistSourceConfig source_config = 4;
 }
 
 message MovePlaylistRequest {
@@ -3101,6 +3120,12 @@ message PlaybackSubtitle {
   optional P2pResourceDelivery p2p_delivery = 7;
 }
 
+enum PlaybackDanmakuDelivery {
+  PLAYBACK_DANMAKU_DELIVERY_UNSPECIFIED = 0;
+  PLAYBACK_DANMAKU_DELIVERY_DOCUMENT = 1;
+  PLAYBACK_DANMAKU_DELIVERY_EVENT_STREAM = 2;
+}
+
 // Danmaku (bullet comments) information.
 message PlaybackDanmaku {
   // Display name (e.g., "Bilibili Danmaku", "Local Danmaku")
@@ -3120,6 +3145,9 @@ message PlaybackDanmaku {
 
   // Omitted for real-time danmaku streams and mutable resources.
   optional P2pResourceDelivery p2p_delivery = 6;
+
+  // Transport contract for this danmaku resource.
+  PlaybackDanmakuDelivery delivery = 7;
 }
 
 // Real-time Messaging

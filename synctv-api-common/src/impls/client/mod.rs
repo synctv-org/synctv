@@ -370,19 +370,18 @@ impl ClientApiImpl {
                             "Failed to encode credential owner public id: {error}"
                         ))
                     })?;
-                let thumbnail = crate::emby_thumbnail_urls::emby_thumbnail_url(
-                    &server_id,
-                    &public_credential_owner_id,
-                    &item_id,
-                );
-                crate::emby_thumbnail_urls::sign_emby_thumbnail_url(
-                    &thumbnail,
+                Ok(Some(crate::emby_thumbnail_urls::playback_thumbnail_url(
+                    self.signing_key.as_ref(),
                     &public_room_id,
                     &public_user_id,
-                    self.signing_key.as_ref(),
-                )
-                .map(Some)
-                .map_err(ApiError::Internal)
+                    crate::emby_thumbnail_urls::ThumbnailSignatureScope {
+                        item_id: &item_id,
+                        server_id: &server_id,
+                        credential_owner_id: &public_credential_owner_id,
+                        max_height: 300,
+                        max_width: 0,
+                    },
+                )))
             }
             synctv_core::provider::SourceCover::Fnos {
                 server_id,
@@ -404,20 +403,17 @@ impl ClientApiImpl {
                     .public_id_codec
                     .encode_user_id(credential_owner_id)
                     .map_err(ApiError::Internal)?;
-                let thumbnail = crate::fnos_thumbnail_urls::fnos_thumbnail_url(
-                    &server_id,
-                    &public_owner_id,
-                    &image_path,
-                    800,
-                );
-                crate::fnos_thumbnail_urls::sign_fnos_thumbnail_url(
-                    &thumbnail,
+                Ok(Some(crate::fnos_thumbnail_urls::playback_image_url(
+                    self.signing_key.as_ref(),
                     &public_room_id,
                     &public_user_id,
-                    self.signing_key.as_ref(),
-                )
-                .map(Some)
-                .map_err(ApiError::Internal)
+                    crate::fnos_thumbnail_urls::FnosThumbnailScope {
+                        server_id: &server_id,
+                        credential_owner_id: &public_owner_id,
+                        image_path: &image_path,
+                        width: 800,
+                    },
+                )))
             }
             synctv_core::provider::SourceCover::Qnap {
                 server_id,
@@ -439,17 +435,17 @@ impl ClientApiImpl {
                     .public_id_codec
                     .encode_user_id(credential_owner_id)
                     .map_err(ApiError::Internal)?;
-                let thumbnail = crate::qnap_thumbnail_urls::qnap_thumbnail_url(
-                    &server_id, &owner_id, &path, 640,
-                );
-                crate::qnap_thumbnail_urls::sign_qnap_thumbnail_url(
-                    &thumbnail,
+                Ok(Some(crate::qnap_thumbnail_urls::playback_thumbnail_url(
+                    self.signing_key.as_ref(),
                     &room_id,
                     &user_id,
-                    self.signing_key.as_ref(),
-                )
-                .map(Some)
-                .map_err(ApiError::Internal)
+                    crate::qnap_thumbnail_urls::QnapThumbnailScope {
+                        server_id: &server_id,
+                        credential_owner_id: &owner_id,
+                        path: &path,
+                        size: 640,
+                    },
+                )))
             }
             synctv_core::provider::SourceCover::Nextcloud {
                 server_id,
@@ -471,17 +467,19 @@ impl ClientApiImpl {
                     .public_id_codec
                     .encode_user_id(credential_owner_id)
                     .map_err(ApiError::Internal)?;
-                let preview = crate::nextcloud_preview_urls::nextcloud_preview_url(
-                    &server_id, &owner_id, file_id, 640, 640, true,
-                );
-                crate::nextcloud_preview_urls::sign_nextcloud_preview_url(
-                    &preview,
+                Ok(Some(crate::nextcloud_preview_urls::playback_preview_url(
+                    self.signing_key.as_ref(),
                     &room_id,
                     &user_id,
-                    self.signing_key.as_ref(),
-                )
-                .map(Some)
-                .map_err(ApiError::Internal)
+                    crate::nextcloud_preview_urls::NextcloudPreviewScope {
+                        server_id: &server_id,
+                        credential_owner_id: &owner_id,
+                        file_id,
+                        width: 640,
+                        height: 640,
+                        crop: true,
+                    },
+                )))
             }
             synctv_core::provider::SourceCover::Seafile {
                 server_id,
@@ -504,21 +502,18 @@ impl ClientApiImpl {
                     .public_id_codec
                     .encode_user_id(credential_owner_id)
                     .map_err(ApiError::Internal)?;
-                let thumbnail = crate::seafile_thumbnail_urls::seafile_thumbnail_url(
-                    &server_id,
-                    &owner_id,
-                    &repository_id,
-                    &path,
-                    640,
-                );
-                crate::seafile_thumbnail_urls::sign_seafile_thumbnail_url(
-                    &thumbnail,
+                Ok(Some(crate::seafile_thumbnail_urls::playback_thumbnail_url(
+                    self.signing_key.as_ref(),
                     &room_id,
                     &user_id,
-                    self.signing_key.as_ref(),
-                )
-                .map(Some)
-                .map_err(ApiError::Internal)
+                    crate::seafile_thumbnail_urls::SeafileThumbnailScope {
+                        server_id: &server_id,
+                        credential_owner_id: &owner_id,
+                        repository_id: &repository_id,
+                        path: &path,
+                        size: 640,
+                    },
+                )))
             }
             synctv_core::provider::SourceCover::SynologyFile {
                 server_id,
@@ -540,11 +535,8 @@ impl ClientApiImpl {
                     .public_id_codec
                     .encode_user_id(credential_owner_id)
                     .map_err(ApiError::Internal)?;
-                let image = crate::synology_image_urls::synology_file_image_url(
-                    &server_id, &owner_id, &path, "large",
-                );
-                crate::synology_image_urls::sign_synology_image_url(
-                    &image,
+                Ok(Some(crate::synology_image_urls::playback_image_url(
+                    self.signing_key.as_ref(),
                     crate::synology_image_urls::SynologyImageScope::File {
                         server_id: &server_id,
                         credential_owner_id: &owner_id,
@@ -553,10 +545,7 @@ impl ClientApiImpl {
                     },
                     &room_id,
                     &user_id,
-                    self.signing_key.as_ref(),
-                )
-                .map(Some)
-                .map_err(ApiError::Internal)
+                )))
             }
             synctv_core::provider::SourceCover::SynologyPoster {
                 server_id,
@@ -580,15 +569,8 @@ impl ClientApiImpl {
                     .public_id_codec
                     .encode_user_id(credential_owner_id)
                     .map_err(ApiError::Internal)?;
-                let image = crate::synology_image_urls::synology_poster_url(
-                    &server_id,
-                    &owner_id,
-                    item_id,
-                    &media_type,
-                    poster_mtime.as_deref(),
-                );
-                crate::synology_image_urls::sign_synology_image_url(
-                    &image,
+                Ok(Some(crate::synology_image_urls::playback_image_url(
+                    self.signing_key.as_ref(),
                     crate::synology_image_urls::SynologyImageScope::Poster {
                         server_id: &server_id,
                         credential_owner_id: &owner_id,
@@ -598,10 +580,7 @@ impl ClientApiImpl {
                     },
                     &room_id,
                     &user_id,
-                    self.signing_key.as_ref(),
-                )
-                .map(Some)
-                .map_err(ApiError::Internal)
+                )))
             }
         }
     }
@@ -1124,10 +1103,6 @@ impl ClientApiImpl {
             synctv_core::Error::NotFound(_) => ApiError::NotFound(not_found_message.to_string()),
             other => ApiError::from(other),
         }
-    }
-
-    pub(crate) fn map_membership_probe_error(err: synctv_core::Error) -> ApiError {
-        ApiError::from(err)
     }
 
     pub(super) fn map_livestream_backend_error(

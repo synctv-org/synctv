@@ -74,9 +74,27 @@ message NextcloudSubtitleResponse {
   synctv.playback_provider.common.StreamChunk chunk = 1;
 }
 
+message GetNextcloudPreviewResourceRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  string credential_owner_id = 2 [(buf.validate.field).string.min_len = 1];
+  uint64 file_id = 3 [(buf.validate.field).uint64.gt = 0];
+  uint32 width = 4 [(buf.validate.field).uint32 = {gte: 1, lte: 2048}];
+  uint32 height = 5 [(buf.validate.field).uint32 = {gte: 1, lte: 2048}];
+  bool crop = 6;
+  string sig = 7 [(buf.validate.field).string.min_len = 1];
+  string uid = 8 [(buf.validate.field).string.min_len = 1];
+  string rid = 9 [(buf.validate.field).string.min_len = 1];
+  int64 exp = 10;
+}
+
+message NextcloudPreviewResourceResponse {
+  synctv.playback_provider.common.StreamChunk chunk = 1;
+}
+
 service NextcloudPlaybackProviderService {
   rpc GetResource(GetNextcloudResourceRequest) returns (stream NextcloudResourceResponse);
   rpc GetHlsManifest(GetNextcloudHlsManifestRequest) returns (stream NextcloudHlsManifestResponse);
   rpc GetHlsResource(GetNextcloudHlsResourceRequest) returns (stream NextcloudHlsResourceResponse);
   rpc GetSubtitle(GetNextcloudSubtitleRequest) returns (stream NextcloudSubtitleResponse);
+  rpc GetPreviewResource(GetNextcloudPreviewResourceRequest) returns (stream NextcloudPreviewResourceResponse);
 }

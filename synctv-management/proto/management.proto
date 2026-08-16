@@ -20,7 +20,6 @@ import "proto/providers/fnos.proto";
 import "proto/providers/huya.proto";
 import "proto/providers/nextcloud.proto";
 import "proto/providers/qnap.proto";
-import "proto/providers/rtmp.proto";
 import "proto/providers/seafile.proto";
 import "proto/providers/synology.proto";
 import "proto/providers/truenas.proto";
@@ -84,8 +83,8 @@ service ManagementService {
     rpc StopPlayback(StopPlaybackRequest) returns (synctv.client.PlaybackState);
     rpc GetPlayback(GetPlaybackRequest) returns (synctv.client.GetPlaybackResponse);
     rpc UpdatePlaybackState(UpdatePlaybackStateRequest) returns (synctv.client.PlaybackState);
-    rpc CreatePublishKey(CreatePublishKeyRequest) returns (synctv.provider.rtmp.CreatePublishKeyResponse);
-    rpc GetStreamInfo(GetStreamInfoRequest) returns (synctv.provider.rtmp.GetStreamInfoResponse);
+    rpc CreatePublishKey(CreatePublishKeyRequest) returns (synctv.client.CreateRoomPublishKeyResponse);
+    rpc GetStreamInfo(GetStreamInfoRequest) returns (synctv.client.GetRoomStreamInfoResponse);
     rpc ListRoomStreams(ListRoomStreamsRequest) returns (synctv.client.ListRoomStreamsResponse);
     rpc KickRoomStream(KickRoomStreamRequest) returns (synctv.client.KickRoomStreamResponse);
     rpc AlistLogin(AlistLoginRequest) returns (synctv.provider.alist.LoginResponse);

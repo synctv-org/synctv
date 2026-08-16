@@ -347,7 +347,7 @@ fn test_provider_api_impls(
 #[allow(clippy::needless_pass_by_value)]
 fn test_playback_provider_services(
     providers: ProviderSet,
-    provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver>,
+    _provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver>,
     room_service: Arc<RoomService>,
     credential_repo: Arc<synctv_core::repository::UserProviderCredentialRepository>,
     provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
@@ -364,7 +364,6 @@ fn test_playback_provider_services(
     });
     let deps = synctv_core::service::PlaybackProviderServiceDeps {
         providers,
-        provider_stores,
         playback_transport_services: playback_transport_services.clone(),
         provider_access_service,
     };
@@ -2762,7 +2761,7 @@ async fn test_provider_proxy_routes_use_streaming_rate_limit_tier() -> TestResul
     let first_request = test_request(
         Request::builder()
             .method("GET")
-            .uri("/api/playback-providers/bilibili/v1/hls-resources/direct/0/media?targetUrl=https%3A%2F%2Fcdn.example.com%2Fseg.ts&sig=s&uid=u&rid=r&exp=1")
+            .uri("/api/playback-providers/r/bilibili/v1/hls-resources/direct/0/media?targetUrl=https%3A%2F%2Fcdn.example.com%2Fseg.ts&sig=s&uid=u&exp=1")
             .body(Body::empty()),
     )?;
     let first = test_response(app.clone().oneshot(first_request).await)?;
@@ -2771,7 +2770,7 @@ async fn test_provider_proxy_routes_use_streaming_rate_limit_tier() -> TestResul
     let second_request = test_request(
         Request::builder()
             .method("GET")
-            .uri("/api/playback-providers/bilibili/v1/hls-resources/direct/0/media?targetUrl=https%3A%2F%2Fcdn.example.com%2Fseg.ts&sig=s&uid=u&rid=r&exp=1")
+            .uri("/api/playback-providers/r/bilibili/v1/hls-resources/direct/0/media?targetUrl=https%3A%2F%2Fcdn.example.com%2Fseg.ts&sig=s&uid=u&exp=1")
             .body(Body::empty()),
     )?;
     let second = test_response(app.oneshot(second_request).await)?;
@@ -2793,13 +2792,13 @@ async fn test_direct_url_manifest_and_resource_routes_are_reachable() -> TestRes
         "https://cdn.example.com/dash/video/",
     );
     let routes = [
-        "/api/playback-providers/direct-url/v1/hls-resources/direct/0/media?targetUrl=https%3A%2F%2Fcdn.example.com%2Fsegment.ts&sig=s&uid=u&rid=r&exp=1".to_string(),
-        "/api/playback-providers/direct-url/v1/dash-manifests/direct/0?sig=s&uid=u&rid=r&exp=1".to_string(),
+        "/api/playback-providers/r/direct-url/v1/hls-resources/direct/0/media?targetUrl=https%3A%2F%2Fcdn.example.com%2Fsegment.ts&sig=s&uid=u&exp=1".to_string(),
+        "/api/playback-providers/r/direct-url/v1/dash-manifests/direct/0?sig=s&uid=u&exp=1".to_string(),
         format!(
-            "/api/playback-providers/direct-url/v1/dash-resources/direct/0/media/{scope}/u/r/1/s"
+            "/api/playback-providers/r/direct-url/v1/dash-resources/direct/0/media/{scope}/u/1/s"
         ),
         format!(
-            "/api/playback-providers/direct-url/v1/dash-resources/direct/0/media/{scope}/u/r/1/s/video/segment-1.m4s?token=x"
+            "/api/playback-providers/r/direct-url/v1/dash-resources/direct/0/media/{scope}/u/1/s/video/segment-1.m4s?token=x"
         ),
     ];
 
@@ -2942,7 +2941,7 @@ async fn test_streaming_proxy_routes_preserve_options_preflight() -> TestResult 
     let rtmp_request = test_request(
         Request::builder()
             .method("OPTIONS")
-            .uri("/api/playback-providers/rtmp/ver1/hls-master")
+            .uri("/api/playback-providers/room/rtmp/ver1/hls-master")
             .header(axum::http::header::ORIGIN, "https://example.com")
             .body(Body::empty()),
     )?;
@@ -2956,7 +2955,7 @@ async fn test_streaming_proxy_routes_preserve_options_preflight() -> TestResult 
     let live_proxy_request = test_request(
         Request::builder()
             .method("OPTIONS")
-            .uri("/api/playback-providers/live-proxy/ver1/hls-master")
+            .uri("/api/playback-providers/room/live-proxy/ver1/hls-master")
             .header(axum::http::header::ORIGIN, "https://example.com")
             .body(Body::empty()),
     )?;
@@ -3185,8 +3184,8 @@ async fn test_openapi_json_route_is_available() -> TestResult {
     assert!(json["paths"]["/api/providers/alist/login"].is_object());
     assert!(json["paths"]["/api/providers/instances"].is_object());
     assert!(json["paths"]["/api/rooms/{roomId}/streams"].is_object());
-    assert!(json["paths"]["/api/providers/rtmp/rooms/{roomId}/publish-key/{mediaId}"].is_object());
-    assert!(json["paths"]["/api/providers/rtmp/rooms/{roomId}/info/{mediaId}"].is_object());
+    assert!(json["paths"]["/api/rooms/{roomId}/streams/{mediaId}/publish-key"].is_object());
+    assert!(json["paths"]["/api/rooms/{roomId}/streams/{mediaId}"].is_object());
     assert_eq!(
         json["paths"]["/api/providers/alist/login"]["post"]["responses"]["200"]["content"]
             ["application/json"]["schema"]["$ref"],
@@ -3207,48 +3206,42 @@ async fn test_openapi_json_route_is_available() -> TestResult {
             ["application/json"]["schema"]["$ref"],
         "#/components/schemas/synctv_provider_bilibili_ParseResponse"
     );
-    assert!(
+    assert_eq!(
         json["components"]["schemas"]["synctv_provider_bilibili_ParseRequest"]["properties"]
-            ["shared"]
-            .is_null(),
-        "Bilibili parsing should return credential-neutral source configs"
+            ["shared"]["type"],
+        "boolean"
     );
-    for request_schema in [
-        "synctv_provider_twitch_ResolveRequest",
-        "synctv_provider_twitch_ListChannelItemsRequest",
-        "synctv_provider_douyin_ResolveRequest",
-        "synctv_provider_douyin_ListUserPostsRequest",
-        "synctv_provider_tiktok_ResolveRequest",
-        "synctv_provider_tiktok_GetUserRequest",
-        "synctv_provider_tiktok_ListUserPostsRequest",
-        "synctv_provider_youtube_ResolveRequest",
+    for (schema, removed_property) in [
+        ("synctv_provider_acfun_Quality", "url"),
+        ("synctv_provider_cctv_Stream", "url"),
+        ("synctv_provider_douyin_Variant", "url"),
+        ("synctv_provider_huya_Quality", "url"),
+        ("synctv_provider_tiktok_Variant", "url"),
+        ("synctv_provider_twitch_Quality", "url"),
+        ("synctv_provider_twitch_Metadata", "storyboardUrl"),
+        ("synctv_provider_youtube_ResolveResponse", "storyboardSpec"),
     ] {
         assert!(
-            json["components"]["schemas"][request_schema]["properties"]["shared"].is_null(),
-            "{request_schema} should return credential-neutral source configs"
+            json["components"]["schemas"][schema]["properties"][removed_property].is_null(),
+            "{schema}.{removed_property} must stay inside playback-provider"
         );
+    }
+    for schema in [
+        "synctv_provider_tiktok_Metadata",
+        "synctv_provider_youtube_ResolveResponse",
+    ] {
+        assert_eq!(
+            json["components"]["schemas"][schema]["properties"]["subtitleCount"]["type"],
+            "integer"
+        );
+        assert!(json["components"]["schemas"][schema]["properties"]["subtitles"].is_null());
     }
     let bilibili_parse_candidate =
         &json["components"]["schemas"]["synctv_provider_bilibili_ParseCandidate"];
-    let source_config_variants = json["components"]["schemas"]
-        ["synctv_provider_bilibili_ParseCandidate_source_config"]["oneOf"]
-        .as_array()
-        .ok_or_else(|| test_error("Bilibili ParseCandidate source config variants"))?;
-    assert!(
-        bilibili_parse_candidate["allOf"].is_array(),
-        "Bilibili parse candidates should flatten their source config"
-    );
-    assert!(
-        source_config_variants
-            .iter()
-            .any(|variant| variant["properties"]["media"].is_object()),
-        "Bilibili parse candidates should expose typed media source config"
-    );
-    assert!(
-        source_config_variants
-            .iter()
-            .any(|variant| variant["properties"]["playlist"].is_object()),
-        "Bilibili parse candidates should expose typed playlist source config"
+    assert_eq!(
+        bilibili_parse_candidate["properties"]["source"]["oneOf"][1]["$ref"],
+        "#/components/schemas/synctv_provider_common_DiscoveredSource",
+        "Bilibili parse candidates should use the shared discovered-source contract"
     );
     assert_eq!(
         json["paths"]["/api/user"]["patch"]["responses"]["200"]["content"]["application/json"]
@@ -3580,14 +3573,14 @@ async fn test_websocket_ticket_runtime_gate_does_not_leak_to_other_write_routes(
 
 #[tokio::test]
 #[ignore = "Requires Docker-backed PostgreSQL"]
-async fn test_rtmp_publish_key_routes_are_reachable_under_api() -> TestResult {
+async fn test_room_stream_routes_are_reachable_under_api() -> TestResult {
     let state = test_app_state();
     let app = register_all_routes().with_state(state);
 
     let api_request = test_request(
         Request::builder()
             .method("POST")
-            .uri("/api/providers/rtmp/rooms/room_AbC123xYz890/publish-key/med_ZyX098wVu765")
+            .uri("/api/rooms/room_AbC123xYz890/streams/med_ZyX098wVu765/publish-key")
             .body(Body::empty()),
     )?;
     let api_response = test_response(app.clone().oneshot(api_request).await)?;
@@ -3596,7 +3589,7 @@ async fn test_rtmp_publish_key_routes_are_reachable_under_api() -> TestResult {
     let info_request = test_request(
         Request::builder()
             .method("GET")
-            .uri("/api/providers/rtmp/rooms/room_AbC123xYz890/info/med_ZyX098wVu765")
+            .uri("/api/rooms/room_AbC123xYz890/streams/med_ZyX098wVu765")
             .body(Body::empty()),
     )?;
     let info_api_response = test_response(app.clone().oneshot(info_request).await)?;

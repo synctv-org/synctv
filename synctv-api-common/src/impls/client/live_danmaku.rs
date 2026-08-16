@@ -103,10 +103,33 @@ impl ClientApiImpl {
         &self,
         actor: &RoomActor,
         req: synctv_proto::playback_provider::bilibili::WatchBilibiliLiveDanmakuRequest,
+        request_control: Option<&synctv_core::provider::ExecutionControl>,
     ) -> Result<BilibiliLiveDanmakuStream, ApiError> {
         crate::impls::validate_proto_request(&req)?;
+        match req.target.ok_or_else(|| {
+            ApiError::InvalidInput("Bilibili live danmaku target is required".to_string())
+        })? {
+            synctv_proto::playback_provider::bilibili::watch_bilibili_live_danmaku_request::Target::MediaId(
+                media_id,
+            ) => {
+                self.watch_bilibili_media_live_danmaku_for_actor(actor, media_id, request_control)
+                    .await
+            }
+            synctv_proto::playback_provider::bilibili::watch_bilibili_live_danmaku_request::Target::Dynamic(dynamic) => {
+                self.watch_bilibili_dynamic_live_danmaku_for_actor(actor, dynamic, request_control)
+                    .await
+            }
+        }
+    }
+
+    async fn watch_bilibili_media_live_danmaku_for_actor(
+        &self,
+        actor: &RoomActor,
+        media_id: String,
+        request_control: Option<&synctv_core::provider::ExecutionControl>,
+    ) -> Result<BilibiliLiveDanmakuStream, ApiError> {
         let room_id = actor.room_id();
-        let media_id = crate::impls::proto_validated_media_id(req.media_id, &self.public_id_codec)?;
+        let media_id = crate::impls::proto_validated_media_id(media_id, &self.public_id_codec)?;
         self.authorize_bilibili_live_danmaku_access(actor, |state| {
             guest_is_current_bilibili_live_media(state, &media_id)
         })
@@ -155,7 +178,7 @@ impl ClientApiImpl {
                 Some(media.id),
                 media.provider_instance_name.as_deref(),
                 None,
-                None,
+                request_control,
             )?,
             provider.as_ref(),
         );
@@ -171,22 +194,17 @@ impl ClientApiImpl {
         Ok(Box::pin(stream))
     }
 
-    pub async fn watch_bilibili_dynamic_live_danmaku_for_actor(
+    async fn watch_bilibili_dynamic_live_danmaku_for_actor(
         &self,
         actor: &RoomActor,
-        playlist_id: &str,
-        live_room_id: u64,
+        req: synctv_proto::playback_provider::bilibili::BilibiliDynamicLiveDanmakuTarget,
+        request_control: Option<&synctv_core::provider::ExecutionControl>,
     ) -> Result<BilibiliLiveDanmakuStream, ApiError> {
-        if live_room_id == 0 {
-            return Err(ApiError::InvalidInput(
-                "Bilibili live room_id must be non-zero".to_string(),
-            ));
-        }
-
+        crate::impls::validate_proto_request(&req)?;
         let room_id = actor.room_id();
         let playlist_id =
-            crate::impls::proto_validated_playlist_id(playlist_id, &self.public_id_codec)?;
-        let target = synctv_core::models::ProviderTarget::bilibili_live(live_room_id);
+            crate::impls::proto_validated_playlist_id(&req.playlist_id, &self.public_id_codec)?;
+        let target = synctv_core::models::ProviderTarget::bilibili_live(req.live_room_id);
         self.authorize_bilibili_live_danmaku_access(actor, |state| {
             guest_is_current_bilibili_dynamic_live(state, &playlist_id, &target)
         })
@@ -255,7 +273,7 @@ impl ClientApiImpl {
                 None,
                 playlist.provider_instance_name.as_deref(),
                 None,
-                None,
+                request_control,
             )?
             .with_playlist_id(playlist_id),
             provider.as_ref(),
@@ -305,5 +323,15 @@ mod tests {
             &playlist_id,
             &synctv_core::models::ProviderTarget::bilibili_live(2),
         ));
+    }
+
+    #[test]
+    fn dynamic_live_danmaku_request_requires_a_live_room_id() {
+        let request = synctv_proto::playback_provider::bilibili::BilibiliDynamicLiveDanmakuTarget {
+            playlist_id: "pl_abc123".to_string(),
+            live_room_id: 0,
+        };
+
+        assert!(crate::impls::validate_proto_request(&request).is_err());
     }
 }

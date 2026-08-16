@@ -105,11 +105,6 @@ impl PlaybackProviderApiRuntime<'_> {
     }
 }
 
-#[derive(Clone, Copy)]
-pub struct PlaybackProviderIdentityRuntime<'a> {
-    pub public_id_codec: &'a synctv_adapter::PublicIdCodec,
-}
-
 pub struct PlaybackProviderAccessRequest<'a> {
     pub version: &'a str,
     pub resource: String,
@@ -176,7 +171,25 @@ pub async fn verify_playback_provider_access_with_deps(
     ),
     ApiError,
 > {
+    let claims = verify_playback_resource_access_with_deps(deps, provider_name, request).await?;
+    Ok((deps.provider_stores.load(provider_name), claims))
+}
+
+pub async fn verify_playback_resource_access_with_deps(
+    deps: &PlaybackProviderAccessDeps<'_>,
+    provider_name: &'static str,
+    request: PlaybackProviderAccessRequest<'_>,
+) -> Result<ProxyUrlClaims, ApiError> {
     verify_playback_provider_http_access(deps, provider_name, request).await
+}
+
+pub fn decode_playback_resource_owner(
+    public_id_codec: &synctv_adapter::PublicIdCodec,
+    credential_owner_id: &str,
+) -> Result<UserId, ApiError> {
+    public_id_codec
+        .decode::<UserId>(credential_owner_id)
+        .map_err(|error| ApiError::InvalidInput(format!("Invalid credential_owner_id: {error}")))
 }
 
 pub fn live_flv_access_from_claims(
@@ -494,8 +507,9 @@ pub async fn get_live_hls_master_chunks(
         expires_at: req.signature_expires_at,
         target_url: None,
     };
-    let signed_query = deps.proxy_signing_key.build_signed_query(&claims);
+    let signed_query = deps.proxy_signing_key.build_signed_playback_query(&claims);
     let playlist_url = build_hls_playlist_path(
+        &claims.room_id,
         &req.route_provider,
         &req.version,
         &generation.generation_id,
@@ -543,8 +557,9 @@ pub async fn get_live_hls_playlist_chunks(
                 expires_at: media_expires_at,
                 target_url: None,
             };
-            let signed_query = deps.proxy_signing_key.build_signed_query(&claims);
+            let signed_query = deps.proxy_signing_key.build_signed_playback_query(&claims);
             build_hls_segment_path(
+                &claims.room_id,
                 &req.route_provider,
                 &req.version,
                 &generation_id,
@@ -620,13 +635,7 @@ pub async fn verify_playback_provider_http_access(
     deps: &PlaybackProviderAccessDeps<'_>,
     provider_name: &'static str,
     request: PlaybackProviderAccessRequest<'_>,
-) -> Result<
-    (
-        Arc<dyn synctv_core::provider::ProviderStore>,
-        ProxyUrlClaims,
-    ),
-    ApiError,
-> {
+) -> Result<ProxyUrlClaims, ApiError> {
     if request.version.trim().is_empty() {
         return Err(ApiError::InvalidInput(
             "playback provider path must include a version".to_string(),
@@ -660,7 +669,7 @@ pub async fn verify_playback_provider_http_access(
         .decode::<RoomId>(&claims.room_id)
         .map_err(|error| ApiError::InvalidInput(format!("Invalid {error} in room_id")))?;
     deps.validate_fresh_access(&room_id, &user_id).await?;
-    Ok((deps.provider_stores.load(provider_name), claims))
+    Ok(claims)
 }
 
 pub async fn playback_transport_action_to_chunk_stream(
@@ -673,53 +682,40 @@ pub async fn playback_transport_action_to_chunk_stream(
             url,
             headers,
             range_header,
+            proxy_strategy,
         } => {
-            let response = if head {
-                synctv_proxy::slice_cache::proxy_head_with_cache_enabled_with_control_and_timeout(
-                    deps.proxy_slice_cache,
-                    deps.proxy_slice_cache.config().enabled,
-                    range_header.as_deref(),
-                    &url,
-                    &headers,
-                    deps.request_control,
-                    Some(synctv_proxy::DEFAULT_UPSTREAM_HEADER_TIMEOUT),
-                )
-                .await
-            } else {
-                synctv_proxy::slice_cache::proxy_with_cache_enabled_with_control_and_timeout(
-                    deps.proxy_slice_cache,
-                    deps.proxy_slice_cache.config().enabled,
-                    range_header.as_deref(),
-                    &url,
-                    &headers,
-                    deps.request_control,
-                    Some(synctv_proxy::DEFAULT_UPSTREAM_HEADER_TIMEOUT),
-                )
-                .await
-            }
-            .map_err(|error| map_proxy_execution_error(&error))?;
-            Ok(axum_response_to_chunk_stream(response))
-        }
-        PlaybackTransportAction::StreamAndForward {
-            url,
-            headers,
-            range_header,
-        } => {
-            let method = if head {
-                reqwest::Method::HEAD
-            } else {
-                reqwest::Method::GET
+            let strategy = match proxy_strategy {
+                synctv_core::provider::PlaybackResourceProxyStrategy::SliceCache => {
+                    synctv_proxy::slice_cache::SliceCacheProxyStrategy::Slice {
+                        range_probe_fallback: None,
+                    }
+                }
+                synctv_core::provider::PlaybackResourceProxyStrategy::FullResponseCache => {
+                    synctv_proxy::slice_cache::SliceCacheProxyStrategy::FullResponse
+                }
+                synctv_core::provider::PlaybackResourceProxyStrategy::Stream => {
+                    synctv_proxy::slice_cache::SliceCacheProxyStrategy::Stream
+                }
             };
-            let response = send_playback_provider_request(
-                &deps,
-                method,
-                &url,
-                &headers,
-                range_header.as_deref(),
-            )
-            .await
-            .map_err(|error| map_proxy_execution_error(&error))?;
-            Ok(response_to_chunk_stream(response, head))
+            let response = deps
+                .proxy_slice_cache
+                .proxy(synctv_proxy::slice_cache::SliceCacheProxyRequest {
+                    method: if head {
+                        synctv_proxy::slice_cache::SliceCacheProxyMethod::Head
+                    } else {
+                        synctv_proxy::slice_cache::SliceCacheProxyMethod::Get
+                    },
+                    strategy,
+                    cache_enabled: deps.proxy_slice_cache.config().enabled,
+                    url: &url,
+                    provider_headers: &headers,
+                    range_header: range_header.as_deref(),
+                    request_control: deps.request_control,
+                    upstream_header_timeout: Some(synctv_proxy::DEFAULT_UPSTREAM_HEADER_TIMEOUT),
+                })
+                .await
+                .map_err(|error| map_proxy_execution_error(&error))?;
+            Ok(axum_response_to_chunk_stream(response))
         }
         PlaybackTransportAction::FetchAndForwardCandidates {
             urls,
@@ -917,29 +913,25 @@ async fn fetch_and_forward_candidates_to_chunk_stream(
 
     let candidate_count = urls.len();
     for (candidate_index, url) in urls.into_iter().enumerate() {
-        let response = if head {
-            synctv_proxy::slice_cache::proxy_head_with_cache_enabled_with_control_and_timeout(
-                deps.proxy_slice_cache,
-                deps.proxy_slice_cache.config().enabled,
-                range_header.as_deref(),
-                &url,
-                &headers,
-                deps.request_control,
-                Some(synctv_proxy::DEFAULT_UPSTREAM_HEADER_TIMEOUT),
-            )
-            .await
-        } else {
-            synctv_proxy::slice_cache::proxy_with_cache_enabled_with_control_and_timeout(
-                deps.proxy_slice_cache,
-                deps.proxy_slice_cache.config().enabled,
-                range_header.as_deref(),
-                &url,
-                &headers,
-                deps.request_control,
-                Some(synctv_proxy::DEFAULT_UPSTREAM_HEADER_TIMEOUT),
-            )
-            .await
-        };
+        let response = deps
+            .proxy_slice_cache
+            .proxy(synctv_proxy::slice_cache::SliceCacheProxyRequest {
+                method: if head {
+                    synctv_proxy::slice_cache::SliceCacheProxyMethod::Head
+                } else {
+                    synctv_proxy::slice_cache::SliceCacheProxyMethod::Get
+                },
+                strategy: synctv_proxy::slice_cache::SliceCacheProxyStrategy::Slice {
+                    range_probe_fallback: None,
+                },
+                cache_enabled: deps.proxy_slice_cache.config().enabled,
+                url: &url,
+                provider_headers: &headers,
+                range_header: range_header.as_deref(),
+                request_control: deps.request_control,
+                upstream_header_timeout: Some(synctv_proxy::DEFAULT_UPSTREAM_HEADER_TIMEOUT),
+            })
+            .await;
         let response = match response {
             Ok(response) => response,
             Err(error) => {
@@ -1079,8 +1071,11 @@ fn build_hls_resource_url(
         );
     }
     let Some(resource_prefix) = rewrite.resource.strip_suffix("/*") else {
-        let signed_query =
-            signing_key.build_signed_query_with_target_url(&claims, rewrite.resource, target_url);
+        let signed_query = signing_key.build_signed_playback_query_with_target_url(
+            &claims,
+            rewrite.resource,
+            target_url,
+        );
         return format!("{segment_base}?{signed_query}");
     };
     let kind = match kind {
@@ -1091,7 +1086,7 @@ fn build_hls_resource_url(
         | synctv_proxy::HlsResourceKind::Init
         | synctv_proxy::HlsResourceKind::Auxiliary => "media",
     };
-    let signed_query = signing_key.build_signed_query_with_target_url(
+    let signed_query = signing_key.build_signed_playback_query_with_target_url(
         &claims,
         &format!("{resource_prefix}/{kind}"),
         target_url,
@@ -1196,9 +1191,8 @@ fn build_dash_scope_url(
     let signature = deps.proxy_signing_key.sign(&claims);
     let scope = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(scope_url);
     let user_id = urlencoding::encode(&claims.user_id);
-    let room_id = urlencoding::encode(&claims.room_id);
     format!(
-        "{}/{kind}/{scope}/{user_id}/{room_id}/{}/{signature}",
+        "{}/{kind}/{scope}/{user_id}/{}/{signature}",
         signing.resource_base, claims.expires_at
     )
 }
@@ -1219,18 +1213,20 @@ fn live_segments_disguised_as_png(
 }
 
 fn build_hls_playlist_path(
+    room_id: &str,
     route_provider: &str,
     version: &str,
     generation_id: &str,
     signed_query: &str,
 ) -> String {
     format!(
-        "/api/playback-providers/{route_provider}/{version}/hls/{generation_id}/index.m3u8{}",
+        "/api/playback-providers/{room_id}/{route_provider}/{version}/hls/{generation_id}/index.m3u8{}",
         hls_query_suffix(signed_query)
     )
 }
 
 fn build_hls_segment_path(
+    room_id: &str,
     route_provider: &str,
     version: &str,
     generation_id: &str,
@@ -1238,7 +1234,7 @@ fn build_hls_segment_path(
     signed_query: &str,
 ) -> String {
     format!(
-        "/api/playback-providers/{route_provider}/{version}/hls/{generation_id}/{segment_name}{}",
+        "/api/playback-providers/{room_id}/{route_provider}/{version}/hls/{generation_id}/{segment_name}{}",
         hls_query_suffix(signed_query)
     )
 }
@@ -1564,9 +1560,7 @@ fn map_axum_body_error(error: axum::Error) -> ApiError {
             synctv_proxy::ProxyErrorKind::InvalidRequest => {
                 return ApiError::InvalidInput(error.to_string());
             }
-            synctv_proxy::ProxyErrorKind::Connection
-            | synctv_proxy::ProxyErrorKind::BodyTooLarge
-            | synctv_proxy::ProxyErrorKind::Upstream => {}
+            synctv_proxy::ProxyErrorKind::Connection | synctv_proxy::ProxyErrorKind::Upstream => {}
         }
     }
     ApiError::ServiceUnavailable(error.to_string())
@@ -1586,19 +1580,20 @@ fn map_proxy_execution_error(err: &anyhow::Error) -> ApiError {
         Some(synctv_proxy::ProxyErrorKind::InvalidRequest) => {
             ApiError::InvalidInput(err.to_string())
         }
-        Some(
-            synctv_proxy::ProxyErrorKind::Connection
-            | synctv_proxy::ProxyErrorKind::BodyTooLarge
-            | synctv_proxy::ProxyErrorKind::Upstream,
-        )
+        Some(synctv_proxy::ProxyErrorKind::Connection | synctv_proxy::ProxyErrorKind::Upstream)
         | None => ApiError::ServiceUnavailable(err.to_string()),
     }
 }
 
-pub fn playback_provider_route_base(route_provider: &str, version: &str, resource: &str) -> String {
+pub fn playback_provider_route_base(
+    room_id: &str,
+    route_provider: &str,
+    version: &str,
+    resource: &str,
+) -> String {
     let encoded_version: String =
         url::form_urlencoded::byte_serialize(version.as_bytes()).collect();
-    format!("/api/playback-providers/{route_provider}/{encoded_version}/{resource}")
+    format!("/api/playback-providers/{room_id}/{route_provider}/{encoded_version}/{resource}")
 }
 
 fn metadata_chunk(status: u16, metadata: StreamResponseMetadata) -> StreamChunk {
@@ -1626,17 +1621,8 @@ mod tests {
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    async fn start_mock_server_or_skip() -> anyhow::Result<Option<MockServer>> {
-        match std::net::TcpListener::bind("127.0.0.1:0") {
-            Ok(listener) => {
-                drop(listener);
-                Ok(Some(MockServer::start().await))
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => Ok(None),
-            Err(error) => Err(anyhow::anyhow!(
-                "preflight bind for playback provider test should succeed: {error}"
-            )),
-        }
+    async fn start_mock_server() -> MockServer {
+        MockServer::start().await
     }
 
     fn mock_public_url(mock_server: &MockServer, path: &str) -> String {
@@ -1674,7 +1660,7 @@ mod tests {
             proxy_slice_cache,
             request_control: None,
             hls_rewrite: Some(HlsRewriteSigning {
-                segment_base: "/api/playback-providers/bilibili/v1/hls-resources/durl/0",
+                segment_base: "/api/playback-providers/room-1/bilibili/v1/hls-resources/durl/0",
                 claims,
                 resource: "hls-resources/durl/0/*",
             }),
@@ -1727,11 +1713,12 @@ mod tests {
                     .next()
                     .filter(|kind| matches!(*kind, "manifest" | "media"))
                     .ok_or_else(|| anyhow::anyhow!("rewritten HLS URL has an invalid route"))?;
-                let claims = signing_key.parse_and_verify_query(
+                let claims = signing_key.parse_and_verify_playback_query(
                     query,
                     "bilibili",
                     "v1",
                     &format!("hls-resources/durl/0/{route_kind}"),
+                    "room-1",
                 )?;
                 Ok((route_kind.to_string(), claims))
             })
@@ -1793,7 +1780,7 @@ mod tests {
             target_url: None,
         };
         let rewrite = HlsRewriteSigning {
-            segment_base: "/api/playback-providers/bilibili/v1/hls-resources/main/0",
+            segment_base: "/api/playback-providers/room-1/bilibili/v1/hls-resources/main/0",
             claims: &claims,
             resource: "hls-resources/main/0/*",
         };
@@ -1868,7 +1855,7 @@ mod tests {
                 playlist_kind,
             );
             assert!(resource_url.contains(&format!("/{route_kind}?")));
-            let resource_claims = signing_key.parse_and_verify_query(
+            let resource_claims = signing_key.parse_and_verify_playback_query(
                 resource_url
                     .split_once('?')
                     .map(|(_, query)| query)
@@ -1876,6 +1863,7 @@ mod tests {
                 "bilibili",
                 "v1",
                 &format!("hls-resources/main/0/{route_kind}"),
+                &claims.room_id,
             )?;
             if short_lived {
                 assert!(resource_claims.expires_at > now);
@@ -1918,9 +1906,7 @@ mod tests {
     #[tokio::test]
     async fn realistic_hls_manifests_apply_route_and_lifetime_matrix_end_to_end(
     ) -> anyhow::Result<()> {
-        let Some(mock_server) = start_mock_server_or_skip().await? else {
-            return Ok(());
-        };
+        let mock_server = start_mock_server().await;
         let client = mock_proxy_client(&mock_server)?;
         let ssrf_guard = test_ssrf_guard();
         let proxy_slice_cache =
@@ -2144,9 +2130,7 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_and_forward_chunk_stream_uses_slice_cache_for_full_body() -> anyhow::Result<()> {
-        let Some(mock_server) = start_mock_server_or_skip().await? else {
-            return Ok(());
-        };
+        let mock_server = start_mock_server().await;
         let total_size = 8_u64;
 
         Mock::given(method("GET"))
@@ -2207,6 +2191,7 @@ mod tests {
             url: mock_public_url(&mock_server, "/video.mp4"),
             headers: HashMap::new(),
             range_header: None,
+            proxy_strategy: synctv_core::provider::PlaybackResourceProxyStrategy::SliceCache,
         };
 
         let mut stream = playback_transport_action_to_chunk_stream(deps, action.clone(), false)
@@ -2248,10 +2233,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stream_and_forward_chunk_stream_uses_one_upstream_request() -> anyhow::Result<()> {
-        let Some(mock_server) = start_mock_server_or_skip().await? else {
-            return Ok(());
-        };
+    async fn stream_proxy_chunk_stream_uses_one_upstream_request() -> anyhow::Result<()> {
+        let mock_server = start_mock_server().await;
         let body = (0_u8..=31).collect::<Vec<_>>();
 
         Mock::given(method("GET"))
@@ -2289,10 +2272,11 @@ mod tests {
             request_control: None,
             hls_rewrite: None,
         };
-        let action = PlaybackTransportAction::StreamAndForward {
+        let action = PlaybackTransportAction::FetchAndForward {
             url: mock_public_url(&mock_server, "/video.mkv"),
             headers: HashMap::new(),
             range_header: None,
+            proxy_strategy: synctv_core::provider::PlaybackResourceProxyStrategy::Stream,
         };
 
         let mut stream = playback_transport_action_to_chunk_stream(deps, action, false)
@@ -2316,9 +2300,7 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_and_forward_candidates_switches_before_response_commit() -> anyhow::Result<()> {
-        let Some(mock_server) = start_mock_server_or_skip().await? else {
-            return Ok(());
-        };
+        let mock_server = start_mock_server().await;
 
         Mock::given(method("GET"))
             .and(path("/primary.mp4"))
@@ -2389,9 +2371,7 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_and_forward_candidates_switches_on_empty_first_body() -> anyhow::Result<()> {
-        let Some(mock_server) = start_mock_server_or_skip().await? else {
-            return Ok(());
-        };
+        let mock_server = start_mock_server().await;
 
         Mock::given(method("GET"))
             .and(path("/empty.mp4"))
@@ -2585,9 +2565,7 @@ mod tests {
 
     #[tokio::test]
     async fn m3u8_rewrite_follows_validated_redirects() -> anyhow::Result<()> {
-        let Some(mock_server) = start_mock_server_or_skip().await? else {
-            return Ok(());
-        };
+        let mock_server = start_mock_server().await;
 
         Mock::given(method("GET"))
             .and(path("/redirect/master.m3u8"))
@@ -2636,7 +2614,7 @@ mod tests {
             proxy_slice_cache: &proxy_slice_cache,
             request_control: None,
             hls_rewrite: Some(HlsRewriteSigning {
-                segment_base: "/api/playback-providers/direct-url/v1/hls-resources/direct/0",
+                segment_base: "/api/playback-providers/room-1/direct-url/v1/hls-resources/direct/0",
                 claims: &claims,
                 resource: "hls-resources/direct/0/*",
             }),
@@ -2658,9 +2636,9 @@ mod tests {
 
         assert_eq!(chunk.status, 200);
         assert_eq!(chunk.cache_control.as_deref(), Some("no-store"));
-        assert!(
-            body.contains("/api/playback-providers/direct-url/v1/hls-resources/direct/0/media?")
-        );
+        assert!(body.contains(
+            "/api/playback-providers/room-1/direct-url/v1/hls-resources/direct/0/media?"
+        ));
         let rewritten_media_url = body
             .lines()
             .find(|line| line.starts_with('/'))
@@ -2669,11 +2647,12 @@ mod tests {
             .split_once('?')
             .map(|(_, query)| query)
             .ok_or_else(|| anyhow::anyhow!("rewritten media URL should contain a query"))?;
-        let media_claims = signing_key.parse_and_verify_query(
+        let media_claims = signing_key.parse_and_verify_playback_query(
             rewritten_query,
             "direct_url",
             "v1",
             "hls-resources/direct/0/media",
+            &claims.room_id,
         )?;
         assert_eq!(
             media_claims.target_url.as_deref(),
@@ -2685,9 +2664,7 @@ mod tests {
     #[tokio::test]
     async fn mpd_rewrite_forwards_headers_and_builds_signed_resource_scopes() -> anyhow::Result<()>
     {
-        let Some(mock_server) = start_mock_server_or_skip().await? else {
-            return Ok(());
-        };
+        let mock_server = start_mock_server().await;
         let manifest = r#"<MPD><Location>refresh.mpd?token=next</Location><Period><AdaptationSet><SegmentTemplate initialization="init-$RepresentationID$.m4s" media="video/$RepresentationID$/segment-$Number$.m4s?token=part"/></AdaptationSet></Period></MPD>"#;
         Mock::given(method("GET"))
             .and(path("/dash/manifest.mpd"))
@@ -2738,7 +2715,8 @@ mod tests {
             deps,
             action,
             DashRewriteSigning {
-                resource_base: "/api/playback-providers/direct-url/v1/dash-resources/direct/0",
+                resource_base:
+                    "/api/playback-providers/room-1/direct-url/v1/dash-resources/direct/0",
                 resource_prefix: "dash-resources/direct/0",
                 claims: &claims,
             },
@@ -2762,10 +2740,10 @@ mod tests {
         ));
 
         assert_eq!(chunk.content_type.as_deref(), Some("application/dash+xml"));
-        assert!(body.contains(&format!("/media/{root_scope}/user-1/room-1/")));
+        assert!(body.contains(&format!("/media/{root_scope}/user-1/")));
         assert!(body.contains("init-$RepresentationID$.m4s"));
         assert!(body.contains("segment-$Number$.m4s?token=part"));
-        assert!(body.contains(&format!("/manifest/{refresh_scope}/user-1/room-1/")));
+        assert!(body.contains(&format!("/manifest/{refresh_scope}/user-1/")));
 
         let generated_claims = crate::proxy_signature::ProxyUrlClaims {
             provider: "bilibili".to_string(),
@@ -2792,7 +2770,7 @@ mod tests {
             deps,
             action,
             DashRewriteSigning {
-                resource_base: "/api/playback-providers/bilibili/v1/dash-resources/dash",
+                resource_base: "/api/playback-providers/room-1/bilibili/v1/dash-resources/dash",
                 resource_prefix: "dash-resources/dash",
                 claims: &generated_claims,
             },
@@ -2809,7 +2787,7 @@ mod tests {
         let generated_scope = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode("https://upos.example/video.m4s?token=private");
         assert!(generated_body.contains(&format!(
-            "/api/playback-providers/bilibili/v1/dash-resources/dash/media/{generated_scope}/user-1/room-1/"
+            "/api/playback-providers/room-1/bilibili/v1/dash-resources/dash/media/{generated_scope}/user-1/"
         )));
         assert!(generated_body.contains("<SegmentBase indexRange=\"100-200\">"));
         Ok(())
@@ -2817,9 +2795,7 @@ mod tests {
 
     #[tokio::test]
     async fn in_memory_m3u8_rewrite_signs_each_segment() -> anyhow::Result<()> {
-        let Some(mock_server) = start_mock_server_or_skip().await? else {
-            return Ok(());
-        };
+        let mock_server = start_mock_server().await;
         let client = mock_proxy_client(&mock_server)?;
         let ssrf_guard = test_ssrf_guard();
         let proxy_slice_cache =
@@ -2847,7 +2823,7 @@ mod tests {
             proxy_slice_cache: &proxy_slice_cache,
             request_control: None,
             hls_rewrite: Some(HlsRewriteSigning {
-                segment_base: "/api/playback-providers/bilibili/v1/hls-resources/durl/0",
+                segment_base: "/api/playback-providers/room-1/bilibili/v1/hls-resources/durl/0",
                 claims: &claims,
                 resource: "hls-resources/durl/0/*",
             }),
@@ -2867,7 +2843,7 @@ mod tests {
         let body = std::str::from_utf8(&chunk.data)?;
 
         assert_eq!(
-            body.matches("/api/playback-providers/bilibili/v1/hls-resources/durl/0/media?")
+            body.matches("/api/playback-providers/room-1/bilibili/v1/hls-resources/durl/0/media?")
                 .count(),
             2
         );
@@ -2879,9 +2855,7 @@ mod tests {
 
     #[tokio::test]
     async fn in_memory_direct_m3u8_keeps_upstream_segment_urls() -> anyhow::Result<()> {
-        let Some(mock_server) = start_mock_server_or_skip().await? else {
-            return Ok(());
-        };
+        let mock_server = start_mock_server().await;
         let client = mock_proxy_client(&mock_server)?;
         let ssrf_guard = test_ssrf_guard();
         let proxy_slice_cache =

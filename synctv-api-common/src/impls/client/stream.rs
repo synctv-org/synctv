@@ -1,13 +1,15 @@
-use synctv_core::models::{MediaId, UserId};
+use synctv_core::models::{MediaId, Room, RoomId, UserId};
 
 use crate::impls::{ApiError, ClientApiImpl};
 use synctv_proto::client::{
-    GetRoomStreamInfoRequest, GetRoomStreamInfoResponse, KickRoomStreamRequest,
-    ListRoomStreamsRequest, ListRoomStreamsResponse, RoomStreamPublisherInfo, SortDirection,
-    StreamEntry,
+    CreateRoomPublishKeyRequest, CreateRoomPublishKeyResponse, GetRoomStreamInfoRequest,
+    GetRoomStreamInfoResponse, KickRoomStreamRequest, ListRoomStreamsRequest,
+    ListRoomStreamsResponse, RoomStreamPublisherInfo, SortDirection, StreamEntry,
 };
 
 const LIVESTREAM_UNAVAILABLE_MESSAGE: &str = "Live streaming is not available on this server.";
+const PUBLISH_KEY_SERVICE_UNAVAILABLE_MESSAGE: &str =
+    "Publish key service is not available on this server.";
 const DEFAULT_ROOM_STREAMS_PAGE: i32 = 1;
 const DEFAULT_ROOM_STREAMS_PAGE_SIZE: i32 = 50;
 
@@ -87,6 +89,55 @@ pub fn live_streaming_unavailable_error() -> ApiError {
     ApiError::ServiceUnavailable(LIVESTREAM_UNAVAILABLE_MESSAGE.to_string())
 }
 
+fn publish_key_service_unavailable_error() -> ApiError {
+    ApiError::ServiceUnavailable(PUBLISH_KEY_SERVICE_UNAVAILABLE_MESSAGE.to_string())
+}
+
+pub(crate) fn ensure_room_accepts_live_publish(room: &Room) -> Result<(), ApiError> {
+    if room.is_banned {
+        return Err(ApiError::Authorization("Room is banned".to_string()));
+    }
+
+    if !room.status.is_active() {
+        return Err(ApiError::Authorization("Room is not active".to_string()));
+    }
+
+    Ok(())
+}
+
+fn build_publish_rtmp_url(runtime_settings: &crate::ApiRuntimeSettings, room_id: &str) -> String {
+    let rtmp_host = runtime_settings.public_rtmp_host();
+    let rtmp_port = runtime_settings.livestream.rtmp_port;
+    format!("rtmp://{rtmp_host}:{rtmp_port}/{room_id}")
+}
+
+pub(crate) fn issue_room_publish_key(
+    publish_key_service: &dyn synctv_core::service::StreamingPublishKeyService,
+    runtime_settings: &crate::ApiRuntimeSettings,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
+    room_id: RoomId,
+    media_id: MediaId,
+    actor_user_id: &UserId,
+) -> Result<CreateRoomPublishKeyResponse, ApiError> {
+    let publish_key = publish_key_service
+        .generate_publish_key(&room_id, &media_id, actor_user_id)
+        .map_err(|error| ApiError::Internal(format!("Failed to generate publish key: {error}")))?;
+    let room_id = public_id_codec
+        .encode_room_id(room_id)
+        .map_err(|error| ApiError::Internal(format!("Failed to encode room id: {error}")))?;
+    let media_id = public_id_codec
+        .encode_media_id(media_id)
+        .map_err(|error| ApiError::Internal(format!("Failed to encode media id: {error}")))?;
+    let stream_key = format!("{media_id}?token={}", publish_key.token);
+
+    Ok(CreateRoomPublishKeyResponse {
+        publish_key: publish_key.token,
+        rtmp_url: build_publish_rtmp_url(runtime_settings, &room_id),
+        stream_key,
+        expires_at: publish_key.expires_at,
+    })
+}
+
 pub async fn fetch_stream_info(
     infrastructure: &synctv_livestream::LiveStreamingInfrastructure,
     public_id_codec: &synctv_adapter::PublicIdCodec,
@@ -119,6 +170,61 @@ pub async fn fetch_stream_info(
 }
 
 impl ClientApiImpl {
+    pub async fn create_room_publish_key(
+        &self,
+        user_id: &UserId,
+        room_id: &str,
+        req: CreateRoomPublishKeyRequest,
+    ) -> Result<CreateRoomPublishKeyResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let uid = *user_id;
+        let rid = self.parse_room_id(room_id)?;
+        let media_id = self
+            .public_id_codec
+            .decode_media_id(&req.media_id)
+            .map_err(ApiError::InvalidInput)?;
+
+        let (media, room) = tokio::join!(
+            self.room_service
+                .media_service()
+                .get_room_media(&rid, &media_id),
+            self.room_service.get_room(&rid),
+        );
+        let media = media
+            .map_err(|error| Self::map_media_lookup_error(error, "Media not found"))?
+            .ok_or_else(|| ApiError::NotFound(format!("Media {media_id} not found")))?;
+        let room = room.map_err(ApiError::from)?;
+        ensure_room_accepts_live_publish(&room)?;
+
+        self.room_service
+            .check_membership_with_room(&room, &uid)
+            .await
+            .map_err(Self::map_room_access_error)?;
+        if media.creator_id != Some(uid) {
+            self.room_service
+                .check_permission(
+                    &rid,
+                    &uid,
+                    synctv_core::models::RoomPermission::MANAGE_LIVE_STREAMS,
+                )
+                .await
+                .map_err(Self::map_room_access_error)?;
+        }
+
+        let publish_key_service = self
+            .publish_key_service
+            .as_deref()
+            .ok_or_else(publish_key_service_unavailable_error)?;
+        issue_room_publish_key(
+            publish_key_service,
+            &self.runtime_settings,
+            &self.public_id_codec,
+            rid,
+            media_id,
+            &uid,
+        )
+    }
+
     pub async fn list_room_streams(
         &self,
         user_id: &UserId,
@@ -229,7 +335,9 @@ impl ClientApiImpl {
 }
 #[cfg(test)]
 mod tests {
-    use super::{build_room_streams_request, build_room_streams_response};
+    use super::{
+        build_room_streams_request, build_room_streams_response, ensure_room_accepts_live_publish,
+    };
     use crate::impls::ApiError;
 
     type TestResult<T = ()> = anyhow::Result<T>;
@@ -324,5 +432,38 @@ mod tests {
         assert_eq!(response.streams[0].media_id, expected_ids[1]);
         assert!(response.streams[0].active);
         Ok(())
+    }
+
+    #[test]
+    fn live_publish_rejects_banned_room() {
+        let mut room = synctv_core::models::Room::new(
+            "Banned live room".to_string(),
+            synctv_core::models::UserId::expect_positive(1),
+        );
+        room.ban();
+
+        let error = ensure_room_accepts_live_publish(&room)
+            .expect_err("banned rooms must not issue publish keys");
+        assert!(
+            matches!(&error, ApiError::Authorization(message) if message == "Room is banned"),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    #[test]
+    fn live_publish_rejects_closed_room() {
+        let room = synctv_core::models::Room::new_with_status(
+            "Closed live room".to_string(),
+            String::new(),
+            synctv_core::models::UserId::expect_positive(1),
+            synctv_core::models::RoomStatus::Closed,
+        );
+
+        let error = ensure_room_accepts_live_publish(&room)
+            .expect_err("closed rooms must not issue publish keys");
+        assert!(
+            matches!(&error, ApiError::Authorization(message) if message == "Room is not active"),
+            "unexpected error: {error:?}"
+        );
     }
 }

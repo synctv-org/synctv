@@ -3,6 +3,7 @@ syntax = "proto3";
 package synctv.provider.nextcloud;
 
 import "proto/providers/nextcloud.proto";
+import "proto/providers/common.proto";
 
 service NextcloudProviderService {
   rpc Login(LoginRequest) returns (LoginResponse);
@@ -12,4 +13,5 @@ service NextcloudProviderService {
   rpc ListFavorites(ListFavoritesRequest) returns (ListResponse);
   rpc Logout(LogoutRequest) returns (LogoutResponse);
   rpc GetBinds(GetBindsRequest) returns (GetBindsResponse);
+  rpc GetPreview(GetPreviewRequest) returns (stream synctv.provider.common.ResourceResponse);
 }

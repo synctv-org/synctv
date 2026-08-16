@@ -4689,6 +4689,7 @@ async fn test_observed_playback_refreshes_when_current_playlist_is_updated() {
                 playlist_id: playlist.id,
                 name: Some("observe-playback-playlist-update-v2".to_string()),
                 description: None,
+                source_config: None,
             },
         )
         .await

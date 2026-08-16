@@ -24,7 +24,7 @@
 //!   dispatch for memory and file backends.
 //! - **[`store`]**: `SliceCache` struct with per-key locking, backend-agnostic
 //!   storage, metadata management, and stale-while-revalidate support.
-//! - **[`filter`]**: `proxy_with_cache`, `head_content_length`, and the
+//! - **[`filter`]**: [`SliceCache::proxy`], `head_content_length`, and the
 //!   range-probe / stream-through paths (the "filter" entry points, analogous
 //!   to nginx's header and body filters).
 //!
@@ -32,8 +32,8 @@
 //!
 //! - **Slice caching**: aligned 2 MB slices with per-key locking (thundering
 //!   herd prevention).
-//! - **No full-body caching**: non-range client requests are served from cached
-//!   slices only when the origin supports range requests.
+//! - **Bounded document caching**: ordinary GET responses can be admitted as a
+//!   complete cached object when their status and declared size are eligible.
 //! - **`ETag` consistency**: validates that the `ETag` is stable across slices
 //!   belonging to the same resource; triggers invalidation on mismatch.
 //! - **Content-Range validation**: upstream 206 responses are validated
@@ -61,11 +61,8 @@ pub use config::{CacheBackendConfig, SliceCacheConfig};
 pub use etag::{CachedResourceMeta, StoredEntry};
 pub use filter::{
     head_content_length, head_content_length_with_control,
-    head_content_length_with_control_and_timeout, proxy_head_with_cache_enabled_with_control,
-    proxy_head_with_cache_enabled_with_control_and_timeout, proxy_with_cache,
-    proxy_with_cache_enabled, proxy_with_cache_enabled_with_control,
-    proxy_with_cache_enabled_with_control_and_timeout, proxy_with_cache_with_control,
-    proxy_with_cache_with_control_and_timeout,
+    head_content_length_with_control_and_timeout, SliceCacheProxyMethod, SliceCacheProxyRequest,
+    SliceCacheProxyStrategy, SliceRangeProbeFallback,
 };
 pub use lifecycle::CacheLifecycleManager;
 pub use range::{parse_content_range, ContentRange};

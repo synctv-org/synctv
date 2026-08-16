@@ -1,6 +1,5 @@
-use std::time::Duration;
-
 use bytes::Bytes;
+use std::time::Duration;
 use synctv_common::ExecutionControl;
 
 use crate::ProviderHeaders;
@@ -46,6 +45,21 @@ pub(super) struct FetchedSlice {
 
 pub(super) enum SliceFetchResult {
     Slice(FetchedSlice),
+    Bypass(reqwest::Response),
+}
+
+#[derive(Clone)]
+pub(super) struct CachedFullResponse {
+    pub(super) data: Bytes,
+    pub(super) content_type: Option<String>,
+    pub(super) content_encoding: Option<String>,
+    pub(super) etag: Option<String>,
+    pub(super) last_modified: Option<String>,
+    pub(super) status: CacheStatus,
+}
+
+pub(super) enum FullResponseFetchResult {
+    Cached(CachedFullResponse),
     Bypass(reqwest::Response),
 }
 

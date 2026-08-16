@@ -106,7 +106,7 @@ pub async fn get_truenas_hls_manifest(
         .map_err(ApiError::from)?;
     let resource_base = format!(
         "{}/{}/{}",
-        playback_provider_route_base(PROVIDER, &req.version, "hls-resources"),
+        playback_provider_route_base(&req.rid, PROVIDER, &req.version, "hls-resources"),
         urlencoding::encode(&req.mode_name),
         req.media_index
     );
@@ -166,7 +166,7 @@ pub async fn get_truenas_hls_resource(
     let stream = if is_manifest {
         let resource_base = format!(
             "{}/{}/{}",
-            playback_provider_route_base(PROVIDER, &req.version, "hls-resources"),
+            playback_provider_route_base(&req.rid, PROVIDER, &req.version, "hls-resources"),
             urlencoding::encode(&req.mode_name),
             req.media_index
         );

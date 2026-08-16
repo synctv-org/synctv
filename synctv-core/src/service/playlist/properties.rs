@@ -1,5 +1,5 @@
 use crate::{
-    models::{Playlist, PlaylistId, RoomId, UserId},
+    models::{Playlist, PlaylistId, PlaylistSourceConfig, RoomId, UserId},
     service::optimistic_retry,
     Error, Result,
 };
@@ -14,6 +14,8 @@ pub struct SetPlaylistRequest {
     pub playlist_id: PlaylistId,
     pub name: Option<String>,
     pub description: Option<String>,
+    /// Complete replacement config for an existing dynamic playlist.
+    pub source_config: Option<PlaylistSourceConfig>,
 }
 
 impl PlaylistService {
@@ -117,6 +119,26 @@ impl PlaylistService {
                         )));
                     }
                     playlist.description = description.clone();
+                }
+                if let Some(source_config) = request.source_config.clone() {
+                    if !playlist.is_dynamic() {
+                        return Err(Error::InvalidInput(
+                            "source_config updates require a dynamic playlist".to_string(),
+                        ));
+                    }
+
+                    let (source_provider, source_config, provider_instance_name) = self
+                        .validate_dynamic_playlist_source(
+                            &room_id,
+                            &user_id,
+                            source_config.provider(),
+                            source_config,
+                            playlist.provider_instance_name.clone(),
+                        )
+                        .await?;
+                    playlist.source_provider = Some(source_provider);
+                    playlist.source_config = Some(source_config);
+                    playlist.provider_instance_name = provider_instance_name;
                 }
                 // Save with optimistic locking
                 let mut tx = self.playlist_repo.pool().begin().await?;

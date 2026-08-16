@@ -13,6 +13,10 @@ use bytes::Bytes;
 /// consistency checking across slices.
 #[derive(Clone, Debug)]
 pub struct CachedResourceMeta {
+    /// Upstream HTTP status observed while validating this resource.
+    ///
+    /// Metadata learned from headers alone leaves this as `None`.
+    pub status: Option<u16>,
     /// `ETag` returned by the upstream for this resource.
     pub etag: Option<String>,
     /// Last-Modified header returned by the upstream.
@@ -95,6 +99,7 @@ mod tests {
     #[test]
     fn cached_resource_meta_has_last_modified_field() {
         let meta = CachedResourceMeta {
+            status: Some(200),
             etag: Some("\"abc\"".to_string()),
             last_modified: Some("Tue, 01 Jan 2030 00:00:00 GMT".to_string()),
             total_size: Some(1024),

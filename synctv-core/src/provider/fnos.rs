@@ -989,7 +989,7 @@ impl FnosProvider {
             .get(mode_name)
             .and_then(|info| info.subtitles.get(subtitle_index))
             .ok_or(ProviderError::NotFound)?;
-        super::playback_transport::transport_action_for_target_url(
+        super::playback_transport::full_response_cache_action_for_target_url(
             subtitle.upstream_url().to_string(),
             subtitle.upstream_headers(),
             None,

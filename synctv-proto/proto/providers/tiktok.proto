@@ -3,7 +3,6 @@ syntax = "proto3";
 package synctv.provider.tiktok;
 
 import "proto/buf/validate/validate.proto";
-import "proto/source_config.proto";
 import "proto/providers/common.proto";
 
 message BindRequest {
@@ -53,12 +52,6 @@ message Author {
   optional Image avatar = 5;
 }
 
-message Subtitle {
-  string language = 1;
-  string format = 2;
-  string url = 3;
-}
-
 enum MediaKind {
   MEDIA_KIND_UNSPECIFIED = 0;
   MEDIA_KIND_VIDEO = 1;
@@ -92,27 +85,25 @@ message Metadata {
   optional uint64 concurrent_viewers = 16;
   optional string music_title = 17;
   optional string music_author = 18;
-  repeated Subtitle subtitles = 19;
+  uint32 subtitle_count = 19;
 }
 
 message Variant {
-  string url = 1;
-  StreamFormat format = 2;
-  string quality = 3;
-  optional string codec = 4;
-  optional uint32 width = 5;
-  optional uint32 height = 6;
-  optional uint64 bitrate = 7;
-  bool audio_only = 8;
-  bool watermarked = 9;
-  bool headers_required = 10;
+  StreamFormat format = 1;
+  string quality = 2;
+  optional string codec = 3;
+  optional uint32 width = 4;
+  optional uint32 height = 5;
+  optional uint64 bitrate = 6;
+  bool audio_only = 7;
+  bool watermarked = 8;
+  bool headers_required = 9;
 }
 
 message ResolveResponse {
   Metadata metadata = 1;
-  optional string room_id = 2;
-  repeated Variant variants = 3;
-  synctv.provider.common.DiscoveredSource source = 4;
+  repeated Variant variants = 2;
+  synctv.provider.common.DiscoveredSource source = 3;
 }
 
 message GetUserRequest {

@@ -162,8 +162,8 @@ pub use playback::{
 pub use playback_auto_advance::{ActivePlaybackRoomSource, PlaybackAutoAdvanceService};
 pub use playback_duration_probe::PlaybackDurationProbeService;
 pub use playback_provider::{
-    AcFunPlaybackProviderService, AlistPlaybackProviderService, BilibiliLiveDanmakuRequest,
-    BilibiliPlaybackProviderService, CctvPlaybackProviderService, CloudrevePlaybackProviderService,
+    AcFunPlaybackProviderService, AlistPlaybackProviderService, BilibiliPlaybackProviderService,
+    CctvPlaybackProviderService, CloudrevePlaybackProviderService,
     DirectUrlPlaybackProviderService, DouyinPlaybackProviderService, DouyuPlaybackProviderService,
     EmbyPlaybackProviderService, FnosPlaybackProviderService, HuyaPlaybackProviderService,
     LiveProxyPlaybackProviderService, NextcloudPlaybackProviderService,

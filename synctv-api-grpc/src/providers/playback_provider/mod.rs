@@ -43,14 +43,6 @@ pub(crate) fn playback_provider_api_runtime(
     }
 }
 
-pub(crate) fn playback_provider_identity_runtime(
-    state: &PlaybackProviderGrpcState,
-) -> synctv_api_common::playback_provider::common::PlaybackProviderIdentityRuntime<'_> {
-    synctv_api_common::playback_provider::common::PlaybackProviderIdentityRuntime {
-        public_id_codec: &state.shared_api_runtime.public_id_codec,
-    }
-}
-
 pub(crate) fn live_playback_api_runtime(
     state: &PlaybackProviderGrpcState,
 ) -> synctv_api_common::playback_provider::common::LivePlaybackApiRuntime<'_> {
@@ -110,5 +102,27 @@ pub(crate) fn grpc_request_metadata<T>(
     runtime_settings: &synctv_api_common::ApiRuntimeSettings,
 ) -> Result<synctv_api_common::impls::RequestMetadata, Status> {
     crate::grpc::request_metadata(request, runtime_settings, None)
+}
+
+pub(crate) fn grpc_room_request_context<T>(
+    state: &PlaybackProviderGrpcState,
+    request: &Request<T>,
+    runtime_settings: &synctv_api_common::ApiRuntimeSettings,
+) -> Result<(synctv_api_common::impls::RequestMetadata, String), Status> {
+    let metadata = grpc_request_metadata(request, runtime_settings)?;
+    let public_room_id = request
+        .metadata()
+        .get("x-room-id")
+        .ok_or_else(|| Status::invalid_argument("Missing x-room-id header"))?
+        .to_str()
+        .map_err(|_| Status::invalid_argument("Invalid x-room-id header"))?
+        .to_string();
+    state
+        .shared_api_runtime
+        .client_api
+        .public_id_codec
+        .decode_room_id(&public_room_id)
+        .map_err(|error| Status::invalid_argument(format!("Invalid room_id: {error}")))?;
+    Ok((metadata, public_room_id))
 }
 pub(crate) mod acfun;

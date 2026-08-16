@@ -125,7 +125,7 @@ pub async fn get_direct_url_hls_manifest(
         .map_err(ApiError::from)?;
     let resource_base = format!(
         "{}/{}/{}",
-        playback_provider_route_base("direct-url", &req.version, "hls-resources"),
+        playback_provider_route_base(&req.rid, "direct-url", &req.version, "hls-resources"),
         urlencoding::encode(&req.mode_name),
         req.url_index
     );
@@ -184,7 +184,7 @@ pub async fn get_direct_url_hls_resource(
     let stream = if kind == DirectUrlManifestResourceKind::Manifest {
         let resource_base = format!(
             "{}/{}/{}",
-            playback_provider_route_base("direct-url", &req.version, "hls-resources"),
+            playback_provider_route_base(&req.rid, "direct-url", &req.version, "hls-resources"),
             urlencoding::encode(&req.mode_name),
             req.url_index
         );
@@ -234,7 +234,7 @@ pub async fn get_direct_url_dash_manifest(
         .map_err(ApiError::from)?;
     let resource_base = format!(
         "{}/{}/{}",
-        playback_provider_route_base("direct-url", &req.version, "dash-resources"),
+        playback_provider_route_base(&req.rid, "direct-url", &req.version, "dash-resources"),
         urlencoding::encode(&req.mode_name),
         req.url_index
     );
@@ -300,7 +300,7 @@ pub async fn get_direct_url_dash_resource(
     let stream = if is_manifest {
         let resource_base = format!(
             "{}/{}/{}",
-            playback_provider_route_base("direct-url", &req.version, "dash-resources"),
+            playback_provider_route_base(&req.rid, "direct-url", &req.version, "dash-resources"),
             urlencoding::encode(&req.mode_name),
             req.url_index
         );

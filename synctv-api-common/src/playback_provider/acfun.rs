@@ -67,7 +67,7 @@ pub async fn get_acfun_resource(
         .map_err(ApiError::from)?;
     let segment_base = format!(
         "{}/{}/{}",
-        playback_provider_route_base(PROVIDER, &req.version, "hls-resources"),
+        playback_provider_route_base(&req.rid, PROVIDER, &req.version, "hls-resources"),
         urlencoding::encode(&req.mode_name),
         req.media_index
     );
@@ -126,7 +126,7 @@ pub async fn get_acfun_hls_resource(
     let stream = if kind == AcFunHlsResourceKind::Manifest {
         let segment_base = format!(
             "{}/{}/{}",
-            playback_provider_route_base(PROVIDER, &req.version, "hls-resources"),
+            playback_provider_route_base(&req.rid, PROVIDER, &req.version, "hls-resources"),
             urlencoding::encode(&req.mode_name),
             req.media_index
         );

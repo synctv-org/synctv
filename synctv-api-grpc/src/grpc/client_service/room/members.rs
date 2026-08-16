@@ -69,6 +69,29 @@ pub(super) async fn get_room_stream_info(
     Ok(Response::new(response))
 }
 
+pub(super) async fn create_room_publish_key(
+    service: &ClientServiceImpl,
+    request: Request<CreateRoomPublishKeyRequest>,
+) -> Result<Response<CreateRoomPublishKeyResponse>, Status> {
+    let (metadata, room_id) = service.room_request_context(&request)?;
+    let req = request.into_inner();
+    let executor = service.client_api.clone();
+    let client_api = service.client_api.clone();
+    let response = executor
+        .execute_user_endpoint(
+            &metadata,
+            EndpointRateLimitCategory::Media,
+            move |authenticated| async move {
+                client_api
+                    .create_room_publish_key(&authenticated.user_id(), room_id.as_str(), req)
+                    .await
+            },
+        )
+        .await
+        .map_err(map_api_error)?;
+    Ok(Response::new(response))
+}
+
 pub(super) async fn kick_room_stream(
     service: &ClientServiceImpl,
     request: Request<KickRoomStreamRequest>,

@@ -39,6 +39,13 @@ impl RoomService for ClientServiceImpl {
         members::list_room_streams(self, request).await
     }
 
+    async fn create_room_publish_key(
+        &self,
+        request: Request<CreateRoomPublishKeyRequest>,
+    ) -> Result<Response<CreateRoomPublishKeyResponse>, Status> {
+        members::create_room_publish_key(self, request).await
+    }
+
     async fn get_room_stream_info(
         &self,
         request: Request<GetRoomStreamInfoRequest>,

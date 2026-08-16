@@ -121,8 +121,7 @@ use synctv_proto::{
     admin as admin_proto, client as client_proto, common as common_proto,
     providers::{
         alist as alist_proto, bilibili as bilibili_proto, common as provider_common_proto,
-        douyin as douyin_proto, emby as emby_proto, rtmp as rtmp_proto, tiktok as tiktok_proto,
-        twitch as twitch_proto,
+        douyin as douyin_proto, emby as emby_proto, tiktok as tiktok_proto, twitch as twitch_proto,
     },
 };
 use synctv_realtime::fanout::{
@@ -3143,7 +3142,7 @@ impl ManagementService for ManagementServiceImpl {
     async fn create_publish_key(
         &self,
         request: Request<CreatePublishKeyRequest>,
-    ) -> Result<Response<rtmp_proto::CreatePublishKeyResponse>, Status> {
+    ) -> Result<Response<client_proto::CreateRoomPublishKeyResponse>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
         let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
@@ -3165,7 +3164,7 @@ impl ManagementService for ManagementServiceImpl {
     async fn get_stream_info(
         &self,
         request: Request<GetStreamInfoRequest>,
-    ) -> Result<Response<rtmp_proto::GetStreamInfoResponse>, Status> {
+    ) -> Result<Response<client_proto::GetRoomStreamInfoResponse>, Status> {
         self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let response = self

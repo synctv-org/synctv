@@ -54,7 +54,7 @@ const SMS_LOGIN_SESSION_TTL_SECONDS: i64 = 10 * 60;
 const SMS_LOGIN_SESSION_VERSION: &str = "v2";
 const SMS_LOGIN_DOMAIN_SEPARATOR: &[u8] = b"synctv-bilibili-sms-login";
 const SMS_LOGIN_TOKEN_NONCE_SIZE: usize = 12;
-const BILIBILI_PLAYBACK_CACHE_SCHEMA_VERSION: &str = "v5";
+const BILIBILI_PLAYBACK_CACHE_SCHEMA_VERSION: &str = "v6";
 type HmacSha256 = Hmac<sha2::Sha256>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -4508,9 +4508,12 @@ mod tests {
     };
     use crate::models::{BilibiliTarget, PlaylistId, ProviderTarget, RoomId};
     use crate::provider::{
-        PlaybackInfo, PlaybackResult, ProviderActor, ProviderContext, SourceConfig,
+        InMemoryProviderStore, PlaybackInfo, PlaybackResult, PlaybackTransportAction,
+        ProviderActor, ProviderContext, ProviderStore, ProviderStoreExt, SourceConfig,
+        VersionedPlayback,
     };
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     type TestResult<T = ()> = anyhow::Result<T>;
 
@@ -4530,7 +4533,7 @@ mod tests {
 
         let (key, _) = provider_ok(super::playback_cache_entry(&config, "anonymous", None))?;
 
-        assert!(key.starts_with("playback:v5:video:"));
+        assert!(key.starts_with("playback:v6:video:"));
         Ok(())
     }
 
@@ -5111,6 +5114,82 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn bilibili_subtitle_uses_full_response_cache_transport() -> TestResult {
+        let store: Arc<dyn ProviderStore> = Arc::new(InMemoryProviderStore::new(8));
+        let subtitle_url = "https://subtitle.bilibili.com/track.json";
+        let playback = PlaybackResult {
+            playback_infos: HashMap::from([(
+                "proxy_h264".to_string(),
+                PlaybackInfo {
+                    thumbnail: None,
+                    medias: Vec::new(),
+                    default_media_index: None,
+                    subtitles: vec![bilibili_subtitle_track(
+                        None,
+                        "video:BV1test:cid:1",
+                        "Chinese",
+                        subtitle_url.to_string(),
+                    )],
+                    default_subtitle_index: Some(0),
+                    danmakus: Vec::new(),
+                    default_danmaku_index: None,
+                },
+            )]),
+            default_mode: "proxy_h264".to_string(),
+            provider: crate::models::SourceProvider::Bilibili,
+            provider_instance_name: None,
+            duration_seconds: None,
+            playback_kind: Some(crate::models::PlaybackKind::Regular),
+            metadata: None,
+        };
+        store
+            .set(
+                "v:subtitle-test",
+                &VersionedPlayback {
+                    version: "subtitle-test".to_string(),
+                    result: playback,
+                    expires_at: crate::SystemClock.now().timestamp() + 60,
+                    playback_context: None,
+                },
+                std::time::Duration::from_secs(60),
+            )
+            .await?;
+
+        let provider = BilibiliProvider::new_local_only()?;
+        let action = provider
+            .get_subtitle(Some(&store), "subtitle-test", "proxy_h264", 0, None)
+            .await?;
+
+        let PlaybackTransportAction::FetchAndForward {
+            url,
+            headers,
+            range_header,
+            proxy_strategy,
+        } = action
+        else {
+            anyhow::bail!("Bilibili subtitles must use the full response cache transport");
+        };
+        assert_eq!(url, subtitle_url);
+        assert_eq!(range_header, None);
+        assert_eq!(
+            proxy_strategy,
+            crate::provider::PlaybackResourceProxyStrategy::FullResponseCache
+        );
+        assert_eq!(
+            headers.get("Referer").map(String::as_str),
+            Some("https://www.bilibili.com")
+        );
+        assert!(headers.contains_key("User-Agent"));
+        assert!(
+            !headers
+                .keys()
+                .any(|name| name.eq_ignore_ascii_case("range")),
+            "Bilibili subtitle provider headers must leave Range ownership to the transport layer"
+        );
+        Ok(())
+    }
+
     #[test]
     fn primary_dash_slot_preserves_hevc_only_metadata() {
         let regular = bilibili_upstream::DashInfo {
@@ -5515,6 +5594,7 @@ impl BilibiliProvider {
                     headers
                 },
                 range_header: range_header.map(ToString::to_string),
+                proxy_strategy: super::PlaybackResourceProxyStrategy::SliceCache,
             },
         )
     }
@@ -5622,6 +5702,7 @@ impl BilibiliProvider {
                     url: request.target_url.to_string(),
                     headers,
                     range_header: request.range_header.map(ToString::to_string),
+                    proxy_strategy: super::PlaybackResourceProxyStrategy::SliceCache,
                 },
             )
         }
@@ -5732,6 +5813,7 @@ impl BilibiliProvider {
                     headers
                 },
                 range_header: None,
+                proxy_strategy: super::PlaybackResourceProxyStrategy::FullResponseCache,
             },
         )
     }
@@ -5765,6 +5847,7 @@ impl BilibiliProvider {
                     headers
                 },
                 range_header: None,
+                proxy_strategy: super::PlaybackResourceProxyStrategy::FullResponseCache,
             },
         )
     }

@@ -174,6 +174,7 @@ fn resolve_response(
     shared: bool,
     provider_instance_name: Option<&str>,
 ) -> ResolveResponse {
+    let subtitle_count = u32::try_from(media.metadata.subtitles.len()).unwrap_or(u32::MAX);
     let source = match &media.resource {
         synctv_media_providers::tiktok::TikTokResource::Video { video_id } => {
             synctv_proto::source_config::tik_tok_media_source_config::Source::Video(
@@ -215,23 +216,12 @@ fn resolve_response(
             concurrent_viewers: media.metadata.concurrent_viewers,
             music_title: media.metadata.music_title,
             music_author: media.metadata.music_author,
-            subtitles: media
-                .metadata
-                .subtitles
-                .into_iter()
-                .map(|subtitle| proto::Subtitle {
-                    language: subtitle.language,
-                    format: subtitle.format,
-                    url: subtitle.url,
-                })
-                .collect(),
+            subtitle_count,
         }),
-        room_id: media.room_id,
         variants: media
             .variants
             .into_iter()
             .map(|variant| proto::Variant {
-                url: variant.url,
                 format: match variant.format {
                     TikTokStreamFormat::Mp4 => proto::StreamFormat::Mp4,
                     TikTokStreamFormat::Flv => proto::StreamFormat::Flv,

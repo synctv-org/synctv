@@ -461,8 +461,8 @@ synctv provider bilibili logout --username alice
 RTMP：
 
 ```bash
-synctv provider rtmp create-publish-key --room-id <ROOM_ID> <MEDIA_ID> --username alice
-synctv provider rtmp get-stream-info --room-id <ROOM_ID> <MEDIA_ID>
+synctv room stream publish-key <ROOM_ID> --media-id <MEDIA_ID> --username alice
+synctv room stream get <ROOM_ID> --media-id <MEDIA_ID>
 ```
 
 Provider 服务操作：

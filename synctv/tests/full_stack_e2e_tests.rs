@@ -2137,6 +2137,21 @@ async fn wait_for_room_stream_total(
     .await
 }
 
+async fn wait_for_rtmp_stream_info(
+    server: &TestServer,
+    room_id: &str,
+    media_id: &str,
+    context: &str,
+) -> Value {
+    wait_for_remote_cli_json(
+        server,
+        &["room", "stream", "get", room_id, "--media-id", media_id],
+        context,
+        |response| response["active"].as_bool() == Some(true),
+    )
+    .await
+}
+
 async fn wait_for_system_stream_count(
     server: &TestServer,
     room_id: &str,
@@ -4645,14 +4660,14 @@ async fn full_stack_cli_stream_commands_cover_publish_list_get_and_kick_with_rea
     let publish_key = run_synctv_remote_cli_json(
         &server,
         &[
-            "provider",
-            "rtmp",
-            "create-publish-key",
-            "--room-id",
+            "room",
+            "stream",
+            "publish-key",
             &room_id,
+            "--media-id",
+            &media_id,
             "--username",
             &owner_username,
-            &media_id,
         ],
         "create rtmp publish key",
     )
@@ -4707,19 +4722,8 @@ async fn full_stack_cli_stream_commands_cover_publish_list_get_and_kick_with_rea
     .await;
     assert_eq!(room_streams["total"].as_i64(), Some(1));
 
-    let room_stream_info = run_synctv_remote_cli_json(
-        &server,
-        &[
-            "provider",
-            "rtmp",
-            "get-stream-info",
-            "--room-id",
-            &room_id,
-            &media_id,
-        ],
-        "get rtmp stream info",
-    )
-    .await;
+    let room_stream_info =
+        wait_for_rtmp_stream_info(&server, &room_id, &media_id, "wait for rtmp stream info").await;
     assert_eq!(room_stream_info["active"], true);
     assert_eq!(room_stream_info["publisher"]["userId"], owner_user_id);
 
@@ -4797,14 +4801,7 @@ async fn full_stack_cli_stream_commands_cover_publish_list_get_and_kick_with_rea
 
     let room_stream_info_after_kick = run_synctv_remote_cli_json(
         &server,
-        &[
-            "provider",
-            "rtmp",
-            "get-stream-info",
-            "--room-id",
-            &room_id,
-            &media_id,
-        ],
+        &["room", "stream", "get", &room_id, "--media-id", &media_id],
         "get rtmp stream info after kick",
     )
     .await;
@@ -5049,14 +5046,14 @@ async fn full_stack_public_rtmp_playback_serves_signed_flv_and_hls_over_http() {
     let publish_key = run_synctv_remote_cli_json(
         &server,
         &[
-            "provider",
-            "rtmp",
-            "create-publish-key",
-            "--room-id",
+            "room",
+            "stream",
+            "publish-key",
             &room_id,
+            "--media-id",
+            &media_id,
             "--username",
             &owner_username,
-            &media_id,
         ],
         "create HTTP playback RTMP publish key",
     )
@@ -5090,6 +5087,19 @@ async fn full_stack_public_rtmp_playback_serves_signed_flv_and_hls_over_http() {
         .await
         .expect("real RTMP publisher should connect");
     wait_for_room_stream_total(&server, &room_id, 1).await;
+    publisher
+        .send_video(0, true)
+        .await
+        .expect("send AVC config");
+    publisher.send_audio(0).await.expect("send AAC config");
+    publisher
+        .send_video(1, true)
+        .await
+        .expect("send first keyframe");
+    publisher
+        .send_audio(1)
+        .await
+        .expect("send first audio frame");
 
     run_synctv_remote_cli_json(
         &server,
@@ -5145,34 +5155,15 @@ async fn full_stack_public_rtmp_playback_serves_signed_flv_and_hls_over_http() {
         "FLV signature missing uid",
     )
     .await;
-    let stream_after_rejected_signatures = run_synctv_remote_cli_json(
+    let stream_after_rejected_signatures = wait_for_rtmp_stream_info(
         &server,
-        &[
-            "provider",
-            "rtmp",
-            "get-stream-info",
-            "--room-id",
-            &room_id,
-            &media_id,
-        ],
+        &room_id,
+        &media_id,
         "confirm stream remains active after rejected playback signatures",
     )
     .await;
     assert_eq!(stream_after_rejected_signatures["active"], true);
 
-    publisher
-        .send_video(0, true)
-        .await
-        .expect("send AVC config");
-    publisher.send_audio(0).await.expect("send AAC config");
-    publisher
-        .send_video(1, true)
-        .await
-        .expect("send first keyframe");
-    publisher
-        .send_audio(1)
-        .await
-        .expect("send first audio frame");
     publisher
         .send_video(5_001, false)
         .await
@@ -5508,14 +5499,14 @@ async fn full_stack_cli_management_actor_state_constraints_reject_invalid_room_o
     let banned_publish_key_error = run_synctv_remote_cli_failure(
         &server,
         &[
-            "provider",
-            "rtmp",
-            "create-publish-key",
-            "--room-id",
+            "room",
+            "stream",
+            "publish-key",
             &room_id,
+            "--media-id",
+            &media_id,
             "--username",
             &banned_username,
-            &media_id,
         ],
         "banned actor publish key",
     )
@@ -5542,14 +5533,14 @@ async fn full_stack_cli_management_actor_state_constraints_reject_invalid_room_o
     let creator_banned_room_publish_key_error = run_synctv_remote_cli_failure(
         &server,
         &[
-            "provider",
-            "rtmp",
-            "create-publish-key",
-            "--room-id",
+            "room",
+            "stream",
+            "publish-key",
             &room_id,
+            "--media-id",
+            &media_id,
             "--username",
             &owner_username,
-            &media_id,
         ],
         "media creator publish key in banned room",
     )

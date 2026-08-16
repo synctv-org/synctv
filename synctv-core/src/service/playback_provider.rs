@@ -1,15 +1,14 @@
 use std::sync::Arc;
 
 use crate::models::{MediaId, RoomId, SourceProvider, UserId};
+use crate::provider::ProviderStore;
 use crate::provider::{
     AlistFileStreamRequest, AlistHlsResourceRequest, BilibiliDashResourceRequest,
-    BilibiliHlsResourceRequest, BilibiliProvider, CloudreveHlsResourceRequest,
-    DirectUrlDashResourceRequest, DirectUrlHlsResourceRequest, EmbyHlsResourceRequest,
-    ExecutionControl, HlsResourceRequest, PlaybackTransportAction, ProviderAccessService,
-    ProviderContext, ProviderError, ProviderSet,
+    BilibiliHlsResourceRequest, CloudreveHlsResourceRequest, DirectUrlDashResourceRequest,
+    DirectUrlHlsResourceRequest, EmbyHlsResourceRequest, ExecutionControl, HlsResourceRequest,
+    PlaybackTransportAction, ProviderAccessService, ProviderError, ProviderSet,
 };
 use crate::provider::{LiveFlvAccess, PlaybackTransportServices};
-use crate::provider::{ProviderStore, ProviderStoreResolver};
 
 #[derive(Clone)]
 pub struct AlistPlaybackProviderService {
@@ -269,13 +268,6 @@ impl BilibiliPlaybackProviderService {
             .bilibili
             .get_danmaku_file(Some(&store), version, danmaku_index, request_control)
             .await
-    }
-
-    pub async fn watch_live_danmaku(
-        &self,
-        request: BilibiliLiveDanmakuRequest<'_>,
-    ) -> Result<crate::provider::BilibiliLiveDanmakuStream, ProviderError> {
-        self.runtime.watch_bilibili_live_danmaku(request).await
     }
 }
 
@@ -645,6 +637,21 @@ impl SeafilePlaybackProviderService {
             )
             .await
     }
+
+    pub async fn thumbnail_resource_action(
+        &self,
+        credential_owner_id: UserId,
+        server_id: &str,
+        repository_id: &str,
+        path: &str,
+        size: u32,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .seafile
+            .thumbnail_action(credential_owner_id, server_id, repository_id, path, size)
+            .await
+    }
 }
 
 impl NextcloudPlaybackProviderService {
@@ -730,6 +737,22 @@ impl NextcloudPlaybackProviderService {
                 subtitle_index,
                 request_control,
             )
+            .await
+    }
+
+    pub async fn preview_resource_action(
+        &self,
+        credential_owner_id: UserId,
+        server_id: &str,
+        file_id: u64,
+        width: u32,
+        height: u32,
+        crop: bool,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .nextcloud
+            .thumbnail_action(credential_owner_id, server_id, file_id, width, height, crop)
             .await
     }
 }
@@ -891,6 +914,41 @@ impl SynologyPlaybackProviderService {
             .get_segment(Some(&store), version, target_url, request_control, range)
             .await
     }
+
+    pub async fn file_image_resource_action(
+        &self,
+        credential_owner_id: UserId,
+        server_id: &str,
+        path: &str,
+        size: &str,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .synology
+            .file_thumbnail_action(credential_owner_id, server_id, path, size)
+            .await
+    }
+
+    pub async fn poster_image_resource_action(
+        &self,
+        credential_owner_id: UserId,
+        server_id: &str,
+        item_id: i64,
+        media_type: &str,
+        poster_mtime: Option<&str>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .synology
+            .poster_action(
+                credential_owner_id,
+                server_id,
+                item_id,
+                media_type,
+                poster_mtime,
+            )
+            .await
+    }
 }
 
 impl QnapPlaybackProviderService {
@@ -991,6 +1049,20 @@ impl QnapPlaybackProviderService {
             .get_thumbnail(Some(&store), version, request_control)
             .await
     }
+
+    pub async fn thumbnail_resource_action(
+        &self,
+        credential_owner_id: UserId,
+        server_id: &str,
+        path: &str,
+        size: u32,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .qnap
+            .thumbnail_action(credential_owner_id, server_id, path, size)
+            .await
+    }
 }
 
 impl FnosPlaybackProviderService {
@@ -1074,6 +1146,20 @@ impl FnosPlaybackProviderService {
             .providers
             .fnos
             .get_thumbnail(Some(&store), version, request_control)
+            .await
+    }
+
+    pub async fn image_resource_action(
+        &self,
+        credential_owner_id: UserId,
+        server_id: &str,
+        image_path: &str,
+        width: u32,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        self.runtime
+            .providers
+            .fnos
+            .image_action(credential_owner_id, server_id, image_path, width)
             .await
     }
 }
@@ -1700,6 +1786,29 @@ impl EmbyPlaybackProviderService {
             )
             .await
     }
+
+    pub async fn thumbnail_resource_action(
+        &self,
+        credential_owner_id: UserId,
+        server_id: &str,
+        item_id: &str,
+        max_height: u32,
+        max_width: u32,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<PlaybackTransportAction, ProviderError> {
+        let access = self
+            .runtime
+            .provider_access_service
+            .emby_access(credential_owner_id, server_id, None, request_control)
+            .await?;
+        crate::provider::EmbyProvider::thumbnail_action(
+            item_id,
+            &access.host,
+            &access.api_key,
+            max_height,
+            max_width,
+        )
+    }
 }
 
 #[derive(Clone)]
@@ -1877,7 +1986,6 @@ impl LiveProxyPlaybackProviderService {
 #[derive(Clone)]
 struct PlaybackProviderRuntime {
     providers: ProviderSet,
-    provider_stores: Arc<dyn ProviderStoreResolver>,
     playback_transport_services: Arc<PlaybackTransportServices>,
     provider_access_service: Arc<dyn ProviderAccessService>,
 }
@@ -1886,151 +1994,15 @@ impl PlaybackProviderRuntime {
     fn new(deps: PlaybackProviderServiceDeps) -> Self {
         Self {
             providers: deps.providers,
-            provider_stores: deps.provider_stores,
             playback_transport_services: deps.playback_transport_services,
             provider_access_service: deps.provider_access_service,
         }
-    }
-
-    async fn watch_bilibili_live_danmaku(
-        &self,
-        request: BilibiliLiveDanmakuRequest<'_>,
-    ) -> Result<crate::provider::BilibiliLiveDanmakuStream, ProviderError> {
-        let media = self
-            .playback_transport_services
-            .room_service
-            .media_service()
-            .get_media(&request.media_id)
-            .await
-            .map_err(core_error_to_provider_error)?
-            .ok_or(ProviderError::NotFound)?;
-        if media.source_provider != SourceProvider::Bilibili {
-            return Err(ProviderError::InvalidConfig(
-                "Bilibili live danmaku requires Bilibili media".to_string(),
-            ));
-        }
-        self.playback_transport_services
-            .room_service
-            .check_membership(&media.room_id, &request.actor_user_id)
-            .await
-            .map_err(membership_error_to_provider_error)?;
-        self.playback_transport_services
-            .permission_service
-            .check_permission(
-                &media.room_id,
-                &request.actor_user_id,
-                crate::models::RoomPermission::BROWSE_LIBRARY,
-            )
-            .await
-            .map_err(core_error_to_provider_error)?;
-        let provider = self
-            .playback_transport_services
-            .room_service
-            .media_service()
-            .providers_manager()
-            .resolve_provider(
-                SourceProvider::Bilibili,
-                media.provider_instance_name.as_deref(),
-            )
-            .await
-            .map_err(core_error_to_provider_error)?;
-        let live_danmaku_provider =
-            provider
-                .as_bilibili_live_danmaku_provider()
-                .ok_or_else(|| {
-                    ProviderError::ApiError(
-                        "Bilibili provider does not expose live danmaku".to_string(),
-                    )
-                })?;
-        let credential_owner_id = media.creator_id.unwrap_or(request.actor_user_id);
-        let mut ctx = ProviderContext::new(
-            "playback-provider",
-            crate::provider::ProviderActor::User(request.actor_user_id),
-        )
-        .with_credential_owner_id(credential_owner_id)
-        .with_room_id(media.room_id)
-        .with_media_id(media.id)
-        .with_provider_access_service(self.provider_access_service.clone())
-        .with_store(self.provider_stores.load(BilibiliProvider::NAME))
-        .with_request_context(request.request_control.map(ExecutionControl::child));
-        if let Some(provider_instance_name) = media.provider_instance_name.as_deref() {
-            ctx = ctx.with_provider_instance_name(provider_instance_name);
-        }
-        if let Some(repo) = self
-            .playback_transport_services
-            .room_service
-            .media_service()
-            .credential_repo()
-        {
-            ctx = ctx.with_credential_repo(repo.as_ref());
-        }
-        if let Some(enc) = self
-            .playback_transport_services
-            .room_service
-            .media_service()
-            .credential_encryption()
-        {
-            ctx = ctx.with_credential_encryption(enc);
-        }
-        live_danmaku_provider
-            .watch_bilibili_live_danmaku(&ctx, &media.source_config)
-            .await
     }
 }
 
 #[derive(Clone)]
 pub struct PlaybackProviderServiceDeps {
     pub providers: ProviderSet,
-    pub provider_stores: Arc<dyn ProviderStoreResolver>,
     pub playback_transport_services: Arc<PlaybackTransportServices>,
     pub provider_access_service: Arc<dyn ProviderAccessService>,
-}
-
-pub struct BilibiliLiveDanmakuRequest<'a> {
-    pub media_id: MediaId,
-    pub actor_user_id: UserId,
-    pub request_control: Option<&'a ExecutionControl>,
-}
-
-fn membership_error_to_provider_error(error: crate::Error) -> ProviderError {
-    match error {
-        crate::Error::KickCooldownDenied => {
-            ProviderError::Authentication(crate::Error::kick_cooldown_denied_message().to_string())
-        }
-        crate::Error::Authorization(_) => ProviderError::Authentication(
-            synctv_common::messages::NOT_A_MEMBER_OF_THIS_ROOM.to_string(),
-        ),
-        other => core_error_to_provider_error(other),
-    }
-}
-
-fn core_error_to_provider_error(error: crate::Error) -> ProviderError {
-    match error {
-        crate::Error::KickCooldownDenied => {
-            ProviderError::Authentication(crate::Error::kick_cooldown_denied_message().to_string())
-        }
-        crate::Error::Authentication(message) | crate::Error::Authorization(message) => {
-            ProviderError::Authentication(message)
-        }
-        crate::Error::NotFound(_) => ProviderError::NotFound,
-        crate::Error::InvalidInput(message) => ProviderError::InvalidConfig(message),
-        crate::Error::RangeNotSatisfiable { total_size } => {
-            ProviderError::InvalidConfig(format!("Range not satisfiable: total size {total_size}"))
-        }
-        crate::Error::RateLimited(message) => ProviderError::ApiError(message),
-        crate::Error::ServiceUnavailable(message) | crate::Error::Timeout(message) => {
-            ProviderError::NetworkError(message)
-        }
-        crate::Error::Internal(message)
-        | crate::Error::AlreadyExists(message)
-        | crate::Error::Conflict(message)
-        | crate::Error::LockConflict(message) => ProviderError::Internal(message),
-        crate::Error::Serialization(error) => ProviderError::Internal(error.to_string()),
-        crate::Error::Deserialization { context } => ProviderError::Internal(context),
-        crate::Error::Database(error) => ProviderError::Internal(error.to_string()),
-        crate::Error::Redis(error) => ProviderError::Internal(error.to_string()),
-        crate::Error::OptimisticLockConflict => {
-            ProviderError::Internal("Optimistic lock conflict".to_string())
-        }
-    }
 }

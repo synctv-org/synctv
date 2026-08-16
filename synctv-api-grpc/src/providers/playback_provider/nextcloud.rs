@@ -6,8 +6,9 @@ use futures::FutureExt;
 use std::sync::Arc;
 use synctv_proto::playback_provider::nextcloud::nextcloud_playback_provider_service_server::NextcloudPlaybackProviderService;
 use synctv_proto::playback_provider::nextcloud::{
-    GetNextcloudHlsManifestRequest, GetNextcloudHlsResourceRequest, GetNextcloudResourceRequest,
-    GetNextcloudSubtitleRequest, NextcloudHlsManifestResponse, NextcloudHlsResourceResponse,
+    GetNextcloudHlsManifestRequest, GetNextcloudHlsResourceRequest,
+    GetNextcloudPreviewResourceRequest, GetNextcloudResourceRequest, GetNextcloudSubtitleRequest,
+    NextcloudHlsManifestResponse, NextcloudHlsResourceResponse, NextcloudPreviewResourceResponse,
     NextcloudResourceResponse, NextcloudSubtitleResponse,
 };
 use tonic::{Request, Response, Status};
@@ -38,6 +39,7 @@ impl NextcloudPlaybackProviderService for NextcloudPlaybackProviderGrpcService {
     type GetHlsManifestStream = GrpcResponseStream<NextcloudHlsManifestResponse>;
     type GetHlsResourceStream = GrpcResponseStream<NextcloudHlsResourceResponse>;
     type GetSubtitleStream = GrpcResponseStream<NextcloudSubtitleResponse>;
+    type GetPreviewResourceStream = GrpcResponseStream<NextcloudPreviewResourceResponse>;
     async fn get_resource(
         &self,
         request: Request<GetNextcloudResourceRequest>,
@@ -112,6 +114,27 @@ impl NextcloudPlaybackProviderService for NextcloudPlaybackProviderGrpcService {
             let state = state.clone();
             async move {
                 synctv_api_common::playback_provider::nextcloud::get_nextcloud_subtitle(
+                    deps(&state, Some(&control)),
+                    req,
+                )
+                .await
+            }
+            .boxed()
+        })
+        .await
+    }
+
+    async fn get_preview_resource(
+        &self,
+        request: Request<GetNextcloudPreviewResourceRequest>,
+    ) -> Result<Response<Self::GetPreviewResourceStream>, Status> {
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
+        let req = request.into_inner();
+        let state = self.state.clone();
+        execute_playback_provider_stream(state.clone(), metadata, move |control| {
+            let state = state.clone();
+            async move {
+                synctv_api_common::playback_provider::nextcloud::get_nextcloud_preview_resource(
                     deps(&state, Some(&control)),
                     req,
                 )

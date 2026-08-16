@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Query, RawQuery, State},
+    extract::{Query, State},
     routing::{get, post},
     Json, Router,
 };
@@ -18,22 +18,12 @@ use synctv_proto::providers::qnap::{
 };
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ThumbnailQuery {
     server_id: String,
-    #[serde(default)]
-    credential_owner_id: Option<String>,
     path: String,
     #[serde(default = "default_size")]
     size: u32,
-    #[serde(default, rename = "sig")]
-    _sig: Option<String>,
-    #[serde(default, rename = "uid")]
-    _uid: Option<String>,
-    #[serde(default, rename = "rid")]
-    _rid: Option<String>,
-    #[serde(default, rename = "exp")]
-    _exp: Option<i64>,
 }
 
 const fn default_size() -> u32 {
@@ -208,7 +198,6 @@ pub(crate) async fn binds(
         tag = "Provider",
         params(
             ("serverId" = String, Query),
-            ("credentialOwnerId" = Option<String>, Query),
             ("path" = String, Query),
             ("size" = u32, Query)
         ),
@@ -220,23 +209,12 @@ pub(crate) async fn thumbnail(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Query(query): Query<ThumbnailQuery>,
-    RawQuery(raw_query): RawQuery,
 ) -> AppResult<axum::response::Response> {
-    let server_id = query.server_id.trim().to_string();
-    let path = query.path.trim().to_string();
-    let requested_owner = query
-        .credential_owner_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
-    if server_id.is_empty() || path.is_empty() {
-        return Err(crate::http::AppError::bad_request(
-            "QNAP thumbnail parameters must not be empty",
-        ));
-    }
-    let size = query.size.clamp(1, 640);
-    let raw_query = raw_query.unwrap_or_default();
+    let req = synctv_proto::providers::qnap::GetThumbnailRequest {
+        server_id: query.server_id,
+        path: query.path,
+        size: query.size,
+    };
     let operation_state = state.clone();
     let metadata = provider_request_metadata(request_meta);
     let action = state
@@ -247,63 +225,14 @@ pub(crate) async fn thumbnail(
             EndpointRateLimitCategory::Read,
             move |auth| async move {
                 let state = operation_state;
-                let public_user = state
-                    .shared_api_runtime
-                    .public_id_codec
-                    .encode_user_id(auth.user_id())
-                    .map_err(synctv_api_common::impls::ApiError::Internal)?;
-                let public_owner = requested_owner
-                    .clone()
-                    .unwrap_or_else(|| public_user.clone());
-                let signed =
-                    url::form_urlencoded::parse(raw_query.as_bytes()).any(|(key, _)| key == "sig");
-                if signed || public_owner != public_user {
-                    let room_id = synctv_api_common::qnap_thumbnail_urls::verify_qnap_thumbnail_access(
-                        &state.shared_api_runtime.proxy_signing_key,
-                        &public_user,
-                        &raw_query,
-                        synctv_api_common::qnap_thumbnail_urls::QnapThumbnailScope {
-                            server_id: &server_id,
-                            credential_owner_id: &public_owner,
-                            path: &path,
-                            size,
-                        },
-                    )
-                    .map_err(|error| match error {
-                        synctv_api_common::qnap_thumbnail_urls::QnapThumbnailAccessError::Invalid => {
-                            synctv_api_common::impls::ApiError::Authentication(
-                                "Invalid QNAP thumbnail signature".to_string(),
-                            )
-                        }
-                        synctv_api_common::qnap_thumbnail_urls::QnapThumbnailAccessError::WrongUser => {
-                            synctv_api_common::impls::ApiError::Authorization(
-                                "QNAP thumbnail URL is scoped to another user".to_string(),
-                            )
-                        }
-                    })?;
-                    let room_id = state
-                        .shared_api_runtime
-                        .public_id_codec
-                        .decode_room_id(&room_id)
-                        .map_err(synctv_api_common::impls::ApiError::InvalidInput)?;
-                    super::playback_provider::playback_provider_api_runtime(&state)
-                        .validate_fresh_access(&room_id, &auth.user_id())
-                        .await?;
-                }
-                let owner = state
-                    .shared_api_runtime
-                    .public_id_codec
-                    .decode_user_id(&public_owner)
-                    .map_err(synctv_api_common::impls::ApiError::InvalidInput)?;
                 state
                     .shared_api_runtime
                     .qnap_api
-                    .thumbnail_action(owner, &server_id, &path, size)
+                    .thumbnail_action(auth.user_id(), req)
                     .await
-                    .map_err(synctv_api_common::impls::ApiError::from)
             },
         )
         .await
         .map_err(crate::http::error::map_api_error)?;
-    super::execute_playback_transport_with_state(&state, action, None).await
+    super::execute_provider_preview_transport(&state, action, None).await
 }

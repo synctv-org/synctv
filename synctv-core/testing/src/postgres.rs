@@ -1006,6 +1006,26 @@ async fn test_database_has_active_connections(
     .await
 }
 
+async fn acquire_test_database_ddl_lock(
+    admin_connection: &mut PgConnection,
+) -> Result<(), sqlx::Error> {
+    loop {
+        let acquired = sqlx::query_scalar!(
+            "SELECT pg_try_advisory_lock($1) AS \"acquired!\"",
+            TEST_DATABASE_DDL_LOCK_KEY,
+        )
+        .fetch_one(&mut *admin_connection)
+        .await?;
+        if acquired {
+            return Ok(());
+        }
+
+        // A backend blocked inside pg_advisory_lock may not acknowledge the
+        // process barrier used by concurrent CREATE/DROP DATABASE on Postgres 18.
+        tokio::time::sleep(TEST_DATABASE_CLEANUP_RETRY_INTERVAL).await;
+    }
+}
+
 async fn try_drop_test_database_if_idle(
     shared: &SharedPostgresServer,
     database_name: &str,
@@ -1024,9 +1044,7 @@ async fn try_drop_test_database_if_idle(
         return Ok(false);
     }
 
-    sqlx::query("SELECT pg_advisory_lock($1)")
-        .bind(TEST_DATABASE_DDL_LOCK_KEY)
-        .execute(&mut admin_connection)
+    acquire_test_database_ddl_lock(&mut admin_connection)
         .await
         .map_err(|error| format!("failed to acquire the database DDL lock: {error}"))?;
 
@@ -1278,9 +1296,7 @@ async fn provision_test_database(requested_db_name: &str, label: &str) -> TestCo
         .await
         .expect("direct postgres admin connection for template clone should succeed");
 
-    sqlx::query("SELECT pg_advisory_lock($1)")
-        .bind(TEST_DATABASE_DDL_LOCK_KEY)
-        .execute(&mut admin_connection)
+    acquire_test_database_ddl_lock(&mut admin_connection)
         .await
         .expect("test database DDL lock should be acquired");
     let create_result = sqlx::query(trusted_dynamic_sql(create_sql))

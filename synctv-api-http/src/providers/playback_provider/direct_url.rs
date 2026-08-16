@@ -21,6 +21,7 @@ use crate::providers::playback_provider::transport::{
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DirectUrlIndexedPath {
+    pub room_id: String,
     pub version: String,
     pub mode_name: String,
     pub url_index: u32,
@@ -29,6 +30,7 @@ pub struct DirectUrlIndexedPath {
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DirectUrlSubtitlePath {
+    pub room_id: String,
     pub version: String,
     pub mode_name: String,
     pub subtitle_index: u32,
@@ -37,6 +39,7 @@ pub struct DirectUrlSubtitlePath {
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DirectUrlManifestResourcePath {
+    pub room_id: String,
     pub version: String,
     pub mode_name: String,
     pub url_index: u32,
@@ -46,13 +49,13 @@ pub struct DirectUrlManifestResourcePath {
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DirectUrlDashResourcePath {
+    pub room_id: String,
     pub version: String,
     pub mode_name: String,
     pub url_index: u32,
     pub resource_kind: String,
     pub scope: String,
     pub uid: String,
-    pub rid: String,
     pub exp: i64,
     pub sig: String,
     #[serde(default)]
@@ -99,15 +102,15 @@ impl PlaybackProviderHttpResponse for DirectUrlSubtitleResponse {
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/direct-url/{version}/streams/{modeName}/{urlIndex}",
+        path = "/api/playback-providers/{roomId}/direct-url/{version}/streams/{modeName}/{urlIndex}",
         tag = "DirectUrl Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path),
             ("modeName" = String, Path),
             ("urlIndex" = u32, Path),
             ("sig" = String, Query),
             ("uid" = String, Query),
-            ("rid" = String, Query),
             ("exp" = i64, Query)
         ),
         responses(
@@ -138,15 +141,15 @@ pub fn get_direct_url_stream(
     feature = "openapi",
     utoipa::path(
         head,
-        path = "/api/playback-providers/direct-url/{version}/streams/{modeName}/{urlIndex}",
+        path = "/api/playback-providers/{roomId}/direct-url/{version}/streams/{modeName}/{urlIndex}",
         tag = "DirectUrl Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path),
             ("modeName" = String, Path),
             ("urlIndex" = u32, Path),
             ("sig" = String, Query),
             ("uid" = String, Query),
-            ("rid" = String, Query),
             ("exp" = i64, Query)
         ),
         responses(
@@ -181,8 +184,8 @@ async fn direct_url_stream(
     query_string: String,
     method: Method,
 ) -> AppResult<axum::response::Response> {
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetDirectUrlStreamRequest {
         version: path.version,
         mode_name: path.mode_name,
@@ -218,15 +221,15 @@ async fn direct_url_stream(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/direct-url/{version}/hls-manifests/{modeName}/{urlIndex}",
+        path = "/api/playback-providers/{roomId}/direct-url/{version}/hls-manifests/{modeName}/{urlIndex}",
         tag = "DirectUrl Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path),
             ("modeName" = String, Path),
             ("urlIndex" = u32, Path),
             ("sig" = String, Query),
             ("uid" = String, Query),
-            ("rid" = String, Query),
             ("exp" = i64, Query)
         ),
         responses(
@@ -243,8 +246,8 @@ pub async fn get_direct_url_hls_manifest(
     raw_query: RawQuery,
 ) -> AppResult<axum::response::Response> {
     let query_string = query(raw_query);
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetDirectUrlHlsManifestRequest {
         version: path.version,
         mode_name: path.mode_name,
@@ -278,9 +281,10 @@ pub async fn get_direct_url_hls_manifest(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/direct-url/{version}/hls-resources/{modeName}/{urlIndex}/{resourceKind}",
+        path = "/api/playback-providers/{roomId}/direct-url/{version}/hls-resources/{modeName}/{urlIndex}/{resourceKind}",
         tag = "DirectUrl Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path),
             ("modeName" = String, Path),
             ("urlIndex" = u32, Path),
@@ -288,7 +292,6 @@ pub async fn get_direct_url_hls_manifest(
             ("targetUrl" = String, Query),
             ("sig" = String, Query),
             ("uid" = String, Query),
-            ("rid" = String, Query),
             ("exp" = i64, Query)
         ),
         responses(
@@ -319,9 +322,10 @@ pub fn get_direct_url_hls_resource(
     feature = "openapi",
     utoipa::path(
         head,
-        path = "/api/playback-providers/direct-url/{version}/hls-resources/{modeName}/{urlIndex}/{resourceKind}",
+        path = "/api/playback-providers/{roomId}/direct-url/{version}/hls-resources/{modeName}/{urlIndex}/{resourceKind}",
         tag = "DirectUrl Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path),
             ("modeName" = String, Path),
             ("urlIndex" = u32, Path),
@@ -329,7 +333,6 @@ pub fn get_direct_url_hls_resource(
             ("targetUrl" = String, Query),
             ("sig" = String, Query),
             ("uid" = String, Query),
-            ("rid" = String, Query),
             ("exp" = i64, Query)
         ),
         responses(
@@ -364,8 +367,8 @@ async fn direct_url_hls_resource(
     query_string: String,
     method: Method,
 ) -> AppResult<axum::response::Response> {
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetDirectUrlHlsResourceRequest {
         version: path.version,
         target_url: target_url(&query_string).map_err(crate::http::error::map_api_error)?,
@@ -403,15 +406,15 @@ async fn direct_url_hls_resource(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/direct-url/{version}/dash-manifests/{modeName}/{urlIndex}",
+        path = "/api/playback-providers/{roomId}/direct-url/{version}/dash-manifests/{modeName}/{urlIndex}",
         tag = "DirectUrl Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path),
             ("modeName" = String, Path),
             ("urlIndex" = u32, Path),
             ("sig" = String, Query),
             ("uid" = String, Query),
-            ("rid" = String, Query),
             ("exp" = i64, Query)
         ),
         responses((status = 200, description = "DirectUrl DASH manifest"))
@@ -424,8 +427,8 @@ pub async fn get_direct_url_dash_manifest(
     raw_query: RawQuery,
 ) -> AppResult<axum::response::Response> {
     let query_string = query(raw_query);
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetDirectUrlDashManifestRequest {
         version: path.version,
         mode_name: path.mode_name,
@@ -459,16 +462,17 @@ pub async fn get_direct_url_dash_manifest(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/direct-url/{version}/dash-resources/{modeName}/{urlIndex}/{resourceKind}/{scope}/{uid}/{rid}/{exp}/{sig}/{resourcePath}",
+        path = "/api/playback-providers/{roomId}/direct-url/{version}/dash-resources/{modeName}/{urlIndex}/{resourceKind}/{scope}/{uid}/{exp}/{sig}/{resourcePath}",
         tag = "DirectUrl Playback Provider",
         params(
+           ("roomId" = String, Path),
+            ("roomId" = String, Path),
             ("version" = String, Path),
             ("modeName" = String, Path),
             ("urlIndex" = u32, Path),
             ("resourceKind" = String, Path),
             ("scope" = String, Path),
             ("uid" = String, Path),
-            ("rid" = String, Path),
             ("exp" = i64, Path),
             ("sig" = String, Path),
             ("resourcePath" = String, Path),
@@ -504,16 +508,17 @@ pub fn get_direct_url_dash_resource(
     feature = "openapi",
     utoipa::path(
         head,
-        path = "/api/playback-providers/direct-url/{version}/dash-resources/{modeName}/{urlIndex}/{resourceKind}/{scope}/{uid}/{rid}/{exp}/{sig}/{resourcePath}",
+        path = "/api/playback-providers/{roomId}/direct-url/{version}/dash-resources/{modeName}/{urlIndex}/{resourceKind}/{scope}/{uid}/{exp}/{sig}/{resourcePath}",
         tag = "DirectUrl Playback Provider",
         params(
+           ("roomId" = String, Path),
+            ("roomId" = String, Path),
             ("version" = String, Path),
             ("modeName" = String, Path),
             ("urlIndex" = u32, Path),
             ("resourceKind" = String, Path),
             ("scope" = String, Path),
             ("uid" = String, Path),
-            ("rid" = String, Path),
             ("exp" = i64, Path),
             ("sig" = String, Path),
             ("resourcePath" = String, Path),
@@ -575,7 +580,7 @@ async fn direct_url_dash_resource(
         resource_kind: manifest_resource_kind(&path.resource_kind)?,
         sig: path.sig,
         uid: path.uid,
-        rid: path.rid,
+        rid: path.room_id,
         exp: path.exp,
         range: range_header(&headers).map_err(crate::http::error::map_api_error)?,
         head: method == Method::HEAD,
@@ -616,15 +621,15 @@ fn manifest_resource_kind(value: &str) -> AppResult<i32> {
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/direct-url/{version}/subtitles/{modeName}/{subtitleIndex}",
+        path = "/api/playback-providers/{roomId}/direct-url/{version}/subtitles/{modeName}/{subtitleIndex}",
         tag = "DirectUrl Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path),
             ("modeName" = String, Path),
             ("subtitleIndex" = u32, Path),
             ("sig" = String, Query),
             ("uid" = String, Query),
-            ("rid" = String, Query),
             ("exp" = i64, Query)
         ),
         responses(
@@ -641,8 +646,8 @@ pub async fn get_direct_url_subtitle(
     raw_query: RawQuery,
 ) -> AppResult<axum::response::Response> {
     let query_string = query(raw_query);
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetDirectUrlSubtitleRequest {
         version: path.version,
         mode_name: path.mode_name,

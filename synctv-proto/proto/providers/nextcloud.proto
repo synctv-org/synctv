@@ -109,3 +109,11 @@ message BindInfo {
 message GetBindsResponse {
   repeated BindInfo binds = 1;
 }
+
+message GetPreviewRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  uint64 file_id = 2 [(buf.validate.field).uint64.gt = 0];
+  uint32 width = 3 [(buf.validate.field).uint32.lte = 2048];
+  uint32 height = 4 [(buf.validate.field).uint32.lte = 2048];
+  optional bool crop = 5;
+}

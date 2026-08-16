@@ -536,6 +536,33 @@ pub(super) async fn execute_room(room_command: RoomCommand) -> Result<()> {
                 )?;
                 args.room.remote.print_output(&response)
             }
+            RoomStreamSubcommand::PublishKey(args) => {
+                let session = connect_remote_access(&args.room.remote).await?;
+                let response = management_unary_call!(
+                    session,
+                    "create room stream publish key",
+                    create_publish_key,
+                    management_proto::CreatePublishKeyRequest {
+                        actor: Some(args.actor.to_management_proto()?),
+                        room_id: args.room.room_id,
+                        media_id: args.media_id,
+                    }
+                )?;
+                args.room.remote.print_output(&response)
+            }
+            RoomStreamSubcommand::Get(args) => {
+                let session = connect_remote_access(&args.room.remote).await?;
+                let response = management_unary_call!(
+                    session,
+                    "get room stream info",
+                    get_stream_info,
+                    management_proto::GetStreamInfoRequest {
+                        room_id: args.room.room_id,
+                        media_id: args.media_id,
+                    }
+                )?;
+                args.room.remote.print_output(&response)
+            }
             RoomStreamSubcommand::Kick(args) => {
                 let session = connect_remote_access(&args.room.remote).await?;
                 let response = management_unary_call!(

@@ -3,7 +3,6 @@ syntax = "proto3";
 package synctv.provider.acfun;
 
 import "proto/buf/validate/validate.proto";
-import "proto/source_config.proto";
 import "proto/providers/common.proto";
 
 enum ResourceKind {
@@ -47,14 +46,13 @@ message Metadata {
 
 message Quality {
   string name = 1;
-  string url = 2;
-  StreamFormat format = 3;
-  optional uint64 bitrate = 4;
-  optional uint32 width = 5;
-  optional uint32 height = 6;
-  optional uint32 fps = 7;
-  optional string codec = 8;
-  optional string quality_type = 9;
+  StreamFormat format = 2;
+  optional uint64 bitrate = 3;
+  optional uint32 width = 4;
+  optional uint32 height = 5;
+  optional uint32 fps = 6;
+  optional string codec = 7;
+  optional string quality_type = 8;
 }
 
 message ResolveResponse {

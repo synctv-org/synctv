@@ -3,8 +3,9 @@ use std::sync::Arc;
 use futures::FutureExt;
 use synctv_proto::playback_provider::fnos::fnos_playback_provider_service_server::FnosPlaybackProviderService;
 use synctv_proto::playback_provider::fnos::{
-    FnosResourceResponse, FnosSegmentResponse, FnosSubtitleResponse, FnosThumbnailResponse,
-    GetFnosResourceRequest, GetFnosSegmentRequest, GetFnosSubtitleRequest, GetFnosThumbnailRequest,
+    FnosImageResourceResponse, FnosResourceResponse, FnosSegmentResponse, FnosSubtitleResponse,
+    FnosThumbnailResponse, GetFnosImageResourceRequest, GetFnosResourceRequest,
+    GetFnosSegmentRequest, GetFnosSubtitleRequest, GetFnosThumbnailRequest,
 };
 use tonic::{Request, Response, Status};
 
@@ -39,6 +40,7 @@ impl FnosPlaybackProviderService for FnosPlaybackProviderGrpcService {
     type GetSegmentStream = GrpcResponseStream<FnosSegmentResponse>;
     type GetSubtitleStream = GrpcResponseStream<FnosSubtitleResponse>;
     type GetThumbnailStream = GrpcResponseStream<FnosThumbnailResponse>;
+    type GetImageResourceStream = GrpcResponseStream<FnosImageResourceResponse>;
 
     async fn get_resource(
         &self,
@@ -114,6 +116,27 @@ impl FnosPlaybackProviderService for FnosPlaybackProviderGrpcService {
             let state = state.clone();
             async move {
                 synctv_api_common::playback_provider::fnos::get_fnos_thumbnail(
+                    fnos_deps(&state, Some(&request_control)),
+                    req,
+                )
+                .await
+            }
+            .boxed()
+        })
+        .await
+    }
+
+    async fn get_image_resource(
+        &self,
+        request: Request<GetFnosImageResourceRequest>,
+    ) -> Result<Response<Self::GetImageResourceStream>, Status> {
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
+        let req = request.into_inner();
+        let state = self.state.clone();
+        execute_playback_provider_stream(state.clone(), metadata, move |request_control| {
+            let state = state.clone();
+            async move {
+                synctv_api_common::playback_provider::fnos::get_fnos_image_resource(
                     fnos_deps(&state, Some(&request_control)),
                     req,
                 )

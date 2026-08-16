@@ -1671,6 +1671,7 @@ mod tests {
                 playlist_id: "playlist-1".into(),
                 name: "a".repeat(256),
                 description: String::new(),
+                source_config: None,
             })
             .unwrap_err(),
         );

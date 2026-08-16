@@ -1456,7 +1456,7 @@ impl SeafileProvider {
             .client
             .download_url(&auth.token, &subtitle.repository_id, &subtitle.path)
             .await?;
-        super::playback_transport::transport_action_for_target_url(
+        super::playback_transport::full_response_cache_action_for_target_url(
             url.to_string(),
             HashMap::new(),
             None,

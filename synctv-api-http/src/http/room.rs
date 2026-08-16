@@ -1,7 +1,7 @@
 use super::{middleware::RequestMetadata, AppResult, AppState};
 
 mod chat;
-mod execute;
+pub(crate) mod execute;
 mod lifecycle;
 mod media;
 mod members;
@@ -77,8 +77,7 @@ pub(crate) use playback::{
 };
 pub(crate) use playback::{
     get_playback, list_playback_history, play_history_entry, play_next, play_previous,
-    start_playback, stop_playback, update_playback_state, watch_bilibili_dynamic_live_danmaku,
-    watch_bilibili_live_danmaku, watch_playback, watch_playback_state,
+    start_playback, stop_playback, update_playback_state, watch_playback, watch_playback_state,
 };
 #[cfg(feature = "openapi")]
 pub(crate) use playlists::{
@@ -120,9 +119,12 @@ pub(crate) use settings::{
 };
 #[cfg(feature = "openapi")]
 pub(crate) use streams::{
-    __path_get_room_stream_info, __path_kick_room_stream, __path_list_room_streams,
+    __path_create_room_publish_key, __path_get_room_stream_info, __path_kick_room_stream,
+    __path_list_room_streams,
 };
-pub(crate) use streams::{get_room_stream_info, kick_room_stream, list_room_streams};
+pub(crate) use streams::{
+    create_room_publish_key, get_room_stream_info, kick_room_stream, list_room_streams,
+};
 #[cfg(test)]
 pub(crate) use types::{
     ChatAttachmentObjectQuery, MediaCoverObjectQuery, MediaThumbnailObjectQuery,

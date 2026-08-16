@@ -1,12 +1,13 @@
 use axum::{
-    extract::{Path, RawQuery, State},
+    extract::{Path, Query, RawQuery, State},
     http::{HeaderMap, Method},
 };
 use futures::FutureExt;
 use synctv_proto::playback_provider::nextcloud::{
-    GetNextcloudHlsManifestRequest, GetNextcloudHlsResourceRequest, GetNextcloudResourceRequest,
-    GetNextcloudSubtitleRequest, NextcloudHlsManifestResponse, NextcloudHlsResourceKind,
-    NextcloudHlsResourceResponse, NextcloudResourceResponse, NextcloudSubtitleResponse,
+    GetNextcloudHlsManifestRequest, GetNextcloudHlsResourceRequest,
+    GetNextcloudPreviewResourceRequest, GetNextcloudResourceRequest, GetNextcloudSubtitleRequest,
+    NextcloudHlsManifestResponse, NextcloudHlsResourceKind, NextcloudHlsResourceResponse,
+    NextcloudPreviewResourceResponse, NextcloudResourceResponse, NextcloudSubtitleResponse,
 };
 
 use crate::http::{middleware::RequestMetadata, AppResult, AppState};
@@ -18,6 +19,7 @@ use crate::providers::playback_provider::transport::{
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NextcloudResourcePath {
+    pub room_id: String,
     pub version: String,
     pub mode_name: String,
     pub media_index: u32,
@@ -26,6 +28,7 @@ pub struct NextcloudResourcePath {
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NextcloudHlsResourcePath {
+    pub room_id: String,
     pub version: String,
     pub mode_name: String,
     pub media_index: u32,
@@ -35,9 +38,24 @@ pub struct NextcloudHlsResourcePath {
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NextcloudSubtitlePath {
+    pub room_id: String,
     pub version: String,
     pub mode_name: String,
     pub subtitle_index: u32,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NextcloudPreviewResourceQuery {
+    pub server_id: String,
+    pub credential_owner_id: String,
+    pub file_id: u64,
+    pub width: u32,
+    pub height: u32,
+    pub crop: bool,
+    pub sig: String,
+    pub uid: String,
+    pub exp: i64,
 }
 
 impl PlaybackProviderHttpResponse for NextcloudResourceResponse {
@@ -64,7 +82,13 @@ impl PlaybackProviderHttpResponse for NextcloudSubtitleResponse {
     }
 }
 
-#[cfg_attr(feature = "openapi", utoipa::path(get, path = "/api/playback-providers/nextcloud/{version}/resources/{modeName}/{mediaIndex}", tag = "Nextcloud Playback Provider", params(("version" = String, Path), ("modeName" = String, Path), ("mediaIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)), responses((status = 200, description = "Nextcloud media resource"))))]
+impl PlaybackProviderHttpResponse for NextcloudPreviewResourceResponse {
+    fn chunk(self) -> Option<synctv_proto::playback_provider::common::StreamChunk> {
+        self.chunk
+    }
+}
+
+#[cfg_attr(feature = "openapi", utoipa::path(get, path = "/api/playback-providers/{roomId}/nextcloud/{version}/resources/{modeName}/{mediaIndex}", tag = "Nextcloud Playback Provider", params(("roomId" = String, Path), ("version" = String, Path), ("modeName" = String, Path), ("mediaIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("exp" = i64, Query)), responses((status = 200, description = "Nextcloud media resource"))))]
 pub fn get_nextcloud_resource(
     Path(path): Path<NextcloudResourcePath>,
     State(state): State<AppState>,
@@ -107,8 +131,8 @@ async fn resource(
     query_string: String,
     method: Method,
 ) -> AppResult<axum::response::Response> {
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetNextcloudResourceRequest {
         version: path.version,
         mode_name: path.mode_name,
@@ -140,7 +164,7 @@ async fn resource(
     .await
 }
 
-#[cfg_attr(feature = "openapi", utoipa::path(get, path = "/api/playback-providers/nextcloud/{version}/hls-manifests/{modeName}/{mediaIndex}", tag = "Nextcloud Playback Provider", params(("version" = String, Path), ("modeName" = String, Path), ("mediaIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)), responses((status = 200, description = "Nextcloud HLS manifest"))))]
+#[cfg_attr(feature = "openapi", utoipa::path(get, path = "/api/playback-providers/{roomId}/nextcloud/{version}/hls-manifests/{modeName}/{mediaIndex}", tag = "Nextcloud Playback Provider", params(("roomId" = String, Path), ("version" = String, Path), ("modeName" = String, Path), ("mediaIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("exp" = i64, Query)), responses((status = 200, description = "Nextcloud HLS manifest"))))]
 pub async fn get_nextcloud_hls_manifest(
     Path(path): Path<NextcloudResourcePath>,
     State(state): State<AppState>,
@@ -150,7 +174,7 @@ pub async fn get_nextcloud_hls_manifest(
     hls_manifest(path, state, request_meta, query(raw_query), Method::GET).await
 }
 
-#[cfg_attr(feature = "openapi", utoipa::path(head, path = "/api/playback-providers/nextcloud/{version}/hls-manifests/{modeName}/{mediaIndex}", tag = "Nextcloud Playback Provider", params(("version" = String, Path), ("modeName" = String, Path), ("mediaIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)), responses((status = 200, description = "Nextcloud HLS manifest metadata"))))]
+#[cfg_attr(feature = "openapi", utoipa::path(head, path = "/api/playback-providers/{roomId}/nextcloud/{version}/hls-manifests/{modeName}/{mediaIndex}", tag = "Nextcloud Playback Provider", params(("roomId" = String, Path), ("version" = String, Path), ("modeName" = String, Path), ("mediaIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("exp" = i64, Query)), responses((status = 200, description = "Nextcloud HLS manifest metadata"))))]
 pub async fn head_nextcloud_hls_manifest(
     Path(path): Path<NextcloudResourcePath>,
     State(state): State<AppState>,
@@ -167,8 +191,8 @@ async fn hls_manifest(
     query_string: String,
     method: Method,
 ) -> AppResult<axum::response::Response> {
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetNextcloudHlsManifestRequest {
         version: path.version,
         mode_name: path.mode_name,
@@ -199,7 +223,7 @@ async fn hls_manifest(
     .await
 }
 
-#[cfg_attr(feature = "openapi", utoipa::path(get, path = "/api/playback-providers/nextcloud/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}", tag = "Nextcloud Playback Provider", params(("version" = String, Path), ("modeName" = String, Path), ("mediaIndex" = u32, Path), ("resourceKind" = String, Path), ("targetUrl" = String, Query), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)), responses((status = 200, description = "Nextcloud HLS resource"))))]
+#[cfg_attr(feature = "openapi", utoipa::path(get, path = "/api/playback-providers/{roomId}/nextcloud/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}", tag = "Nextcloud Playback Provider", params(("roomId" = String, Path), ("version" = String, Path), ("modeName" = String, Path), ("mediaIndex" = u32, Path), ("resourceKind" = String, Path), ("targetUrl" = String, Query), ("sig" = String, Query), ("uid" = String, Query), ("exp" = i64, Query)), responses((status = 200, description = "Nextcloud HLS resource"))))]
 pub fn get_nextcloud_hls_resource(
     Path(path): Path<NextcloudHlsResourcePath>,
     State(state): State<AppState>,
@@ -217,7 +241,7 @@ pub fn get_nextcloud_hls_resource(
     )
 }
 
-#[cfg_attr(feature = "openapi", utoipa::path(head, path = "/api/playback-providers/nextcloud/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}", tag = "Nextcloud Playback Provider", params(("version" = String, Path), ("modeName" = String, Path), ("mediaIndex" = u32, Path), ("resourceKind" = String, Path), ("targetUrl" = String, Query), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)), responses((status = 200, description = "Nextcloud HLS resource metadata"))))]
+#[cfg_attr(feature = "openapi", utoipa::path(head, path = "/api/playback-providers/{roomId}/nextcloud/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}", tag = "Nextcloud Playback Provider", params(("roomId" = String, Path), ("version" = String, Path), ("modeName" = String, Path), ("mediaIndex" = u32, Path), ("resourceKind" = String, Path), ("targetUrl" = String, Query), ("sig" = String, Query), ("uid" = String, Query), ("exp" = i64, Query)), responses((status = 200, description = "Nextcloud HLS resource metadata"))))]
 pub fn head_nextcloud_hls_resource(
     Path(path): Path<NextcloudHlsResourcePath>,
     State(state): State<AppState>,
@@ -243,8 +267,8 @@ async fn hls_resource(
     query_string: String,
     method: Method,
 ) -> AppResult<axum::response::Response> {
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetNextcloudHlsResourceRequest {
         version: path.version,
         target_url: target_url(&query_string).map_err(crate::http::error::map_api_error)?,
@@ -290,7 +314,7 @@ fn nextcloud_hls_resource_kind(value: &str) -> AppResult<i32> {
     }
 }
 
-#[cfg_attr(feature = "openapi", utoipa::path(get, path = "/api/playback-providers/nextcloud/{version}/subtitles/{modeName}/{subtitleIndex}", tag = "Nextcloud Playback Provider", params(("version" = String, Path), ("modeName" = String, Path), ("subtitleIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)), responses((status = 200, description = "Nextcloud subtitle"))))]
+#[cfg_attr(feature = "openapi", utoipa::path(get, path = "/api/playback-providers/{roomId}/nextcloud/{version}/subtitles/{modeName}/{subtitleIndex}", tag = "Nextcloud Playback Provider", params(("roomId" = String, Path), ("version" = String, Path), ("modeName" = String, Path), ("subtitleIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("exp" = i64, Query)), responses((status = 200, description = "Nextcloud subtitle"))))]
 pub async fn get_nextcloud_subtitle(
     Path(path): Path<NextcloudSubtitlePath>,
     State(state): State<AppState>,
@@ -298,8 +322,8 @@ pub async fn get_nextcloud_subtitle(
     raw_query: RawQuery,
 ) -> AppResult<axum::response::Response> {
     let query_string = query(raw_query);
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetNextcloudSubtitleRequest {
         version: path.version,
         mode_name: path.mode_name,
@@ -319,6 +343,60 @@ pub async fn get_nextcloud_subtitle(
             async move {
                 synctv_api_common::playback_provider::nextcloud::get_nextcloud_subtitle(
                     deps(&state, Some(&control)),
+                    req,
+                )
+                .await
+            }
+            .boxed()
+        },
+    )
+    .await
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/playback-providers/{roomId}/nextcloud/preview",
+        tag = "Nextcloud Playback Provider",
+        params(
+            ("roomId" = String, Path), ("serverId" = String, Query),
+            ("credentialOwnerId" = String, Query), ("fileId" = u64, Query),
+            ("width" = u32, Query), ("height" = u32, Query),
+            ("crop" = bool, Query), ("sig" = String, Query),
+            ("uid" = String, Query), ("exp" = i64, Query)
+        ),
+        responses((status = 200, description = "Room-scoped Nextcloud preview"))
+    )
+)]
+pub async fn get_nextcloud_preview_resource(
+    Path(room_id): Path<String>,
+    Query(query): Query<NextcloudPreviewResourceQuery>,
+    State(state): State<AppState>,
+    request_meta: RequestMetadata,
+) -> AppResult<axum::response::Response> {
+    let req = GetNextcloudPreviewResourceRequest {
+        server_id: query.server_id,
+        credential_owner_id: query.credential_owner_id,
+        file_id: query.file_id,
+        width: query.width,
+        height: query.height,
+        crop: query.crop,
+        sig: query.sig,
+        uid: query.uid,
+        rid: room_id,
+        exp: query.exp,
+    };
+    let state_for_stream = state.clone();
+    stream_http_response::<NextcloudPreviewResourceResponse, _>(
+        state,
+        request_meta,
+        Method::GET,
+        move |request_control| {
+            let state = state_for_stream;
+            async move {
+                synctv_api_common::playback_provider::nextcloud::get_nextcloud_preview_resource(
+                    deps(&state, Some(&request_control)),
                     req,
                 )
                 .await

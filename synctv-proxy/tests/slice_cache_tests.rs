@@ -10,7 +10,7 @@ use axum::http::StatusCode;
 use bytes::Bytes;
 use http_body_util::BodyExt;
 use wiremock::matchers::{header, method, path};
-use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};
+use wiremock::{Match, Mock, MockServer, Request, Respond, ResponseTemplate};
 
 use synctv_proxy::slice_cache::{
     CacheStatus, CachedResourceMeta, SliceCache, SliceCacheBackend, SliceCacheConfig,
@@ -42,6 +42,322 @@ fn slice_cache_for_mock(config: SliceCacheConfig, mock_server: &MockServer) -> S
             .build(),
     )
     .expect("mock slice cache should build")
+}
+
+async fn proxy_slice(
+    cache: &SliceCache,
+    range_header: Option<&str>,
+    url: &str,
+    provider_headers: &HashMap<String, String>,
+) -> Result<axum::response::Response, anyhow::Error> {
+    cache
+        .proxy(synctv_proxy::slice_cache::SliceCacheProxyRequest {
+            method: synctv_proxy::slice_cache::SliceCacheProxyMethod::Get,
+            strategy: synctv_proxy::slice_cache::SliceCacheProxyStrategy::Slice {
+                range_probe_fallback: None,
+            },
+            cache_enabled: cache.config().enabled,
+            url,
+            provider_headers,
+            range_header,
+            request_control: None,
+            upstream_header_timeout: None,
+        })
+        .await
+}
+
+async fn proxy_slice_enabled(
+    cache: &SliceCache,
+    cache_enabled: bool,
+    range_header: Option<&str>,
+    url: &str,
+    provider_headers: &HashMap<String, String>,
+) -> Result<axum::response::Response, anyhow::Error> {
+    cache
+        .proxy(synctv_proxy::slice_cache::SliceCacheProxyRequest {
+            method: synctv_proxy::slice_cache::SliceCacheProxyMethod::Get,
+            strategy: synctv_proxy::slice_cache::SliceCacheProxyStrategy::Slice {
+                range_probe_fallback: None,
+            },
+            cache_enabled,
+            url,
+            provider_headers,
+            range_header,
+            request_control: None,
+            upstream_header_timeout: None,
+        })
+        .await
+}
+
+async fn proxy_slice_with_control_and_timeout(
+    cache: &SliceCache,
+    range_header: Option<&str>,
+    url: &str,
+    provider_headers: &HashMap<String, String>,
+    request_control: Option<&synctv_common::ExecutionControl>,
+    upstream_header_timeout: Option<Duration>,
+) -> Result<axum::response::Response, anyhow::Error> {
+    cache
+        .proxy(synctv_proxy::slice_cache::SliceCacheProxyRequest {
+            method: synctv_proxy::slice_cache::SliceCacheProxyMethod::Get,
+            strategy: synctv_proxy::slice_cache::SliceCacheProxyStrategy::Slice {
+                range_probe_fallback: None,
+            },
+            cache_enabled: cache.config().enabled,
+            url,
+            provider_headers,
+            range_header,
+            request_control,
+            upstream_header_timeout,
+        })
+        .await
+}
+
+async fn proxy_slice_with_range_probe_fallback(
+    cache: &SliceCache,
+    range_header: Option<&str>,
+    url: &str,
+    provider_headers: &HashMap<String, String>,
+    retry_status: StatusCode,
+) -> Result<axum::response::Response, anyhow::Error> {
+    let fallback =
+        move |status: StatusCode, _headers: &axum::http::HeaderMap| status == retry_status;
+    cache
+        .proxy(synctv_proxy::slice_cache::SliceCacheProxyRequest {
+            method: synctv_proxy::slice_cache::SliceCacheProxyMethod::Get,
+            strategy: synctv_proxy::slice_cache::SliceCacheProxyStrategy::Slice {
+                range_probe_fallback: Some(&fallback),
+            },
+            cache_enabled: cache.config().enabled,
+            url,
+            provider_headers,
+            range_header,
+            request_control: None,
+            upstream_header_timeout: None,
+        })
+        .await
+}
+
+async fn proxy_head_slice_enabled_with_control(
+    cache: &SliceCache,
+    cache_enabled: bool,
+    range_header: Option<&str>,
+    url: &str,
+    provider_headers: &HashMap<String, String>,
+    request_control: Option<&synctv_common::ExecutionControl>,
+) -> Result<axum::response::Response, anyhow::Error> {
+    cache
+        .proxy(synctv_proxy::slice_cache::SliceCacheProxyRequest {
+            method: synctv_proxy::slice_cache::SliceCacheProxyMethod::Head,
+            strategy: synctv_proxy::slice_cache::SliceCacheProxyStrategy::Slice {
+                range_probe_fallback: None,
+            },
+            cache_enabled,
+            url,
+            provider_headers,
+            range_header,
+            request_control,
+            upstream_header_timeout: None,
+        })
+        .await
+}
+
+async fn proxy_full_response(
+    cache: &SliceCache,
+    url: &str,
+    provider_headers: &HashMap<String, String>,
+) -> Result<axum::response::Response, anyhow::Error> {
+    cache
+        .proxy(synctv_proxy::slice_cache::SliceCacheProxyRequest {
+            method: synctv_proxy::slice_cache::SliceCacheProxyMethod::Get,
+            strategy: synctv_proxy::slice_cache::SliceCacheProxyStrategy::FullResponse,
+            cache_enabled: cache.config().enabled,
+            url,
+            provider_headers,
+            range_header: None,
+            request_control: None,
+            upstream_header_timeout: None,
+        })
+        .await
+}
+
+#[tokio::test]
+async fn test_full_response_metadata_bypasses_then_admits_after_headers_change() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct StatusThenDocument {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl Respond for StatusThenDocument {
+        fn respond(&self, _request: &Request) -> ResponseTemplate {
+            match self.calls.fetch_add(1, Ordering::SeqCst) {
+                0 => ResponseTemplate::new(503).set_body_bytes(Bytes::from_static(b"busy")),
+                _ => ResponseTemplate::new(200)
+                    .set_body_bytes(Bytes::from_static(b"subtitle document"))
+                    .insert_header("Content-Type", "application/json"),
+            }
+        }
+    }
+
+    let mock_server = MockServer::start().await;
+    let calls = Arc::new(AtomicUsize::new(0));
+    Mock::given(method("GET"))
+        .and(path("/subtitle.json"))
+        .respond_with(StatusThenDocument {
+            calls: Arc::clone(&calls),
+        })
+        .mount(&mock_server)
+        .await;
+
+    let cache = slice_cache_for_mock(SliceCacheConfig::default(), &mock_server);
+    let url = mock_public_url(&mock_server, "/subtitle.json");
+    let headers = HashMap::new();
+
+    let first = proxy_full_response(&cache, &url, &headers)
+        .await
+        .expect("initial error response should stream through");
+    assert_eq!(first.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(first.headers().get("X-Cache-Status").unwrap(), "BYPASS");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(cache.lock_count(), 0);
+
+    let second = proxy_full_response(&cache, &url, &headers)
+        .await
+        .expect("uncacheable metadata should avoid the fill lock");
+    assert_eq!(second.status(), StatusCode::OK);
+    assert_eq!(second.headers().get("X-Cache-Status").unwrap(), "BYPASS");
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(cache.lock_count(), 0);
+
+    let third = proxy_full_response(&cache, &url, &headers)
+        .await
+        .expect("refreshed metadata should admit a cache fill");
+    assert_eq!(third.status(), StatusCode::OK);
+    assert_eq!(third.headers().get("X-Cache-Status").unwrap(), "MISS");
+    assert_eq!(
+        axum::body::to_bytes(third.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+        Bytes::from_static(b"subtitle document")
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+
+    let fourth = proxy_full_response(&cache, &url, &headers)
+        .await
+        .expect("cached document should be reused");
+    assert_eq!(fourth.status(), StatusCode::OK);
+    assert_eq!(fourth.headers().get("X-Cache-Status").unwrap(), "HIT");
+    assert_eq!(
+        axum::body::to_bytes(fourth.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+        Bytes::from_static(b"subtitle document")
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn test_full_response_cache_fill_serializes_after_body_expiry() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct DelayedDocument {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl Respond for DelayedDocument {
+        fn respond(&self, _request: &Request) -> ResponseTemplate {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            ResponseTemplate::new(200)
+                .set_body_bytes(Bytes::from_static(b"subtitle document"))
+                .set_delay(Duration::from_millis(75))
+        }
+    }
+
+    let mock_server = MockServer::start().await;
+    let calls = Arc::new(AtomicUsize::new(0));
+    Mock::given(method("GET"))
+        .and(path("/subtitle.json"))
+        .respond_with(DelayedDocument {
+            calls: Arc::clone(&calls),
+        })
+        .mount(&mock_server)
+        .await;
+
+    let cache = slice_cache_for_mock(
+        SliceCacheConfig {
+            segment_ttl: Duration::from_millis(1),
+            ..SliceCacheConfig::default()
+        },
+        &mock_server,
+    );
+    let url = mock_public_url(&mock_server, "/subtitle.json");
+    let headers = HashMap::new();
+
+    let initial = proxy_full_response(&cache, &url, &headers)
+        .await
+        .expect("initial response should populate the cache");
+    assert_eq!(initial.headers().get("X-Cache-Status").unwrap(), "MISS");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    tokio::time::sleep(Duration::from_millis(10)).await;
+
+    let (first, second) = tokio::join!(
+        proxy_full_response(&cache, &url, &headers),
+        proxy_full_response(&cache, &url, &headers),
+    );
+    let first = first.expect("first refresh should succeed");
+    let second = second.expect("second refresh should reuse the fill");
+    let mut statuses = [
+        first
+            .headers()
+            .get("X-Cache-Status")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        second
+            .headers()
+            .get("X-Cache-Status")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+    ];
+    statuses.sort_unstable();
+
+    assert_eq!(statuses, ["HIT", "MISS"]);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn test_oversized_full_response_streams_and_records_metadata_without_locking() {
+    let mock_server = MockServer::start().await;
+    let body = Bytes::from(vec![0x5Au8; 16 * 1024 * 1024 + 1]);
+    Mock::given(method("GET"))
+        .and(path("/large-document.bin"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(body.clone()))
+        .expect(2)
+        .mount(&mock_server)
+        .await;
+
+    let cache = slice_cache_for_mock(SliceCacheConfig::default(), &mock_server);
+    let url = mock_public_url(&mock_server, "/large-document.bin");
+    let headers = HashMap::new();
+
+    for _ in 0..2 {
+        let response = proxy_full_response(&cache, &url, &headers)
+            .await
+            .expect("oversized response should stream through");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers().get("X-Cache-Status").unwrap(), "BYPASS");
+        assert_eq!(
+            axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+            body
+        );
+        assert_eq!(cache.lock_count(), 0);
+        assert_eq!(cache.backend().entry_count(), 0);
+        assert_eq!(cache.stats().metadata_entries, 1);
+    }
 }
 
 struct HeaderAbsent(&'static str);
@@ -202,14 +518,9 @@ async fn test_proxy_with_cache_returns_206_for_range_request() {
     let url = mock_public_url(&mock_server, "/video.mp4");
     let provider_headers = HashMap::new();
 
-    let response = synctv_proxy::slice_cache::proxy_with_cache(
-        &cache,
-        Some("bytes=0-999"),
-        &url,
-        &provider_headers,
-    )
-    .await
-    .unwrap();
+    let response = proxy_slice(&cache, Some("bytes=0-999"), &url, &provider_headers)
+        .await
+        .unwrap();
 
     assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
 
@@ -259,7 +570,7 @@ async fn test_proxy_with_cache_no_range_streams_through() {
     let url = mock_public_url(&mock_server, "/video.mp4");
     let provider_headers = HashMap::new();
 
-    let response = synctv_proxy::slice_cache::proxy_with_cache(
+    let response = proxy_slice(
         &cache,
         None, // No Range header
         &url,
@@ -307,14 +618,9 @@ async fn test_proxy_with_cache_x_cache_status_miss() {
     let url = mock_public_url(&mock_server, "/video.mp4");
     let provider_headers = HashMap::new();
 
-    let response = synctv_proxy::slice_cache::proxy_with_cache(
-        &cache,
-        Some("bytes=0-999"),
-        &url,
-        &provider_headers,
-    )
-    .await
-    .unwrap();
+    let response = proxy_slice(&cache, Some("bytes=0-999"), &url, &provider_headers)
+        .await
+        .unwrap();
 
     assert_eq!(
         response
@@ -363,24 +669,14 @@ async fn test_proxy_with_cache_x_cache_status_hit() {
     let provider_headers = HashMap::new();
 
     // First request - cache miss
-    let _ = synctv_proxy::slice_cache::proxy_with_cache(
-        &cache,
-        Some("bytes=0-999"),
-        &url,
-        &provider_headers,
-    )
-    .await
-    .unwrap();
+    let _ = proxy_slice(&cache, Some("bytes=0-999"), &url, &provider_headers)
+        .await
+        .unwrap();
 
     // Second request - should be cache hit
-    let response = synctv_proxy::slice_cache::proxy_with_cache(
-        &cache,
-        Some("bytes=0-999"),
-        &url,
-        &provider_headers,
-    )
-    .await
-    .unwrap();
+    let response = proxy_slice(&cache, Some("bytes=0-999"), &url, &provider_headers)
+        .await
+        .unwrap();
 
     assert_eq!(
         response
@@ -468,16 +764,10 @@ async fn test_proxy_head_with_cache_uses_head_and_reuses_cached_metadata() {
     let url = mock_public_url(&mock_server, "/head.bin");
     let provider_headers = HashMap::new();
 
-    let miss = synctv_proxy::slice_cache::proxy_head_with_cache_enabled_with_control(
-        &cache,
-        true,
-        None,
-        &url,
-        &provider_headers,
-        None,
-    )
-    .await
-    .unwrap();
+    let miss =
+        proxy_head_slice_enabled_with_control(&cache, true, None, &url, &provider_headers, None)
+            .await
+            .unwrap();
     assert_eq!(miss.status(), StatusCode::OK);
     assert_eq!(miss.headers().get("X-Cache-Status").unwrap(), "MISS");
     assert_eq!(
@@ -487,16 +777,10 @@ async fn test_proxy_head_with_cache_uses_head_and_reuses_cached_metadata() {
     let miss_body = miss.into_body().collect().await.unwrap().to_bytes();
     assert!(miss_body.is_empty());
 
-    let hit = synctv_proxy::slice_cache::proxy_head_with_cache_enabled_with_control(
-        &cache,
-        true,
-        None,
-        &url,
-        &provider_headers,
-        None,
-    )
-    .await
-    .unwrap();
+    let hit =
+        proxy_head_slice_enabled_with_control(&cache, true, None, &url, &provider_headers, None)
+            .await
+            .unwrap();
     assert_eq!(hit.status(), StatusCode::OK);
     assert_eq!(hit.headers().get("X-Cache-Status").unwrap(), "HIT");
     assert_eq!(
@@ -558,16 +842,10 @@ async fn test_head_without_accept_ranges_stores_length_without_range_support() {
     let url = mock_public_url(&mock_server, "/head-no-range.bin");
     let provider_headers = HashMap::new();
 
-    let head = synctv_proxy::slice_cache::proxy_head_with_cache_enabled_with_control(
-        &cache,
-        true,
-        None,
-        &url,
-        &provider_headers,
-        None,
-    )
-    .await
-    .unwrap();
+    let head =
+        proxy_head_slice_enabled_with_control(&cache, true, None, &url, &provider_headers, None)
+            .await
+            .unwrap();
     assert_eq!(head.status(), StatusCode::OK);
     assert_eq!(head.headers().get("X-Cache-Status").unwrap(), "MISS");
     let meta = cache
@@ -579,14 +857,9 @@ async fn test_head_without_accept_ranges_stores_length_without_range_support() {
         "Content-Length alone must not prove range support"
     );
 
-    let range = synctv_proxy::slice_cache::proxy_with_cache(
-        &cache,
-        Some("bytes=0-511"),
-        &url,
-        &provider_headers,
-    )
-    .await
-    .unwrap();
+    let range = proxy_slice(&cache, Some("bytes=0-511"), &url, &provider_headers)
+        .await
+        .unwrap();
     assert_eq!(range.status(), StatusCode::OK);
     assert_eq!(
         range.headers().get("X-Cache-Status").unwrap(),
@@ -638,26 +911,15 @@ async fn test_range_with_head_metadata_bypasses_when_upstream_returns_200() {
     let url = mock_public_url(&mock_server, "/range-200-after-head.bin");
     let provider_headers = HashMap::new();
 
-    let head = synctv_proxy::slice_cache::proxy_head_with_cache_enabled_with_control(
-        &cache,
-        true,
-        None,
-        &url,
-        &provider_headers,
-        None,
-    )
-    .await
-    .unwrap();
+    let head =
+        proxy_head_slice_enabled_with_control(&cache, true, None, &url, &provider_headers, None)
+            .await
+            .unwrap();
     assert_eq!(head.headers().get("X-Cache-Status").unwrap(), "MISS");
 
-    let response = synctv_proxy::slice_cache::proxy_with_cache(
-        &cache,
-        Some("bytes=0-511"),
-        &url,
-        &provider_headers,
-    )
-    .await
-    .expect("non-206 aligned range response should bypass, not fail");
+    let response = proxy_slice(&cache, Some("bytes=0-511"), &url, &provider_headers)
+        .await
+        .expect("non-206 aligned range response should bypass, not fail");
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
         response.headers().get("X-Cache-Status").unwrap(),
@@ -701,14 +963,9 @@ async fn test_disabled_slice_cache_passthrough_preserves_representation_headers(
     );
     let url = mock_public_url(&mock_server, "/passthrough.bin");
 
-    let response = synctv_proxy::slice_cache::proxy_with_cache(
-        &cache,
-        Some("bytes=0-127"),
-        &url,
-        &HashMap::new(),
-    )
-    .await
-    .unwrap();
+    let response = proxy_slice(&cache, Some("bytes=0-127"), &url, &HashMap::new())
+        .await
+        .unwrap();
 
     assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
     assert_eq!(
@@ -761,30 +1018,18 @@ async fn test_head_metadata_revalidates_after_segment_ttl() {
     let url = mock_public_url(&mock_server, "/head-ttl.bin");
     let provider_headers = HashMap::new();
 
-    let first = synctv_proxy::slice_cache::proxy_head_with_cache_enabled_with_control(
-        &cache,
-        true,
-        None,
-        &url,
-        &provider_headers,
-        None,
-    )
-    .await
-    .unwrap();
+    let first =
+        proxy_head_slice_enabled_with_control(&cache, true, None, &url, &provider_headers, None)
+            .await
+            .unwrap();
     assert_eq!(first.headers().get("X-Cache-Status").unwrap(), "MISS");
 
     tokio::time::sleep(Duration::from_millis(30)).await;
 
-    let second = synctv_proxy::slice_cache::proxy_head_with_cache_enabled_with_control(
-        &cache,
-        true,
-        None,
-        &url,
-        &provider_headers,
-        None,
-    )
-    .await
-    .unwrap();
+    let second =
+        proxy_head_slice_enabled_with_control(&cache, true, None, &url, &provider_headers, None)
+            .await
+            .unwrap();
     assert_eq!(second.headers().get("X-Cache-Status").unwrap(), "MISS");
 }
 
@@ -930,7 +1175,7 @@ async fn test_proxy_with_cache_multi_range_rejected() {
     let config = SliceCacheConfig::default();
     let cache = SliceCache::new(config).expect("slice cache should build");
 
-    let result = synctv_proxy::slice_cache::proxy_with_cache(
+    let result = proxy_slice(
         &cache,
         Some("bytes=0-100,200-300"),
         "https://cdn.example.com/video.mp4",
@@ -1031,14 +1276,9 @@ async fn test_disabled_cache_streams_directly() {
     let provider_headers = HashMap::new();
 
     // Even with a range header, disabled cache should stream through
-    let response = synctv_proxy::slice_cache::proxy_with_cache(
-        &disabled_cache,
-        Some("bytes=0-99"),
-        &url,
-        &provider_headers,
-    )
-    .await
-    .unwrap();
+    let response = proxy_slice(&disabled_cache, Some("bytes=0-99"), &url, &provider_headers)
+        .await
+        .unwrap();
 
     // Disabled cache should forward upstream response as-is
     assert!(
@@ -1097,10 +1337,15 @@ async fn test_no_range_request_streams_from_slice_cache_when_origin_supports_ran
     let url = mock_public_url(&mock_server, "/video.mp4");
     let provider_headers = HashMap::new();
 
-    let response =
-        synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
-            .await
-            .unwrap();
+    let response = proxy_slice_with_range_probe_fallback(
+        &cache,
+        None,
+        &url,
+        &provider_headers,
+        StatusCode::RANGE_NOT_SATISFIABLE,
+    )
+    .await
+    .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -1163,10 +1408,9 @@ async fn test_concurrent_no_range_cold_fill_only_fetches_first_slice_once() {
         let url = url.clone();
         let provider_headers = provider_headers.clone();
         async move {
-            let response =
-                synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
-                    .await
-                    .unwrap();
+            let response = proxy_slice(&cache, None, &url, &provider_headers)
+                .await
+                .unwrap();
             assert_eq!(response.status(), StatusCode::OK);
             response.into_body().collect().await.unwrap().to_bytes()
         }
@@ -1176,10 +1420,9 @@ async fn test_concurrent_no_range_cold_fill_only_fetches_first_slice_once() {
         let url = url.clone();
         let provider_headers = provider_headers.clone();
         async move {
-            let response =
-                synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
-                    .await
-                    .unwrap();
+            let response = proxy_slice(&cache, None, &url, &provider_headers)
+                .await
+                .unwrap();
             assert_eq!(response.status(), StatusCode::OK);
             response.into_body().collect().await.unwrap().to_bytes()
         }
@@ -1212,10 +1455,9 @@ async fn test_no_range_request_bypasses_when_origin_does_not_support_range() {
     let url = mock_public_url(&mock_server, "/no-range.bin");
     let provider_headers = HashMap::new();
 
-    let response =
-        synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
-            .await
-            .unwrap();
+    let response = proxy_slice(&cache, None, &url, &provider_headers)
+        .await
+        .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -1256,10 +1498,15 @@ async fn test_no_range_request_retries_original_get_when_range_probe_is_rejected
     let url = mock_public_url(&mock_server, "/range-rejected.bin");
     let provider_headers = HashMap::new();
 
-    let response =
-        synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
-            .await
-            .unwrap();
+    let response = proxy_slice_with_range_probe_fallback(
+        &cache,
+        None,
+        &url,
+        &provider_headers,
+        StatusCode::RANGE_NOT_SATISFIABLE,
+    )
+    .await
+    .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -1269,6 +1516,96 @@ async fn test_no_range_request_retries_original_get_when_range_probe_is_rejected
     let response_body = response.into_body().collect().await.unwrap().to_bytes();
     assert_eq!(response_body, body);
     assert_eq!(cache.backend().entry_count(), 0);
+}
+
+#[tokio::test]
+async fn test_no_range_request_returns_failed_probe_without_provider_fallback() {
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/range-rejected.bin"))
+        .and(header("Range", "bytes=0-2097151"))
+        .respond_with(ResponseTemplate::new(503).set_body_string("range rejected"))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/range-rejected.bin"))
+        .and(HeaderAbsent("range"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("ordinary response"))
+        .expect(0)
+        .mount(&mock_server)
+        .await;
+
+    let cache = slice_cache_for_mock(SliceCacheConfig::default(), &mock_server);
+    let url = mock_public_url(&mock_server, "/range-rejected.bin");
+    let provider_headers = HashMap::new();
+
+    let response = proxy_slice(&cache, None, &url, &provider_headers)
+        .await
+        .expect("failed range probe should be forwarded");
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.headers().get("X-Cache-Status").unwrap(), "BYPASS");
+    assert_eq!(
+        response.into_body().collect().await.unwrap().to_bytes(),
+        Bytes::from_static(b"range rejected")
+    );
+}
+
+#[tokio::test]
+async fn test_no_range_request_retries_original_get_when_range_probe_returns_503() {
+    let mock_server = MockServer::start().await;
+    let body = Bytes::from_static(br#"{"body":[{"from":0,"to":1,"content":"subtitle"}]}"#);
+
+    Mock::given(method("GET"))
+        .and(path("/subtitle.json"))
+        .and(header("Range", "bytes=0-2097151"))
+        .and(header("Referer", "https://www.bilibili.com/"))
+        .respond_with(ResponseTemplate::new(503).set_body_string("range rejected"))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/subtitle.json"))
+        .and(HeaderAbsent("range"))
+        .and(header("Referer", "https://www.bilibili.com/"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_bytes(body.clone())
+                .insert_header("Content-Type", "application/json"),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let cache = slice_cache_for_mock(SliceCacheConfig::default(), &mock_server);
+    let url = mock_public_url(&mock_server, "/subtitle.json");
+    let provider_headers = HashMap::from([(
+        "Referer".to_string(),
+        "https://www.bilibili.com/".to_string(),
+    )]);
+
+    let response = proxy_slice_with_range_probe_fallback(
+        &cache,
+        None,
+        &url,
+        &provider_headers,
+        StatusCode::SERVICE_UNAVAILABLE,
+    )
+    .await
+    .expect("an original GET should succeed after the failed range probe");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("X-Cache-Status").unwrap(),
+        CacheStatus::Bypass.as_str()
+    );
+    assert_eq!(
+        response.into_body().collect().await.unwrap().to_bytes(),
+        body
+    );
 }
 
 #[tokio::test]
@@ -1316,14 +1653,9 @@ async fn test_open_ended_range_without_metadata_uses_unified_slice_fetch() {
     let url = mock_public_url(&mock_server, "/open-ended.bin");
     let provider_headers = HashMap::new();
 
-    let response = synctv_proxy::slice_cache::proxy_with_cache(
-        &cache,
-        Some("bytes=2048-"),
-        &url,
-        &provider_headers,
-    )
-    .await
-    .unwrap();
+    let response = proxy_slice(&cache, Some("bytes=2048-"), &url, &provider_headers)
+        .await
+        .unwrap();
 
     assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
     assert_eq!(
@@ -1366,14 +1698,9 @@ async fn test_explicit_range_without_metadata_allows_short_final_aligned_slice()
     let url = mock_public_url(&mock_server, "/short-final.bin");
     let provider_headers = HashMap::new();
 
-    let response = synctv_proxy::slice_cache::proxy_with_cache(
-        &cache,
-        Some("bytes=3300-4095"),
-        &url,
-        &provider_headers,
-    )
-    .await
-    .unwrap();
+    let response = proxy_slice(&cache, Some("bytes=3300-4095"), &url, &provider_headers)
+        .await
+        .unwrap();
 
     assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
     assert_eq!(
@@ -1427,7 +1754,7 @@ async fn test_huge_explicit_range_without_metadata_does_not_materialize_slice_sp
     let url = mock_public_url(&mock_server, "/huge-range.bin");
     let provider_headers = HashMap::new();
 
-    let response = synctv_proxy::slice_cache::proxy_with_cache(
+    let response = proxy_slice(
         &cache,
         Some("bytes=0-18446744073709551615"),
         &url,
@@ -1480,14 +1807,9 @@ async fn test_suffix_range_without_meta_bypasses_once_and_learns_metadata() {
     let url = mock_public_url(&mock_server, "/suffix.bin");
     let provider_headers = HashMap::new();
 
-    let response = synctv_proxy::slice_cache::proxy_with_cache(
-        &cache,
-        Some("bytes=-512"),
-        &url,
-        &provider_headers,
-    )
-    .await
-    .unwrap();
+    let response = proxy_slice(&cache, Some("bytes=-512"), &url, &provider_headers)
+        .await
+        .unwrap();
 
     assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
     assert_eq!(
@@ -1557,38 +1879,23 @@ async fn test_suffix_range_with_learned_meta_uses_slice_cache() {
     let url = mock_public_url(&mock_server, "/suffix-cache.bin");
     let provider_headers = HashMap::new();
 
-    let cold = synctv_proxy::slice_cache::proxy_with_cache(
-        &cache,
-        Some("bytes=-512"),
-        &url,
-        &provider_headers,
-    )
-    .await
-    .unwrap();
+    let cold = proxy_slice(&cache, Some("bytes=-512"), &url, &provider_headers)
+        .await
+        .unwrap();
     assert_eq!(cold.headers().get("X-Cache-Status").unwrap(), "BYPASS");
     let _ = cold.into_body().collect().await.unwrap().to_bytes();
 
-    let miss = synctv_proxy::slice_cache::proxy_with_cache(
-        &cache,
-        Some("bytes=-512"),
-        &url,
-        &provider_headers,
-    )
-    .await
-    .unwrap();
+    let miss = proxy_slice(&cache, Some("bytes=-512"), &url, &provider_headers)
+        .await
+        .unwrap();
     assert_eq!(miss.status(), StatusCode::PARTIAL_CONTENT);
     assert_eq!(miss.headers().get("X-Cache-Status").unwrap(), "MISS");
     let miss_body = miss.into_body().collect().await.unwrap().to_bytes();
     assert_eq!(miss_body, suffix_body);
 
-    let hit = synctv_proxy::slice_cache::proxy_with_cache(
-        &cache,
-        Some("bytes=-512"),
-        &url,
-        &provider_headers,
-    )
-    .await
-    .unwrap();
+    let hit = proxy_slice(&cache, Some("bytes=-512"), &url, &provider_headers)
+        .await
+        .unwrap();
     assert_eq!(hit.headers().get("X-Cache-Status").unwrap(), "HIT");
     let hit_body = hit.into_body().collect().await.unwrap().to_bytes();
     assert_eq!(hit_body, suffix_body);
@@ -1641,18 +1948,8 @@ async fn test_concurrent_suffix_without_meta_does_not_wait_for_metadata() {
     let provider_headers = HashMap::new();
 
     let (first, second) = tokio::join!(
-        synctv_proxy::slice_cache::proxy_with_cache(
-            &cache,
-            Some("bytes=-512"),
-            &url,
-            &provider_headers,
-        ),
-        synctv_proxy::slice_cache::proxy_with_cache(
-            &cache,
-            Some("bytes=-512"),
-            &url,
-            &provider_headers,
-        ),
+        proxy_slice(&cache, Some("bytes=-512"), &url, &provider_headers,),
+        proxy_slice(&cache, Some("bytes=-512"), &url, &provider_headers,),
     );
 
     let first = first.unwrap();
@@ -1723,40 +2020,24 @@ async fn test_head_metadata_enables_suffix_range_slice_cache() {
     let url = mock_public_url(&mock_server, "/suffix-after-head.bin");
     let provider_headers = HashMap::new();
 
-    let head = synctv_proxy::slice_cache::proxy_head_with_cache_enabled_with_control(
-        &cache,
-        true,
-        None,
-        &url,
-        &provider_headers,
-        None,
-    )
-    .await
-    .unwrap();
+    let head =
+        proxy_head_slice_enabled_with_control(&cache, true, None, &url, &provider_headers, None)
+            .await
+            .unwrap();
     assert_eq!(head.status(), StatusCode::OK);
     assert_eq!(head.headers().get("X-Cache-Status").unwrap(), "MISS");
 
-    let miss = synctv_proxy::slice_cache::proxy_with_cache(
-        &cache,
-        Some("bytes=-512"),
-        &url,
-        &provider_headers,
-    )
-    .await
-    .unwrap();
+    let miss = proxy_slice(&cache, Some("bytes=-512"), &url, &provider_headers)
+        .await
+        .unwrap();
     assert_eq!(miss.status(), StatusCode::PARTIAL_CONTENT);
     assert_eq!(miss.headers().get("X-Cache-Status").unwrap(), "MISS");
     let miss_body = miss.into_body().collect().await.unwrap().to_bytes();
     assert_eq!(miss_body, suffix_body);
 
-    let hit = synctv_proxy::slice_cache::proxy_with_cache(
-        &cache,
-        Some("bytes=-512"),
-        &url,
-        &provider_headers,
-    )
-    .await
-    .unwrap();
+    let hit = proxy_slice(&cache, Some("bytes=-512"), &url, &provider_headers)
+        .await
+        .unwrap();
     assert_eq!(hit.headers().get("X-Cache-Status").unwrap(), "HIT");
     let hit_body = hit.into_body().collect().await.unwrap().to_bytes();
     assert_eq!(hit_body, suffix_body);
@@ -1818,27 +2099,16 @@ async fn test_suffix_range_with_head_length_bypasses_when_origin_ignores_aligned
     let url = mock_public_url(&mock_server, "/suffix-no-ranges.bin");
     let provider_headers = HashMap::new();
 
-    let head = synctv_proxy::slice_cache::proxy_head_with_cache_enabled_with_control(
-        &cache,
-        true,
-        None,
-        &url,
-        &provider_headers,
-        None,
-    )
-    .await
-    .unwrap();
+    let head =
+        proxy_head_slice_enabled_with_control(&cache, true, None, &url, &provider_headers, None)
+            .await
+            .unwrap();
     assert_eq!(head.status(), StatusCode::OK);
     assert_eq!(head.headers().get("X-Cache-Status").unwrap(), "MISS");
 
-    let response = synctv_proxy::slice_cache::proxy_with_cache(
-        &cache,
-        Some("bytes=-512"),
-        &url,
-        &provider_headers,
-    )
-    .await
-    .unwrap();
+    let response = proxy_slice(&cache, Some("bytes=-512"), &url, &provider_headers)
+        .await
+        .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -1885,26 +2155,15 @@ async fn test_suffix_range_larger_than_known_total_returns_entire_resource() {
     let url = mock_public_url(&mock_server, "/suffix-too-large.bin");
     let provider_headers = HashMap::new();
 
-    let head = synctv_proxy::slice_cache::proxy_head_with_cache_enabled_with_control(
-        &cache,
-        true,
-        None,
-        &url,
-        &provider_headers,
-        None,
-    )
-    .await
-    .unwrap();
+    let head =
+        proxy_head_slice_enabled_with_control(&cache, true, None, &url, &provider_headers, None)
+            .await
+            .unwrap();
     assert_eq!(head.status(), StatusCode::OK);
 
-    let response = synctv_proxy::slice_cache::proxy_with_cache(
-        &cache,
-        Some("bytes=-8192"),
-        &url,
-        &provider_headers,
-    )
-    .await
-    .expect("suffix range larger than known total should be satisfiable");
+    let response = proxy_slice(&cache, Some("bytes=-8192"), &url, &provider_headers)
+        .await
+        .expect("suffix range larger than known total should be satisfiable");
 
     assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
     assert_eq!(
@@ -1921,6 +2180,7 @@ async fn test_suffix_range_larger_than_known_total_returns_entire_resource() {
 #[test]
 fn test_cached_resource_meta_fields() {
     let meta = CachedResourceMeta {
+        status: Some(206),
         etag: Some("\"abc123\"".to_string()),
         last_modified: None,
         total_size: Some(10_485_760),
@@ -2150,7 +2410,7 @@ async fn test_cache_status_bypass_when_disabled() {
     let cache = slice_cache_for_mock(config, &mock_server);
     let url = mock_public_url(&mock_server, "/video.mp4");
 
-    let resp = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &HashMap::new())
+    let resp = proxy_slice(&cache, None, &url, &HashMap::new())
         .await
         .unwrap();
 
@@ -2193,14 +2453,9 @@ async fn test_multi_range_request_bypasses_slice_cache() {
     let cache = slice_cache_for_mock(config, &mock_server);
     let url = mock_public_url(&mock_server, "/video.mp4");
 
-    let response = synctv_proxy::slice_cache::proxy_with_cache(
-        &cache,
-        Some("bytes=0-100,200-300"),
-        &url,
-        &HashMap::new(),
-    )
-    .await
-    .expect("multi-range request should bypass slice cache");
+    let response = proxy_slice(&cache, Some("bytes=0-100,200-300"), &url, &HashMap::new())
+        .await
+        .expect("multi-range request should bypass slice cache");
 
     assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
     assert_eq!(
@@ -2255,14 +2510,9 @@ async fn test_cache_status_expired_for_slice_request() {
     let provider_headers = HashMap::new();
 
     // First request: MISS
-    let resp1 = synctv_proxy::slice_cache::proxy_with_cache(
-        &cache,
-        Some("bytes=0-999"),
-        &url,
-        &provider_headers,
-    )
-    .await
-    .unwrap();
+    let resp1 = proxy_slice(&cache, Some("bytes=0-999"), &url, &provider_headers)
+        .await
+        .unwrap();
     assert_eq!(
         resp1
             .headers()
@@ -2274,14 +2524,9 @@ async fn test_cache_status_expired_for_slice_request() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Second request: EXPIRED (was cached, but TTL expired, re-fetched)
-    let resp2 = synctv_proxy::slice_cache::proxy_with_cache(
-        &cache,
-        Some("bytes=0-999"),
-        &url,
-        &provider_headers,
-    )
-    .await
-    .unwrap();
+    let resp2 = proxy_slice(&cache, Some("bytes=0-999"), &url, &provider_headers)
+        .await
+        .unwrap();
     assert_eq!(
         resp2
             .headers()
@@ -2568,14 +2813,9 @@ async fn test_cached_meta_avoids_head_request() {
     let provider_headers = HashMap::new();
 
     // First range request learns total_size from the initial range GET.
-    let resp1 = synctv_proxy::slice_cache::proxy_with_cache(
-        &cache,
-        Some("bytes=0-999"),
-        &url,
-        &provider_headers,
-    )
-    .await
-    .unwrap();
+    let resp1 = proxy_slice(&cache, Some("bytes=0-999"), &url, &provider_headers)
+        .await
+        .unwrap();
     assert_eq!(resp1.status(), StatusCode::PARTIAL_CONTENT);
     let _ = resp1.into_body().collect().await.unwrap().to_bytes();
 
@@ -2588,14 +2828,9 @@ async fn test_cached_meta_avoids_head_request() {
     assert_eq!(meta.unwrap().total_size, Some(total_size));
 
     // Second range request should reuse cached total_size and cached slice data.
-    let resp2 = synctv_proxy::slice_cache::proxy_with_cache(
-        &cache,
-        Some("bytes=0-999"),
-        &url,
-        &provider_headers,
-    )
-    .await
-    .unwrap();
+    let resp2 = proxy_slice(&cache, Some("bytes=0-999"), &url, &provider_headers)
+        .await
+        .unwrap();
     assert_eq!(resp2.status(), StatusCode::PARTIAL_CONTENT);
     assert_eq!(
         resp2
@@ -2652,14 +2887,9 @@ async fn test_slice_stale_when_expired_within_window() {
     let provider_headers = HashMap::new();
 
     // First request: MISS
-    let resp1 = synctv_proxy::slice_cache::proxy_with_cache(
-        &cache,
-        Some("bytes=0-999"),
-        &url,
-        &provider_headers,
-    )
-    .await
-    .unwrap();
+    let resp1 = proxy_slice(&cache, Some("bytes=0-999"), &url, &provider_headers)
+        .await
+        .unwrap();
     assert_eq!(
         resp1
             .headers()
@@ -2671,14 +2901,9 @@ async fn test_slice_stale_when_expired_within_window() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Second request: STALE
-    let resp2 = synctv_proxy::slice_cache::proxy_with_cache(
-        &cache,
-        Some("bytes=0-999"),
-        &url,
-        &provider_headers,
-    )
-    .await
-    .unwrap();
+    let resp2 = proxy_slice(&cache, Some("bytes=0-999"), &url, &provider_headers)
+        .await
+        .unwrap();
     assert_eq!(
         resp2
             .headers()
@@ -3092,15 +3317,9 @@ async fn test_range_miss_does_not_send_conditional_headers_from_head_metadata() 
     let url = mock_public_url(&mock_server, "/range-miss.bin");
     let headers = HashMap::new();
 
-    let response = synctv_proxy::slice_cache::proxy_with_cache_enabled(
-        &cache,
-        true,
-        Some("bytes=0-127"),
-        &url,
-        &headers,
-    )
-    .await
-    .expect("cold range miss should succeed without conditional slice headers");
+    let response = proxy_slice_enabled(&cache, true, Some("bytes=0-127"), &url, &headers)
+        .await
+        .expect("cold range miss should succeed without conditional slice headers");
 
     assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
     assert_eq!(
@@ -3272,24 +3491,12 @@ async fn test_proxy_with_cache_enabled_overrides_disabled_config() {
     let url = mock_public_url(&mock_server, "/runtime-toggle.mp4");
     let headers = HashMap::new();
 
-    let miss = synctv_proxy::slice_cache::proxy_with_cache_enabled(
-        &cache,
-        true,
-        Some("bytes=0-999"),
-        &url,
-        &headers,
-    )
-    .await
-    .expect("runtime-enabled cache request should succeed");
-    let hit = synctv_proxy::slice_cache::proxy_with_cache_enabled(
-        &cache,
-        true,
-        Some("bytes=0-999"),
-        &url,
-        &headers,
-    )
-    .await
-    .expect("second runtime-enabled cache request should succeed");
+    let miss = proxy_slice_enabled(&cache, true, Some("bytes=0-999"), &url, &headers)
+        .await
+        .expect("runtime-enabled cache request should succeed");
+    let hit = proxy_slice_enabled(&cache, true, Some("bytes=0-999"), &url, &headers)
+        .await
+        .expect("second runtime-enabled cache request should succeed");
 
     assert_eq!(miss.headers().get("X-Cache-Status").unwrap(), "MISS");
     assert_eq!(hit.headers().get("X-Cache-Status").unwrap(), "HIT");
@@ -3309,7 +3516,7 @@ async fn test_proxy_with_cache_redirect_to_loopback_is_blocked_on_slice_fetch() 
         .mount(&mock_server)
         .await;
 
-    let err = synctv_proxy::slice_cache::proxy_with_cache(
+    let err = proxy_slice(
         &cache,
         Some("bytes=0-999"),
         &mock_public_url(&mock_server, "/video.mp4"),
@@ -3343,7 +3550,7 @@ async fn test_proxy_with_cache_disabled_redirect_to_loopback_is_blocked_on_bypas
         .mount(&mock_server)
         .await;
 
-    let err = synctv_proxy::slice_cache::proxy_with_cache_enabled(
+    let err = proxy_slice_enabled(
         &cache,
         false,
         None,
@@ -3464,10 +3671,9 @@ async fn test_proxy_with_cache_bypasses_full_resource_200_without_metadata() {
     let url = mock_public_url(&mock_server, "/single-slice.bin");
     let headers = HashMap::new();
 
-    let response1 =
-        synctv_proxy::slice_cache::proxy_with_cache(&cache, Some("bytes=0-127"), &url, &headers)
-            .await
-            .expect("full-resource 200 should be bypassed");
+    let response1 = proxy_slice(&cache, Some("bytes=0-127"), &url, &headers)
+        .await
+        .expect("full-resource 200 should be bypassed");
     assert_eq!(response1.status(), StatusCode::OK);
     assert_eq!(
         response1.headers().get("X-Cache-Status").unwrap(),
@@ -3478,10 +3684,9 @@ async fn test_proxy_with_cache_bypasses_full_resource_200_without_metadata() {
         .unwrap();
     assert_eq!(body1, full_body);
 
-    let response2 =
-        synctv_proxy::slice_cache::proxy_with_cache(&cache, Some("bytes=0-127"), &url, &headers)
-            .await
-            .expect("second full-resource 200 should also be bypassed");
+    let response2 = proxy_slice(&cache, Some("bytes=0-127"), &url, &headers)
+        .await
+        .expect("second full-resource 200 should also be bypassed");
     assert_eq!(response2.status(), StatusCode::OK);
     assert_eq!(
         response2.headers().get("X-Cache-Status").unwrap(),
@@ -3513,10 +3718,9 @@ async fn test_proxy_with_cache_preserves_multi_range_header_on_bypass() {
     let url = mock_public_url(&mock_server, "/multi-range.bin");
     let headers = HashMap::new();
 
-    let response =
-        synctv_proxy::slice_cache::proxy_with_cache(&cache, Some("bytes=0-1,3-4"), &url, &headers)
-            .await
-            .expect("multi-range requests should bypass slice cache");
+    let response = proxy_slice(&cache, Some("bytes=0-1,3-4"), &url, &headers)
+        .await
+        .expect("multi-range requests should bypass slice cache");
 
     assert_eq!(
         response.headers().get("X-Cache-Status").unwrap(),
@@ -3544,7 +3748,7 @@ async fn test_proxy_with_cache_multi_range_bypass_obeys_header_timeout() {
     let url = mock_public_url(&mock_server, "/slow-multi-range.bin");
     let headers = HashMap::new();
 
-    let err = synctv_proxy::slice_cache::proxy_with_cache_with_control_and_timeout(
+    let err = proxy_slice_with_control_and_timeout(
         &cache,
         Some("bytes=0-1,3-4"),
         &url,
@@ -3591,14 +3795,13 @@ async fn test_proxy_with_cache_marks_start_beyond_total_as_range_not_satisfiable
     let url = mock_public_url(&mock_server, "/range-oob.bin");
     let headers = HashMap::new();
 
-    synctv_proxy::slice_cache::proxy_with_cache(&cache, Some("bytes=0-1"), &url, &headers)
+    proxy_slice(&cache, Some("bytes=0-1"), &url, &headers)
         .await
         .expect("first satisfiable range should populate resource metadata");
 
-    let err =
-        synctv_proxy::slice_cache::proxy_with_cache(&cache, Some("bytes=1024-"), &url, &headers)
-            .await
-            .expect_err("range starting at total size must be reported as unsatisfiable");
+    let err = proxy_slice(&cache, Some("bytes=1024-"), &url, &headers)
+        .await
+        .expect_err("range starting at total size must be reported as unsatisfiable");
 
     assert_eq!(
         synctv_proxy::proxy_error_kind(&err),

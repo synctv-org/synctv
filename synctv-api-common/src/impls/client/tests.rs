@@ -313,18 +313,6 @@ fn test_media_lookup_error_service_unavailable_stays_service_unavailable() {
 }
 
 #[test]
-fn test_membership_probe_error_service_unavailable_stays_service_unavailable() {
-    let mapped = super::ClientApiImpl::map_membership_probe_error(
-        synctv_core::Error::ServiceUnavailable("membership backend unavailable".to_string()),
-    );
-
-    assert!(
-        matches!(mapped, ApiError::ServiceUnavailable(ref msg) if msg == "membership backend unavailable"),
-        "membership probe backend failures must remain service unavailable, got: {mapped:?}"
-    );
-}
-
-#[test]
 fn test_room_list_backend_outage_maps_to_service_unavailable() {
     let mapped =
         crate::impls::ApiError::from(synctv_core::Error::Database(sqlx::Error::PoolTimedOut));

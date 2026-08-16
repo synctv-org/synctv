@@ -1,11 +1,12 @@
 //! FNOS provider gRPC transport adapter.
 
+use futures::FutureExt;
 use std::sync::Arc;
 
 use synctv_proto::providers::fnos::fnos_provider_service_server::FnosProviderService;
 use synctv_proto::providers::fnos::{
     GetBindsRequest, GetBindsResponse, GetServerInfoRequest, GetServerInfoResponse,
-    ListMediaItemsRequest, ListMediaItemsResponse, ListMediaLibrariesRequest,
+    GetThumbnailRequest, ListMediaItemsRequest, ListMediaItemsResponse, ListMediaLibrariesRequest,
     ListMediaLibrariesResponse, ListRequest, ListResponse, LoginRequest, LoginResponse,
     LogoutRequest, LogoutResponse, SetFavoriteRequest, SetFavoriteResponse, SetWatchedRequest,
     SetWatchedResponse,
@@ -21,6 +22,7 @@ pub struct FnosProviderGrpcService {
     api: Arc<FnosApiImpl>,
     request_executor: Arc<RequestExecutor>,
     runtime_settings: Arc<synctv_api_common::ApiRuntimeSettings>,
+    resource_state: Arc<super::playback_provider::PlaybackProviderGrpcState>,
 }
 
 impl FnosProviderGrpcService {
@@ -29,11 +31,13 @@ impl FnosProviderGrpcService {
         shared_api_runtime: &Arc<SharedApiRuntime>,
         request_executor: Arc<RequestExecutor>,
         runtime_settings: Arc<synctv_api_common::ApiRuntimeSettings>,
+        resource_state: Arc<super::playback_provider::PlaybackProviderGrpcState>,
     ) -> Self {
         Self {
             api: shared_api_runtime.fnos_api.clone(),
             request_executor,
             runtime_settings,
+            resource_state,
         }
     }
 }
@@ -41,6 +45,8 @@ impl FnosProviderGrpcService {
 #[tonic::async_trait]
 #[allow(clippy::result_large_err)]
 impl FnosProviderService for FnosProviderGrpcService {
+    type GetThumbnailStream = super::ProviderResourceResponseStream;
+
     async fn login(
         &self,
         request: Request<LoginRequest>,
@@ -241,5 +247,23 @@ impl FnosProviderService for FnosProviderGrpcService {
             .await
             .map(Response::new)
             .map_err(crate::grpc::map_api_error)
+    }
+
+    async fn get_thumbnail(
+        &self,
+        request: Request<GetThumbnailRequest>,
+    ) -> Result<Response<Self::GetThumbnailStream>, Status> {
+        let metadata = super::provider_stream_request_metadata(&request, &self.runtime_settings)?;
+        let req = request.into_inner();
+        let api = self.api.clone();
+
+        super::execute_provider_resource_stream(
+            self.resource_state.clone(),
+            metadata,
+            move |_control, authenticated| {
+                async move { api.thumbnail_action(authenticated.user_id(), req).await }.boxed()
+            },
+        )
+        .await
     }
 }

@@ -204,6 +204,7 @@ impl AcFunProvider {
                 url: quality.url,
                 headers,
                 range_header: range_header.map(ToString::to_string),
+                proxy_strategy: super::PlaybackResourceProxyStrategy::SliceCache,
             })
         }
     }
@@ -248,6 +249,7 @@ impl AcFunProvider {
                 url: request.target_url.to_string(),
                 headers,
                 range_header: request.range_header.map(ToString::to_string),
+                proxy_strategy: super::PlaybackResourceProxyStrategy::SliceCache,
             })
         }
     }

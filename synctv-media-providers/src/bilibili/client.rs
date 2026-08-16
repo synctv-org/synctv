@@ -15,7 +15,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use chrono::{FixedOffset, NaiveDateTime, TimeZone};
 use futures_util::{SinkExt, StreamExt};
 use md5::{Digest, Md5};
-use prost::Message as ProstMessage;
 use regex::Regex;
 use reqwest::Client;
 use serde::{de::DeserializeOwned, Deserialize};
@@ -32,9 +31,7 @@ use tokio_tungstenite::tungstenite::Message;
 
 use super::types;
 use crate::error::with_retry;
-use crate::error::{
-    bytes_with_limit, check_response, json_with_limit, ProviderClientError as BilibiliError,
-};
+use crate::error::{check_response, json_with_limit, ProviderClientError as BilibiliError};
 
 static RE_BVID: LazyLock<Result<Regex, regex::Error>> =
     LazyLock::new(|| Regex::new(r"BV[a-zA-Z0-9]+"));
@@ -43,44 +40,11 @@ static RE_EPID: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| Regex::
 use crate::PROVIDER_USER_AGENT as USER_AGENT;
 const REFERER: &str = "https://www.bilibili.com";
 const LIVE_ORIGIN: &str = "https://live.bilibili.com";
-// The WebView subtitle endpoint returns an empty protobuf for desktop Windows
-// and macOS user agents. Use the app user agent that exposes the subtitle list.
-const SUBTITLE_WEB_VIEW_USER_AGENT: &str = "BiliDroid/7.57.0 os/android model/Pixel";
 const BILIBILI_SHORT_LINK_MAX_REDIRECTS: usize = 5;
 #[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots", test))]
 const LIVE_DANMAKU_WS_MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
 #[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots", test))]
 const LIVE_DANMAKU_WS_MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
-
-#[derive(Clone, PartialEq, ProstMessage)]
-struct SubtitleWebViewReply {
-    #[prost(message, optional, tag = "1")]
-    subtitle: Option<SubtitleWebView>,
-}
-
-#[derive(Clone, PartialEq, ProstMessage)]
-struct SubtitleWebView {
-    #[prost(string, tag = "1")]
-    _lan: String,
-    #[prost(string, tag = "2")]
-    _lan_doc: String,
-    #[prost(message, repeated, tag = "3")]
-    subtitles: Vec<SubtitleWebViewItem>,
-}
-
-#[derive(Clone, PartialEq, ProstMessage)]
-struct SubtitleWebViewItem {
-    #[prost(int64, tag = "1")]
-    _id: i64,
-    #[prost(string, tag = "2")]
-    _id_str: String,
-    #[prost(string, tag = "3")]
-    _lan: String,
-    #[prost(string, tag = "4")]
-    lan_doc: String,
-    #[prost(string, tag = "5")]
-    subtitle_url: String,
-}
 
 fn shared_client() -> Result<Client, BilibiliError> {
     crate::provider_http_client_builder(synctv_common::ssrf::SsrfGuard::strict_policy())
@@ -124,16 +88,6 @@ fn normalized_subtitle_url(url: &str) -> Option<String> {
     } else {
         url.strip_prefix("//").map(|url| format!("https://{url}"))
     }
-}
-
-fn subtitle_web_view_to_map(items: Vec<SubtitleWebViewItem>) -> HashMap<String, String> {
-    items
-        .into_iter()
-        .filter_map(|item| {
-            normalized_subtitle_url(&item.subtitle_url).map(|url| (item.lan_doc, url))
-        })
-        .filter(|(name, _)| !name.is_empty())
-        .collect()
 }
 
 fn subtitle_player_to_map(items: Vec<types::SubtitleItem>) -> HashMap<String, String> {
@@ -1998,72 +1952,7 @@ impl BilibiliClient {
         bvid: &str,
         cid: u64,
     ) -> Result<HashMap<String, String>, BilibiliError> {
-        match self.get_subtitles_from_web_view(aid, cid).await {
-            Ok(subtitles) if !subtitles.is_empty() => Ok(subtitles),
-            Ok(subtitles) => {
-                tracing::debug!(
-                    "Bilibili subtitle web view returned no tracks; using player API fallback"
-                );
-                match self.get_subtitles_from_player(aid, bvid, cid).await {
-                    Ok(fallback) => Ok(fallback),
-                    Err(error) => {
-                        tracing::debug!(
-                            error = %error,
-                            "Bilibili subtitle player API fallback failed after an empty web view"
-                        );
-                        Ok(subtitles)
-                    }
-                }
-            }
-            Err(error) => {
-                tracing::debug!(
-                    error = %error,
-                    "Bilibili subtitle web view request failed; using player API fallback"
-                );
-                self.get_subtitles_from_player(aid, bvid, cid).await
-            }
-        }
-    }
-
-    async fn get_subtitles_from_web_view(
-        &self,
-        aid: u64,
-        cid: u64,
-    ) -> Result<HashMap<String, String>, BilibiliError> {
-        let client = self.client.clone();
-        let endpoint = self.endpoints.api_url("/x/v2/subtitle/web/view");
-        let cookie_header = self.build_cookie_header();
-        let referer = self.endpoints.web_base.clone();
-        let response = with_retry(|| {
-            let client = client.clone();
-            let endpoint = endpoint.clone();
-            let cookie_header = cookie_header.clone();
-            let referer = referer.clone();
-            async move {
-                let mut request = client
-                    .get(endpoint)
-                    .query(&[
-                        ("type", "1"),
-                        ("oid", &cid.to_string()),
-                        ("pid", &aid.to_string()),
-                    ])
-                    .header("User-Agent", SUBTITLE_WEB_VIEW_USER_AGENT)
-                    .header("Accept", "application/octet-stream")
-                    .header("Referer", referer);
-                if let Some(cookies) = cookie_header.as_deref() {
-                    request = request.header("Cookie", cookies);
-                }
-                let response = check_response(request.send().await?).await?;
-                bytes_with_limit(response).await
-            }
-        })
-        .await?;
-        let subtitle = SubtitleWebViewReply::decode(response.as_slice())
-            .map_err(|error| BilibiliError::Parse(format!("subtitle web view: {error}")))?
-            .subtitle
-            .unwrap_or_default();
-
-        Ok(subtitle_web_view_to_map(subtitle.subtitles))
+        self.get_subtitles_from_player(aid, bvid, cid).await
     }
 
     async fn get_subtitles_from_player(
@@ -2072,14 +1961,14 @@ impl BilibiliClient {
         bvid: &str,
         cid: u64,
     ) -> Result<HashMap<String, String>, BilibiliError> {
-        let mut query = vec![("cid", cid.to_string())];
+        let mut query = vec![("cid".to_string(), cid.to_string())];
         if bvid.is_empty() {
-            query.push(("aid", aid.to_string()));
+            query.push(("aid".to_string(), aid.to_string()));
         } else {
-            query.push(("bvid", bvid.to_string()));
+            query.push(("bvid".to_string(), bvid.to_string()));
         }
         let response = self
-            .get_wbi_api::<types::PlayerV2Data>("/x/player/wbi/v2", query)
+            .get_api::<types::PlayerV2Data>("/x/player/v2", query)
             .await?;
         let data = response
             .data

@@ -918,7 +918,6 @@ mod websocket_e2e {
             });
         let playback_provider_deps = synctv_core::service::PlaybackProviderServiceDeps {
             providers: providers.clone(),
-            provider_stores: shared_provider_stores.clone(),
             playback_transport_services: playback_transport_services.clone(),
             provider_access_service: provider_access_service.clone(),
         };

@@ -558,7 +558,6 @@ fn build_provider_api_impls(
 #[allow(clippy::needless_pass_by_value)]
 fn build_playback_provider_services(
     providers: synctv_core::provider::ProviderSet,
-    provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver>,
     room_service: Arc<RoomService>,
     credential_repo: Arc<UserProviderCredentialRepository>,
     provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
@@ -577,7 +576,6 @@ fn build_playback_provider_services(
     });
     let deps = synctv_core::service::PlaybackProviderServiceDeps {
         providers,
-        provider_stores,
         playback_transport_services: playback_transport_services.clone(),
         provider_access_service,
     };
@@ -2681,7 +2679,6 @@ impl SyncTvServer {
         );
         let playback_provider_services = build_playback_provider_services(
             self.services.providers.clone(),
-            shared_provider_runtime.provider_stores.clone(),
             self.services.room_service.clone(),
             self.services.user_provider_credential_repository.clone(),
             provider_access_service.clone(),
@@ -3362,7 +3359,6 @@ mod tests {
         );
         let playback_provider_services = build_playback_provider_services(
             providers.clone(),
-            shared_runtime.provider_stores.clone(),
             room_service.clone(),
             credential_repo.clone(),
             provider_access_service.clone(),

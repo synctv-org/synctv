@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Query, RawQuery, State},
+    extract::{Query, State},
     routing::{get, post},
     Json, Router,
 };
@@ -19,11 +19,9 @@ use crate::http::{middleware::RequestMetadata, validation::ProtoQuery, AppResult
 use synctv_api_common::impls::EndpointRateLimitCategory;
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct PreviewQuery {
     server_id: String,
-    #[serde(default)]
-    credential_owner_id: Option<String>,
     file_id: u64,
     #[serde(default = "default_size")]
     width: u32,
@@ -31,14 +29,6 @@ pub(crate) struct PreviewQuery {
     height: u32,
     #[serde(default = "default_crop")]
     crop: bool,
-    #[serde(default, rename = "sig")]
-    _sig: Option<String>,
-    #[serde(default, rename = "uid")]
-    _uid: Option<String>,
-    #[serde(default, rename = "rid")]
-    _rid: Option<String>,
-    #[serde(default, rename = "exp")]
-    _exp: Option<i64>,
 }
 
 const fn default_size() -> u32 {
@@ -157,29 +147,19 @@ pub(crate) async fn binds(
     .await
 }
 
-#[cfg_attr(feature = "openapi", utoipa::path(get, path = "/api/providers/nextcloud/preview", tag = "Provider", params(("serverId" = String, Query), ("credentialOwnerId" = Option<String>, Query), ("fileId" = u64, Query), ("width" = u32, Query), ("height" = u32, Query), ("crop" = bool, Query)), responses((status = 200, description = "Nextcloud preview")), security(("bearer_auth" = []))))]
+#[cfg_attr(feature = "openapi", utoipa::path(get, path = "/api/providers/nextcloud/preview", tag = "Provider", params(("serverId" = String, Query), ("fileId" = u64, Query), ("width" = u32, Query), ("height" = u32, Query), ("crop" = bool, Query)), responses((status = 200, description = "Nextcloud preview")), security(("bearer_auth" = []))))]
 pub(crate) async fn preview(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Query(query): Query<PreviewQuery>,
-    RawQuery(raw_query): RawQuery,
 ) -> AppResult<axum::response::Response> {
-    let server_id = query.server_id.trim().to_string();
-    if server_id.is_empty() || query.file_id == 0 {
-        return Err(crate::http::AppError::bad_request(
-            "Nextcloud preview serverId and fileId are required",
-        ));
-    }
-    let width = query.width.clamp(1, 2048);
-    let height = query.height.clamp(1, 2048);
-    let crop = query.crop;
-    let requested_owner = query
-        .credential_owner_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
-    let raw_query = raw_query.unwrap_or_default();
+    let req = synctv_proto::providers::nextcloud::GetPreviewRequest {
+        server_id: query.server_id,
+        file_id: query.file_id,
+        width: query.width,
+        height: query.height,
+        crop: Some(query.crop),
+    };
     let operation_state = state.clone();
     let metadata = provider_request_metadata(request_meta);
     let action = state
@@ -190,65 +170,14 @@ pub(crate) async fn preview(
             EndpointRateLimitCategory::Read,
             move |auth| async move {
                 let state = operation_state;
-                let public_user = state
-                    .shared_api_runtime
-                    .public_id_codec
-                    .encode_user_id(auth.user_id())
-                    .map_err(synctv_api_common::impls::ApiError::Internal)?;
-                let public_owner = requested_owner
-                    .clone()
-                    .unwrap_or_else(|| public_user.clone());
-                let signed =
-                    url::form_urlencoded::parse(raw_query.as_bytes()).any(|(key, _)| key == "sig");
-                if signed || public_owner != public_user {
-                    let room_id = synctv_api_common::nextcloud_preview_urls::verify_nextcloud_preview_access(
-                        &state.shared_api_runtime.proxy_signing_key,
-                        &public_user,
-                        &raw_query,
-                        synctv_api_common::nextcloud_preview_urls::NextcloudPreviewScope {
-                            server_id: &server_id,
-                            credential_owner_id: &public_owner,
-                            file_id: query.file_id,
-                            width,
-                            height,
-                            crop,
-                        },
-                    )
-                    .map_err(|error| match error {
-                        synctv_api_common::nextcloud_preview_urls::NextcloudPreviewAccessError::Invalid => {
-                            synctv_api_common::impls::ApiError::Authentication(
-                                "Invalid Nextcloud preview signature".to_string(),
-                            )
-                        }
-                        synctv_api_common::nextcloud_preview_urls::NextcloudPreviewAccessError::WrongUser => {
-                            synctv_api_common::impls::ApiError::Authorization(
-                                "Nextcloud preview URL is scoped to another user".to_string(),
-                            )
-                        }
-                    })?;
-                    let room_id = state
-                        .shared_api_runtime
-                        .public_id_codec
-                        .decode_room_id(&room_id)
-                        .map_err(synctv_api_common::impls::ApiError::InvalidInput)?;
-                    super::playback_provider::playback_provider_api_runtime(&state)
-                        .validate_fresh_access(&room_id, &auth.user_id())
-                        .await?;
-                }
-                let owner = state
-                    .shared_api_runtime
-                    .public_id_codec
-                    .decode_user_id(&public_owner)
-                    .map_err(synctv_api_common::impls::ApiError::InvalidInput)?;
                 state
                     .shared_api_runtime
                     .nextcloud_api
-                    .preview_action(owner, &server_id, query.file_id, width, height, crop)
+                    .preview_action(auth.user_id(), req)
                     .await
-                    .map_err(synctv_api_common::impls::ApiError::from)
             },
         )
         .await
         .map_err(crate::http::error::map_api_error)?;
-    super::execute_playback_transport_with_state(&state, action, None).await
+    super::execute_provider_preview_transport(&state, action, None).await
 }

@@ -1,11 +1,12 @@
+use futures::FutureExt;
 use std::sync::Arc;
 use synctv_api_common::api_runtime::SharedApiRuntime;
 use synctv_api_common::impls::{EndpointRateLimitCategory, RequestExecutor};
 use synctv_api_common::providers::NextcloudApiImpl;
 use synctv_proto::providers::nextcloud::nextcloud_provider_service_server::NextcloudProviderService;
 use synctv_proto::providers::nextcloud::{
-    GetBindsRequest, GetBindsResponse, ListFavoritesRequest, ListRequest, ListResponse,
-    LoginRequest, LoginResponse, LogoutRequest, LogoutResponse, PollLoginFlowRequest,
+    GetBindsRequest, GetBindsResponse, GetPreviewRequest, ListFavoritesRequest, ListRequest,
+    ListResponse, LoginRequest, LoginResponse, LogoutRequest, LogoutResponse, PollLoginFlowRequest,
     StartLoginFlowRequest, StartLoginFlowResponse,
 };
 use tonic::{Request, Response, Status};
@@ -15,6 +16,7 @@ pub struct NextcloudProviderGrpcService {
     api: Arc<NextcloudApiImpl>,
     request_executor: Arc<RequestExecutor>,
     runtime_settings: Arc<synctv_api_common::ApiRuntimeSettings>,
+    resource_state: Arc<super::playback_provider::PlaybackProviderGrpcState>,
 }
 
 impl NextcloudProviderGrpcService {
@@ -23,11 +25,13 @@ impl NextcloudProviderGrpcService {
         shared: &Arc<SharedApiRuntime>,
         request_executor: Arc<RequestExecutor>,
         runtime_settings: Arc<synctv_api_common::ApiRuntimeSettings>,
+        resource_state: Arc<super::playback_provider::PlaybackProviderGrpcState>,
     ) -> Self {
         Self {
             api: shared.nextcloud_api.clone(),
             request_executor,
             runtime_settings,
+            resource_state,
         }
     }
 }
@@ -35,6 +39,8 @@ impl NextcloudProviderGrpcService {
 #[tonic::async_trait]
 #[allow(clippy::result_large_err)]
 impl NextcloudProviderService for NextcloudProviderGrpcService {
+    type GetPreviewStream = super::ProviderResourceResponseStream;
+
     async fn login(
         &self,
         request: Request<LoginRequest>,
@@ -183,5 +189,23 @@ impl NextcloudProviderService for NextcloudProviderGrpcService {
             .await
             .map(Response::new)
             .map_err(crate::grpc::map_api_error)
+    }
+
+    async fn get_preview(
+        &self,
+        request: Request<GetPreviewRequest>,
+    ) -> Result<Response<Self::GetPreviewStream>, Status> {
+        let metadata = super::provider_stream_request_metadata(&request, &self.runtime_settings)?;
+        let req = request.into_inner();
+        let api = self.api.clone();
+
+        super::execute_provider_resource_stream(
+            self.resource_state.clone(),
+            metadata,
+            move |_control, authenticated| {
+                async move { api.preview_action(authenticated.user_id(), req).await }.boxed()
+            },
+        )
+        .await
     }
 }

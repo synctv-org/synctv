@@ -1,5 +1,6 @@
 //! Emby Provider gRPC Service Implementation
 
+use futures::FutureExt;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
@@ -10,8 +11,8 @@ use synctv_api_common::providers::EmbyApiImpl;
 // Import generated proto types from synctv_proto
 use synctv_proto::providers::emby::emby_provider_service_server::EmbyProviderService;
 use synctv_proto::providers::emby::{
-    GetBindsRequest, GetBindsResponse, GetMeRequest, GetMeResponse, ListRequest, ListResponse,
-    LoginRequest, LoginResponse, LogoutRequest, LogoutResponse,
+    GetBindsRequest, GetBindsResponse, GetMeRequest, GetMeResponse, GetThumbnailRequest,
+    ListRequest, ListResponse, LoginRequest, LoginResponse, LogoutRequest, LogoutResponse,
 };
 
 use crate::grpc::map_api_error;
@@ -23,6 +24,7 @@ pub struct EmbyProviderGrpcService {
     api: Arc<EmbyApiImpl>,
     request_executor: Arc<RequestExecutor>,
     runtime_settings: Arc<synctv_api_common::ApiRuntimeSettings>,
+    resource_state: Arc<super::playback_provider::PlaybackProviderGrpcState>,
 }
 
 impl EmbyProviderGrpcService {
@@ -31,11 +33,13 @@ impl EmbyProviderGrpcService {
         shared_api_runtime: &Arc<SharedApiRuntime>,
         request_executor: Arc<RequestExecutor>,
         runtime_settings: Arc<synctv_api_common::ApiRuntimeSettings>,
+        resource_state: Arc<super::playback_provider::PlaybackProviderGrpcState>,
     ) -> Self {
         Self {
             api: shared_api_runtime.emby_api.clone(),
             request_executor,
             runtime_settings,
+            resource_state,
         }
     }
 }
@@ -45,6 +49,8 @@ impl EmbyProviderGrpcService {
 // Provider business logic stays in `EmbyApiImpl`.
 #[allow(clippy::result_large_err)]
 impl EmbyProviderService for EmbyProviderGrpcService {
+    type GetThumbnailStream = super::ProviderResourceResponseStream;
+
     async fn login(
         &self,
         request: Request<LoginRequest>,
@@ -183,5 +189,27 @@ impl EmbyProviderService for EmbyProviderGrpcService {
             .map_err(map_api_error)?;
 
         Ok(Response::new(provider_binds))
+    }
+
+    async fn get_thumbnail(
+        &self,
+        request: Request<GetThumbnailRequest>,
+    ) -> Result<Response<Self::GetThumbnailStream>, Status> {
+        let metadata = super::provider_stream_request_metadata(&request, &self.runtime_settings)?;
+        let req = request.into_inner();
+        let api = self.api.clone();
+
+        super::execute_provider_resource_stream(
+            self.resource_state.clone(),
+            metadata,
+            move |control, authenticated| {
+                async move {
+                    api.thumbnail_action(&authenticated.user_id(), req, Some(&control))
+                        .await
+                }
+                .boxed()
+            },
+        )
+        .await
     }
 }

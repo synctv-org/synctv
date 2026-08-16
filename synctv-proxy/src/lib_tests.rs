@@ -2,7 +2,6 @@ use super::*;
 use crate::manifest::{make_absolute, rewrite_uri_attribute_with_count};
 use crate::redirect::{send_with_redirect_validation, REDIRECT_PRESERVE_HEADERS};
 use axum::http::StatusCode;
-use http_body_util::BodyExt;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -485,10 +484,6 @@ fn test_proxy_error_kind_mapping() {
         ProxyError::Connection("x".into()).kind(),
         ProxyErrorKind::Connection
     );
-    assert_eq!(
-        ProxyError::BodyTooLarge("x".into()).kind(),
-        ProxyErrorKind::BodyTooLarge
-    );
     assert_eq!(ProxyError::Ssrf("x".into()).kind(), ProxyErrorKind::Ssrf);
     assert_eq!(
         ProxyError::InvalidRequest("x".into()).kind(),
@@ -509,16 +504,6 @@ fn test_proxy_error_kind_mapping() {
 }
 
 #[test]
-fn test_proxy_error_kind_from_error_chain() {
-    let err = anyhow::Error::from(ProxyError::BodyTooLarge(
-        "stream exceeded limit".to_string(),
-    ))
-    .context("outer context");
-
-    assert_eq!(proxy_error_kind(&err), Some(ProxyErrorKind::BodyTooLarge));
-}
-
-#[test]
 fn test_proxy_range_not_satisfiable_total_size_from_error_chain() {
     let err = anyhow::Error::from(ProxyError::RangeNotSatisfiable {
         message: "range start beyond total size".to_string(),
@@ -531,24 +516,6 @@ fn test_proxy_range_not_satisfiable_total_size_from_error_chain() {
         Some(ProxyErrorKind::RangeNotSatisfiable)
     );
     assert_eq!(proxy_range_not_satisfiable_total_size(&err), Some(4096));
-}
-
-#[tokio::test]
-async fn test_proxy_body_stream_preserves_typed_oversize_error() {
-    let stream = futures::stream::iter([
-        Ok(Bytes::from_static(b"1234")),
-        Ok(Bytes::from_static(b"567")),
-    ]);
-    let body = Body::from_stream(proxy_body_stream(stream, 6));
-    let err = body
-        .collect()
-        .await
-        .expect_err("oversized streaming body should fail");
-
-    assert_eq!(
-        proxy_error_kind_from_std_error(&err),
-        Some(ProxyErrorKind::BodyTooLarge)
-    );
 }
 
 #[tokio::test]

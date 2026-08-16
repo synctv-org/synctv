@@ -485,6 +485,7 @@ impl CloudreveProvider {
             url: url.clone(),
             headers: headers.clone(),
             range_header: range_header.map(ToString::to_string),
+            proxy_strategy: super::PlaybackResourceProxyStrategy::SliceCache,
         })
     }
 
@@ -590,6 +591,7 @@ impl CloudreveProvider {
             url: url.clone(),
             headers: headers.clone(),
             range_header: None,
+            proxy_strategy: super::PlaybackResourceProxyStrategy::FullResponseCache,
         })
     }
 

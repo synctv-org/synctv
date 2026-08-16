@@ -1,11 +1,12 @@
 use axum::{
-    extract::{Path, RawQuery, State},
+    extract::{Path, Query, RawQuery, State},
     http::{HeaderMap, Method},
 };
 use futures::FutureExt;
 use synctv_proto::playback_provider::fnos::{
-    FnosResourceResponse, FnosSegmentResponse, FnosSubtitleResponse, FnosThumbnailResponse,
-    GetFnosResourceRequest, GetFnosSegmentRequest, GetFnosSubtitleRequest, GetFnosThumbnailRequest,
+    FnosImageResourceResponse, FnosResourceResponse, FnosSegmentResponse, FnosSubtitleResponse,
+    FnosThumbnailResponse, GetFnosImageResourceRequest, GetFnosResourceRequest,
+    GetFnosSegmentRequest, GetFnosSubtitleRequest, GetFnosThumbnailRequest,
 };
 
 use crate::http::{middleware::RequestMetadata, AppResult, AppState};
@@ -17,6 +18,7 @@ use crate::providers::playback_provider::transport::{
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FnosResourcePath {
+    pub room_id: String,
     pub version: String,
     pub mode_name: String,
     pub media_index: u32,
@@ -25,9 +27,22 @@ pub struct FnosResourcePath {
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FnosSubtitlePath {
+    pub room_id: String,
     pub version: String,
     pub mode_name: String,
     pub subtitle_index: u32,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FnosImageResourceQuery {
+    pub server_id: String,
+    pub credential_owner_id: String,
+    pub image_path: String,
+    pub width: u32,
+    pub sig: String,
+    pub uid: String,
+    pub exp: i64,
 }
 
 impl PlaybackProviderHttpResponse for FnosResourceResponse {
@@ -54,16 +69,23 @@ impl PlaybackProviderHttpResponse for FnosThumbnailResponse {
     }
 }
 
+impl PlaybackProviderHttpResponse for FnosImageResourceResponse {
+    fn chunk(self) -> Option<synctv_proto::playback_provider::common::StreamChunk> {
+        self.chunk
+    }
+}
+
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/fnos/{version}/resources/{modeName}/{mediaIndex}",
+        path = "/api/playback-providers/{roomId}/fnos/{version}/resources/{modeName}/{mediaIndex}",
         tag = "FNOS Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path), ("modeName" = String, Path),
             ("mediaIndex" = u32, Path), ("sig" = String, Query),
-            ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)
+            ("uid" = String, Query), ("exp" = i64, Query)
         ),
         responses((status = 200, description = "FNOS WebDAV media resource"))
     )
@@ -110,8 +132,8 @@ async fn fnos_resource(
     query_string: String,
     method: Method,
 ) -> AppResult<axum::response::Response> {
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetFnosResourceRequest {
         version: path.version,
         mode_name: path.mode_name,
@@ -147,24 +169,25 @@ async fn fnos_resource(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/fnos/{version}/segments",
+        path = "/api/playback-providers/{roomId}/fnos/{version}/segments",
         tag = "FNOS Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path), ("targetUrl" = String, Query),
-            ("sig" = String, Query), ("uid" = String, Query),
-            ("rid" = String, Query), ("exp" = i64, Query)
+            ("sig" = String, Query), ("uid" = String, Query), ("exp" = i64, Query)
         ),
         responses((status = 200, description = "FNOS HLS segment"))
     )
 )]
 pub fn get_fnos_segment(
-    Path(version): Path<String>,
+    Path((room_id, version)): Path<(String, String)>,
     State(state): State<AppState>,
     request_meta: RequestMetadata,
     headers: HeaderMap,
     raw_query: RawQuery,
 ) -> impl futures::Future<Output = AppResult<axum::response::Response>> + Send + 'static {
     fnos_segment(
+        room_id,
         version,
         state,
         request_meta,
@@ -175,13 +198,14 @@ pub fn get_fnos_segment(
 }
 
 pub fn head_fnos_segment(
-    Path(version): Path<String>,
+    Path((room_id, version)): Path<(String, String)>,
     State(state): State<AppState>,
     request_meta: RequestMetadata,
     headers: HeaderMap,
     raw_query: RawQuery,
 ) -> impl futures::Future<Output = AppResult<axum::response::Response>> + Send + 'static {
     fnos_segment(
+        room_id,
         version,
         state,
         request_meta,
@@ -192,6 +216,7 @@ pub fn head_fnos_segment(
 }
 
 async fn fnos_segment(
+    room_id: String,
     version: String,
     state: AppState,
     request_meta: RequestMetadata,
@@ -200,7 +225,7 @@ async fn fnos_segment(
     method: Method,
 ) -> AppResult<axum::response::Response> {
     let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+        signed_query_fields(&query_string, &room_id).map_err(crate::http::error::map_api_error)?;
     let req = GetFnosSegmentRequest {
         version,
         target_url: target_url(&query_string).map_err(crate::http::error::map_api_error)?,
@@ -235,12 +260,13 @@ async fn fnos_segment(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/fnos/{version}/subtitles/{modeName}/{subtitleIndex}",
+        path = "/api/playback-providers/{roomId}/fnos/{version}/subtitles/{modeName}/{subtitleIndex}",
         tag = "FNOS Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path), ("modeName" = String, Path),
             ("subtitleIndex" = u32, Path), ("sig" = String, Query),
-            ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)
+            ("uid" = String, Query), ("exp" = i64, Query)
         ),
         responses((status = 200, description = "FNOS subtitle"))
     )
@@ -252,8 +278,8 @@ pub async fn get_fnos_subtitle(
     raw_query: RawQuery,
 ) -> AppResult<axum::response::Response> {
     let query_string = query(raw_query);
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetFnosSubtitleRequest {
         version: path.version,
         mode_name: path.mode_name,
@@ -287,24 +313,25 @@ pub async fn get_fnos_subtitle(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/fnos/{version}/thumbnail",
+        path = "/api/playback-providers/{roomId}/fnos/{version}/thumbnail",
         tag = "FNOS Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path), ("sig" = String, Query),
-            ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)
+            ("uid" = String, Query), ("exp" = i64, Query)
         ),
         responses((status = 200, description = "FNOS media thumbnail"))
     )
 )]
 pub async fn get_fnos_thumbnail(
-    Path(version): Path<String>,
+    Path((room_id, version)): Path<(String, String)>,
     State(state): State<AppState>,
     request_meta: RequestMetadata,
     raw_query: RawQuery,
 ) -> AppResult<axum::response::Response> {
     let query_string = query(raw_query);
     let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+        signed_query_fields(&query_string, &room_id).map_err(crate::http::error::map_api_error)?;
     let req = GetFnosThumbnailRequest {
         version,
         sig,
@@ -321,6 +348,57 @@ pub async fn get_fnos_thumbnail(
             let state = state_for_stream;
             async move {
                 synctv_api_common::playback_provider::fnos::get_fnos_thumbnail(
+                    fnos_deps(&state, Some(&request_control)),
+                    req,
+                )
+                .await
+            }
+            .boxed()
+        },
+    )
+    .await
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/playback-providers/{roomId}/fnos/image",
+        tag = "FNOS Playback Provider",
+        params(
+            ("roomId" = String, Path), ("serverId" = String, Query),
+            ("credentialOwnerId" = String, Query), ("imagePath" = String, Query),
+            ("width" = u32, Query), ("sig" = String, Query),
+            ("uid" = String, Query), ("exp" = i64, Query)
+        ),
+        responses((status = 200, description = "Room-scoped FNOS image"))
+    )
+)]
+pub async fn get_fnos_image_resource(
+    Path(room_id): Path<String>,
+    Query(query): Query<FnosImageResourceQuery>,
+    State(state): State<AppState>,
+    request_meta: RequestMetadata,
+) -> AppResult<axum::response::Response> {
+    let req = GetFnosImageResourceRequest {
+        server_id: query.server_id,
+        credential_owner_id: query.credential_owner_id,
+        image_path: query.image_path,
+        width: query.width,
+        sig: query.sig,
+        uid: query.uid,
+        rid: room_id,
+        exp: query.exp,
+    };
+    let state_for_stream = state.clone();
+    stream_http_response::<FnosImageResourceResponse, _>(
+        state,
+        request_meta,
+        Method::GET,
+        move |request_control| {
+            let state = state_for_stream;
+            async move {
+                synctv_api_common::playback_provider::fnos::get_fnos_image_resource(
                     fnos_deps(&state, Some(&request_control)),
                     req,
                 )

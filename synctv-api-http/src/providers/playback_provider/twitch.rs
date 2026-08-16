@@ -21,6 +21,7 @@ use synctv_api_common::impls::EndpointRateLimitCategory;
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TwitchResourcePath {
+    pub room_id: String,
     pub version: String,
     pub mode_name: String,
     pub media_index: u32,
@@ -42,12 +43,13 @@ impl PlaybackProviderHttpResponse for TwitchSegmentResponse {
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/twitch/{version}/resources/{modeName}/{mediaIndex}",
+        path = "/api/playback-providers/{roomId}/twitch/{version}/resources/{modeName}/{mediaIndex}",
         tag = "Twitch Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path), ("modeName" = String, Path),
             ("mediaIndex" = u32, Path), ("sig" = String, Query),
-            ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)
+            ("uid" = String, Query), ("exp" = i64, Query)
         ),
         responses((status = 200, description = "Refreshed Twitch media resource"))
     )
@@ -94,8 +96,8 @@ async fn twitch_resource(
     query_string: String,
     method: Method,
 ) -> AppResult<axum::response::Response> {
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetTwitchResourceRequest {
         version: path.version,
         mode_name: path.mode_name,
@@ -131,24 +133,25 @@ async fn twitch_resource(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/twitch/{version}/segments",
+        path = "/api/playback-providers/{roomId}/twitch/{version}/segments",
         tag = "Twitch Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path), ("targetUrl" = String, Query),
-            ("sig" = String, Query), ("uid" = String, Query),
-            ("rid" = String, Query), ("exp" = i64, Query)
+            ("sig" = String, Query), ("uid" = String, Query), ("exp" = i64, Query)
         ),
         responses((status = 200, description = "Twitch HLS segment"))
     )
 )]
 pub fn get_twitch_segment(
-    Path(version): Path<String>,
+    Path((room_id, version)): Path<(String, String)>,
     State(state): State<AppState>,
     request_meta: RequestMetadata,
     headers: HeaderMap,
     raw_query: RawQuery,
 ) -> impl futures::Future<Output = AppResult<axum::response::Response>> + Send + 'static {
     twitch_segment(
+        room_id,
         version,
         state,
         request_meta,
@@ -159,13 +162,14 @@ pub fn get_twitch_segment(
 }
 
 pub fn head_twitch_segment(
-    Path(version): Path<String>,
+    Path((room_id, version)): Path<(String, String)>,
     State(state): State<AppState>,
     request_meta: RequestMetadata,
     headers: HeaderMap,
     raw_query: RawQuery,
 ) -> impl futures::Future<Output = AppResult<axum::response::Response>> + Send + 'static {
     twitch_segment(
+        room_id,
         version,
         state,
         request_meta,
@@ -176,6 +180,7 @@ pub fn head_twitch_segment(
 }
 
 async fn twitch_segment(
+    room_id: String,
     version: String,
     state: AppState,
     request_meta: RequestMetadata,
@@ -184,7 +189,7 @@ async fn twitch_segment(
     method: Method,
 ) -> AppResult<axum::response::Response> {
     let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+        signed_query_fields(&query_string, &room_id).map_err(crate::http::error::map_api_error)?;
     let req = GetTwitchSegmentRequest {
         version,
         target_url: target_url(&query_string).map_err(crate::http::error::map_api_error)?,
@@ -219,12 +224,13 @@ async fn twitch_segment(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/twitch/{version}/chats/{modeName}/{mediaIndex}",
+        path = "/api/playback-providers/{roomId}/twitch/{version}/chats/{modeName}/{mediaIndex}",
         tag = "Twitch Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path), ("modeName" = String, Path),
             ("mediaIndex" = u32, Path), ("sig" = String, Query),
-            ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)
+            ("uid" = String, Query), ("exp" = i64, Query)
         ),
         responses((
             status = 200,
@@ -241,8 +247,8 @@ pub async fn watch_twitch_chat(
     raw_query: RawQuery,
 ) -> AppResult<axum::response::Response> {
     let query_string = query(raw_query);
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = WatchTwitchChatRequest {
         version: path.version,
         mode_name: path.mode_name,

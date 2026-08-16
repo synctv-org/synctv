@@ -396,7 +396,7 @@ mod tests {
         admin as admin_proto, client as client_proto, common as common_proto,
         providers::{
             alist as alist_proto, bilibili as bilibili_proto, common as provider_common_proto,
-            douyin as douyin_proto, emby as emby_proto, rtmp as rtmp_proto,
+            douyin as douyin_proto, emby as emby_proto,
         },
     };
     #[cfg(unix)]
@@ -1532,13 +1532,15 @@ mod tests {
         async fn create_publish_key(
             &self,
             _: Request<CreatePublishKeyRequest>,
-        ) -> std::result::Result<Response<rtmp_proto::CreatePublishKeyResponse>, Status> {
+        ) -> std::result::Result<Response<client_proto::CreateRoomPublishKeyResponse>, Status>
+        {
             unavailable_test_management_response()
         }
         async fn get_stream_info(
             &self,
             _: Request<GetStreamInfoRequest>,
-        ) -> std::result::Result<Response<rtmp_proto::GetStreamInfoResponse>, Status> {
+        ) -> std::result::Result<Response<client_proto::GetRoomStreamInfoResponse>, Status>
+        {
             unavailable_test_management_response()
         }
         async fn list_room_streams(

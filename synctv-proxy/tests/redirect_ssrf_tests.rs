@@ -13,21 +13,28 @@ fn proxy_client() -> reqwest::Client {
         .expect("proxy HTTP client should build for tests")
 }
 
-/// Verify that a loopback target still fails when nothing is listening.
+/// Verify that an upstream connection failure is surfaced with the disabled policy.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_proxy_loopback_target_without_listener_returns_error() {
+async fn test_proxy_loopback_target_with_connection_close_returns_error() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
-        .expect("ephemeral loopback listener should bind");
-    let port = listener
+        .expect("test listener should bind an ephemeral loopback port");
+    let address = listener
         .local_addr()
-        .expect("ephemeral listener should expose local addr")
-        .port();
-    drop(listener);
+        .expect("test listener should expose local addr");
+    let connection_close_task = tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+
+        if let Ok((mut stream, _)) = listener.accept().await {
+            let mut buffer = [0u8; 1024];
+            let _ = stream.read(&mut buffer).await;
+            drop(stream);
+        }
+    });
 
     let client = proxy_client();
     let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
-    let url = format!("http://127.0.0.1:{port}/admin");
+    let url = format!("http://{address}/admin");
     let cfg = ProxyConfig {
         ssrf_guard: &ssrf_guard,
         client: &client,
@@ -38,9 +45,10 @@ async fn test_proxy_loopback_target_without_listener_returns_error() {
         upstream_header_timeout: None,
     };
     let result = proxy_fetch_and_forward(cfg, &NoopMetrics).await;
+    connection_close_task.abort();
     assert!(
         result.is_err(),
-        "loopback target without a listener should fail when SSRF is explicitly disabled"
+        "loopback target with a closing connection should fail when SSRF is explicitly disabled"
     );
 }
 

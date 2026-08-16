@@ -128,6 +128,12 @@ impl AppConfig {
         format_socket_address(&self.server.host, self.server.port)
     }
 
+    /// Get the RTMP listener address.
+    #[must_use]
+    pub fn livestream_address(&self) -> String {
+        format_socket_address(&self.server.host, self.livestream.rtmp_port)
+    }
+
     /// Get dedicated metrics address.
     #[must_use]
     pub fn metrics_address(&self) -> String {

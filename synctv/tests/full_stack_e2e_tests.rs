@@ -1,9 +1,8 @@
 #![allow(clippy::unwrap_used)]
 
 use std::collections::HashMap;
-use std::net::{SocketAddr, TcpListener};
-use std::sync::Arc;
-use std::sync::OnceLock;
+use std::net::SocketAddr;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
@@ -22,7 +21,7 @@ use serde_json::Value;
 use sha2_010::Sha512;
 use synctv::{
     app_config::{AppConfig as Config, ManagementTransport},
-    Application, ApplicationBuildOptions,
+    Application, ApplicationBuildOptions, ApplicationPreboundListeners,
 };
 use synctv_core_testing::{
     connect_test_pool_url, create_test_database_url_with_label,
@@ -88,18 +87,8 @@ impl CipherSuite for TestOpaqueCipherSuite {
     type Ksf = OpaqueArgon2Ksf<'static>;
 }
 
-fn reserve_local_ports() -> (u16, u16, u16, u16) {
-    let listeners: [_; 4] =
-        std::array::from_fn(|_| TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port"));
-    let mut ports = listeners
-        .iter()
-        .map(|listener| listener.local_addr().expect("ephemeral local_addr").port());
-    (
-        ports.next().expect("API port"),
-        ports.next().expect("management port"),
-        ports.next().expect("RTMP port"),
-        ports.next().expect("health port"),
-    )
+fn inert_test_config_ports() -> (u16, u16, u16, u16) {
+    (41_001, 41_002, 41_003, 41_004)
 }
 
 fn unique_test_suffix() -> String {
@@ -432,6 +421,72 @@ fn test_config(
     config
 }
 
+struct TestListeners {
+    api: tokio::net::TcpListener,
+    management: tokio::net::TcpListener,
+    rtmp: tokio::net::TcpListener,
+    health: tokio::net::TcpListener,
+}
+
+impl TestListeners {
+    async fn bind() -> Self {
+        Self {
+            api: tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("test API listener should bind"),
+            management: tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("test management listener should bind"),
+            rtmp: tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("test RTMP listener should bind"),
+            health: tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("test health listener should bind"),
+        }
+    }
+
+    fn ports(&self) -> (u16, u16, u16, u16) {
+        (
+            self.api
+                .local_addr()
+                .expect("test API listener should expose address")
+                .port(),
+            self.management
+                .local_addr()
+                .expect("test management listener should expose address")
+                .port(),
+            self.rtmp
+                .local_addr()
+                .expect("test RTMP listener should expose address")
+                .port(),
+            self.health
+                .local_addr()
+                .expect("test health listener should expose address")
+                .port(),
+        )
+    }
+
+    fn into_tcp_prebound_listeners(self) -> ApplicationPreboundListeners {
+        ApplicationPreboundListeners {
+            api: Some(self.api),
+            management: Some(self.management),
+            rtmp: Some(self.rtmp),
+            health: Some(self.health),
+            ..ApplicationPreboundListeners::default()
+        }
+    }
+
+    fn into_unix_management_prebound_listeners(self) -> ApplicationPreboundListeners {
+        ApplicationPreboundListeners {
+            api: Some(self.api),
+            rtmp: Some(self.rtmp),
+            health: Some(self.health),
+            ..ApplicationPreboundListeners::default()
+        }
+    }
+}
+
 fn write_cli_test_config(path: &std::path::Path, config: &Config) {
     let yaml = serde_yaml::to_string(config).expect("CLI test config should serialize to YAML");
     std::fs::write(path, yaml).expect("CLI test config should be written");
@@ -580,93 +635,69 @@ async fn start_test_server() -> TestServer {
         provider_probe_addr.port()
     );
 
-    for attempt in 1..=3 {
-        let (api_port, management_port, rtmp_port, health_port) = reserve_local_ports();
-        let config = test_config(
-            database_url.clone(),
-            redis_url.clone(),
-            api_port,
-            management_port,
-            rtmp_port,
-            health_port,
-        );
+    let listeners = TestListeners::bind().await;
+    let (api_port, management_port, rtmp_port, health_port) = listeners.ports();
+    let config = test_config(
+        database_url,
+        redis_url,
+        api_port,
+        management_port,
+        rtmp_port,
+        health_port,
+    );
 
-        let provider_probe_host = PROVIDER_PROBE_HOST.to_string();
-        let app = Box::pin(Application::build_with_options(
-            config,
-            ApplicationBuildOptions {
-                provider_address_overrides: HashMap::from([(
-                    provider_probe_host,
-                    provider_probe_addr,
-                )]),
-                credential_encryption_key_override: Some(
-                    TEST_CREDENTIAL_ENCRYPTION_KEY.to_string(),
-                ),
-                allow_password_registration: true,
-                ..ApplicationBuildOptions::default()
-            },
-        ))
+    let provider_probe_host = PROVIDER_PROBE_HOST.to_string();
+    let app = Box::pin(Application::build_with_options(
+        config,
+        ApplicationBuildOptions {
+            provider_address_overrides: HashMap::from([(provider_probe_host, provider_probe_addr)]),
+            credential_encryption_key_override: Some(TEST_CREDENTIAL_ENCRYPTION_KEY.to_string()),
+            allow_password_registration: true,
+            prebound_listeners: listeners.into_tcp_prebound_listeners(),
+            ..ApplicationBuildOptions::default()
+        },
+    ))
+    .await
+    .expect("test application build");
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let (server_handle, startup_exit_rx) = spawn_server_task(async move {
+        Box::pin(app.run_with_shutdown_signal(async move {
+            let _ = shutdown_rx.await;
+        }))
         .await
-        .expect("test application build");
-        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-        let (server_handle, startup_exit_rx) = spawn_server_task(async move {
-            Box::pin(app.run_with_shutdown_signal(async move {
-                let _ = shutdown_rx.await;
-            }))
+    });
+
+    let api_base_url = format!("http://127.0.0.1:{api_port}");
+    let health_base_url = format!("http://127.0.0.1:{health_port}");
+    let management_base_url = format!("http://127.0.0.1:{management_port}");
+
+    let startup_result: Result<(), String> = async {
+        wait_until_live_or_server_exit(&health_base_url, &startup_exit_rx).await?;
+        wait_until_grpc_ready_or_server_exit(&api_base_url, &startup_exit_rx).await?;
+        wait_until_grpc_ready_or_server_exit(&management_base_url, &startup_exit_rx).await
+    }
+    .await;
+
+    if let Err(error) = startup_result {
+        let _ = shutdown_tx.send(());
+        let join_result = server_handle
             .await
-        });
-
-        let api_base_url = format!("http://127.0.0.1:{api_port}");
-        let health_base_url = format!("http://127.0.0.1:{health_port}");
-        let management_base_url = format!("http://127.0.0.1:{management_port}");
-
-        let startup_result: Result<(), String> = async {
-            wait_until_live_or_server_exit(&health_base_url, &startup_exit_rx).await?;
-            wait_until_grpc_ready_or_server_exit(&api_base_url, &startup_exit_rx).await?;
-            wait_until_grpc_ready_or_server_exit(&management_base_url, &startup_exit_rx).await
-        }
-        .await;
-
-        match startup_result {
-            Ok(()) => {
-                return TestServer {
-                    api_base_url,
-                    health_base_url,
-                    management_base_url,
-                    provider_probe_endpoint,
-                    provider_probe_secret: PROVIDER_PROBE_SECRET.to_string(),
-                    shutdown_tx: Some(shutdown_tx),
-                    server_handle: Some(server_handle),
-                    provider_probe_handle: Some(provider_probe_handle),
-                    _postgres: postgres,
-                    _redis: redis,
-                };
-            }
-            Err(error) if attempt < 3 && startup_error_is_retryable(&error) => {
-                let _ = shutdown_tx.send(());
-                let join_result = server_handle
-                    .await
-                    .expect("retryable startup failure task should join");
-                tracing::warn!(
-                    attempt,
-                    error = %error,
-                    result = ?join_result.as_ref(),
-                    "retrying full-stack test server startup after transient bind failure"
-                );
-            }
-            Err(error) => {
-                let _ = shutdown_tx.send(());
-                let join_result = server_handle
-                    .await
-                    .expect("failed startup task should join");
-                panic!(
-                    "full-stack test server failed to start on attempt {attempt}: {error}\nrun result: {join_result:?}"
-                );
-            }
-        }
+            .expect("failed startup task should join");
+        panic!("full-stack test server failed to start: {error}\nrun result: {join_result:?}");
     }
 
-    unreachable!("full-stack test server startup loop should return or panic")
+    TestServer {
+        api_base_url,
+        health_base_url,
+        management_base_url,
+        provider_probe_endpoint,
+        provider_probe_secret: PROVIDER_PROBE_SECRET.to_string(),
+        shutdown_tx: Some(shutdown_tx),
+        server_handle: Some(server_handle),
+        provider_probe_handle: Some(provider_probe_handle),
+        _postgres: postgres,
+        _redis: redis,
+    }
 }
 
 async fn spawn_authenticated_provider_server(
@@ -827,13 +858,6 @@ fn server_startup_exit_error(startup_exit_rx: &StartupExitRx) -> Option<String> 
         })
 }
 
-fn startup_error_is_retryable(error: &str) -> bool {
-    error.contains("Failed to bind HTTP address")
-        || error.contains("failed to bind management TCP address")
-        || error.contains("Address already in use")
-        || error.contains("address already in use")
-}
-
 async fn wait_until_live_or_server_exit(
     http_base_url: &str,
     startup_exit_rx: &StartupExitRx,
@@ -990,6 +1014,65 @@ async fn wait_until_unix_grpc_ready_or_server_exit(
                 ));
             }
             Err(error) => return Err(format!("unix gRPC health never became ready: {error}")),
+        }
+    }
+}
+
+#[cfg(unix)]
+async fn wait_until_unix_grpc_ready_or_process_exit(
+    socket_path: &std::path::Path,
+    child: &mut tokio::process::Child,
+    stdout_log_path: &std::path::Path,
+    stderr_log_path: &std::path::Path,
+) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+
+    loop {
+        if let Some(error) = process_exit_error(child, stdout_log_path, stderr_log_path)? {
+            return Err(error);
+        }
+
+        let path = socket_path.to_path_buf();
+        let status = match tonic::transport::Endpoint::try_from("http://[::]:50052")
+            .map_err(|error| format!("invalid synthetic unix gRPC endpoint: {error}"))?
+            .connect_with_connector(tower::service_fn(move |_: tonic::transport::Uri| {
+                let path = path.clone();
+                async move {
+                    let stream = tokio::net::UnixStream::connect(path).await?;
+                    Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(stream))
+                }
+            }))
+            .await
+        {
+            Ok(channel) => {
+                let mut health = HealthClient::new(channel);
+                health
+                    .check(HealthCheckRequest {
+                        service: String::new(),
+                    })
+                    .await
+                    .map(|response| response.into_inner().status)
+            }
+            Err(error) => Err(tonic::Status::unavailable(error.to_string())),
+        };
+
+        match status {
+            Ok(status) if status == ServingStatus::Serving as i32 => return Ok(()),
+            Ok(_) | Err(_) if Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Ok(status) => {
+                return Err(format!(
+                    "unix gRPC health never became serving, last status: {status}\n{}",
+                    cli_process_failure_details(stdout_log_path, stderr_log_path)
+                ));
+            }
+            Err(error) => {
+                return Err(format!(
+                    "unix gRPC health never became ready: {error}\n{}",
+                    cli_process_failure_details(stdout_log_path, stderr_log_path)
+                ));
+            }
         }
     }
 }
@@ -1180,97 +1263,6 @@ fn spawn_synctv_process(
         child,
         stdout_log_path,
         stderr_log_path,
-    }
-}
-
-async fn wait_until_http_live_or_process_exit(
-    http_base_url: &str,
-    child: &mut tokio::process::Child,
-    stdout_log_path: &std::path::Path,
-    stderr_log_path: &std::path::Path,
-) -> Result<(), String> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build()
-        .map_err(|error| format!("failed to build HTTP client: {error}"))?;
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let url = format!("{http_base_url}/health/live");
-
-    loop {
-        if let Some(error) = process_exit_error(child, stdout_log_path, stderr_log_path)? {
-            return Err(error);
-        }
-
-        match client.get(&url).send().await {
-            Ok(response) if response.status() == StatusCode::OK => return Ok(()),
-            Ok(_) | Err(_) if Instant::now() < deadline => {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-            Ok(response) => {
-                return Err(format!(
-                    "health endpoint never became live, last status: {}\n{}",
-                    response.status(),
-                    cli_process_failure_details(stdout_log_path, stderr_log_path)
-                ));
-            }
-            Err(error) => {
-                return Err(format!(
-                    "health endpoint never became live: {error}\n{}",
-                    cli_process_failure_details(stdout_log_path, stderr_log_path)
-                ));
-            }
-        }
-    }
-}
-
-async fn wait_until_grpc_ready_or_process_exit(
-    grpc_base_url: &str,
-    child: &mut tokio::process::Child,
-    stdout_log_path: &std::path::Path,
-    stderr_log_path: &std::path::Path,
-) -> Result<(), String> {
-    let deadline = Instant::now() + Duration::from_secs(30);
-
-    loop {
-        if let Some(error) = process_exit_error(child, stdout_log_path, stderr_log_path)? {
-            return Err(error);
-        }
-
-        let status = match tonic::transport::Endpoint::from_shared(grpc_base_url.to_string())
-            .map_err(|error| format!("invalid gRPC endpoint {grpc_base_url}: {error}"))?
-            .connect()
-            .await
-        {
-            Ok(channel) => {
-                let mut health = HealthClient::new(channel);
-                health
-                    .check(HealthCheckRequest {
-                        service: String::new(),
-                    })
-                    .await
-                    .map(|response| response.into_inner().status)
-            }
-            Err(error) => Err(tonic::Status::unavailable(error.to_string())),
-        };
-
-        match status {
-            Ok(status) if status == ServingStatus::Serving as i32 => return Ok(()),
-            Ok(_) | Err(_) if Instant::now() < deadline => {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-            Ok(status) => {
-                return Err(format!(
-                    "gRPC health never became serving, last status: {status}\n{}",
-                    cli_process_failure_details(stdout_log_path, stderr_log_path)
-                ));
-            }
-            Err(error) => {
-                return Err(format!(
-                    "gRPC health never became ready: {error}\n{}",
-                    cli_process_failure_details(stdout_log_path, stderr_log_path)
-                ));
-            }
-        }
     }
 }
 
@@ -6021,7 +6013,8 @@ async fn full_stack_cli_system_stats_uses_management_unix_socket_via_env_without
     let (postgres, database_url) =
         create_test_database_url_with_label("synctv_e2e_unix", "full-stack-management-unix").await;
     let (redis, redis_url) = start_redis_url_with_label("full-stack-management-unix").await;
-    let (api_port, management_port, rtmp_port, health_port) = reserve_local_ports();
+    let listeners = TestListeners::bind().await;
+    let (api_port, management_port, rtmp_port, health_port) = listeners.ports();
     let socket_dir = tempfile::tempdir().expect("temp dir should be created");
     let socket_path = socket_dir.path().join("management.sock");
 
@@ -6039,6 +6032,7 @@ async fn full_stack_cli_system_stats_uses_management_unix_socket_via_env_without
         config,
         ApplicationBuildOptions {
             credential_encryption_key_override: Some(TEST_CREDENTIAL_ENCRYPTION_KEY.to_string()),
+            prebound_listeners: listeners.into_unix_management_prebound_listeners(),
             ..ApplicationBuildOptions::default()
         },
     ))
@@ -6108,7 +6102,8 @@ async fn full_stack_cli_system_stats_uses_default_management_unix_socket_without
     let (postgres, database_url) =
         create_test_database_url_with_label(&database_name, &container_label).await;
     let (redis, redis_url) = start_redis_url_with_label(&container_label).await;
-    let (api_port, management_port, rtmp_port, health_port) = reserve_local_ports();
+    let listeners = TestListeners::bind().await;
+    let (api_port, management_port, rtmp_port, health_port) = listeners.ports();
 
     let mut config = test_config(
         database_url,
@@ -6125,6 +6120,7 @@ async fn full_stack_cli_system_stats_uses_default_management_unix_socket_without
         config,
         ApplicationBuildOptions {
             credential_encryption_key_override: Some(TEST_CREDENTIAL_ENCRYPTION_KEY.to_string()),
+            prebound_listeners: listeners.into_unix_management_prebound_listeners(),
             ..ApplicationBuildOptions::default()
         },
     ))
@@ -6190,7 +6186,8 @@ async fn full_stack_cli_system_stats_reads_management_unix_socket_auth_token_fro
     )
     .await;
     let (redis, redis_url) = start_redis_url_with_label("full-stack-management-unix-auth").await;
-    let (api_port, management_port, rtmp_port, health_port) = reserve_local_ports();
+    let listeners = TestListeners::bind().await;
+    let (api_port, management_port, rtmp_port, health_port) = listeners.ports();
     let socket_dir = tempfile::tempdir().expect("temp dir should be created");
     let socket_path = socket_dir.path().join("management.sock");
     let config_path = socket_dir.path().join("synctv.yaml");
@@ -6216,6 +6213,7 @@ async fn full_stack_cli_system_stats_reads_management_unix_socket_auth_token_fro
         config,
         ApplicationBuildOptions {
             credential_encryption_key_override: Some(TEST_CREDENTIAL_ENCRYPTION_KEY.to_string()),
+            prebound_listeners: listeners.into_unix_management_prebound_listeners(),
             ..ApplicationBuildOptions::default()
         },
     ))
@@ -6285,7 +6283,8 @@ async fn full_stack_cli_explicit_management_endpoint_does_not_implicitly_use_con
     .await;
     let (redis, redis_url) =
         start_redis_url_with_label("full-stack-management-unix-auth-explicit").await;
-    let (api_port, management_port, rtmp_port, health_port) = reserve_local_ports();
+    let listeners = TestListeners::bind().await;
+    let (api_port, management_port, rtmp_port, health_port) = listeners.ports();
     let socket_dir = tempfile::tempdir().expect("temp dir should be created");
     let socket_path = socket_dir.path().join("management.sock");
     let config_path = socket_dir.path().join("synctv.yaml");
@@ -6310,6 +6309,7 @@ async fn full_stack_cli_explicit_management_endpoint_does_not_implicitly_use_con
         config,
         ApplicationBuildOptions {
             credential_encryption_key_override: Some(TEST_CREDENTIAL_ENCRYPTION_KEY.to_string()),
+            prebound_listeners: listeners.into_unix_management_prebound_listeners(),
             ..ApplicationBuildOptions::default()
         },
     ))
@@ -6379,7 +6379,8 @@ async fn full_stack_cli_stop_gracefully_shuts_down_server_via_management_api() {
         create_test_database_url_with_label("synctv_e2e_stop_graceful", "full-stack-stop-graceful")
             .await;
     let (redis, redis_url) = start_redis_url_with_label("full-stack-stop-graceful").await;
-    let (api_port, management_port, rtmp_port, health_port) = reserve_local_ports();
+    let listeners = TestListeners::bind().await;
+    let (api_port, management_port, rtmp_port, health_port) = listeners.ports();
     let socket_dir = tempfile::tempdir().expect("temp dir should be created");
     let socket_path = socket_dir.path().join("management.sock");
 
@@ -6397,6 +6398,7 @@ async fn full_stack_cli_stop_gracefully_shuts_down_server_via_management_api() {
         config,
         ApplicationBuildOptions {
             credential_encryption_key_override: Some(TEST_CREDENTIAL_ENCRYPTION_KEY.to_string()),
+            prebound_listeners: listeners.into_unix_management_prebound_listeners(),
             ..ApplicationBuildOptions::default()
         },
     ))
@@ -6450,7 +6452,7 @@ async fn full_stack_cli_stop_gracefully_shuts_down_server_via_management_api() {
 
 #[tokio::test]
 async fn full_stack_cli_config_validate_and_show_use_explicit_config_file() {
-    let (api_port, management_port, rtmp_port, health_port) = reserve_local_ports();
+    let (api_port, management_port, rtmp_port, health_port) = inert_test_config_ports();
     let temp_dir = tempfile::tempdir().expect("temp dir should be created");
     let config_path = temp_dir.path().join("synctv.yaml");
 
@@ -6565,7 +6567,7 @@ async fn full_stack_cli_db_status_reports_migration_readiness_and_db_migrate_is_
     let (postgres, database_url) =
         create_test_database_url_with_label("synctv_e2e_db_cli", "full-stack-cli-db").await;
     let (redis, redis_url) = start_redis_url_with_label("full-stack-cli-db").await;
-    let (api_port, management_port, rtmp_port, health_port) = reserve_local_ports();
+    let (api_port, management_port, rtmp_port, health_port) = inert_test_config_ports();
     let temp_dir = tempfile::tempdir().expect("temp dir should be created");
     let config_path = temp_dir.path().join("synctv-db-cli.yaml");
 
@@ -6733,7 +6735,7 @@ async fn full_stack_cli_db_status_fails_when_migration_metadata_is_unreadable() 
     let (postgres, database_url) =
         create_test_database_url_with_label("synctv_e2e_db_cli_acl", "full-stack-cli-db-acl").await;
     let (redis, redis_url) = start_redis_url_with_label("full-stack-cli-db-acl").await;
-    let (api_port, management_port, rtmp_port, health_port) = reserve_local_ports();
+    let (api_port, management_port, rtmp_port, health_port) = inert_test_config_ports();
     let temp_dir = tempfile::tempdir().expect("temp dir should be created");
     let config_path = temp_dir.path().join("synctv-db-cli-acl.yaml");
 
@@ -6798,7 +6800,7 @@ async fn full_stack_cli_db_status_fails_when_migration_metadata_is_unreadable() 
         &limited_role,
         limited_password,
     );
-    let (api_port, management_port, rtmp_port, health_port) = reserve_local_ports();
+    let (api_port, management_port, rtmp_port, health_port) = inert_test_config_ports();
     let limited_config = test_config(
         limited_database_url,
         redis_url,
@@ -6841,7 +6843,7 @@ async fn full_stack_cli_db_status_fails_when_migration_metadata_is_unreadable() 
 
 #[tokio::test]
 async fn full_stack_cli_serve_dry_run_validates_config_without_starting_listeners() {
-    let (api_port, management_port, rtmp_port, health_port) = reserve_local_ports();
+    let (api_port, management_port, rtmp_port, health_port) = inert_test_config_ports();
     let temp_dir = tempfile::tempdir().expect("temp dir should be created");
     let config_path = temp_dir.path().join("synctv-dry-run.yaml");
 
@@ -6884,6 +6886,7 @@ async fn full_stack_cli_serve_dry_run_validates_config_without_starting_listener
     );
 }
 
+#[cfg(unix)]
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn full_stack_cli_server_binary_starts_and_handles_management_commands() {
@@ -6893,19 +6896,16 @@ async fn full_stack_cli_server_binary_starts_and_handles_management_commands() {
     )
     .await;
     let (redis, redis_url) = start_redis_url_with_label("full-stack-server-binary-cli").await;
-    let (api_port, management_port, rtmp_port, health_port) = reserve_local_ports();
     let temp_dir = tempfile::tempdir().expect("temp dir should be created");
     let config_path = temp_dir.path().join("synctv-server-binary.yaml");
+    let management_socket_path = temp_dir.path().join("management.sock");
 
-    let mut config = test_config(
-        database_url,
-        redis_url,
-        api_port,
-        management_port,
-        rtmp_port,
-        health_port,
+    let mut config = test_config(database_url, redis_url, 0, 0, 0, 0);
+    configure_management_unix_socket_with_auth_token(
+        &mut config,
+        &management_socket_path,
+        MANAGEMENT_E2E_AUTH_TOKEN,
     );
-    config.management.auth_token = MANAGEMENT_E2E_AUTH_TOKEN.to_string();
     write_cli_test_config(&config_path, &config);
 
     let config_path_string = config_path
@@ -6921,27 +6921,18 @@ async fn full_stack_cli_server_binary_starts_and_handles_management_commands() {
         temp_dir.path(),
     );
 
-    let health_base_url = format!("http://127.0.0.1:{health_port}");
-    let management_base_url = format!("http://127.0.0.1:{management_port}");
-    wait_until_http_live_or_process_exit(
-        &health_base_url,
+    wait_until_unix_grpc_ready_or_process_exit(
+        &management_socket_path,
         &mut server_process.child,
         &server_process.stdout_log_path,
         &server_process.stderr_log_path,
     )
     .await
-    .expect("server binary should become live");
-    wait_until_grpc_ready_or_process_exit(
-        &management_base_url,
-        &mut server_process.child,
-        &server_process.stdout_log_path,
-        &server_process.stderr_log_path,
-    )
-    .await
-    .expect("server binary management endpoint should become ready");
+    .expect("server binary management endpoint should become ready over unix socket");
 
+    let management_endpoint = format!("unix://{}", management_socket_path.display());
     let envs = [
-        ("SYNCTV_MANAGEMENT_ENDPOINT", management_base_url.as_str()),
+        ("SYNCTV_MANAGEMENT_ENDPOINT", management_endpoint.as_str()),
         ("SYNCTV_MANAGEMENT_AUTH_TOKEN", MANAGEMENT_E2E_AUTH_TOKEN),
     ];
 
@@ -7097,7 +7088,8 @@ async fn full_stack_cli_force_stop_shuts_down_server_via_management_api() {
     let (postgres, database_url) =
         create_test_database_url_with_label("synctv_e2e_stop_force", "full-stack-stop-force").await;
     let (redis, redis_url) = start_redis_url_with_label("full-stack-stop-force").await;
-    let (api_port, management_port, rtmp_port, health_port) = reserve_local_ports();
+    let listeners = TestListeners::bind().await;
+    let (api_port, management_port, rtmp_port, health_port) = listeners.ports();
     let socket_dir = tempfile::tempdir().expect("temp dir should be created");
     let socket_path = socket_dir.path().join("management.sock");
 
@@ -7115,6 +7107,7 @@ async fn full_stack_cli_force_stop_shuts_down_server_via_management_api() {
         config,
         ApplicationBuildOptions {
             credential_encryption_key_override: Some(TEST_CREDENTIAL_ENCRYPTION_KEY.to_string()),
+            prebound_listeners: listeners.into_unix_management_prebound_listeners(),
             ..ApplicationBuildOptions::default()
         },
     ))
@@ -8436,6 +8429,19 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
     send_client_message(
         &mut member_ws,
         observe_playback_state_message("ws-playback-state"),
+    )
+    .await;
+    let _ = recv_matching_server_message(
+        &mut member_ws,
+        Duration::from_secs(10),
+        |message| {
+            matches!(
+                &message.message,
+                Some(server_message::Message::ResourceObserved(observed))
+                    if observed.observe_id == "ws-room-member-events"
+            )
+        },
+        "room member events observation acknowledgement",
     )
     .await;
     let _ = drain_until_quiet(&mut member_ws, 250).await;

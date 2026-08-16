@@ -259,17 +259,6 @@ impl AppConfig {
     fn validate_core(&self) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
 
-        // Validate port numbers are in valid range (1-65535)
-        let ports_to_check: &[(&str, u16)] = &[
-            ("server.port", self.server.port),
-            ("livestream.rtmp_port", self.livestream.rtmp_port),
-        ];
-        for (name, port) in ports_to_check {
-            if *port == 0 {
-                errors.push(format!("{name} must be between 1 and 65535, got 0"));
-            }
-        }
-
         if self.password_complexity.zxcvbn_min_score > 4 {
             errors.push("password_complexity.zxcvbn_min_score must be between 0 and 4".to_string());
         }
@@ -525,18 +514,6 @@ impl AppConfig {
             }
         }
 
-        if self.health.enabled && self.health.port == 0 {
-            errors.push("health.port must be between 1 and 65535, got 0".to_string());
-        }
-        if self.cluster.enabled && self.cluster.port == 0 {
-            errors.push("cluster.port must be between 1 and 65535, got 0".to_string());
-        }
-        if self.management.enabled
-            && matches!(self.management.transport, ManagementTransport::Tcp)
-            && self.management.port == 0
-        {
-            errors.push("management.port must be between 1 and 65535, got 0".to_string());
-        }
         let mut listener_ports = vec![
             ("server.port", self.server.port),
             ("livestream.rtmp_port", self.livestream.rtmp_port),
@@ -556,7 +533,7 @@ impl AppConfig {
         }
         for (index, (left_name, left_port)) in listener_ports.iter().enumerate() {
             for (right_name, right_port) in listener_ports.iter().skip(index + 1) {
-                if left_port == right_port {
+                if *left_port != 0 && left_port == right_port {
                     errors.push(format!(
                         "{left_name} and {right_name} must use different ports ({left_port})"
                     ));
@@ -654,7 +631,7 @@ impl AppConfig {
         if self.management.enabled {
             match self.management.transport {
                 ManagementTransport::Tcp => {
-                    if self.management.port == self.server.port {
+                    if self.management.port != 0 && self.management.port == self.server.port {
                         errors.push(format!(
                             "management bind target ({}) must be different from server.host:port ({})",
                             self.management_bind_target(),
@@ -1461,6 +1438,31 @@ mod tests {
         assert!(errors
             .iter()
             .any(|error| error.contains("webrtc.logging.output.path must not be empty")));
+    }
+
+    #[test]
+    fn listener_ports_accept_kernel_assignment() {
+        let mut config = AppConfig::default();
+        config.server.port = 0;
+        config.livestream.rtmp_port = 0;
+        config.health.port = 0;
+        config.management.transport = crate::app_config::ManagementTransport::Tcp;
+        config.management.port = 0;
+
+        let errors = config
+            .validate()
+            .expect_err("default security settings should remain invalid");
+        for path in [
+            "server.port",
+            "livestream.rtmp_port",
+            "health.port",
+            "management.port",
+        ] {
+            assert!(
+                errors.iter().all(|error| !error.contains(path)),
+                "kernel-assigned {path} must pass listener validation: {errors:?}"
+            );
+        }
     }
 
     #[test]

@@ -1502,6 +1502,7 @@ fn hls_manifest_chunk_stream(
 #[derive(Default)]
 struct StreamResponseMetadata {
     content_type: Option<String>,
+    content_encoding: Option<String>,
     content_length: Option<u64>,
     content_range: Option<String>,
     accept_ranges: Option<String>,
@@ -1516,6 +1517,7 @@ struct StreamResponseMetadata {
 fn stream_metadata_from_headers(headers: &axum::http::HeaderMap) -> StreamResponseMetadata {
     StreamResponseMetadata {
         content_type: header_string(headers, axum::http::header::CONTENT_TYPE),
+        content_encoding: header_string(headers, axum::http::header::CONTENT_ENCODING),
         content_length: header_string(headers, axum::http::header::CONTENT_LENGTH)
             .and_then(|value| value.parse::<u64>().ok()),
         content_range: header_string(headers, axum::http::header::CONTENT_RANGE),
@@ -1604,6 +1606,7 @@ fn metadata_chunk(status: u16, metadata: StreamResponseMetadata) -> StreamChunk 
         data: Bytes::new(),
         status: status.into(),
         content_type: metadata.content_type,
+        content_encoding: metadata.content_encoding,
         content_length: metadata.content_length,
         content_range: metadata.content_range,
         accept_ranges: metadata.accept_ranges,
@@ -1679,7 +1682,7 @@ mod tests {
         let action = PlaybackTransportAction::M3u8BodyRewrite {
             body: body.as_bytes().to_vec(),
         };
-        let mut stream = playback_transport_action_to_chunk_stream(deps, action, false)
+        let mut stream = playback_transport_action_to_chunk_stream(deps, action.clone(), false)
             .await
             .map_err(|error| anyhow::anyhow!("{error:?}"))?;
         stream
@@ -2152,6 +2155,7 @@ mod tests {
             .respond_with(
                 ResponseTemplate::new(206)
                     .set_body_bytes([1_u8, 2, 3, 4])
+                    .insert_header("Content-Encoding", "deflate")
                     .insert_header("Content-Range", "bytes 0-3/8")
                     .insert_header("Content-Length", "4")
                     .insert_header("Content-Type", "video/mp4")
@@ -2167,6 +2171,7 @@ mod tests {
             .respond_with(
                 ResponseTemplate::new(206)
                     .set_body_bytes([5_u8, 6, 7, 8])
+                    .insert_header("Content-Encoding", "deflate")
                     .insert_header("Content-Range", "bytes 4-7/8")
                     .insert_header("Content-Length", "4")
                     .insert_header("Content-Type", "video/mp4")
@@ -2204,7 +2209,7 @@ mod tests {
             range_header: None,
         };
 
-        let mut stream = playback_transport_action_to_chunk_stream(deps, action, false)
+        let mut stream = playback_transport_action_to_chunk_stream(deps, action.clone(), false)
             .await
             .map_err(|error| anyhow::anyhow!("{error:?}"))?;
         let metadata = stream
@@ -2215,12 +2220,30 @@ mod tests {
         assert_eq!(metadata.status, 200);
         assert_eq!(metadata.content_length, Some(total_size));
         assert_eq!(metadata.accept_ranges.as_deref(), Some("bytes"));
+        assert_eq!(metadata.content_encoding.as_deref(), Some("deflate"));
 
         let mut body = Vec::new();
         while let Some(chunk) = stream.next().await {
             body.extend(chunk.map_err(|error| anyhow::anyhow!("{error:?}"))?.data);
         }
         assert_eq!(body, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+
+        let mut cached_stream = playback_transport_action_to_chunk_stream(deps, action, false)
+            .await
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        let cached_metadata = cached_stream
+            .next()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("cached stream should emit metadata"))?
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        assert_eq!(cached_metadata.status, 200);
+        assert_eq!(cached_metadata.content_encoding.as_deref(), Some("deflate"));
+
+        let mut cached_body = Vec::new();
+        while let Some(chunk) = cached_stream.next().await {
+            cached_body.extend(chunk.map_err(|error| anyhow::anyhow!("{error:?}"))?.data);
+        }
+        assert_eq!(cached_body, body);
         Ok(())
     }
 

@@ -21,6 +21,11 @@ struct LivestreamRuntimeBindings {
     user_stream_index_shared: bool,
 }
 
+pub struct LivestreamInitOptions {
+    pub hls_cleanup_leader: Arc<dyn synctv_core::service::LeaderCheck>,
+    pub rtmp_listener: Option<tokio::net::TcpListener>,
+}
+
 struct CoreRegistryConnectionRuntime {
     runtime: Arc<dyn RedisConnectionRuntime>,
 }
@@ -87,7 +92,7 @@ pub async fn init_livestream(
     synctv_services: &crate::bootstrap::Services,
     realtime_event_service: Arc<dyn RealtimeEventService>,
     shared_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
-    hls_cleanup_leader: Arc<dyn synctv_core::service::LeaderCheck>,
+    init_options: LivestreamInitOptions,
     node_id: &str,
 ) -> Result<(
     Option<server::LivestreamState>,
@@ -95,6 +100,11 @@ pub async fn init_livestream(
     Vec<tokio::task::JoinHandle<()>>,
 )> {
     info!("Initializing livestream infrastructure...");
+
+    let LivestreamInitOptions {
+        hls_cleanup_leader,
+        rtmp_listener,
+    } = init_options;
 
     let shared_state_profile = SharedStateProfile::for_cluster_runtime(
         shared_runtime,
@@ -113,14 +123,20 @@ pub async fn init_livestream(
 
     // Pre-bind RTMP listener to catch port-in-use errors before deep initialization.
     // This follows the same pattern as gRPC/HTTP server pre-binding.
-    let rtmp_listen_addr = format!("{}:{}", config.server.host, config.livestream.rtmp_port);
+    let rtmp_listen_addr = config.livestream_address();
     let rtmp_socket_addr: std::net::SocketAddr = rtmp_listen_addr
         .parse()
         .map_err(|e| anyhow::anyhow!("Invalid RTMP address '{rtmp_listen_addr}': {e}"))?;
-    let rtmp_listener = tokio::net::TcpListener::bind(rtmp_socket_addr)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to bind RTMP address {rtmp_socket_addr}: {e}"))?;
-    info!("RTMP server pre-bound on {}", rtmp_socket_addr);
+    let rtmp_listener = match rtmp_listener {
+        Some(listener) => listener,
+        None => tokio::net::TcpListener::bind(rtmp_socket_addr)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to bind RTMP address {rtmp_socket_addr}: {e}"))?,
+    };
+    let rtmp_bound_addr = rtmp_listener
+        .local_addr()
+        .map_err(|e| anyhow::anyhow!("Failed to read RTMP listener address: {e}"))?;
+    info!("RTMP server pre-bound on {}", rtmp_bound_addr);
 
     let publisher_registry_for_auth = publisher_registry.clone();
     let user_stream_tracker_for_auth = user_stream_tracker.clone();

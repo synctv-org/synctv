@@ -386,6 +386,11 @@ where
 
 fn apply_stream_chunk_metadata(headers: &mut HeaderMap, chunk: &StreamChunk) -> AppResult<()> {
     insert_optional_header(headers, header::CONTENT_TYPE, chunk.content_type.as_deref())?;
+    insert_optional_header(
+        headers,
+        header::CONTENT_ENCODING,
+        chunk.content_encoding.as_deref(),
+    )?;
     if let Some(content_length) = chunk.content_length {
         insert_optional_header(
             headers,
@@ -460,5 +465,24 @@ mod tests {
         let error = signed_query_fields("sig=s&uid=u&rid=r&exp=1&extra=1")
             .expect_err("unknown query parameter should be rejected");
         assert!(matches!(error, ApiError::InvalidInput(message) if message.contains("extra")));
+    }
+
+    #[test]
+    fn stream_chunk_metadata_preserves_content_encoding() {
+        let mut headers = HeaderMap::new();
+        let chunk = StreamChunk {
+            content_encoding: Some("deflate".to_string()),
+            ..Default::default()
+        };
+
+        apply_stream_chunk_metadata(&mut headers, &chunk)
+            .expect("content encoding metadata should be a valid HTTP header");
+
+        assert_eq!(
+            headers
+                .get(header::CONTENT_ENCODING)
+                .and_then(|value| value.to_str().ok()),
+            Some("deflate")
+        );
     }
 }

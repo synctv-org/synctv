@@ -1,5 +1,6 @@
 use super::*;
 use crate::bilibili::Quality;
+use prost::Message as ProstMessage;
 use serde_json::json;
 use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -74,6 +75,343 @@ fn nav_response_with_wbi_keys(img_key: &str, sub_key: &str) -> serde_json::Value
         "code": 0,
         "ttl": 1
     })
+}
+
+#[tokio::test]
+async fn live_danmaku_info_uses_wbi_signature_and_cached_device_cookies() -> TestResult {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/x/frontend/finger/spi"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": 0,
+            "data": {"b_3": "device-3", "b_4": "device-4"}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/x/web-interface/nav"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(nav_response_with_wbi_keys(
+                "7cd084941338484aae1ad9425b84077c",
+                "4932caff0ff746eab6f01bf08b70ac45",
+            )),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/xlive/web-room/v1/index/getDanmuInfo"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": 0,
+            "data": {
+                "token": "live-token",
+                "host_list": [{
+                    "host": "broadcast.example.com",
+                    "port": 2243,
+                    "ws_port": 2244,
+                    "wss_port": 443
+                }]
+            }
+        })))
+        .mount(&server)
+        .await;
+    let client = BilibiliClient::new_with_transport(
+        test_http_client(),
+        test_http_client(),
+        test_endpoints(server.uri()),
+        Arc::new(WbiState::default()),
+        SsrfGuard::strict_policy(),
+    );
+
+    let first = client.get_live_danmu_info(25_206_807).await?;
+    let second = client.get_live_danmu_info(25_206_807).await?;
+
+    assert_eq!(first.token, "live-token");
+    assert_eq!(second.host_list[0].wss_port, 443);
+    let requests = server
+        .received_requests()
+        .await
+        .ok_or_else(|| missing("requests should be recorded"))?;
+    let danmaku_requests = requests
+        .iter()
+        .filter(|request| request.url.path() == "/xlive/web-room/v1/index/getDanmuInfo")
+        .collect::<Vec<_>>();
+    assert_eq!(danmaku_requests.len(), 2);
+    let request = danmaku_requests[0];
+    assert_eq!(
+        request
+            .headers
+            .get("origin")
+            .and_then(|value| value.to_str().ok()),
+        Some("https://live.bilibili.com")
+    );
+    assert_eq!(
+        request
+            .headers
+            .get("referer")
+            .and_then(|value| value.to_str().ok()),
+        Some("https://www.bilibili.com")
+    );
+    assert_eq!(
+        request
+            .headers
+            .get("cookie")
+            .and_then(|value| value.to_str().ok()),
+        Some("buvid3=device-3; buvid4=device-4")
+    );
+    let query = request.url.query_pairs().collect::<HashMap<_, _>>();
+    assert_eq!(query.get("id").map(AsRef::as_ref), Some("25206807"));
+    assert_eq!(query.get("type").map(AsRef::as_ref), Some("0"));
+    assert_eq!(query.get("web_location").map(AsRef::as_ref), Some("444.8"));
+    assert!(query.get("wts").is_some_and(|value| !value.is_empty()));
+    assert!(query.get("w_rid").is_some_and(|value| !value.is_empty()));
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.url.path() == "/x/frontend/finger/spi")
+            .count(),
+        1
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn live_danmaku_info_reports_wbi_errors_before_deserializing_data() -> TestResult {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/x/frontend/finger/spi"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": 0,
+            "data": {"b_3": "device-3", "b_4": "device-4"}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/x/web-interface/nav"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(nav_response_with_wbi_keys(
+                "7cd084941338484aae1ad9425b84077c",
+                "4932caff0ff746eab6f01bf08b70ac45",
+            )),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/xlive/web-room/v1/index/getDanmuInfo"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": -352,
+            "message": "-352"
+        })))
+        .mount(&server)
+        .await;
+    let client = BilibiliClient::new_with_transport(
+        test_http_client(),
+        test_http_client(),
+        test_endpoints(server.uri()),
+        Arc::new(WbiState::default()),
+        SsrfGuard::strict_policy(),
+    );
+
+    let error = client
+        .get_live_danmu_info(25_206_807)
+        .await
+        .expect_err("a rejected WBI signature should fail");
+
+    assert!(matches!(error, BilibiliError::Api { code: -352, .. }));
+    assert!(error.to_string().contains("request signature"));
+    let requests = server
+        .received_requests()
+        .await
+        .ok_or_else(|| missing("requests should be recorded"))?;
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.url.path() == "/x/web-interface/nav")
+            .count(),
+        2
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn subtitles_use_the_web_view_endpoint() -> TestResult {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/x/v2/subtitle/web/view"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_bytes(
+                SubtitleWebViewReply {
+                    subtitle: Some(SubtitleWebView {
+                        _lan: "zh-CN".to_string(),
+                        _lan_doc: "中文".to_string(),
+                        subtitles: vec![SubtitleWebViewItem {
+                            _id: 1,
+                            _id_str: "1".to_string(),
+                            _lan: "zh-CN".to_string(),
+                            lan_doc: "中文".to_string(),
+                            subtitle_url: "//subtitle.example.com/track.json".to_string(),
+                        }],
+                    }),
+                }
+                .encode_to_vec(),
+            ),
+        )
+        .mount(&server)
+        .await;
+    let client = BilibiliClient::new_with_transport(
+        test_http_client(),
+        test_http_client(),
+        test_endpoints(server.uri()),
+        Arc::new(WbiState::default()),
+        SsrfGuard::strict_policy(),
+    );
+
+    let subtitles = client.get_subtitles(2, "BV1xx411c7mD", 62_131).await?;
+
+    assert_eq!(
+        subtitles.get("中文").map(String::as_str),
+        Some("https://subtitle.example.com/track.json")
+    );
+    let requests = server
+        .received_requests()
+        .await
+        .ok_or_else(|| missing("requests should be recorded"))?;
+    let request = requests
+        .iter()
+        .find(|request| request.url.path() == "/x/v2/subtitle/web/view")
+        .ok_or_else(|| missing("subtitle web view request"))?;
+    let query = request.url.query_pairs().collect::<HashMap<_, _>>();
+    assert_eq!(query.get("type").map(AsRef::as_ref), Some("1"));
+    assert_eq!(query.get("oid").map(AsRef::as_ref), Some("62131"));
+    assert_eq!(query.get("pid").map(AsRef::as_ref), Some("2"));
+    assert_eq!(
+        request
+            .headers
+            .get("referer")
+            .and_then(|value| value.to_str().ok()),
+        Some(server.uri().as_str())
+    );
+    assert_eq!(
+        request
+            .headers
+            .get("user-agent")
+            .and_then(|value| value.to_str().ok()),
+        Some("BiliDroid/7.57.0 os/android model/Pixel")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn empty_web_view_subtitles_use_the_player_fallback() -> TestResult {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/x/v2/subtitle/web/view"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![0x0a, 0x00]))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/x/web-interface/nav"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(nav_response_with_wbi_keys(
+                "7cd084941338484aae1ad9425b84077c",
+                "4932caff0ff746eab6f01bf08b70ac45",
+            )),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/x/player/wbi/v2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": 0,
+            "message": "OK",
+            "data": {
+                "subtitle": {
+                    "subtitles": [{
+                        "id": 1,
+                        "lan": "zh-CN",
+                        "lan_doc": "中文",
+                        "subtitle_url": "//subtitle.example.com/track.json"
+                    }]
+                }
+            }
+        })))
+        .mount(&server)
+        .await;
+    let client = BilibiliClient::new_with_transport(
+        test_http_client(),
+        test_http_client(),
+        test_endpoints(server.uri()),
+        Arc::new(WbiState::default()),
+        SsrfGuard::strict_policy(),
+    );
+
+    let subtitles = client.get_subtitles(2, "BV1xx411c7mD", 62_131).await?;
+    assert_eq!(
+        subtitles.get("中文").map(String::as_str),
+        Some("https://subtitle.example.com/track.json")
+    );
+    let requests = server
+        .received_requests()
+        .await
+        .ok_or_else(|| missing("requests should be recorded"))?;
+    assert!(requests
+        .iter()
+        .any(|request| request.url.path() == "/x/v2/subtitle/web/view"));
+    assert!(requests
+        .iter()
+        .any(|request| request.url.path() == "/x/player/wbi/v2"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn subtitle_web_view_failure_uses_the_wbi_player_fallback() -> TestResult {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/x/v2/subtitle/web/view"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/x/web-interface/nav"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(nav_response_with_wbi_keys(
+                "7cd084941338484aae1ad9425b84077c",
+                "4932caff0ff746eab6f01bf08b70ac45",
+            )),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/x/player/wbi/v2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": 0,
+            "message": "OK",
+            "data": {
+                "subtitle": {
+                    "subtitles": [{
+                        "id": 1,
+                        "lan": "zh-CN",
+                        "lan_doc": "中文",
+                        "subtitle_url": "//subtitle.example.com/track.json"
+                    }]
+                }
+            }
+        })))
+        .mount(&server)
+        .await;
+    let client = BilibiliClient::new_with_transport(
+        test_http_client(),
+        test_http_client(),
+        test_endpoints(server.uri()),
+        Arc::new(WbiState::default()),
+        SsrfGuard::strict_policy(),
+    );
+
+    let subtitles = client.get_subtitles(2, "BV1xx411c7mD", 62_131).await?;
+    assert_eq!(
+        subtitles.get("中文").map(String::as_str),
+        Some("https://subtitle.example.com/track.json")
+    );
+    Ok(())
 }
 
 #[test]
@@ -881,6 +1219,23 @@ fn test_parse_danmaku_gift_with_normal_count() -> TestResult {
         return Err(missing("expected Gift message variant"));
     };
     assert_eq!(count, 5);
+    Ok(())
+}
+
+#[test]
+fn test_parse_danmaku_chat_with_versioned_command() -> TestResult {
+    let json = serde_json::json!({
+        "cmd": "DANMU_MSG:4:0:2:2:2:0",
+        "info": [null, "Live chat", [0, "Viewer"]]
+    });
+
+    let DanmakuMessage::Chat { user, message, .. } =
+        parse_danmaku_cmd("DANMU_MSG:4:0:2:2:2:0", &json)
+    else {
+        return Err(missing("expected Chat message variant"));
+    };
+    assert_eq!(user, "Viewer");
+    assert_eq!(message, "Live chat");
     Ok(())
 }
 

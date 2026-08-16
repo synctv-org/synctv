@@ -15,13 +15,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use chrono::{FixedOffset, NaiveDateTime, TimeZone};
 use futures_util::{SinkExt, StreamExt};
 use md5::{Digest, Md5};
+use prost::Message as ProstMessage;
 use regex::Regex;
 use reqwest::Client;
 use serde::{de::DeserializeOwned, Deserialize};
 use synctv_common::ssrf::SsrfGuard;
 #[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots"))]
 use tokio::net::TcpStream;
-use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::{Mutex as AsyncMutex, OnceCell};
 use tokio::task::JoinHandle;
 #[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots"))]
 use tokio_tungstenite::client_async_tls_with_config;
@@ -31,7 +32,9 @@ use tokio_tungstenite::tungstenite::Message;
 
 use super::types;
 use crate::error::with_retry;
-use crate::error::{check_response, json_with_limit, ProviderClientError as BilibiliError};
+use crate::error::{
+    bytes_with_limit, check_response, json_with_limit, ProviderClientError as BilibiliError,
+};
 
 static RE_BVID: LazyLock<Result<Regex, regex::Error>> =
     LazyLock::new(|| Regex::new(r"BV[a-zA-Z0-9]+"));
@@ -39,11 +42,45 @@ static RE_EPID: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| Regex::
 
 use crate::PROVIDER_USER_AGENT as USER_AGENT;
 const REFERER: &str = "https://www.bilibili.com";
+const LIVE_ORIGIN: &str = "https://live.bilibili.com";
+// The WebView subtitle endpoint returns an empty protobuf for desktop Windows
+// and macOS user agents. Use the app user agent that exposes the subtitle list.
+const SUBTITLE_WEB_VIEW_USER_AGENT: &str = "BiliDroid/7.57.0 os/android model/Pixel";
 const BILIBILI_SHORT_LINK_MAX_REDIRECTS: usize = 5;
 #[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots", test))]
 const LIVE_DANMAKU_WS_MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
 #[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots", test))]
 const LIVE_DANMAKU_WS_MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
+
+#[derive(Clone, PartialEq, ProstMessage)]
+struct SubtitleWebViewReply {
+    #[prost(message, optional, tag = "1")]
+    subtitle: Option<SubtitleWebView>,
+}
+
+#[derive(Clone, PartialEq, ProstMessage)]
+struct SubtitleWebView {
+    #[prost(string, tag = "1")]
+    _lan: String,
+    #[prost(string, tag = "2")]
+    _lan_doc: String,
+    #[prost(message, repeated, tag = "3")]
+    subtitles: Vec<SubtitleWebViewItem>,
+}
+
+#[derive(Clone, PartialEq, ProstMessage)]
+struct SubtitleWebViewItem {
+    #[prost(int64, tag = "1")]
+    _id: i64,
+    #[prost(string, tag = "2")]
+    _id_str: String,
+    #[prost(string, tag = "3")]
+    _lan: String,
+    #[prost(string, tag = "4")]
+    lan_doc: String,
+    #[prost(string, tag = "5")]
+    subtitle_url: String,
+}
 
 fn shared_client() -> Result<Client, BilibiliError> {
     crate::provider_http_client_builder(synctv_common::ssrf::SsrfGuard::strict_policy())
@@ -78,6 +115,35 @@ fn video_segments_from_durls(durls: &[types::DurlInfo]) -> Vec<VideoSegment> {
 fn quality_to_u32(quality: u64, endpoint: &'static str) -> Result<u32, BilibiliError> {
     u32::try_from(quality)
         .map_err(|_| BilibiliError::Parse(format!("{endpoint} quality {quality} exceeds u32")))
+}
+
+fn normalized_subtitle_url(url: &str) -> Option<String> {
+    let url = url.trim();
+    if url.starts_with("https://") || url.starts_with("http://") {
+        Some(url.to_string())
+    } else {
+        url.strip_prefix("//").map(|url| format!("https://{url}"))
+    }
+}
+
+fn subtitle_web_view_to_map(items: Vec<SubtitleWebViewItem>) -> HashMap<String, String> {
+    items
+        .into_iter()
+        .filter_map(|item| {
+            normalized_subtitle_url(&item.subtitle_url).map(|url| (item.lan_doc, url))
+        })
+        .filter(|(name, _)| !name.is_empty())
+        .collect()
+}
+
+fn subtitle_player_to_map(items: Vec<types::SubtitleItem>) -> HashMap<String, String> {
+    items
+        .into_iter()
+        .filter_map(|item| {
+            normalized_subtitle_url(&item.subtitle_url).map(|url| (item.lan_doc, url))
+        })
+        .filter(|(name, _)| !name.is_empty())
+        .collect()
 }
 
 fn parse_bilibili_live_started_at(value: &str) -> Option<i64> {
@@ -460,6 +526,7 @@ pub struct BilibiliClient {
     client: Client,
     short_link_client: Client,
     cookies: Option<HashMap<String, String>>,
+    live_danmaku_device_cookies: Arc<OnceCell<HashMap<String, String>>>,
     wbi_state: Arc<WbiState>,
     endpoints: BilibiliEndpoints,
     #[allow(dead_code)]
@@ -483,7 +550,7 @@ impl BilibiliClient {
         ))
     }
 
-    pub(crate) const fn new_with_transport(
+    pub(crate) fn new_with_transport(
         client: Client,
         short_link_client: Client,
         endpoints: BilibiliEndpoints,
@@ -494,6 +561,7 @@ impl BilibiliClient {
             client,
             short_link_client,
             cookies: None,
+            live_danmaku_device_cookies: Arc::new(OnceCell::new()),
             wbi_state,
             endpoints,
             ssrf_guard,
@@ -551,7 +619,7 @@ impl BilibiliClient {
         ))
     }
 
-    pub(crate) const fn with_cookies_and_transport(
+    pub(crate) fn with_cookies_and_transport(
         cookies: HashMap<String, String>,
         client: Client,
         short_link_client: Client,
@@ -563,10 +631,19 @@ impl BilibiliClient {
             client,
             short_link_client,
             cookies: Some(cookies),
+            live_danmaku_device_cookies: Arc::new(OnceCell::new()),
             wbi_state,
             endpoints,
             ssrf_guard,
         }
+    }
+
+    pub(crate) fn with_live_danmaku_device_cookies(
+        mut self,
+        live_danmaku_device_cookies: Arc<OnceCell<HashMap<String, String>>>,
+    ) -> Self {
+        self.live_danmaku_device_cookies = live_danmaku_device_cookies;
+        self
     }
 
     pub fn with_cookies_and_transport_defaults(
@@ -742,13 +819,41 @@ impl BilibiliClient {
     /// Returns `None` if no cookies are configured.
     /// This is useful when `self` cannot be borrowed inside a closure (e.g. `with_retry`).
     fn build_cookie_header(&self) -> Option<String> {
-        self.cookies.as_ref().map(|cookies| {
+        self.cookies
+            .as_ref()
+            .and_then(Self::cookie_header_from_pairs)
+    }
+
+    fn cookie_header_from_pairs(cookies: &HashMap<String, String>) -> Option<String> {
+        if cookies.is_empty() {
+            return None;
+        }
+
+        let mut cookies = cookies.iter().collect::<Vec<_>>();
+        cookies.sort_unstable_by_key(|(key, _)| *key);
+        Some(
             cookies
-                .iter()
-                .map(|(k, v)| sanitize_cookie_pair(k, v))
+                .into_iter()
+                .map(|(key, value)| sanitize_cookie_pair(key, value))
                 .collect::<Vec<_>>()
-                .join("; ")
-        })
+                .join("; "),
+        )
+    }
+
+    async fn live_danmaku_cookie_header(&self) -> Result<Option<String>, BilibiliError> {
+        let mut cookies = self.cookies.clone().unwrap_or_default();
+        if !cookies.contains_key("buvid3") {
+            let device_cookies = self
+                .live_danmaku_device_cookies
+                .get_or_try_init(|| self.get_buvid_cookies())
+                .await?;
+            cookies.extend(
+                device_cookies
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone())),
+            );
+        }
+        Ok(Self::cookie_header_from_pairs(&cookies))
     }
 
     /// Add cookies to request.
@@ -823,6 +928,67 @@ impl BilibiliClient {
         let response = self.get_api(path, signed).await?;
         if response.code != 0 {
             return Err(bilibili_api_error(i64::from(response.code), "signed list"));
+        }
+        Ok(response)
+    }
+
+    async fn get_wbi_live_api<T>(
+        &self,
+        path: &str,
+        query: Vec<(&str, String)>,
+    ) -> Result<types::ApiEnvelope<T>, BilibiliError>
+    where
+        T: DeserializeOwned + Send,
+    {
+        let cookie_header = self.live_danmaku_cookie_header().await?;
+        let first = self
+            .get_wbi_live_api_once(path, &query, cookie_header.clone(), false)
+            .await;
+        if matches!(&first, Err(error) if Self::is_wbi_stale_error(error)) {
+            return self
+                .get_wbi_live_api_once(path, &query, cookie_header, true)
+                .await;
+        }
+        first
+    }
+
+    async fn get_wbi_live_api_once<T>(
+        &self,
+        path: &str,
+        query: &[(&str, String)],
+        cookie_header: Option<String>,
+        force_key_refresh: bool,
+    ) -> Result<types::ApiEnvelope<T>, BilibiliError>
+    where
+        T: DeserializeOwned + Send,
+    {
+        let mixin_key = self.get_wbi_mixin_key_internal(force_key_refresh).await?;
+        let signed = wbi_sign(query, &mixin_key);
+        let client = self.client.clone();
+        let endpoint = self.endpoints.live_api_url(path);
+
+        let response: types::ApiEnvelope<T> = with_retry(|| {
+            let client = client.clone();
+            let endpoint = endpoint.clone();
+            let signed = signed.clone();
+            let cookie_header = cookie_header.clone();
+            async move {
+                let mut request = client
+                    .get(endpoint)
+                    .query(&signed)
+                    .header("Referer", REFERER)
+                    .header("Origin", LIVE_ORIGIN);
+                if let Some(cookies) = cookie_header.as_deref() {
+                    request = request.header("Cookie", cookies);
+                }
+                let response = check_response(request.send().await?).await?;
+                json_with_limit(response).await
+            }
+        })
+        .await?;
+
+        if response.code != 0 {
+            return Err(bilibili_api_error(i64::from(response.code), "live danmaku"));
         }
         Ok(response)
     }
@@ -976,12 +1142,11 @@ impl BilibiliClient {
             data: Option<SpiData>,
         }
 
-        let url = "https://api.bilibili.com/x/frontend/finger/spi";
+        let url = self.endpoints.api_url("/x/frontend/finger/spi");
         let req = self
-            .client
-            .get(url)
+            .add_cookies(self.client.get(url))
             .header("User-Agent", USER_AGENT)
-            .header("Referer", "https://www.bilibili.com");
+            .header("Referer", REFERER);
 
         let resp = check_response(req.send().await?).await?;
         let json: SpiResp = json_with_limit(resp).await?;
@@ -1833,55 +1998,94 @@ impl BilibiliClient {
         bvid: &str,
         cid: u64,
     ) -> Result<HashMap<String, String>, BilibiliError> {
-        let client = self.client.clone();
-        let cookie_header = self.build_cookie_header();
-        let bvid = bvid.to_string();
-        let cid_str = cid.to_string();
-
-        with_retry(|| {
-            let client = client.clone();
-            let cookie_header = cookie_header.clone();
-            let bvid = bvid.clone();
-            let cid_str = cid_str.clone();
-            async move {
-                let mut req = client.get("https://api.bilibili.com/x/player/v2");
-                if bvid.is_empty() {
-                    req = req.query(&[("aid", &aid.to_string()), ("cid", &cid_str)]);
-                } else {
-                    req = req.query(&[("bvid", &bvid), ("cid", &cid_str)]);
-                }
-                req = req.header("Referer", REFERER);
-                if let Some(ref cookies) = cookie_header {
-                    req = req.header("Cookie", cookies.as_str());
-                }
-                let resp = check_response(req.send().await?).await?;
-                let json: types::PlayerV2InfoResp = json_with_limit(resp).await?;
-
-                if json.code != 0 {
-                    return Err(bilibili_api_error(i64::from(json.code), "subtitles"));
-                }
-
-                let mut subtitles = HashMap::new();
-                let data = json.data.ok_or_else(|| {
-                    BilibiliError::Parse("subtitle response missing data".to_string())
-                })?;
-                for sub in data.subtitle.subtitles {
-                    let name = sub.lan_doc;
-                    let url = if sub.subtitle_url.starts_with("http") {
-                        sub.subtitle_url
-                    } else {
-                        format!("https:{}", sub.subtitle_url)
-                    };
-                    if name.is_empty() || url.is_empty() {
-                        continue;
+        match self.get_subtitles_from_web_view(aid, cid).await {
+            Ok(subtitles) if !subtitles.is_empty() => Ok(subtitles),
+            Ok(subtitles) => {
+                tracing::debug!(
+                    "Bilibili subtitle web view returned no tracks; using player API fallback"
+                );
+                match self.get_subtitles_from_player(aid, bvid, cid).await {
+                    Ok(fallback) => Ok(fallback),
+                    Err(error) => {
+                        tracing::debug!(
+                            error = %error,
+                            "Bilibili subtitle player API fallback failed after an empty web view"
+                        );
+                        Ok(subtitles)
                     }
-                    subtitles.insert(name, url);
                 }
+            }
+            Err(error) => {
+                tracing::debug!(
+                    error = %error,
+                    "Bilibili subtitle web view request failed; using player API fallback"
+                );
+                self.get_subtitles_from_player(aid, bvid, cid).await
+            }
+        }
+    }
 
-                Ok(subtitles)
+    async fn get_subtitles_from_web_view(
+        &self,
+        aid: u64,
+        cid: u64,
+    ) -> Result<HashMap<String, String>, BilibiliError> {
+        let client = self.client.clone();
+        let endpoint = self.endpoints.api_url("/x/v2/subtitle/web/view");
+        let cookie_header = self.build_cookie_header();
+        let referer = self.endpoints.web_base.clone();
+        let response = with_retry(|| {
+            let client = client.clone();
+            let endpoint = endpoint.clone();
+            let cookie_header = cookie_header.clone();
+            let referer = referer.clone();
+            async move {
+                let mut request = client
+                    .get(endpoint)
+                    .query(&[
+                        ("type", "1"),
+                        ("oid", &cid.to_string()),
+                        ("pid", &aid.to_string()),
+                    ])
+                    .header("User-Agent", SUBTITLE_WEB_VIEW_USER_AGENT)
+                    .header("Accept", "application/octet-stream")
+                    .header("Referer", referer);
+                if let Some(cookies) = cookie_header.as_deref() {
+                    request = request.header("Cookie", cookies);
+                }
+                let response = check_response(request.send().await?).await?;
+                bytes_with_limit(response).await
             }
         })
-        .await
+        .await?;
+        let subtitle = SubtitleWebViewReply::decode(response.as_slice())
+            .map_err(|error| BilibiliError::Parse(format!("subtitle web view: {error}")))?
+            .subtitle
+            .unwrap_or_default();
+
+        Ok(subtitle_web_view_to_map(subtitle.subtitles))
+    }
+
+    async fn get_subtitles_from_player(
+        &self,
+        aid: u64,
+        bvid: &str,
+        cid: u64,
+    ) -> Result<HashMap<String, String>, BilibiliError> {
+        let mut query = vec![("cid", cid.to_string())];
+        if bvid.is_empty() {
+            query.push(("aid", aid.to_string()));
+        } else {
+            query.push(("bvid", bvid.to_string()));
+        }
+        let response = self
+            .get_wbi_api::<types::PlayerV2Data>("/x/player/wbi/v2", query)
+            .await?;
+        let data = response
+            .data
+            .ok_or_else(|| BilibiliError::Parse("subtitle response missing data".to_string()))?;
+
+        Ok(subtitle_player_to_map(data.subtitle.subtitles))
     }
 
     /// Get user information
@@ -3196,46 +3400,34 @@ impl BilibiliClient {
 
     /// Get live danmaku server info
     pub async fn get_live_danmu_info(&self, room_id: u64) -> Result<LiveDanmuInfo, BilibiliError> {
-        let client = self.client.clone();
-        let cookie_header = self.build_cookie_header();
-        let danmu_info_url = self
-            .endpoints
-            .live_api_url("/xlive/web-room/v1/index/getDanmuInfo");
+        let response: types::ApiEnvelope<types::LiveDanmuData> = self
+            .get_wbi_live_api(
+                "/xlive/web-room/v1/index/getDanmuInfo",
+                vec![
+                    ("id", room_id.to_string()),
+                    ("type", "0".to_string()),
+                    ("web_location", "444.8".to_string()),
+                ],
+            )
+            .await?;
+        let data = response.data.ok_or_else(|| {
+            BilibiliError::Parse("live danmaku response missing data".to_string())
+        })?;
+        let host_list = data
+            .host_list
+            .into_iter()
+            .map(|host| DanmuHost {
+                host: host.host,
+                port: host.port,
+                wss_port: host.wss_port,
+                ws_port: host.ws_port,
+            })
+            .collect();
 
-        with_retry(|| {
-            let client = client.clone();
-            let cookie_header = cookie_header.clone();
-            let danmu_info_url = danmu_info_url.clone();
-            async move {
-                let mut req = client.get(danmu_info_url).query(&[("id", room_id)]);
-                req = req.header("Referer", REFERER);
-                if let Some(ref cookies) = cookie_header {
-                    req = req.header("Cookie", cookies.as_str());
-                }
-                let resp = check_response(req.send().await?).await?;
-                let json: types::GetLiveDanmuInfoResp = json_with_limit(resp).await?;
-
-                if json.code != 0 {
-                    return Err(bilibili_api_error(i64::from(json.code), "live danmaku"));
-                }
-
-                let data = json.data;
-                let token = data.token;
-                let host_list: Vec<DanmuHost> = data
-                    .host_list
-                    .into_iter()
-                    .map(|h| DanmuHost {
-                        host: h.host,
-                        port: h.port,
-                        wss_port: h.wss_port,
-                        ws_port: h.ws_port,
-                    })
-                    .collect();
-
-                Ok(LiveDanmuInfo { token, host_list })
-            }
+        Ok(LiveDanmuInfo {
+            token: data.token,
+            host_list,
         })
-        .await
     }
 
     /// Connect to live danmaku WebSocket and return a message stream
@@ -4061,7 +4253,8 @@ fn parse_danmaku_packet(data: &[u8]) -> std::vec::Vec<DanmakuMessage> {
 
 /// Parse danmaku command from JSON
 fn parse_danmaku_cmd(cmd: &str, json: &serde_json::Value) -> DanmakuMessage {
-    match cmd {
+    let command = cmd.split_once(':').map_or(cmd, |(command, _)| command);
+    match command {
         "DANMU_MSG" => {
             // Chat message
             let info = json.get("info").and_then(|v| v.as_array());

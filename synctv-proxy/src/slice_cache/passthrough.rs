@@ -32,6 +32,7 @@ pub(super) struct StreamThroughRequest<'a> {
 const PASSTHROUGH_RESPONSE_HEADERS: &[&str] = &[
     "content-length",
     "content-type",
+    "content-encoding",
     "content-range",
     "accept-ranges",
     "cache-control",

@@ -28,6 +28,22 @@ fn require_proxy_err<T>(
     }
 }
 
+async fn start_request_close_listener(
+) -> std::io::Result<(std::net::SocketAddr, tokio::task::JoinHandle<()>)> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let task = tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+
+        if let Ok((mut stream, _)) = listener.accept().await {
+            let mut buffer = [0u8; 1024];
+            let _ = stream.read(&mut buffer).await;
+            drop(stream);
+        }
+    });
+    Ok((address, task))
+}
+
 #[test]
 fn test_redirect_preserve_headers_includes_critical_headers() {
     assert!(
@@ -581,15 +597,16 @@ async fn test_send_with_redirect_validation_dns_rebind_error_is_typed_ssrf() -> 
 }
 
 #[tokio::test]
-async fn test_send_with_redirect_validation_redirect_to_loopback_without_listener_fails_with_disabled_ssrf(
+async fn test_send_with_redirect_validation_redirect_to_connection_close_fails_with_disabled_ssrf(
 ) -> TestResult {
     let server = wiremock::MockServer::start().await;
+    let (close_address, close_task) = start_request_close_listener().await?;
 
     wiremock::Mock::given(wiremock::matchers::method("GET"))
         .and(wiremock::matchers::path("/start"))
         .respond_with(
             wiremock::ResponseTemplate::new(302)
-                .insert_header("location", "http://127.0.0.1:12345/private"),
+                .insert_header("location", format!("http://{close_address}/private")),
         )
         .mount(&server)
         .await;
@@ -600,8 +617,9 @@ async fn test_send_with_redirect_validation_redirect_to_loopback_without_listene
     let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
     let err = require_proxy_err(
         send_with_redirect_validation(&client, request, &ssrf_guard).await,
-        "redirect to loopback without a listener must fail",
+        "redirect to a closing loopback connection must fail",
     )?;
+    close_task.abort();
     let proxy_err = err
         .downcast_ref::<ProxyError>()
         .ok_or("error should downcast to ProxyError")?;
@@ -617,13 +635,15 @@ async fn test_send_with_redirect_validation_redirect_to_loopback_without_listene
 async fn test_send_with_redirect_validation_initial_loopback_fails_by_connection_with_disabled_ssrf(
 ) -> TestResult {
     let client = test_proxy_client()?;
-    let request = client.get("http://127.0.0.1:12345/private");
+    let (close_address, close_task) = start_request_close_listener().await?;
+    let request = client.get(format!("http://{close_address}/private"));
 
     let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
     let err = require_proxy_err(
         send_with_redirect_validation(&client, request, &ssrf_guard).await,
-        "initial loopback target without a listener must fail",
+        "initial closing loopback target must fail",
     )?;
+    close_task.abort();
     let proxy_err = err
         .downcast_ref::<ProxyError>()
         .ok_or("error should downcast to ProxyError")?;
@@ -636,7 +656,8 @@ async fn test_send_with_redirect_validation_initial_loopback_fails_by_connection
 }
 
 #[tokio::test]
-async fn test_send_with_redirect_validation_closed_connection_is_typed_connection() -> TestResult {
+async fn test_send_with_redirect_validation_closed_connection_with_private_path_is_typed_connection(
+) -> TestResult {
     use tokio::io::AsyncReadExt;
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -650,7 +671,7 @@ async fn test_send_with_redirect_validation_closed_connection_is_typed_connectio
     });
 
     let client = test_proxy_client()?;
-    let request = client.get(format!("http://{addr}/closed"));
+    let request = client.get(format!("http://{addr}/private"));
 
     let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
     let err = require_proxy_err(
@@ -703,16 +724,19 @@ async fn test_proxy_m3u8_and_rewrite_initial_loopback_fails_by_connection_with_d
 ) -> TestResult {
     let client = test_proxy_client()?;
     let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let port = listener.local_addr()?.port();
 
     let err = proxy_m3u8_and_rewrite(
         &client,
         &ssrf_guard,
-        "http://127.0.0.1:12345/private.m3u8",
+        &format!("http://127.0.0.2:{port}/private.m3u8"),
         &HashMap::new(),
         "/proxy",
     )
     .await
-    .expect_err("loopback manifest without a listener must fail");
+    .expect_err("unbound sibling loopback manifest request must fail");
+    drop(listener);
 
     assert!(
         err.to_string().contains("Connection failed"),

@@ -290,6 +290,7 @@ impl SliceCache {
             slice: CachedSlice {
                 total_size,
                 content_type: meta.and_then(|meta| meta.content_type.clone()),
+                content_encoding: meta.and_then(|meta| meta.content_encoding.clone()),
                 etag: meta.and_then(|meta| meta.etag.clone()),
                 last_modified: meta.and_then(|meta| meta.last_modified.clone()),
                 data,
@@ -1180,6 +1181,11 @@ impl SliceCache {
             .get("content-type")
             .and_then(|v| v.to_str().ok())
             .map(ToString::to_string);
+        let resp_content_encoding = resp
+            .headers()
+            .get("content-encoding")
+            .and_then(|v| v.to_str().ok())
+            .map(ToString::to_string);
 
         // Early validator consistency check BEFORE reading the body (nginx header
         // filter pattern).  This avoids reading a full 2 MiB slice body only
@@ -1249,6 +1255,7 @@ impl SliceCache {
                 total_size: Some(total_size),
                 supports_ranges: true,
                 content_type: resp_content_type.clone(),
+                content_encoding: resp_content_encoding.clone(),
                 validated_at: std::time::SystemTime::now(),
                 last_accessed: std::time::SystemTime::now(),
             },
@@ -1272,6 +1279,7 @@ impl SliceCache {
             slice: CachedSlice {
                 total_size,
                 content_type: resp_content_type,
+                content_encoding: resp_content_encoding,
                 etag: resp_etag,
                 last_modified: resp_last_modified,
                 data,

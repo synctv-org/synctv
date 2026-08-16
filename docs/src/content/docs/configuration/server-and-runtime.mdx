@@ -35,6 +35,12 @@ server:
 
 HTTP REST、公开 gRPC 和健康检查使用这个端口。Helm 会把 HTTP 和 gRPC 暴露成独立 Service，但它们仍指向同一个容器端口。
 
+### 内核分配端口
+
+TCP 监听端口可设为 `0`。SyncTV 在启动初始化阶段直接建立监听器，并将内核分配的实际端口写入运行时配置。该语义适用于 `server.port`、`health.port`、`metrics.port`、`cluster.port`、TCP `management.port` 和 `livestream.rtmp_port`。
+
+此方式适合测试、临时本地进程和由外层发现实际端口的环境。生产部署使用显式端口，并将 Service、Ingress、反向代理和防火墙规则指向这些端口。
+
 ### `server.enable_reflection`
 
 默认值：`false`。

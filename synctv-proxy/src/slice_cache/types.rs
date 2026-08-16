@@ -32,6 +32,7 @@ pub struct SliceCacheStats {
 pub(super) struct CachedSlice {
     pub total_size: u64,
     pub content_type: Option<String>,
+    pub content_encoding: Option<String>,
     pub etag: Option<String>,
     pub last_modified: Option<String>,
     pub data: Bytes,

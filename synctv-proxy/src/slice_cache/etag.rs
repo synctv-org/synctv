@@ -23,6 +23,8 @@ pub struct CachedResourceMeta {
     pub supports_ranges: bool,
     /// Content-Type of the resource.
     pub content_type: Option<String>,
+    /// Content-Encoding of the resource.
+    pub content_encoding: Option<String>,
     /// When this metadata was last validated against upstream.
     pub validated_at: SystemTime,
     /// When this metadata was last accessed. Used by `cleanup_stale_meta`
@@ -98,6 +100,7 @@ mod tests {
             total_size: Some(1024),
             supports_ranges: true,
             content_type: Some("video/mp4".to_string()),
+            content_encoding: Some("deflate".to_string()),
             validated_at: SystemTime::now(),
             last_accessed: SystemTime::now(),
         };

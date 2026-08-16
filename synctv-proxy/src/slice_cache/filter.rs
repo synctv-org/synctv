@@ -209,6 +209,11 @@ async fn stream_original_range_with_learned_meta(
                         .get("content-type")
                         .and_then(|v| v.to_str().ok())
                         .map(ToString::to_string),
+                    content_encoding: resp
+                        .headers()
+                        .get("content-encoding")
+                        .and_then(|v| v.to_str().ok())
+                        .map(ToString::to_string),
                     validated_at: std::time::SystemTime::now(),
                     last_accessed: std::time::SystemTime::now(),
                 },
@@ -616,6 +621,7 @@ async fn range_slice_cache_path(request: RangeSliceRequest<'_>) -> Result<Respon
     let response_header_slice = CachedSlice {
         total_size,
         content_type: first_slice.slice.content_type.clone(),
+        content_encoding: first_slice.slice.content_encoding.clone(),
         etag: first_slice.slice.etag.clone(),
         last_modified: first_slice.slice.last_modified.clone(),
         data: Bytes::new(),
@@ -782,6 +788,9 @@ fn apply_cached_slice_response_headers(
 ) -> axum::http::response::Builder {
     if let Some(ref ct) = slice.content_type {
         builder = builder.header("Content-Type", ct.as_str());
+    }
+    if let Some(ref encoding) = slice.content_encoding {
+        builder = builder.header("Content-Encoding", encoding.as_str());
     }
     if let Some(ref etag) = slice.etag {
         builder = builder.header("ETag", etag.as_str());

@@ -70,6 +70,25 @@ fn error_chain_contains(error: &anyhow::Error, expected: &str) -> bool {
         .any(|cause| cause.to_string().contains(expected))
 }
 
+async fn start_request_close_listener() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("test listener should bind an ephemeral loopback port");
+    let address = listener
+        .local_addr()
+        .expect("test listener should expose its address");
+    let task = tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+
+        if let Ok((mut stream, _)) = listener.accept().await {
+            let mut buffer = [0u8; 1024];
+            let _ = stream.read(&mut buffer).await;
+            drop(stream);
+        }
+    });
+    (address, task)
+}
+
 // SliceCacheConfig tests
 
 #[test]
@@ -842,19 +861,21 @@ async fn test_head_content_length_falls_back_when_head_omits_content_length() {
 }
 
 #[tokio::test]
-async fn test_head_content_length_loopback_without_listener_fails_with_disabled_ssrf() {
+async fn test_head_content_length_connection_close_fails_with_disabled_ssrf() {
     let config = SliceCacheConfig::default();
     let cache = SliceCache::new(config).expect("slice cache should build");
     let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
+    let (close_address, close_task) = start_request_close_listener().await;
 
     let err = synctv_proxy::slice_cache::head_content_length(
         cache.client(),
         &ssrf_guard,
-        "http://127.0.0.1:12345/private",
+        &format!("http://{close_address}/private"),
         &HashMap::new(),
     )
     .await
-    .expect_err("HEAD to loopback without a listener must fail");
+    .expect_err("HEAD to a closing loopback connection must fail");
+    close_task.abort();
 
     assert!(
         err.to_string().contains("HEAD request failed"),
@@ -867,13 +888,15 @@ async fn test_head_content_length_loopback_without_listener_fails_with_disabled_
 }
 
 #[tokio::test]
-async fn test_head_content_length_redirect_to_loopback_without_listener_fails_with_disabled_ssrf() {
+async fn test_head_content_length_redirect_to_connection_close_fails_with_disabled_ssrf() {
     let mock_server = MockServer::start().await;
+    let (close_address, close_task) = start_request_close_listener().await;
 
     Mock::given(method("HEAD"))
         .and(path("/start"))
         .respond_with(
-            ResponseTemplate::new(302).insert_header("Location", "http://127.0.0.1:12345/private"),
+            ResponseTemplate::new(302)
+                .insert_header("Location", format!("http://{close_address}/private")),
         )
         .mount(&mock_server)
         .await;
@@ -889,7 +912,8 @@ async fn test_head_content_length_redirect_to_loopback_without_listener_fails_wi
         &HashMap::new(),
     )
     .await
-    .expect_err("HEAD redirect to loopback without a listener must fail");
+    .expect_err("HEAD redirect to a closing loopback connection must fail");
+    close_task.abort();
 
     assert!(
         err.to_string().contains("HEAD request failed"),
@@ -1893,7 +1917,7 @@ async fn test_suffix_range_larger_than_known_total_returns_entire_resource() {
 
 // Enhancement 2: ETag consistency validation
 
-/// CachedResourceMeta stores etag, total_size, content_type.
+/// CachedResourceMeta stores validators, resource metadata, and transfer encoding.
 #[test]
 fn test_cached_resource_meta_fields() {
     let meta = CachedResourceMeta {
@@ -1902,12 +1926,14 @@ fn test_cached_resource_meta_fields() {
         total_size: Some(10_485_760),
         supports_ranges: true,
         content_type: Some("video/mp4".to_string()),
+        content_encoding: Some("deflate".to_string()),
         validated_at: std::time::SystemTime::now(),
         last_accessed: std::time::SystemTime::now(),
     };
     assert_eq!(meta.etag.as_deref(), Some("\"abc123\""));
     assert_eq!(meta.total_size, Some(10_485_760));
     assert_eq!(meta.content_type.as_deref(), Some("video/mp4"));
+    assert_eq!(meta.content_encoding.as_deref(), Some("deflate"));
 }
 
 /// Two slices with the same ETag are cached successfully.

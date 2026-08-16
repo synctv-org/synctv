@@ -186,6 +186,11 @@ pub(super) fn cached_head_headers(
         reqwest::header::CONTENT_TYPE,
         meta.content_type.as_deref(),
     );
+    insert_header_from_string(
+        &mut headers,
+        reqwest::header::CONTENT_ENCODING,
+        meta.content_encoding.as_deref(),
+    );
     insert_header_from_string(&mut headers, reqwest::header::ETAG, meta.etag.as_deref());
     insert_header_from_string(
         &mut headers,
@@ -344,6 +349,7 @@ fn resource_meta_from_head_headers(headers: &reqwest::header::HeaderMap) -> Cach
         total_size,
         supports_ranges,
         content_type: header_to_string(headers, reqwest::header::CONTENT_TYPE),
+        content_encoding: header_to_string(headers, reqwest::header::CONTENT_ENCODING),
         validated_at: now,
         last_accessed: now,
     }

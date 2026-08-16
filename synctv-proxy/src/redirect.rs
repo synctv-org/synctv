@@ -271,27 +271,14 @@ where
 
 fn classify_reqwest_error(error: &reqwest::Error) -> anyhow::Error {
     let message = error.to_string();
-    let proxy_error = if error.is_timeout() {
+    let proxy_error = if reqwest_error_has_ssrf_resolution_block(error) {
+        ProxyError::Ssrf(message)
+    } else if error.is_timeout() {
         ProxyError::Timeout(message)
-    } else if error.is_connect() {
-        if reqwest_error_has_ssrf_resolution_block(error) {
-            ProxyError::Ssrf(message)
-        } else {
-            ProxyError::Connection(message)
-        }
+    } else if error.is_connect() || reqwest_error_message_indicates_connection_failure(&message) {
+        ProxyError::Connection(message)
     } else {
-        let lower = message.to_ascii_lowercase();
-        if lower.contains("private")
-            || lower.contains("loopback")
-            || lower.contains("disallowed")
-            || lower.contains("blocked")
-        {
-            ProxyError::Ssrf(message)
-        } else if reqwest_error_message_indicates_connection_failure(&message) {
-            ProxyError::Connection(message)
-        } else {
-            ProxyError::Upstream(message)
-        }
+        ProxyError::Upstream(message)
     };
     proxy_error.into()
 }

@@ -21,7 +21,7 @@ mod rtmp_auth;
 mod server;
 mod shutdown;
 
-pub use app::{Application, ApplicationBuildOptions};
+pub use app::{Application, ApplicationBuildOptions, ApplicationPreboundListeners};
 
 #[cfg(test)]
 pub(crate) mod test_support {

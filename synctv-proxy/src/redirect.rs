@@ -4,9 +4,7 @@ use std::time::Duration;
 
 use synctv_common::ExecutionControl;
 
-use crate::{
-    reqwest_error_message_indicates_connection_failure, run_with_proxy_cancellation, ProxyError,
-};
+use crate::{reqwest_error_indicates_connection_failure, run_with_proxy_cancellation, ProxyError};
 
 /// Maximum number of redirects to follow manually.
 const MAX_REDIRECTS: usize = 10;
@@ -275,7 +273,7 @@ fn classify_reqwest_error(error: &reqwest::Error) -> anyhow::Error {
         ProxyError::Ssrf(message)
     } else if error.is_timeout() {
         ProxyError::Timeout(message)
-    } else if error.is_connect() || reqwest_error_message_indicates_connection_failure(&message) {
+    } else if reqwest_error_indicates_connection_failure(error) {
         ProxyError::Connection(message)
     } else {
         ProxyError::Upstream(message)

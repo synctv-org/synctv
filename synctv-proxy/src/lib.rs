@@ -28,7 +28,7 @@ use synctv_common::ExecutionControl;
 
 pub use cors::{proxy_options_preflight_with_cors, CorsConfig};
 pub(crate) use error::{
-    classify_reqwest_body_error, reqwest_error_message_indicates_connection_failure, ProxyError,
+    classify_reqwest_body_error, reqwest_error_indicates_connection_failure, ProxyError,
 };
 pub use error::{
     proxy_error_kind, proxy_error_kind_from_std_error, proxy_range_not_satisfiable_total_size,

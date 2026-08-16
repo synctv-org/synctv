@@ -111,14 +111,29 @@ pub(crate) fn classify_reqwest_body_error(error: &reqwest::Error) -> ProxyError 
     let message = error.to_string();
     if error.is_timeout() {
         ProxyError::Timeout(message)
-    } else if error.is_connect() || reqwest_error_message_indicates_connection_failure(&message) {
+    } else if reqwest_error_indicates_connection_failure(error) {
         ProxyError::Connection(message)
     } else {
         ProxyError::Upstream(message)
     }
 }
 
-pub(crate) fn reqwest_error_message_indicates_connection_failure(message: &str) -> bool {
+pub(crate) fn reqwest_error_indicates_connection_failure(error: &reqwest::Error) -> bool {
+    if error.is_connect() {
+        return true;
+    }
+
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(cause) = current {
+        if reqwest_error_message_indicates_connection_failure(&cause.to_string()) {
+            return true;
+        }
+        current = cause.source();
+    }
+    false
+}
+
+fn reqwest_error_message_indicates_connection_failure(message: &str) -> bool {
     let lower = message.to_ascii_lowercase();
     lower.contains("connection")
         || lower.contains("closed")

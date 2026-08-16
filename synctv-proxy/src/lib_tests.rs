@@ -13,6 +13,7 @@ fn test_proxy_client() -> Result<reqwest::Client, reqwest::Error> {
 fn proxy_client_builder() -> reqwest::ClientBuilder {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
         .no_gzip()
         .no_brotli()
         .no_zstd()
@@ -720,23 +721,22 @@ async fn test_send_with_redirect_validation_malformed_response_is_typed_bad_gate
 }
 
 #[tokio::test]
-async fn test_proxy_m3u8_and_rewrite_initial_loopback_fails_by_connection_with_disabled_ssrf(
+async fn test_proxy_m3u8_and_rewrite_closed_connection_is_typed_connection_with_disabled_ssrf(
 ) -> TestResult {
     let client = test_proxy_client()?;
     let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let port = listener.local_addr()?.port();
+    let (close_address, close_task) = start_request_close_listener().await?;
 
     let err = proxy_m3u8_and_rewrite(
         &client,
         &ssrf_guard,
-        &format!("http://127.0.0.2:{port}/private.m3u8"),
+        &format!("http://{close_address}/private.m3u8"),
         &HashMap::new(),
         "/proxy",
     )
     .await
-    .expect_err("unbound sibling loopback manifest request must fail");
-    drop(listener);
+    .expect_err("manifest request to a closing loopback connection must fail");
+    close_task.await?;
 
     assert!(
         err.to_string().contains("Connection failed"),

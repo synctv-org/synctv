@@ -106,6 +106,15 @@ use stop::execute_stop;
 use system::execute_system;
 use user::execute_user;
 
+fn log_startup_diagnostics(config: &crate::app_config::AppConfig) {
+    for diagnostic in config.startup_diagnostics() {
+        match diagnostic {
+            crate::app_config::StartupDiagnostic::Info(message) => tracing::info!("{message}"),
+            crate::app_config::StartupDiagnostic::Warning(message) => tracing::warn!("{message}"),
+        }
+    }
+}
+
 #[cfg(test)]
 pub(in crate::cli) use db::{database_summary, DatabaseCliOutput};
 #[cfg(test)]

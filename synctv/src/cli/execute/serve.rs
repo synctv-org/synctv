@@ -8,6 +8,7 @@ pub(super) async fn execute_serve(args: ServeArgs) -> Result<()> {
 
     let _log_guard =
         synctv_core::logging::init_logging(&crate::resource_options::logging_options(&config))?;
+    log_startup_diagnostics(&config);
 
     if args.dry_run {
         tracing::info!("Configuration and logging initialized successfully");

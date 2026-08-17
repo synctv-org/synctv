@@ -821,30 +821,32 @@ fn test_weak_secret_all_same_character_rejected() {
 }
 
 #[test]
-fn test_weak_secret_repeated_pattern_rejected() {
-    // Repeated pattern "abcabcabcabcabcabcabcabcabcabcab"
-    let result = JwtService::new("abcabcabcabcabcabcabcabcabcabcab");
+fn test_weak_secret_repeated_pattern_allowed_with_warning() {
+    let result = JwtService::new("abc1abc1abc1abc1abc1abc1abc1abc1");
     assert!(
-        result.is_err(),
-        "Repeated pattern secret should be rejected"
+        result.is_ok(),
+        "Repeated pattern secret should be allowed: {result:?}"
     );
 }
 
 #[test]
-fn test_weak_secret_keyboard_walk_rejected() {
+fn test_weak_secret_keyboard_walk_allowed_with_warning() {
     // Keyboard walk pattern with insufficient variety
     // "qwerty" repeated - this is a simple repeating pattern
     let result = JwtService::new("qwertyqwertyqwertyqwertyqwerty12");
-    assert!(result.is_err(), "Repeated keyboard walk should be rejected");
+    assert!(
+        result.is_ok(),
+        "Repeated keyboard walk should be allowed: {result:?}"
+    );
 }
 
 #[test]
-fn test_weak_secret_sequential_rejected() {
+fn test_weak_secret_sequential_allowed_with_warning() {
     // Sequential characters - fully sequential alphabet
     let result = JwtService::new("abcdefghijklmnopqrstuvwxyz123456");
     assert!(
-        result.is_err(),
-        "Sequential character secret should be rejected"
+        result.is_ok(),
+        "Sequential character secret should be allowed: {result:?}"
     );
 }
 
@@ -856,12 +858,11 @@ fn test_weak_secret_numeric_only_rejected() {
 }
 
 #[test]
-fn test_weak_secret_repeated_word_rejected() {
-    // Repeated low-variety word pattern with padding.
-    let result = JwtService::new("passpasspasspasspasspasspass12");
+fn test_weak_secret_repeated_word_allowed_with_warning() {
+    let result = JwtService::new("passpasspasspasspasspasspasspass12");
     assert!(
-        result.is_err(),
-        "Repeated low-variety secret should be rejected"
+        result.is_ok(),
+        "Repeated low-variety secret should be allowed: {result:?}"
     );
 }
 
@@ -898,13 +899,57 @@ fn test_strong_secret_with_spaces_accepted() {
 }
 
 #[test]
-fn test_weak_secret_low_unique_chars_rejected() {
-    // Low unique character count (mostly repeated chars)
-    let result = JwtService::new("aabbccddaabbccddaabbccddaabbccdd");
+fn test_weak_secret_low_unique_chars_allowed_with_warning() {
+    let result = JwtService::new("aabbccdd11aabbccdd11aabbccdd11aabbccdd11");
     assert!(
-        result.is_err(),
-        "Low unique character secret should be rejected"
+        result.is_ok(),
+        "Low unique character secret should be allowed: {result:?}"
     );
+}
+
+#[test]
+fn test_low_unique_character_ratio_is_non_blocking() {
+    let secret = concat!(
+        "aA0!bB1?cC2#",
+        "A0!bB1?cC2#a",
+        "0!bB1?cC2#aA",
+        "!bB1?cC2#aA0",
+        "bB1?cC2#aA0!",
+        "B1?cC2#aA0!b",
+        "1?cC2#aA0!bB",
+        "?cC2#aA0!bB1"
+    );
+
+    let result = JwtService::new(secret);
+
+    assert!(
+        result.is_ok(),
+        "Low unique character ratio should emit a warning without rejecting the secret: {result:?}"
+    );
+}
+
+#[test]
+fn test_non_ascii_secret_is_supported() {
+    let result = JwtService::new(concat!(
+        "\u{4e2d}a\u{6587}b\u{5bc6}c\u{94a5}d\u{6d4b}e\u{8bd5}f",
+        "\u{4e2d}a\u{6587}b\u{5bc6}c\u{94a5}d\u{6d4b}e\u{8bd5}f",
+        "\u{4e2d}a\u{6587}b\u{5bc6}c\u{94a5}d\u{6d4b}e\u{8bd5}f"
+    ));
+
+    assert!(
+        result.is_ok(),
+        "Non-ASCII secret should not panic or be rejected: {result:?}"
+    );
+}
+
+#[test]
+fn test_shannon_entropy_counts_characters_consistently() {
+    let entropy = ok(
+        JwtService::calculate_shannon_entropy("a\u{4e2d}"),
+        "entropy should be calculated",
+    );
+
+    assert!((entropy - 1.0).abs() < f64::EPSILON);
 }
 
 #[test]

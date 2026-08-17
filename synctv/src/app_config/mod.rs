@@ -6,6 +6,12 @@ use serde::{Deserialize, Serialize};
 mod runtime;
 mod validation;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum StartupDiagnostic {
+    Info(String),
+    Warning(String),
+}
+
 const MIN_GRPC_MESSAGE_SIZE: usize = 1024 * 1024;
 const MAX_GRPC_MESSAGE_SIZE: usize = 1024 * 1024 * 1024;
 const DANGEROUS_CIDR_RANGES: &[&str] = &["0.0.0.0/0", "::/0", "0.0.0.0/0,::/0"];

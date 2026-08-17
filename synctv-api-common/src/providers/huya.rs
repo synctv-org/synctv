@@ -29,7 +29,6 @@ pub fn resolve_response(media: HuyaMedia, provider_instance_name: Option<&str>) 
                 name: quality.name,
                 cdn: quality.cdn,
                 format: stream_format(quality.format),
-                url: quality.url,
                 bitrate: quality.bitrate,
                 width: quality.width,
                 height: quality.height,

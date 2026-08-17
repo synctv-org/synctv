@@ -112,6 +112,13 @@ message GetBindsResponse {
   repeated BindInfo binds = 1;
 }
 
+message GetThumbnailRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  string item_id = 2 [(buf.validate.field).string.min_len = 1];
+  uint32 max_height = 3 [(buf.validate.field).uint32.lte = 1920];
+  uint32 max_width = 4 [(buf.validate.field).uint32.lte = 1920];
+}
+
 // Saved credential information
 message BindInfo {
   string id = 1;

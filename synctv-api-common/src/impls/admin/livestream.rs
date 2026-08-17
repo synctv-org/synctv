@@ -213,16 +213,41 @@ impl AdminApiImpl {
         actor_user_id: &UserId,
         admin_user_id: &UserId,
         ctx: &RequestContext,
-    ) -> Result<synctv_proto::providers::rtmp::CreatePublishKeyResponse, ApiError> {
-        let response = self
-            .create_rtmp_publish_key(
-                synctv_proto::providers::rtmp::CreatePublishKeyRequest {
-                    room_id: room_id.to_string(),
-                    media_id: media_id.to_string(),
-                },
-                actor_user_id,
+    ) -> Result<synctv_proto::client::CreateRoomPublishKeyResponse, ApiError> {
+        let request = synctv_proto::client::CreateRoomPublishKeyRequest {
+            media_id: media_id.to_string(),
+        };
+        crate::impls::validate_proto_request(&request)?;
+        let room_id_value =
+            crate::impls::parse_room_id_param(room_id, "room_id", &self.public_id_codec)?;
+        let media_id_value =
+            crate::impls::proto_validated_media_id(request.media_id, &self.public_id_codec)?;
+
+        let (media, room) = tokio::join!(
+            self.room_service
+                .media_service()
+                .get_room_media(&room_id_value, &media_id_value),
+            self.room_service.get_room(&room_id_value),
+        );
+        media
+            .map_err(|error| ApiError::Internal(format!("Failed to load media: {error}")))?
+            .ok_or_else(|| ApiError::NotFound(format!("Media {media_id_value} not found")))?;
+        let room = room.map_err(ApiError::from)?;
+        crate::impls::client::stream::ensure_room_accepts_live_publish(&room)?;
+
+        let publish_key_service = self.publish_key_service.as_deref().ok_or_else(|| {
+            ApiError::ServiceUnavailable(
+                "Publish key service is not available on this server.".to_string(),
             )
-            .await?;
+        })?;
+        let response = crate::impls::client::stream::issue_room_publish_key(
+            publish_key_service,
+            &self.runtime_settings,
+            &self.public_id_codec,
+            room_id_value,
+            media_id_value,
+            actor_user_id,
+        )?;
 
         tracing::info!(
             room_id,
@@ -241,8 +266,26 @@ impl AdminApiImpl {
         &self,
         room_id: &str,
         media_id: &str,
-    ) -> Result<synctv_proto::providers::rtmp::GetStreamInfoResponse, ApiError> {
-        self.get_rtmp_stream_info(room_id, media_id).await
+    ) -> Result<synctv_proto::client::GetRoomStreamInfoResponse, ApiError> {
+        let request = synctv_proto::client::GetRoomStreamInfoRequest {
+            media_id: media_id.to_string(),
+        };
+        crate::impls::validate_proto_request(&request)?;
+        let room_id = crate::impls::parse_room_id_param(room_id, "room_id", &self.public_id_codec)?;
+        let media_id =
+            crate::impls::proto_validated_media_id(request.media_id, &self.public_id_codec)?;
+        let infrastructure = self
+            .live_streaming_infrastructure
+            .as_ref()
+            .ok_or_else(crate::impls::client::stream::live_streaming_unavailable_error)?;
+
+        crate::impls::client::stream::fetch_stream_info(
+            infrastructure,
+            &self.public_id_codec,
+            &room_id.to_string(),
+            &media_id.to_string(),
+        )
+        .await
     }
 
     pub async fn list_room_streams(

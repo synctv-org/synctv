@@ -1,9 +1,11 @@
+use futures::FutureExt;
 use std::sync::Arc;
 
 use synctv_proto::providers::qnap::qnap_provider_service_server::QnapProviderService;
 use synctv_proto::providers::qnap::{
     GetBindsRequest, GetBindsResponse, GetCapabilitiesRequest, GetCapabilitiesResponse,
-    ListRequest, ListResponse, LoginRequest, LoginResponse, LogoutRequest, LogoutResponse,
+    GetThumbnailRequest, ListRequest, ListResponse, LoginRequest, LoginResponse, LogoutRequest,
+    LogoutResponse,
 };
 use tonic::{Request, Response, Status};
 
@@ -16,6 +18,7 @@ pub struct QnapProviderGrpcService {
     api: Arc<QnapApiImpl>,
     request_executor: Arc<RequestExecutor>,
     runtime_settings: Arc<synctv_api_common::ApiRuntimeSettings>,
+    resource_state: Arc<super::playback_provider::PlaybackProviderGrpcState>,
 }
 
 impl QnapProviderGrpcService {
@@ -24,11 +27,13 @@ impl QnapProviderGrpcService {
         shared: &Arc<SharedApiRuntime>,
         request_executor: Arc<RequestExecutor>,
         runtime_settings: Arc<synctv_api_common::ApiRuntimeSettings>,
+        resource_state: Arc<super::playback_provider::PlaybackProviderGrpcState>,
     ) -> Self {
         Self {
             api: shared.qnap_api.clone(),
             request_executor,
             runtime_settings,
+            resource_state,
         }
     }
 }
@@ -36,6 +41,8 @@ impl QnapProviderGrpcService {
 #[tonic::async_trait]
 #[allow(clippy::result_large_err)]
 impl QnapProviderService for QnapProviderGrpcService {
+    type GetThumbnailStream = super::ProviderResourceResponseStream;
+
     async fn login(
         &self,
         request: Request<LoginRequest>,
@@ -145,5 +152,23 @@ impl QnapProviderService for QnapProviderGrpcService {
             .await
             .map(Response::new)
             .map_err(crate::grpc::map_api_error)
+    }
+
+    async fn get_thumbnail(
+        &self,
+        request: Request<GetThumbnailRequest>,
+    ) -> Result<Response<Self::GetThumbnailStream>, Status> {
+        let metadata = super::provider_stream_request_metadata(&request, &self.runtime_settings)?;
+        let req = request.into_inner();
+        let api = self.api.clone();
+
+        super::execute_provider_resource_stream(
+            self.resource_state.clone(),
+            metadata,
+            move |_control, authenticated| {
+                async move { api.thumbnail_action(authenticated.user_id(), req).await }.boxed()
+            },
+        )
+        .await
     }
 }

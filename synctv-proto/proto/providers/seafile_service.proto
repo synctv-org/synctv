@@ -3,6 +3,7 @@ syntax = "proto3";
 package synctv.provider.seafile;
 
 import "proto/providers/seafile.proto";
+import "proto/providers/common.proto";
 
 service SeafileProviderService {
   rpc Login(LoginRequest) returns (LoginResponse);
@@ -12,4 +13,5 @@ service SeafileProviderService {
   rpc ListStarred(ListStarredRequest) returns (ListResponse);
   rpc Logout(LogoutRequest) returns (LogoutResponse);
   rpc GetBinds(GetBindsRequest) returns (GetBindsResponse);
+  rpc GetThumbnail(GetThumbnailRequest) returns (stream synctv.provider.common.ResourceResponse);
 }

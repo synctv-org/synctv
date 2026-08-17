@@ -21,14 +21,13 @@ use std::hash::BuildHasher;
 use std::time::Duration;
 
 use axum::{body::Body, http::StatusCode, response::Response};
-use bytes::Bytes;
 use futures::StreamExt;
 use reqwest::header::{HeaderName, HeaderValue, USER_AGENT};
 use synctv_common::ExecutionControl;
 
 pub use cors::{proxy_options_preflight_with_cors, CorsConfig};
 pub(crate) use error::{
-    classify_reqwest_body_error, reqwest_error_message_indicates_connection_failure, ProxyError,
+    classify_reqwest_body_error, reqwest_error_indicates_connection_failure, ProxyError,
 };
 pub use error::{
     proxy_error_kind, proxy_error_kind_from_std_error, proxy_range_not_satisfiable_total_size,
@@ -43,9 +42,6 @@ pub(crate) use redirect::{
     send_head_with_redirect_validation_with_control_and_timeout, validate_target_url_against_ssrf,
 };
 pub use redirect::{send_with_redirect_validation_with_control_and_timeout, ProxyResponse};
-
-/// Maximum response body size for proxied media (256 MB).
-const MAX_PROXY_BODY_SIZE: usize = 256 * 1024 * 1024;
 
 /// Maximum response body size for M3U8/MPD manifests (10 MB).
 const MAX_MANIFEST_SIZE: usize = 10 * 1024 * 1024;
@@ -220,35 +216,6 @@ pub struct M3u8RewriteConfig<'a, S: BuildHasher> {
     pub proxy_base: &'a str,
     pub request_control: Option<&'a ExecutionControl>,
     pub upstream_header_timeout: Option<Duration>,
-}
-
-fn proxy_body_stream<S>(
-    stream: S,
-    max_body_size: usize,
-) -> impl futures::Stream<Item = Result<Bytes, ProxyError>>
-where
-    S: futures::Stream<Item = Result<Bytes, reqwest::Error>>,
-{
-    stream.scan((0usize, false), move |(total, exceeded), chunk| {
-        if *exceeded {
-            return futures::future::ready(None);
-        }
-        match chunk {
-            Ok(data) => {
-                *total += data.len();
-                if *total > max_body_size {
-                    *exceeded = true;
-                    futures::future::ready(Some(Err(ProxyError::BodyTooLarge(format!(
-                        "response exceeded size limit ({} bytes, max {max_body_size})",
-                        *total
-                    )))))
-                } else {
-                    futures::future::ready(Some(Ok(data)))
-                }
-            }
-            Err(e) => futures::future::ready(Some(Err(classify_reqwest_body_error(&e)))),
-        }
-    })
 }
 
 /// Fetch a remote URL and return the response.
@@ -475,18 +442,6 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
     let status = proxy_response.status();
     let response_headers = proxy_response.headers().clone();
 
-    // Check Content-Length hint before streaming (not authoritative, but catches obvious cases).
-    // Use `try_from` instead of `as usize` to avoid silent truncation on 32-bit targets
-    // where u64 > usize::MAX would wrap around and pass the size check.
-    if let Some(cl) = proxy_response.content_length() {
-        if usize::try_from(cl).map_or(true, |s| s > MAX_PROXY_BODY_SIZE) {
-            return Err(ProxyError::BodyTooLarge(format!(
-                "response too large ({cl} bytes, max {MAX_PROXY_BODY_SIZE})"
-            ))
-            .into());
-        }
-    }
-
     let mut builder = Response::builder().status(status);
 
     // For 206 Partial Content responses the client needs Content-Length to
@@ -521,7 +476,9 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
     // After headers arrive the body is intentionally cancellation-only. We do
     // not apply a timeout to the remainder of the proxy lifecycle because
     // upstream media responses can be arbitrarily large or slow by design.
-    let body_stream = proxy_body_stream(proxy_response.bytes_stream(), MAX_PROXY_BODY_SIZE);
+    let body_stream = proxy_response
+        .bytes_stream()
+        .map(|chunk| chunk.map_err(|error| classify_reqwest_body_error(&error)));
     let body = Body::from_stream(body_stream);
 
     builder

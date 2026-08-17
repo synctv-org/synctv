@@ -3,8 +3,8 @@ use std::sync::Arc;
 use synctv_core::models::UserId;
 use synctv_core::provider::{NextcloudProvider, PlaybackTransportAction, ProviderError};
 use synctv_proto::providers::nextcloud::{
-    BindInfo, FileItem, GetBindsResponse, ListFavoritesRequest, ListRequest, ListResponse,
-    LoginRequest, LoginResponse, LogoutRequest, LogoutResponse, PollLoginFlowRequest,
+    BindInfo, FileItem, GetBindsResponse, GetPreviewRequest, ListFavoritesRequest, ListRequest,
+    ListResponse, LoginRequest, LoginResponse, LogoutRequest, LogoutResponse, PollLoginFlowRequest,
     StartLoginFlowRequest, StartLoginFlowResponse,
 };
 use synctv_proto::source_config::{
@@ -202,15 +202,22 @@ impl NextcloudApiImpl {
     pub async fn preview_action(
         &self,
         owner: UserId,
-        server_id: &str,
-        file_id: u64,
-        width: u32,
-        height: u32,
-        crop: bool,
-    ) -> Result<PlaybackTransportAction, ProviderError> {
+        req: GetPreviewRequest,
+    ) -> Result<PlaybackTransportAction, crate::impls::ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let width = if req.width == 0 { 640 } else { req.width };
+        let height = if req.height == 0 { 640 } else { req.height };
         self.provider
-            .thumbnail_action(owner, server_id, file_id, width, height, crop)
+            .thumbnail_action(
+                owner,
+                req.server_id.trim(),
+                req.file_id,
+                width,
+                height,
+                req.crop.unwrap_or(true),
+            )
             .await
+            .map_err(crate::impls::ApiError::from)
     }
 
     fn publish(&self, user_id: UserId, server_id: &str) {

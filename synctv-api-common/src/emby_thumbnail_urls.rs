@@ -3,8 +3,9 @@ use sha2::{Digest, Sha256};
 
 const DEFAULT_THUMBNAIL_HEIGHT: u32 = 300;
 const MAX_THUMBNAIL_DIMENSION: u32 = 1920;
-pub const THUMBNAIL_ROUTE_PREFIX: &str = "/api/providers/emby/thumbnail/";
-pub const THUMBNAIL_SIGNATURE_PROVIDER: &str = "emby-thumbnail";
+pub const PROVIDER_THUMBNAIL_ROUTE_PREFIX: &str = "/api/providers/emby/thumbnail/";
+pub const PLAYBACK_THUMBNAIL_ROUTE_PREFIX: &str = "/api/playback-providers";
+pub const THUMBNAIL_SIGNATURE_PROVIDER: &str = "emby";
 
 #[derive(Clone, Copy)]
 pub struct ThumbnailSignatureScope<'a> {
@@ -15,12 +16,6 @@ pub struct ThumbnailSignatureScope<'a> {
     pub max_width: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ThumbnailSignatureAccessError {
-    Invalid,
-    WrongUser,
-}
-
 pub fn clamp_thumbnail_dimension(value: Option<u32>, default: u32) -> u32 {
     value
         .filter(|value| *value > 0)
@@ -28,12 +23,28 @@ pub fn clamp_thumbnail_dimension(value: Option<u32>, default: u32) -> u32 {
         .min(MAX_THUMBNAIL_DIMENSION)
 }
 
-pub fn emby_thumbnail_url(server_id: &str, credential_owner_id: &str, item_id: &str) -> String {
+pub fn provider_thumbnail_url(
+    server_id: &str,
+    item_id: &str,
+    max_height: u32,
+    max_width: u32,
+) -> String {
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    query.append_pair("serverId", server_id).append_pair(
+        "maxHeight",
+        &clamp_thumbnail_dimension(Some(max_height), DEFAULT_THUMBNAIL_HEIGHT).to_string(),
+    );
+    if max_width > 0 {
+        query.append_pair(
+            "maxWidth",
+            &clamp_thumbnail_dimension(Some(max_width), 0).to_string(),
+        );
+    }
+    let item_id =
+        percent_encoding::utf8_percent_encode(item_id, percent_encoding::NON_ALPHANUMERIC);
     format!(
-        "{THUMBNAIL_ROUTE_PREFIX}{item_id}?serverId={server_id}&credentialOwnerId={credential_owner_id}&maxHeight=300",
-        item_id = percent_encoding::utf8_percent_encode(item_id, percent_encoding::NON_ALPHANUMERIC),
-        server_id = percent_encoding::utf8_percent_encode(server_id, percent_encoding::NON_ALPHANUMERIC),
-        credential_owner_id = percent_encoding::utf8_percent_encode(credential_owner_id, percent_encoding::NON_ALPHANUMERIC),
+        "{PROVIDER_THUMBNAIL_ROUTE_PREFIX}{item_id}?{}",
+        query.finish()
     )
 }
 
@@ -51,13 +62,19 @@ pub fn thumbnail_signature_version(scope: ThumbnailSignatureScope<'_>) -> String
     hex::encode(digest)
 }
 
-pub fn build_signed_thumbnail_query(
+pub fn playback_thumbnail_url(
     signing_key: &ProxySigningKey,
     room_id: &str,
     user_id: &str,
     scope: ThumbnailSignatureScope<'_>,
-    expires_at: i64,
 ) -> String {
+    let scope = ThumbnailSignatureScope {
+        max_height: clamp_thumbnail_dimension(Some(scope.max_height), DEFAULT_THUMBNAIL_HEIGHT),
+        max_width: clamp_thumbnail_dimension(Some(scope.max_width), 0),
+        ..scope
+    };
+    let expires_at =
+        synctv_core::SystemClock.now().timestamp() + ProxySigningKey::default_expiry_secs();
     let claims = ProxyUrlClaims {
         provider: THUMBNAIL_SIGNATURE_PROVIDER.to_string(),
         version: thumbnail_signature_version(scope),
@@ -67,109 +84,16 @@ pub fn build_signed_thumbnail_query(
         expires_at,
         target_url: None,
     };
-    signing_key.build_signed_query(&claims)
-}
-
-pub fn thumbnail_signature_present(raw_query: &str) -> bool {
-    url::form_urlencoded::parse(raw_query.as_bytes()).any(|(key, _)| key.as_ref() == "sig")
-}
-
-pub fn thumbnail_signature_query(raw_query: &str) -> String {
-    url::form_urlencoded::Serializer::new(String::new())
-        .extend_pairs(
-            url::form_urlencoded::parse(raw_query.as_bytes())
-                .filter(|(key, _)| matches!(key.as_ref(), "sig" | "uid" | "rid" | "exp")),
-        )
-        .finish()
-}
-
-pub fn verify_signed_thumbnail_access(
-    signing_key: &ProxySigningKey,
-    auth_user_id: &str,
-    raw_query: &str,
-    scope: ThumbnailSignatureScope<'_>,
-) -> Result<String, ThumbnailSignatureAccessError> {
-    let signature_query = thumbnail_signature_query(raw_query);
-    let claims = signing_key
-        .parse_and_verify_query(
-            &signature_query,
-            THUMBNAIL_SIGNATURE_PROVIDER,
-            &thumbnail_signature_version(scope),
-            "thumbnail",
-        )
-        .map_err(|_| ThumbnailSignatureAccessError::Invalid)?;
-
-    if claims.user_id != auth_user_id {
-        return Err(ThumbnailSignatureAccessError::WrongUser);
-    }
-
-    Ok(claims.room_id)
-}
-
-pub fn sign_emby_thumbnail_url(
-    thumbnail_url: &str,
-    room_id: &str,
-    user_id: &str,
-    signing_key: &ProxySigningKey,
-) -> Result<String, String> {
-    let Some(path_with_item) = thumbnail_url.strip_prefix(THUMBNAIL_ROUTE_PREFIX) else {
-        return Ok(thumbnail_url.to_string());
-    };
-    let Some((item_id, raw_query)) = path_with_item.split_once('?') else {
-        return Ok(thumbnail_url.to_string());
-    };
-    if thumbnail_signature_present(raw_query) {
-        return Ok(thumbnail_url.to_string());
-    }
-
-    let mut server_id = None;
-    let mut credential_owner_id = None;
-    let mut max_height = None;
-    let mut max_width = None;
-    for (key, value) in url::form_urlencoded::parse(raw_query.as_bytes()) {
-        match key.as_ref() {
-            "serverId" => server_id = Some(value.into_owned()),
-            "credentialOwnerId" => credential_owner_id = Some(value.into_owned()),
-            "maxHeight" => {
-                max_height = Some(value.parse().map_err(|error| {
-                    format!("Failed to parse Emby thumbnail maxHeight: {error}")
-                })?);
-            }
-            "maxWidth" => {
-                max_width = Some(value.parse().map_err(|error| {
-                    format!("Failed to parse Emby thumbnail maxWidth: {error}")
-                })?);
-            }
-            _ => {}
-        }
-    }
-    let server_id = server_id
-        .map(|value: String| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| "Emby thumbnail URL missing serverId".to_string())?;
-    let credential_owner_id = credential_owner_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(user_id)
-        .to_string();
-    let max_height = clamp_thumbnail_dimension(max_height, DEFAULT_THUMBNAIL_HEIGHT);
-    let max_width = clamp_thumbnail_dimension(max_width, 0);
-    let item_id = percent_encoding::percent_decode_str(item_id)
-        .decode_utf8()
-        .map_err(|error| format!("Failed to decode Emby thumbnail item_id: {error}"))?
-        .into_owned();
-    let scope = ThumbnailSignatureScope {
-        item_id: &item_id,
-        server_id: &server_id,
-        credential_owner_id: &credential_owner_id,
-        max_height,
-        max_width,
-    };
-    let expires_at =
-        synctv_core::SystemClock.now().timestamp() + ProxySigningKey::default_expiry_secs();
-    let signed_query =
-        build_signed_thumbnail_query(signing_key, room_id, user_id, scope, expires_at);
-
-    Ok(format!("{thumbnail_url}&{signed_query}"))
+    let signed_query = signing_key.build_signed_playback_query(&claims);
+    let resource_query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("serverId", scope.server_id)
+        .append_pair("credentialOwnerId", scope.credential_owner_id)
+        .append_pair("maxHeight", &scope.max_height.to_string())
+        .append_pair("maxWidth", &scope.max_width.to_string())
+        .finish();
+    let item_id =
+        percent_encoding::utf8_percent_encode(scope.item_id, percent_encoding::NON_ALPHANUMERIC);
+    format!(
+        "{PLAYBACK_THUMBNAIL_ROUTE_PREFIX}/{room_id}/emby/thumbnail/{item_id}?{resource_query}&{signed_query}"
+    )
 }

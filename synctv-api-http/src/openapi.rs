@@ -21,7 +21,7 @@ use crate::providers::{
         truenas as playback_provider_truenas, twitch as playback_provider_twitch,
         youtube as playback_provider_youtube,
     },
-    qnap, rtmp, seafile, synology, tiktok, truenas, twitch, youtube,
+    qnap, seafile, synology, tiktok, truenas, twitch, youtube,
 };
 use synctv_proto::client;
 
@@ -224,8 +224,6 @@ pub struct GoogleRpcStatusSchema {
         bilibili::binds,
         bilibili::logout,
         emby::thumbnail,
-        rtmp::generate_publish_key,
-        rtmp::handle_stream_info,
         playback_provider_direct_url::get_direct_url_stream,
         playback_provider_direct_url::head_direct_url_stream,
         playback_provider_direct_url::get_direct_url_hls_manifest,
@@ -302,7 +300,6 @@ pub struct GoogleRpcStatusSchema {
         playback_provider_bilibili::head_bilibili_dash_resource,
         playback_provider_bilibili::get_bilibili_subtitle,
         playback_provider_bilibili::get_bilibili_danmaku_file,
-        playback_provider_bilibili::watch_bilibili_live_danmaku,
         playback_provider_rtmp::get_rtmp_flv_stream,
         playback_provider_rtmp::head_rtmp_flv_stream,
         playback_provider_rtmp::get_rtmp_hls_master,
@@ -324,6 +321,7 @@ pub struct GoogleRpcStatusSchema {
         room::leave_room,
         room::get_room_members,
         room::list_room_streams,
+        room::create_room_publish_key,
         room::get_room_stream_info,
         room::kick_room_stream,
         room::get_playback,
@@ -498,7 +496,7 @@ pub struct GoogleRpcStatusSchema {
             client::RefreshTokenRequest,
             client::RefreshTokenResponse,
             client::LogoutResponse,
-            synctv_proto::providers::rtmp::CreatePublishKeyResponse,
+            client::CreateRoomPublishKeyResponse,
             client::RequestPasswordResetRequest,
             client::RequestPasswordResetResponse,
             client::StartOpaquePasswordResetRequest,
@@ -723,7 +721,6 @@ pub struct GoogleRpcStatusSchema {
             synctv_proto::providers::youtube::ResolveResponse,
             synctv_proto::providers::youtube::Metadata,
             synctv_proto::providers::youtube::Format,
-            synctv_proto::providers::youtube::Subtitle,
             synctv_proto::providers::douyin::BindRequest,
             synctv_proto::providers::douyin::BindResponse,
             synctv_proto::providers::douyin::GetBindsResponse,
@@ -885,8 +882,6 @@ pub struct GoogleRpcStatusSchema {
             synctv_proto::providers::bilibili::LogoutRequest,
             synctv_proto::providers::bilibili::LogoutResponse,
             synctv_proto::providers::bilibili::QrLoginStatus,
-            synctv_proto::providers::rtmp::GetStreamInfoResponse,
-            synctv_proto::providers::rtmp::StreamPublisherInfo,
             synctv_proto::client::GetRoomStreamInfoResponse,
             synctv_proto::client::RoomStreamPublisherInfo,
             synctv_proto::client::KickRoomStreamRequest,
@@ -1212,12 +1207,12 @@ mod tests {
             ("/api/providers/youtube/binds", "get"),
             ("/api/providers/youtube/unbind", "post"),
             (
-                "/api/playback-providers/youtube/{version}/resources/{modeName}/{mediaIndex}",
+                "/api/playback-providers/{roomId}/youtube/{version}/resources/{modeName}/{mediaIndex}",
                 "get",
             ),
-            ("/api/playback-providers/youtube/{version}/segments", "get"),
+            ("/api/playback-providers/{roomId}/youtube/{version}/segments", "get"),
             (
-                "/api/playback-providers/youtube/{version}/subtitles/{modeName}/{subtitleIndex}",
+                "/api/playback-providers/{roomId}/youtube/{version}/subtitles/{modeName}/{subtitleIndex}",
                 "get",
             ),
         ] {
@@ -1258,12 +1253,12 @@ mod tests {
 
         for provider in ["rtmp", "live-proxy"] {
             for path in [
-                format!("/api/playback-providers/{provider}/{{version}}/hls-master"),
+                format!("/api/playback-providers/{{roomId}}/{provider}/{{version}}/hls-master"),
                 format!(
-                    "/api/playback-providers/{provider}/{{version}}/hls/{{generationId}}/index.m3u8"
+                    "/api/playback-providers/{{roomId}}/{provider}/{{version}}/hls/{{generationId}}/index.m3u8"
                 ),
                 format!(
-                    "/api/playback-providers/{provider}/{{version}}/hls/{{generationId}}/{{segmentName}}"
+                    "/api/playback-providers/{{roomId}}/{provider}/{{version}}/hls/{{generationId}}/{{segmentName}}"
                 ),
             ] {
                 let operation = &doc["paths"][&path]["get"];
@@ -1274,9 +1269,9 @@ mod tests {
                 );
             }
             for removed_path in [
-                format!("/api/playback-providers/{provider}/{{version}}/hls-playlist"),
+                format!("/api/playback-providers/{{roomId}}/{provider}/{{version}}/hls-playlist"),
                 format!(
-                    "/api/playback-providers/{provider}/{{version}}/hls-segments/{{segmentName}}"
+                    "/api/playback-providers/{{roomId}}/{provider}/{{version}}/hls-segments/{{segmentName}}"
                 ),
             ] {
                 assert!(
@@ -1300,15 +1295,15 @@ mod tests {
             ("/api/providers/douyin/resolve", "post"),
             ("/api/providers/douyin/user-posts", "post"),
             (
-                "/api/playback-providers/douyin/{version}/resources/{modeName}/{mediaIndex}",
+                "/api/playback-providers/{roomId}/douyin/{version}/resources/{modeName}/{mediaIndex}",
                 "get",
             ),
             (
-                "/api/playback-providers/douyin/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
+                "/api/playback-providers/{roomId}/douyin/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
                 "get",
             ),
             (
-                "/api/playback-providers/douyin/{version}/danmakus/{modeName}/{mediaIndex}",
+                "/api/playback-providers/{roomId}/douyin/{version}/danmakus/{modeName}/{mediaIndex}",
                 "get",
             ),
         ] {
@@ -1357,15 +1352,15 @@ mod tests {
             ("/api/providers/tiktok/user", "post"),
             ("/api/providers/tiktok/user-posts", "post"),
             (
-                "/api/playback-providers/tiktok/{version}/resources/{modeName}/{mediaIndex}",
+                "/api/playback-providers/{roomId}/tiktok/{version}/resources/{modeName}/{mediaIndex}",
                 "get",
             ),
             (
-                "/api/playback-providers/tiktok/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
+                "/api/playback-providers/{roomId}/tiktok/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
                 "get",
             ),
             (
-                "/api/playback-providers/tiktok/{version}/subtitles/{modeName}/{subtitleIndex}",
+                "/api/playback-providers/{roomId}/tiktok/{version}/subtitles/{modeName}/{subtitleIndex}",
                 "get",
             ),
         ] {
@@ -1414,12 +1409,12 @@ mod tests {
             ("/api/providers/twitch/resolve", "post"),
             ("/api/providers/twitch/channel-items", "post"),
             (
-                "/api/playback-providers/twitch/{version}/resources/{modeName}/{mediaIndex}",
+                "/api/playback-providers/{roomId}/twitch/{version}/resources/{modeName}/{mediaIndex}",
                 "get",
             ),
-            ("/api/playback-providers/twitch/{version}/segments", "get"),
+            ("/api/playback-providers/{roomId}/twitch/{version}/segments", "get"),
             (
-                "/api/playback-providers/twitch/{version}/chats/{modeName}/{mediaIndex}",
+                "/api/playback-providers/{roomId}/twitch/{version}/chats/{modeName}/{mediaIndex}",
                 "get",
             ),
         ] {
@@ -1447,8 +1442,8 @@ mod tests {
         }
 
         let chat_response = &doc["paths"]
-            ["/api/playback-providers/twitch/{version}/chats/{modeName}/{mediaIndex}"]["get"]
-            ["responses"]["200"]["content"]["text/event-stream"];
+            ["/api/playback-providers/{roomId}/twitch/{version}/chats/{modeName}/{mediaIndex}"]
+            ["get"]["responses"]["200"]["content"]["text/event-stream"];
         assert!(
             chat_response["schema"].is_object(),
             "Twitch chat SSE should document its event schema"
@@ -1539,10 +1534,13 @@ mod tests {
             ("/api/providers/fnos/logout", "post"),
             ("/api/providers/fnos/binds", "get"),
             (
-                "/api/playback-providers/fnos/{version}/resources/{modeName}/{mediaIndex}",
+                "/api/playback-providers/{roomId}/fnos/{version}/resources/{modeName}/{mediaIndex}",
                 "get",
             ),
-            ("/api/playback-providers/fnos/{version}/segments", "get"),
+            (
+                "/api/playback-providers/{roomId}/fnos/{version}/segments",
+                "get",
+            ),
         ] {
             assert!(
                 doc["paths"][path][method].is_object(),
@@ -1570,14 +1568,14 @@ mod tests {
             ("/api/providers/qnap/binds", "get"),
             ("/api/providers/qnap/thumbnail", "get"),
             (
-                "/api/playback-providers/qnap/{version}/resources/{modeName}/{mediaIndex}",
+                "/api/playback-providers/{roomId}/qnap/{version}/resources/{modeName}/{mediaIndex}",
                 "get",
             ),
             (
-                "/api/playback-providers/qnap/{version}/subtitles/{modeName}/{subtitleIndex}",
+                "/api/playback-providers/{roomId}/qnap/{version}/subtitles/{modeName}/{subtitleIndex}",
                 "get",
             ),
-            ("/api/playback-providers/qnap/{version}/thumbnail", "get"),
+            ("/api/playback-providers/{roomId}/qnap/{version}/thumbnail", "get"),
         ] {
             let operation = &doc["paths"][path][method];
             assert!(
@@ -1628,12 +1626,12 @@ mod tests {
             ("/api/providers/synology/binds", "get"),
             ("/api/providers/synology/image", "get"),
             (
-                "/api/playback-providers/synology/{version}/resources/{modeName}/{mediaIndex}",
+                "/api/playback-providers/{roomId}/synology/{version}/resources/{modeName}/{mediaIndex}",
                 "get",
             ),
-            ("/api/playback-providers/synology/{version}/segments", "get"),
+            ("/api/playback-providers/{roomId}/synology/{version}/segments", "get"),
             (
-                "/api/playback-providers/synology/{version}/subtitles/{modeName}/{subtitleIndex}",
+                "/api/playback-providers/{roomId}/synology/{version}/subtitles/{modeName}/{subtitleIndex}",
                 "get",
             ),
         ] {
@@ -1683,11 +1681,11 @@ mod tests {
             ("/api/providers/nextcloud/binds", "get"),
             ("/api/providers/nextcloud/preview", "get"),
             (
-                "/api/playback-providers/nextcloud/{version}/resources/{modeName}/{mediaIndex}",
+                "/api/playback-providers/{roomId}/nextcloud/{version}/resources/{modeName}/{mediaIndex}",
                 "get",
             ),
             (
-                "/api/playback-providers/nextcloud/{version}/subtitles/{modeName}/{subtitleIndex}",
+                "/api/playback-providers/{roomId}/nextcloud/{version}/subtitles/{modeName}/{subtitleIndex}",
                 "get",
             ),
         ] {
@@ -1732,11 +1730,11 @@ mod tests {
             ("/api/providers/seafile/binds", "get"),
             ("/api/providers/seafile/thumbnail", "get"),
             (
-                "/api/playback-providers/seafile/{version}/resources/{modeName}/{mediaIndex}",
+                "/api/playback-providers/{roomId}/seafile/{version}/resources/{modeName}/{mediaIndex}",
                 "get",
             ),
             (
-                "/api/playback-providers/seafile/{version}/subtitles/{modeName}/{subtitleIndex}",
+                "/api/playback-providers/{roomId}/seafile/{version}/subtitles/{modeName}/{subtitleIndex}",
                 "get",
             ),
         ] {
@@ -1777,11 +1775,11 @@ mod tests {
             ("/api/providers/truenas/logout", "post"),
             ("/api/providers/truenas/binds", "get"),
             (
-                "/api/playback-providers/truenas/{version}/resources/{modeName}/{mediaIndex}",
+                "/api/playback-providers/{roomId}/truenas/{version}/resources/{modeName}/{mediaIndex}",
                 "get",
             ),
             (
-                "/api/playback-providers/truenas/{version}/subtitles/{modeName}/{subtitleIndex}",
+                "/api/playback-providers/{roomId}/truenas/{version}/subtitles/{modeName}/{subtitleIndex}",
                 "get",
             ),
         ] {
@@ -1814,9 +1812,9 @@ mod tests {
     fn openapi_documents_huya_playback_provider_contract() -> TestResult {
         let doc = openapi_json()?;
         for path in [
-            "/api/playback-providers/huya/{version}/resources/{modeName}/{mediaIndex}",
-            "/api/playback-providers/huya/{version}/segments",
-            "/api/playback-providers/huya/{version}/danmakus/{modeName}/{mediaIndex}",
+            "/api/playback-providers/{roomId}/huya/{version}/resources/{modeName}/{mediaIndex}",
+            "/api/playback-providers/{roomId}/huya/{version}/segments",
+            "/api/playback-providers/{roomId}/huya/{version}/danmakus/{modeName}/{mediaIndex}",
         ] {
             assert!(
                 doc["paths"][path]["get"].is_object(),
@@ -1824,8 +1822,8 @@ mod tests {
             );
         }
         let danmaku = &doc["paths"]
-            ["/api/playback-providers/huya/{version}/danmakus/{modeName}/{mediaIndex}"]["get"]
-            ["responses"]["200"]["content"]["text/event-stream"];
+            ["/api/playback-providers/{roomId}/huya/{version}/danmakus/{modeName}/{mediaIndex}"]
+            ["get"]["responses"]["200"]["content"]["text/event-stream"];
         assert!(
             danmaku["schema"].is_object(),
             "Huya danmaku should document its event schema"
@@ -1844,9 +1842,9 @@ mod tests {
     fn openapi_documents_douyu_playback_provider_contract() -> TestResult {
         let doc = openapi_json()?;
         for path in [
-            "/api/playback-providers/douyu/{version}/resources/{modeName}/{mediaIndex}",
-            "/api/playback-providers/douyu/{version}/segments",
-            "/api/playback-providers/douyu/{version}/danmakus/{modeName}/{mediaIndex}",
+            "/api/playback-providers/{roomId}/douyu/{version}/resources/{modeName}/{mediaIndex}",
+            "/api/playback-providers/{roomId}/douyu/{version}/segments",
+            "/api/playback-providers/{roomId}/douyu/{version}/danmakus/{modeName}/{mediaIndex}",
         ] {
             assert!(
                 doc["paths"][path]["get"].is_object(),
@@ -1854,8 +1852,8 @@ mod tests {
             );
         }
         let danmaku = &doc["paths"]
-            ["/api/playback-providers/douyu/{version}/danmakus/{modeName}/{mediaIndex}"]["get"]
-            ["responses"]["200"]["content"]["text/event-stream"];
+            ["/api/playback-providers/{roomId}/douyu/{version}/danmakus/{modeName}/{mediaIndex}"]
+            ["get"]["responses"]["200"]["content"]["text/event-stream"];
         assert!(
             danmaku["schema"].is_object(),
             "Douyu danmaku should document its event schema"
@@ -1874,10 +1872,10 @@ mod tests {
     fn openapi_documents_acfun_playback_provider_contract() -> TestResult {
         let doc = openapi_json()?;
         for path in [
-            "/api/playback-providers/acfun/{version}/resources/{modeName}/{mediaIndex}",
-            "/api/playback-providers/acfun/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
-            "/api/playback-providers/acfun/{version}/danmaku-files/{modeName}/{mediaIndex}",
-            "/api/playback-providers/acfun/{version}/danmakus/{modeName}/{mediaIndex}",
+            "/api/playback-providers/{roomId}/acfun/{version}/resources/{modeName}/{mediaIndex}",
+            "/api/playback-providers/{roomId}/acfun/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
+            "/api/playback-providers/{roomId}/acfun/{version}/danmaku-files/{modeName}/{mediaIndex}",
+            "/api/playback-providers/{roomId}/acfun/{version}/danmakus/{modeName}/{mediaIndex}",
         ] {
             assert!(
                 doc["paths"][path]["get"].is_object(),
@@ -1885,8 +1883,8 @@ mod tests {
             );
         }
         let danmaku = &doc["paths"]
-            ["/api/playback-providers/acfun/{version}/danmakus/{modeName}/{mediaIndex}"]["get"]
-            ["responses"]["200"]["content"]["text/event-stream"];
+            ["/api/playback-providers/{roomId}/acfun/{version}/danmakus/{modeName}/{mediaIndex}"]
+            ["get"]["responses"]["200"]["content"]["text/event-stream"];
         assert!(
             danmaku["schema"].is_object(),
             "AcFun live danmaku should document its event schema"
@@ -1905,8 +1903,8 @@ mod tests {
     fn openapi_documents_cctv_playback_provider_contract() -> TestResult {
         let doc = openapi_json()?;
         for path in [
-            "/api/playback-providers/cctv/{version}/resources/{modeName}/{mediaIndex}",
-            "/api/playback-providers/cctv/{version}/segments",
+            "/api/playback-providers/{roomId}/cctv/{version}/resources/{modeName}/{mediaIndex}",
+            "/api/playback-providers/{roomId}/cctv/{version}/segments",
         ] {
             assert!(
                 doc["paths"][path]["get"].is_object(),

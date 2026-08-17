@@ -5,9 +5,9 @@ use synctv_core::provider::{
     PlaybackTransportAction, ProviderError, SeafileListRequest, SeafileProvider,
 };
 use synctv_proto::providers::seafile::{
-    BindInfo, FileItem, GetBindsResponse, ListRepositoriesRequest, ListRequest, ListResponse,
-    ListStarredRequest, LoginRequest, LoginResponse, LogoutRequest, LogoutResponse,
-    UnlockLibraryRequest, UnlockLibraryResponse,
+    BindInfo, FileItem, GetBindsResponse, GetThumbnailRequest, ListRepositoriesRequest,
+    ListRequest, ListResponse, ListStarredRequest, LoginRequest, LoginResponse, LogoutRequest,
+    LogoutResponse, UnlockLibraryRequest, UnlockLibraryResponse,
 };
 use synctv_proto::source_config::{
     media_source_config, playlist_source_config, seafile_playlist_source_config,
@@ -220,14 +220,20 @@ impl SeafileApiImpl {
     pub async fn thumbnail_action(
         &self,
         owner: UserId,
-        server_id: &str,
-        repository_id: &str,
-        path: &str,
-        size: u32,
-    ) -> Result<PlaybackTransportAction, ProviderError> {
+        req: GetThumbnailRequest,
+    ) -> Result<PlaybackTransportAction, crate::impls::ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let size = if req.size == 0 { 640 } else { req.size };
         self.provider
-            .thumbnail_action(owner, server_id, repository_id, path, size)
+            .thumbnail_action(
+                owner,
+                req.server_id.trim(),
+                req.repository_id.trim(),
+                req.path.trim(),
+                size,
+            )
             .await
+            .map_err(crate::impls::ApiError::from)
     }
 
     fn publish(&self, user_id: UserId, server_id: &str) {

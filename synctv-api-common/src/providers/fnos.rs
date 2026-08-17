@@ -4,7 +4,7 @@ use synctv_core::models::UserId;
 use synctv_core::provider::{FnosLoginResult, FnosProvider, ProviderError};
 use synctv_proto::providers::fnos::{
     login_response, Authenticated, BindInfo, FileItem, GetBindsResponse, GetServerInfoRequest,
-    GetServerInfoResponse, ListMediaItemsRequest, ListMediaItemsResponse,
+    GetServerInfoResponse, GetThumbnailRequest, ListMediaItemsRequest, ListMediaItemsResponse,
     ListMediaLibrariesRequest, ListMediaLibrariesResponse, ListRequest, ListResponse, LoginRequest,
     LoginResponse, LogoutRequest, LogoutResponse, MediaCollection, MediaItem, MediaLibrary,
     SetFavoriteRequest, SetFavoriteResponse, SetWatchedRequest, SetWatchedResponse,
@@ -86,16 +86,19 @@ impl FnosApiImpl {
         })
     }
 
-    pub async fn image_action(
+    pub async fn thumbnail_action(
         &self,
         credential_owner_id: UserId,
-        server_id: &str,
-        image_path: &str,
-        width: u32,
-    ) -> Result<synctv_core::provider::PlaybackTransportAction, ProviderError> {
+        req: GetThumbnailRequest,
+    ) -> Result<synctv_core::provider::PlaybackTransportAction, crate::impls::ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let server_id = req.server_id.trim();
+        let image_path = req.image_path.trim();
+        let width = if req.width == 0 { 800 } else { req.width };
         self.provider
             .image_action(credential_owner_id, server_id, image_path, width)
             .await
+            .map_err(crate::impls::ApiError::from)
     }
 
     pub async fn list(
@@ -189,13 +192,13 @@ impl FnosApiImpl {
                 .into_iter()
                 .map(|library| {
                     let poster = library.poster.map(|path| {
-                        crate::fnos_thumbnail_urls::fnos_own_thumbnail_url(&server_id, &path, 400)
+                        crate::fnos_thumbnail_urls::provider_thumbnail_url(&server_id, &path, 400)
                     });
                     let posters = library
                         .posters
                         .into_iter()
                         .map(|path| {
-                            crate::fnos_thumbnail_urls::fnos_own_thumbnail_url(
+                            crate::fnos_thumbnail_urls::provider_thumbnail_url(
                                 &server_id, &path, 400,
                             )
                         })
@@ -341,7 +344,7 @@ impl FnosApiImpl {
                         title,
                         item_type: item.item_type,
                         poster: item.poster.map(|path| {
-                            crate::fnos_thumbnail_urls::fnos_own_thumbnail_url(
+                            crate::fnos_thumbnail_urls::provider_thumbnail_url(
                                 &server_id, &path, 400,
                             )
                         }),

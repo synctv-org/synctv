@@ -17,6 +17,20 @@ use crate::service::{PermissionService, RoomService};
 /// during their own `generate_playback` path. Transport adapters execute the
 /// instruction; provider-specific upstream URL, header, manifest, and live
 /// lifecycle rules stay in the provider.
+/// Upstream transfer strategy selected by a provider for one resource.
+///
+/// Slice caching is appropriate for seekable media. Documents and origins
+/// known to reject range probes use `FullResponseCache`, which fetches one
+/// ordinary upstream response and caches only bounded complete documents.
+/// `Stream` forwards a long-lived response without cache storage.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum PlaybackResourceProxyStrategy {
+    #[default]
+    SliceCache,
+    FullResponseCache,
+    Stream,
+}
+
 #[derive(Debug, Clone)]
 pub enum PlaybackTransportAction {
     /// Fetch the URL and forward the response body (video stream, subtitle, etc.)
@@ -28,16 +42,8 @@ pub enum PlaybackTransportAction {
         /// This is intentionally separate from `headers`: it drives range/slice
         /// behavior without becoming part of the resource cache key.
         range_header: Option<String>,
-    },
-    /// Stream one upstream response directly to the client without slicing it.
-    ///
-    /// Providers use this for origins where sequential range fan-out is less
-    /// reliable than one long-lived response, while preserving client Range
-    /// requests and the normal SSRF-safe proxy path.
-    StreamAndForward {
-        url: String,
-        headers: HashMap<String, String>,
-        range_header: Option<String>,
+        /// Provider-selected upstream transfer strategy for this resource.
+        proxy_strategy: PlaybackResourceProxyStrategy,
     },
     /// Try equivalent upstream URLs in order and commit the downstream
     /// response only after the selected candidate produces its first body data.
@@ -216,6 +222,7 @@ pub(crate) fn transport_action_for_target_url(
             url,
             headers,
             range_header: range_header.map(ToString::to_string),
+            proxy_strategy: PlaybackResourceProxyStrategy::SliceCache,
         })
     }
 }
@@ -228,10 +235,28 @@ pub(crate) fn stream_action_for_target_url(
     if transport_target_is_m3u8(&url) {
         Ok(PlaybackTransportAction::M3u8Rewrite { url, headers })
     } else {
-        Ok(PlaybackTransportAction::StreamAndForward {
+        Ok(PlaybackTransportAction::FetchAndForward {
             url,
             headers,
             range_header: range_header.map(ToString::to_string),
+            proxy_strategy: PlaybackResourceProxyStrategy::Stream,
+        })
+    }
+}
+
+pub(crate) fn full_response_cache_action_for_target_url(
+    url: String,
+    headers: HashMap<String, String>,
+    range_header: Option<&str>,
+) -> Result<PlaybackTransportAction, ProviderError> {
+    if transport_target_is_m3u8(&url) {
+        Ok(PlaybackTransportAction::M3u8Rewrite { url, headers })
+    } else {
+        Ok(PlaybackTransportAction::FetchAndForward {
+            url,
+            headers,
+            range_header: range_header.map(ToString::to_string),
+            proxy_strategy: PlaybackResourceProxyStrategy::FullResponseCache,
         })
     }
 }
@@ -377,6 +402,7 @@ pub(crate) fn transport_action_for_dynamic_hls_target(
         url: resolved_url,
         headers,
         range_header: range_header.map(ToString::to_string),
+        proxy_strategy: PlaybackResourceProxyStrategy::SliceCache,
     })
 }
 
@@ -398,6 +424,7 @@ pub(crate) fn transport_action_for_storage_hls_target(
         url,
         headers,
         range_header: range_header.map(ToString::to_string),
+        proxy_strategy: PlaybackResourceProxyStrategy::SliceCache,
     })
 }
 
@@ -592,10 +619,11 @@ mod tests {
 
         assert!(matches!(
             action,
-            PlaybackTransportAction::StreamAndForward {
+            PlaybackTransportAction::FetchAndForward {
                 url,
                 headers,
                 range_header: Some(range),
+                proxy_strategy: PlaybackResourceProxyStrategy::Stream,
             } if url == "https://media.example/video.mkv"
                 && headers.get("Authorization").map(String::as_str) == Some("Basic test")
                 && range == "bytes=100-199"

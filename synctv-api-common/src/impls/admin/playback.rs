@@ -187,6 +187,7 @@ impl AdminApiImpl {
             synctv_core::provider::ProviderActor::User(*user_id_model),
         )
         .with_room_id(*room_id_model)
+        .with_playlist_id(*playlist_id)
         .with_playback_client_profile(playback_client_profile.cloned());
         if let Some(creator_id) = playlist.creator_id.as_ref() {
             ctx = ctx.with_credential_owner_id(*creator_id);

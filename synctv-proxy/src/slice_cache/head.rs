@@ -186,6 +186,11 @@ pub(super) fn cached_head_headers(
         reqwest::header::CONTENT_TYPE,
         meta.content_type.as_deref(),
     );
+    insert_header_from_string(
+        &mut headers,
+        reqwest::header::CONTENT_ENCODING,
+        meta.content_encoding.as_deref(),
+    );
     insert_header_from_string(&mut headers, reqwest::header::ETAG, meta.etag.as_deref());
     insert_header_from_string(
         &mut headers,
@@ -287,7 +292,7 @@ pub(super) async fn get_or_fetch_head_resource_with_control(
         put_resource_meta(
             ctx.meta,
             ctx.meta_key,
-            resource_meta_from_head_headers(&headers),
+            resource_meta_from_head_response(status, &headers),
         );
     }
 
@@ -319,7 +324,10 @@ fn put_resource_meta(
     super::store::cleanup_stale_resource_meta(meta, super::store::MAX_META_ENTRIES);
 }
 
-fn resource_meta_from_head_headers(headers: &reqwest::header::HeaderMap) -> CachedResourceMeta {
+fn resource_meta_from_head_response(
+    status: reqwest::StatusCode,
+    headers: &reqwest::header::HeaderMap,
+) -> CachedResourceMeta {
     let content_range_total_size = headers
         .get(reqwest::header::CONTENT_RANGE)
         .and_then(|value| value.to_str().ok())
@@ -339,11 +347,13 @@ fn resource_meta_from_head_headers(headers: &reqwest::header::HeaderMap) -> Cach
     let now = std::time::SystemTime::now();
 
     CachedResourceMeta {
+        status: Some(status.as_u16()),
         etag: header_to_string(headers, reqwest::header::ETAG),
         last_modified: header_to_string(headers, reqwest::header::LAST_MODIFIED),
         total_size,
         supports_ranges,
         content_type: header_to_string(headers, reqwest::header::CONTENT_TYPE),
+        content_encoding: header_to_string(headers, reqwest::header::CONTENT_ENCODING),
         validated_at: now,
         last_accessed: now,
     }

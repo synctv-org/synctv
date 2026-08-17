@@ -3,13 +3,15 @@ use synctv_core::provider::ExecutionControl;
 use synctv_core::service::EmbyPlaybackProviderService;
 use synctv_proto::playback_provider::emby::{
     EmbyHlsManifestResponse, EmbyHlsResourceKind, EmbyHlsResourceResponse, EmbyMediaStreamResponse,
-    EmbySubtitleResponse, GetEmbyHlsManifestRequest, GetEmbyHlsResourceRequest,
-    GetEmbyMediaStreamRequest, GetEmbySubtitleRequest,
+    EmbySubtitleResponse, EmbyThumbnailResourceResponse, GetEmbyHlsManifestRequest,
+    GetEmbyHlsResourceRequest, GetEmbyMediaStreamRequest, GetEmbySubtitleRequest,
+    GetEmbyThumbnailResourceRequest,
 };
 
 use super::common::{
-    playback_provider_route_base, playback_transport_action_to_chunk_stream,
-    verify_playback_provider_access_with_deps, HasPlaybackProviderAccessFields, HlsRewriteSigning,
+    decode_playback_resource_owner, playback_provider_route_base,
+    playback_transport_action_to_chunk_stream, verify_playback_provider_access_with_deps,
+    verify_playback_resource_access_with_deps, HasPlaybackProviderAccessFields, HlsRewriteSigning,
     PlaybackProviderAccessRequest, PlaybackProviderApiRuntime, PlaybackTransportExecutorDeps,
 };
 use crate::impls::ApiError;
@@ -33,6 +35,13 @@ pub type EmbyHlsResourceResponseStream = std::pin::Pin<
 >;
 pub type EmbySubtitleResponseStream = std::pin::Pin<
     Box<dyn futures::Stream<Item = Result<EmbySubtitleResponse, ApiError>> + Send + 'static>,
+>;
+pub type EmbyThumbnailResourceResponseStream = std::pin::Pin<
+    Box<
+        dyn futures::Stream<Item = Result<EmbyThumbnailResourceResponse, ApiError>>
+            + Send
+            + 'static,
+    >,
 >;
 pub async fn get_emby_media_stream(
     deps: EmbyPlaybackProviderDeps<'_>,
@@ -102,7 +111,7 @@ pub async fn get_emby_hls_manifest(
         .map_err(ApiError::from)?;
     let segment_base = format!(
         "{}/{}/{}",
-        playback_provider_route_base("emby", &req.version, "hls-resources"),
+        playback_provider_route_base(&req.rid, "emby", &req.version, "hls-resources"),
         urlencoding::encode(&req.mode_name),
         req.url_index
     );
@@ -161,7 +170,7 @@ pub async fn get_emby_hls_resource(
     let stream = if kind == EmbyHlsResourceKind::Manifest {
         let segment_base = format!(
             "{}/{}/{}",
-            playback_provider_route_base("emby", &req.version, "hls-resources"),
+            playback_provider_route_base(&req.rid, "emby", &req.version, "hls-resources"),
             urlencoding::encode(&req.mode_name),
             req.media_index
         );
@@ -232,6 +241,54 @@ pub async fn get_emby_subtitle(
         playback_transport_action_to_chunk_stream(deps.chunk_deps(), action, false).await?;
     Ok(Box::pin(stream.map(|chunk| {
         chunk.map(|chunk| EmbySubtitleResponse { chunk: Some(chunk) })
+    })))
+}
+
+pub async fn get_emby_thumbnail_resource(
+    deps: EmbyPlaybackProviderDeps<'_>,
+    req: GetEmbyThumbnailResourceRequest,
+) -> Result<EmbyThumbnailResourceResponseStream, ApiError> {
+    crate::impls::validate_proto_request(&req)?;
+    let scope = crate::emby_thumbnail_urls::ThumbnailSignatureScope {
+        item_id: &req.item_id,
+        server_id: &req.server_id,
+        credential_owner_id: &req.credential_owner_id,
+        max_height: req.max_height,
+        max_width: req.max_width,
+    };
+    let version = crate::emby_thumbnail_urls::thumbnail_signature_version(scope);
+    verify_playback_resource_access_with_deps(
+        &deps.access_deps(),
+        PROVIDER,
+        PlaybackProviderAccessRequest {
+            version: &version,
+            resource: "thumbnail".to_string(),
+            signature: &req.sig,
+            user_id: &req.uid,
+            room_id: &req.rid,
+            expires_at: req.exp,
+            target_url: None,
+        },
+    )
+    .await?;
+    let credential_owner_id =
+        decode_playback_resource_owner(deps.runtime.public_id_codec, &req.credential_owner_id)?;
+    let action = deps
+        .playback_provider_service
+        .thumbnail_resource_action(
+            credential_owner_id,
+            &req.server_id,
+            &req.item_id,
+            req.max_height,
+            req.max_width,
+            deps.request_control,
+        )
+        .await
+        .map_err(ApiError::from)?;
+    let stream =
+        playback_transport_action_to_chunk_stream(deps.chunk_deps(), action, false).await?;
+    Ok(Box::pin(stream.map(|chunk| {
+        chunk.map(|chunk| EmbyThumbnailResourceResponse { chunk: Some(chunk) })
     })))
 }
 

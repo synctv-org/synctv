@@ -834,7 +834,11 @@ impl SynologyProvider {
                 )?
             }
         };
-        super::playback_transport::transport_action_for_target_url(url, HashMap::new(), None)
+        super::playback_transport::full_response_cache_action_for_target_url(
+            url,
+            HashMap::new(),
+            None,
+        )
     }
 
     pub async fn get_segment(

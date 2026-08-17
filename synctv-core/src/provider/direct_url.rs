@@ -701,6 +701,7 @@ impl DirectUrlProvider {
             url: url.to_string(),
             headers: media.upstream_headers(),
             range_header: range_header.map(ToString::to_string),
+            proxy_strategy: super::PlaybackResourceProxyStrategy::SliceCache,
         })
     }
 
@@ -755,6 +756,7 @@ impl DirectUrlProvider {
                 url: request.target_url.to_string(),
                 headers: media.upstream_headers(),
                 range_header: request.range_header.map(ToString::to_string),
+                proxy_strategy: super::PlaybackResourceProxyStrategy::SliceCache,
             })
         }
     }
@@ -812,6 +814,7 @@ impl DirectUrlProvider {
                 url: target_url,
                 headers: media.upstream_headers(),
                 range_header: request.range_header.map(ToString::to_string),
+                proxy_strategy: super::PlaybackResourceProxyStrategy::SliceCache,
             })
         }
     }
@@ -845,6 +848,7 @@ impl DirectUrlProvider {
                 subtitle,
             ),
             range_header: None,
+            proxy_strategy: super::PlaybackResourceProxyStrategy::FullResponseCache,
         })
     }
 }
@@ -1781,6 +1785,7 @@ mod tests {
                 ref url,
                 ref headers,
                 range_header: Some(ref range),
+                ..
             } if url == "https://cdn.example.com/dash/video/representation/segment-12.m4s?token=a%2Bb"
                 && headers.get("authorization").map(String::as_str) == Some("Bearer secret")
                 && range == "bytes=100-199"

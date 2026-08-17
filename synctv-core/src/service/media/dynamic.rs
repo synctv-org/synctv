@@ -220,6 +220,7 @@ impl MediaService {
             credential_owner_id,
             prepared.playlist.provider_instance_name.as_deref(),
         )
+        .with_playlist_id(prepared.playlist.id)
     }
 
     pub async fn admin_list_dynamic_playlist_items(

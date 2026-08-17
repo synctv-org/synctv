@@ -1,12 +1,13 @@
 use axum::{
-    extract::{Path, RawQuery, State},
+    extract::{Path, Query, RawQuery, State},
     http::{HeaderMap, Method},
 };
 use futures::FutureExt;
 use synctv_proto::playback_provider::qnap::{
     GetQnapHlsManifestRequest, GetQnapHlsResourceRequest, GetQnapResourceRequest,
-    GetQnapSubtitleRequest, GetQnapThumbnailRequest, QnapHlsManifestResponse, QnapHlsResourceKind,
-    QnapHlsResourceResponse, QnapResourceResponse, QnapSubtitleResponse, QnapThumbnailResponse,
+    GetQnapSubtitleRequest, GetQnapThumbnailRequest, GetQnapThumbnailResourceRequest,
+    QnapHlsManifestResponse, QnapHlsResourceKind, QnapHlsResourceResponse, QnapResourceResponse,
+    QnapSubtitleResponse, QnapThumbnailResourceResponse, QnapThumbnailResponse,
 };
 
 use crate::http::{middleware::RequestMetadata, AppResult, AppState};
@@ -18,6 +19,7 @@ use crate::providers::playback_provider::transport::{
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QnapResourcePath {
+    pub room_id: String,
     pub version: String,
     pub mode_name: String,
     pub media_index: u32,
@@ -26,6 +28,7 @@ pub struct QnapResourcePath {
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QnapHlsResourcePath {
+    pub room_id: String,
     pub version: String,
     pub mode_name: String,
     pub media_index: u32,
@@ -35,9 +38,22 @@ pub struct QnapHlsResourcePath {
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QnapSubtitlePath {
+    pub room_id: String,
     pub version: String,
     pub mode_name: String,
     pub subtitle_index: u32,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct QnapThumbnailResourceQuery {
+    pub server_id: String,
+    pub credential_owner_id: String,
+    pub path: String,
+    pub size: u32,
+    pub sig: String,
+    pub uid: String,
+    pub exp: i64,
 }
 
 impl PlaybackProviderHttpResponse for QnapResourceResponse {
@@ -70,19 +86,25 @@ impl PlaybackProviderHttpResponse for QnapThumbnailResponse {
     }
 }
 
+impl PlaybackProviderHttpResponse for QnapThumbnailResourceResponse {
+    fn chunk(self) -> Option<synctv_proto::playback_provider::common::StreamChunk> {
+        self.chunk
+    }
+}
+
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/qnap/{version}/resources/{modeName}/{mediaIndex}",
+        path = "/api/playback-providers/{roomId}/qnap/{version}/resources/{modeName}/{mediaIndex}",
         tag = "QNAP Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path),
             ("modeName" = String, Path),
             ("mediaIndex" = u32, Path),
             ("sig" = String, Query),
             ("uid" = String, Query),
-            ("rid" = String, Query),
             ("exp" = i64, Query)
         ),
         responses((status = 200, description = "QNAP media resource"))
@@ -130,8 +152,8 @@ async fn qnap_resource(
     query_string: String,
     method: Method,
 ) -> AppResult<axum::response::Response> {
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetQnapResourceRequest {
         version: path.version,
         mode_name: path.mode_name,
@@ -162,15 +184,15 @@ async fn qnap_resource(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/qnap/{version}/hls-manifests/{modeName}/{mediaIndex}",
+        path = "/api/playback-providers/{roomId}/qnap/{version}/hls-manifests/{modeName}/{mediaIndex}",
         tag = "QNAP Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path),
             ("modeName" = String, Path),
             ("mediaIndex" = u32, Path),
             ("sig" = String, Query),
             ("uid" = String, Query),
-            ("rid" = String, Query),
             ("exp" = i64, Query)
         ),
         responses((status = 200, description = "QNAP HLS manifest"))
@@ -189,15 +211,15 @@ pub async fn get_qnap_hls_manifest(
     feature = "openapi",
     utoipa::path(
         head,
-        path = "/api/playback-providers/qnap/{version}/hls-manifests/{modeName}/{mediaIndex}",
+        path = "/api/playback-providers/{roomId}/qnap/{version}/hls-manifests/{modeName}/{mediaIndex}",
         tag = "QNAP Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path),
             ("modeName" = String, Path),
             ("mediaIndex" = u32, Path),
             ("sig" = String, Query),
             ("uid" = String, Query),
-            ("rid" = String, Query),
             ("exp" = i64, Query)
         ),
         responses((status = 200, description = "QNAP HLS manifest metadata"))
@@ -219,8 +241,8 @@ async fn qnap_hls_manifest(
     query_string: String,
     method: Method,
 ) -> AppResult<axum::response::Response> {
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetQnapHlsManifestRequest {
         version: path.version,
         mode_name: path.mode_name,
@@ -255,9 +277,10 @@ async fn qnap_hls_manifest(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/qnap/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
+        path = "/api/playback-providers/{roomId}/qnap/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
         tag = "QNAP Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path),
             ("modeName" = String, Path),
             ("mediaIndex" = u32, Path),
@@ -265,7 +288,6 @@ async fn qnap_hls_manifest(
             ("targetUrl" = String, Query),
             ("sig" = String, Query),
             ("uid" = String, Query),
-            ("rid" = String, Query),
             ("exp" = i64, Query)
         ),
         responses((status = 200, description = "QNAP HLS resource"))
@@ -292,9 +314,10 @@ pub fn get_qnap_hls_resource(
     feature = "openapi",
     utoipa::path(
         head,
-        path = "/api/playback-providers/qnap/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
+        path = "/api/playback-providers/{roomId}/qnap/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
         tag = "QNAP Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path),
             ("modeName" = String, Path),
             ("mediaIndex" = u32, Path),
@@ -302,7 +325,6 @@ pub fn get_qnap_hls_resource(
             ("targetUrl" = String, Query),
             ("sig" = String, Query),
             ("uid" = String, Query),
-            ("rid" = String, Query),
             ("exp" = i64, Query)
         ),
         responses((status = 200, description = "QNAP HLS resource metadata"))
@@ -333,8 +355,8 @@ async fn qnap_hls_resource(
     query_string: String,
     method: Method,
 ) -> AppResult<axum::response::Response> {
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetQnapHlsResourceRequest {
         version: path.version,
         target_url: target_url(&query_string).map_err(crate::http::error::map_api_error)?,
@@ -384,15 +406,15 @@ fn qnap_hls_resource_kind(value: &str) -> AppResult<i32> {
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/qnap/{version}/subtitles/{modeName}/{subtitleIndex}",
+        path = "/api/playback-providers/{roomId}/qnap/{version}/subtitles/{modeName}/{subtitleIndex}",
         tag = "QNAP Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path),
             ("modeName" = String, Path),
             ("subtitleIndex" = u32, Path),
             ("sig" = String, Query),
             ("uid" = String, Query),
-            ("rid" = String, Query),
             ("exp" = i64, Query)
         ),
         responses((status = 200, description = "QNAP subtitle"))
@@ -405,8 +427,8 @@ pub async fn get_qnap_subtitle(
     raw_query: RawQuery,
 ) -> AppResult<axum::response::Response> {
     let query_string = query(raw_query);
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetQnapSubtitleRequest {
         version: path.version,
         mode_name: path.mode_name,
@@ -440,27 +462,27 @@ pub async fn get_qnap_subtitle(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/qnap/{version}/thumbnail",
+        path = "/api/playback-providers/{roomId}/qnap/{version}/thumbnail",
         tag = "QNAP Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path),
             ("sig" = String, Query),
             ("uid" = String, Query),
-            ("rid" = String, Query),
             ("exp" = i64, Query)
         ),
         responses((status = 200, description = "QNAP thumbnail"))
     )
 )]
 pub async fn get_qnap_thumbnail(
-    Path(version): Path<String>,
+    Path((room_id, version)): Path<(String, String)>,
     State(state): State<AppState>,
     request_meta: RequestMetadata,
     raw_query: RawQuery,
 ) -> AppResult<axum::response::Response> {
     let query_string = query(raw_query);
     let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+        signed_query_fields(&query_string, &room_id).map_err(crate::http::error::map_api_error)?;
     let req = GetQnapThumbnailRequest {
         version,
         sig,
@@ -478,6 +500,57 @@ pub async fn get_qnap_thumbnail(
             async move {
                 synctv_api_common::playback_provider::qnap::get_qnap_thumbnail(
                     deps(&state, Some(&control)),
+                    req,
+                )
+                .await
+            }
+            .boxed()
+        },
+    )
+    .await
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/playback-providers/{roomId}/qnap/thumbnail",
+        tag = "QNAP Playback Provider",
+        params(
+            ("roomId" = String, Path), ("serverId" = String, Query),
+            ("credentialOwnerId" = String, Query), ("path" = String, Query),
+            ("size" = u32, Query), ("sig" = String, Query),
+            ("uid" = String, Query), ("exp" = i64, Query)
+        ),
+        responses((status = 200, description = "Room-scoped QNAP thumbnail"))
+    )
+)]
+pub async fn get_qnap_thumbnail_resource(
+    Path(room_id): Path<String>,
+    Query(query): Query<QnapThumbnailResourceQuery>,
+    State(state): State<AppState>,
+    request_meta: RequestMetadata,
+) -> AppResult<axum::response::Response> {
+    let req = GetQnapThumbnailResourceRequest {
+        server_id: query.server_id,
+        credential_owner_id: query.credential_owner_id,
+        path: query.path,
+        size: query.size,
+        sig: query.sig,
+        uid: query.uid,
+        rid: room_id,
+        exp: query.exp,
+    };
+    let state_for_stream = state.clone();
+    stream_http_response::<QnapThumbnailResourceResponse, _>(
+        state,
+        request_meta,
+        Method::GET,
+        move |request_control| {
+            let state = state_for_stream;
+            async move {
+                synctv_api_common::playback_provider::qnap::get_qnap_thumbnail_resource(
+                    deps(&state, Some(&request_control)),
                     req,
                 )
                 .await

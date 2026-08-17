@@ -3,7 +3,6 @@ pub enum ProxyErrorKind {
     Cancelled,
     Timeout,
     Connection,
-    BodyTooLarge,
     Ssrf,
     InvalidRequest,
     RangeNotSatisfiable,
@@ -16,7 +15,6 @@ impl ProxyErrorKind {
             Self::Cancelled => "cancelled",
             Self::Timeout => "timeout",
             Self::Connection => "connection",
-            Self::BodyTooLarge => "body_too_large",
             Self::Ssrf => "ssrf",
             Self::InvalidRequest => "invalid_request",
             Self::RangeNotSatisfiable => "range_not_satisfiable",
@@ -30,7 +28,6 @@ pub(crate) enum ProxyError {
     Cancelled(String),
     Timeout(String),
     Connection(String),
-    BodyTooLarge(String),
     Ssrf(String),
     InvalidRequest(String),
     RangeNotSatisfiable { message: String, total_size: u64 },
@@ -43,7 +40,6 @@ impl ProxyError {
             Self::Cancelled(_) => ProxyErrorKind::Cancelled,
             Self::Timeout(_) => ProxyErrorKind::Timeout,
             Self::Connection(_) => ProxyErrorKind::Connection,
-            Self::BodyTooLarge(_) => ProxyErrorKind::BodyTooLarge,
             Self::Ssrf(_) => ProxyErrorKind::Ssrf,
             Self::InvalidRequest(_) => ProxyErrorKind::InvalidRequest,
             Self::RangeNotSatisfiable { .. } => ProxyErrorKind::RangeNotSatisfiable,
@@ -65,7 +61,6 @@ impl std::fmt::Display for ProxyError {
             Self::Cancelled(message) => write!(f, "Request cancelled: {message}"),
             Self::Timeout(message) => write!(f, "Request timed out: {message}"),
             Self::Connection(message) => write!(f, "Connection failed: {message}"),
-            Self::BodyTooLarge(message) => write!(f, "Proxy response body too large: {message}"),
             Self::Ssrf(message) => write!(f, "SSRF protection blocked request: {message}"),
             Self::InvalidRequest(message) => write!(f, "Invalid proxy request: {message}"),
             Self::RangeNotSatisfiable { message, .. } => {
@@ -111,14 +106,29 @@ pub(crate) fn classify_reqwest_body_error(error: &reqwest::Error) -> ProxyError 
     let message = error.to_string();
     if error.is_timeout() {
         ProxyError::Timeout(message)
-    } else if error.is_connect() || reqwest_error_message_indicates_connection_failure(&message) {
+    } else if reqwest_error_indicates_connection_failure(error) {
         ProxyError::Connection(message)
     } else {
         ProxyError::Upstream(message)
     }
 }
 
-pub(crate) fn reqwest_error_message_indicates_connection_failure(message: &str) -> bool {
+pub(crate) fn reqwest_error_indicates_connection_failure(error: &reqwest::Error) -> bool {
+    if error.is_connect() {
+        return true;
+    }
+
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(cause) = current {
+        if reqwest_error_message_indicates_connection_failure(&cause.to_string()) {
+            return true;
+        }
+        current = cause.source();
+    }
+    false
+}
+
+fn reqwest_error_message_indicates_connection_failure(message: &str) -> bool {
     let lower = message.to_ascii_lowercase();
     lower.contains("connection")
         || lower.contains("closed")

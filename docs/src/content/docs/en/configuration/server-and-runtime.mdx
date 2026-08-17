@@ -37,6 +37,12 @@ server:
 
 HTTP REST API, public gRPC API, and health checks use this port. In Helm, HTTP and gRPC are exposed through separate Services, but both target the same container port.
 
+### Kernel-Assigned Ports
+
+Set a TCP listener port to `0` to request a kernel-assigned port. SyncTV creates the listener during startup initialization and writes the assigned port into the runtime configuration. This applies to `server.port`, `health.port`, `metrics.port`, `cluster.port`, TCP `management.port`, and `livestream.rtmp_port`.
+
+Use this for tests, temporary local processes, and environments that discover the assigned port externally. Production deployments use explicit ports and point Services, Ingresses, reverse proxies, and firewall rules at them.
+
 ### `server.enable_reflection`
 
 Default: `false`.

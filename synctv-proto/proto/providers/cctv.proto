@@ -3,7 +3,6 @@ syntax = "proto3";
 package synctv.provider.cctv;
 
 import "proto/buf/validate/validate.proto";
-import "proto/source_config.proto";
 import "proto/providers/common.proto";
 
 enum StreamKind {
@@ -43,8 +42,7 @@ message Metadata {
 
 message Stream {
   string name = 1;
-  string url = 2;
-  StreamKind kind = 3;
+  StreamKind kind = 2;
 }
 
 message ResolveResponse {

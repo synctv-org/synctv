@@ -289,46 +289,48 @@ impl MediaSwarmSigningKey {
 }
 
 pub trait ProxySigningKeyQueryExt {
-    fn build_signed_query(&self, claims: &ProxyUrlClaims) -> String;
+    fn build_signed_playback_query(&self, claims: &ProxyUrlClaims) -> String;
 
-    fn build_signed_query_with_target_url(
+    fn build_signed_playback_query_with_target_url(
         &self,
         claims: &ProxyUrlClaims,
         resource: &str,
         target_url: &str,
     ) -> String;
 
-    fn parse_and_verify_query(
+    fn parse_and_verify_playback_query(
         &self,
         query: &str,
         provider: &str,
         version: &str,
         resource: &str,
+        room_id: &str,
     ) -> Result<ProxyUrlClaims, ProxySignatureQueryError>;
 }
 
 impl ProxySigningKeyQueryExt for ProxySigningKey {
-    fn build_signed_query(&self, claims: &ProxyUrlClaims) -> String {
-        build_signed_query(self, claims)
+    fn build_signed_playback_query(&self, claims: &ProxyUrlClaims) -> String {
+        build_signed_playback_query(self, claims)
     }
 
-    fn build_signed_query_with_target_url(
+    fn build_signed_playback_query_with_target_url(
         &self,
         claims: &ProxyUrlClaims,
         resource: &str,
         target_url: &str,
     ) -> String {
-        build_signed_query_with_target_url(self, claims, resource, target_url)
+        build_signed_playback_query_with_target_url(self, claims, resource, target_url)
     }
 
-    fn parse_and_verify_query(
+    fn parse_and_verify_playback_query(
         &self,
         query: &str,
         provider: &str,
         version: &str,
         resource: &str,
+        room_id: &str,
     ) -> Result<ProxyUrlClaims, ProxySignatureQueryError> {
-        parse_and_verify_query(self, query, provider, version, resource)
+        parse_and_verify_playback_query(self, query, provider, version, resource, room_id)
     }
 }
 
@@ -359,18 +361,33 @@ impl From<ProxySignatureError> for ProxySignatureQueryError {
     }
 }
 
+/// Build the query for a playback-provider URL whose room is represented by
+/// the route path. The room remains part of the signed claims.
 #[must_use]
-pub fn build_signed_query(signing_key: &ProxySigningKey, claims: &ProxyUrlClaims) -> String {
+pub fn build_signed_playback_query(
+    signing_key: &ProxySigningKey,
+    claims: &ProxyUrlClaims,
+) -> String {
     let sig = signing_key.sign(claims);
-    build_query(claims, &sig, claims.target_url.as_deref())
+    build_playback_query(claims, &sig, claims.target_url.as_deref())
 }
 
-fn build_query(claims: &ProxyUrlClaims, sig: &str, target_url: Option<&str>) -> String {
+#[must_use]
+pub fn build_signed_playback_query_with_target_url(
+    signing_key: &ProxySigningKey,
+    claims: &ProxyUrlClaims,
+    resource: &str,
+    target_url: &str,
+) -> String {
+    let sig = signing_key.sign_with_overrides(claims, resource, Some(target_url));
+    build_playback_query(claims, &sig, Some(target_url))
+}
+
+fn build_playback_query(claims: &ProxyUrlClaims, sig: &str, target_url: Option<&str>) -> String {
     let mut query = format!(
-        "sig={}&uid={}&rid={}&exp={}",
+        "sig={}&uid={}&exp={}",
         url_encode(sig),
         url_encode(&claims.user_id),
-        url_encode(&claims.room_id),
         claims.expires_at
     );
     if let Some(target_url) = target_url {
@@ -380,27 +397,16 @@ fn build_query(claims: &ProxyUrlClaims, sig: &str, target_url: Option<&str>) -> 
     query
 }
 
-#[must_use]
-pub fn build_signed_query_with_target_url(
-    signing_key: &ProxySigningKey,
-    claims: &ProxyUrlClaims,
-    resource: &str,
-    target_url: &str,
-) -> String {
-    let sig = signing_key.sign_with_overrides(claims, resource, Some(target_url));
-    build_query(claims, &sig, Some(target_url))
-}
-
-pub fn parse_and_verify_query(
+pub fn parse_and_verify_playback_query(
     signing_key: &ProxySigningKey,
     query: &str,
     provider: &str,
     version: &str,
     resource: &str,
+    room_id: &str,
 ) -> Result<ProxyUrlClaims, ProxySignatureQueryError> {
     let mut sig: Option<String> = None;
     let mut uid: Option<String> = None;
-    let mut rid: Option<String> = None;
     let mut exp_str: Option<String> = None;
     let mut target_url: Option<String> = None;
 
@@ -408,7 +414,6 @@ pub fn parse_and_verify_query(
         match key.as_ref() {
             "sig" => sig = Some(value.into_owned()),
             "uid" => uid = Some(value.into_owned()),
-            "rid" => rid = Some(value.into_owned()),
             "exp" => exp_str = Some(value.into_owned()),
             "targetUrl" => target_url = Some(value.into_owned()),
             _ => return Err(ProxySignatureQueryError::UnknownParam(key.into_owned())),
@@ -417,7 +422,6 @@ pub fn parse_and_verify_query(
 
     let sig = sig.ok_or(ProxySignatureQueryError::MissingParam("sig"))?;
     let uid = uid.ok_or(ProxySignatureQueryError::MissingParam("uid"))?;
-    let rid = rid.ok_or(ProxySignatureQueryError::MissingParam("rid"))?;
     let exp_str = exp_str.ok_or(ProxySignatureQueryError::MissingParam("exp"))?;
 
     if uid.is_empty() {
@@ -425,9 +429,9 @@ pub fn parse_and_verify_query(
             "uid cannot be empty",
         ));
     }
-    if rid.is_empty() {
+    if room_id.is_empty() {
         return Err(ProxySignatureQueryError::InvalidParam(
-            "rid cannot be empty",
+            "roomId cannot be empty",
         ));
     }
 
@@ -439,7 +443,7 @@ pub fn parse_and_verify_query(
         provider: provider.to_string(),
         version: version.to_string(),
         resource: resource.to_string(),
-        room_id: rid,
+        room_id: room_id.to_string(),
         user_id: uid,
         expires_at,
         target_url,
@@ -526,20 +530,83 @@ mod tests {
     fn build_and_parse_query_roundtrip() {
         let key = test_key();
         let claims = test_claims();
-        let query = build_signed_query(&key, &claims);
+        let query = build_signed_playback_query(&key, &claims);
         let parsed = ok(
-            parse_and_verify_query(
+            parse_and_verify_playback_query(
                 &key,
                 &query,
                 &claims.provider,
                 &claims.version,
                 &claims.resource,
+                &claims.room_id,
             ),
             "signed query should parse",
         );
         assert_eq!(parsed.room_id, claims.room_id);
         assert_eq!(parsed.user_id, claims.user_id);
         assert_eq!(parsed.expires_at, claims.expires_at);
+    }
+
+    #[test]
+    fn playback_query_binds_the_path_room_id() {
+        let key = test_key();
+        let claims = test_claims();
+        let query = build_signed_playback_query(&key, &claims);
+        assert!(!query.contains("rid="));
+
+        let parsed = ok(
+            parse_and_verify_playback_query(
+                &key,
+                &query,
+                &claims.provider,
+                &claims.version,
+                &claims.resource,
+                &claims.room_id,
+            ),
+            "playback query should parse with its path room id",
+        );
+        assert_eq!(parsed.provider, claims.provider);
+        assert_eq!(parsed.version, claims.version);
+        assert_eq!(parsed.resource, claims.resource);
+        assert_eq!(parsed.room_id, claims.room_id);
+        assert_eq!(parsed.user_id, claims.user_id);
+        assert_eq!(parsed.expires_at, claims.expires_at);
+        assert_eq!(parsed.target_url, claims.target_url);
+        assert!(matches!(
+            parse_and_verify_playback_query(
+                &key,
+                &query,
+                &claims.provider,
+                &claims.version,
+                &claims.resource,
+                "room-2",
+            ),
+            Err(ProxySignatureQueryError::Signature(
+                ProxySignatureError::InvalidSignature
+            ))
+        ));
+    }
+
+    #[test]
+    fn playback_query_rejects_legacy_room_id() {
+        let key = test_key();
+        let claims = test_claims();
+        let query = format!(
+            "{}&rid={}",
+            build_signed_playback_query(&key, &claims),
+            claims.room_id
+        );
+        assert!(matches!(
+            parse_and_verify_playback_query(
+                &key,
+                &query,
+                &claims.provider,
+                &claims.version,
+                &claims.resource,
+                &claims.room_id,
+            ),
+            Err(ProxySignatureQueryError::UnknownParam(param)) if param == "rid"
+        ));
     }
 
     #[test]
@@ -668,14 +735,15 @@ mod tests {
         let key = test_key();
         let mut claims = test_claims();
         claims.target_url = Some("http://example.com/seg.ts".to_string());
-        let query = build_signed_query(&key, &claims);
+        let query = build_signed_playback_query(&key, &claims);
         let parsed = ok(
-            parse_and_verify_query(
+            parse_and_verify_playback_query(
                 &key,
                 &query,
                 &claims.provider,
                 &claims.version,
                 &claims.resource,
+                &claims.room_id,
             ),
             "signed query with target URL should parse",
         );
@@ -688,7 +756,7 @@ mod tests {
         let key = test_key();
         let mut claims = test_claims();
         claims.target_url = Some("http://example.com/seg.ts".to_string());
-        let query = build_signed_query(&key, &claims);
+        let query = build_signed_playback_query(&key, &claims);
         let (prefix, _) = some(
             query.split_once("&targetUrl="),
             "signed target query should include targetUrl",
@@ -699,12 +767,13 @@ mod tests {
         );
 
         assert!(matches!(
-            parse_and_verify_query(
+            parse_and_verify_playback_query(
                 &key,
                 &tampered,
                 &claims.provider,
                 &claims.version,
                 &claims.resource,
+                &claims.room_id,
             ),
             Err(ProxySignatureQueryError::Signature(
                 ProxySignatureError::InvalidSignature
@@ -716,12 +785,13 @@ mod tests {
     fn parse_query_missing_sig() {
         let key = test_key();
         assert!(matches!(
-            parse_and_verify_query(
+            parse_and_verify_playback_query(
                 &key,
-                "uid=u1&rid=r1&exp=999999999999",
+                "uid=u1&exp=999999999999",
                 "emby",
                 "v1",
                 "media-streams/main/0",
+                "room-1",
             ),
             Err(ProxySignatureQueryError::MissingParam("sig"))
         ));
@@ -731,15 +801,16 @@ mod tests {
     fn parse_query_rejects_unknown_query_param() {
         let key = test_key();
         let claims = test_claims();
-        let query = format!("{}&extra=1", build_signed_query(&key, &claims));
+        let query = format!("{}&extra=1", build_signed_playback_query(&key, &claims));
 
         assert!(matches!(
-            parse_and_verify_query(
+            parse_and_verify_playback_query(
                 &key,
                 &query,
                 &claims.provider,
                 &claims.version,
                 &claims.resource,
+                &claims.room_id,
             ),
             Err(ProxySignatureQueryError::UnknownParam(param)) if param == "extra"
         ));
@@ -757,15 +828,16 @@ mod tests {
             expires_at: synctv_core::SystemClock.now().timestamp() + 3600,
             target_url: Some("https://cdn.example.com/a segment.ts?x=1&y=2".to_string()),
         };
-        let query = build_signed_query(&key, &claims);
+        let query = build_signed_playback_query(&key, &claims);
 
         let parsed = ok(
-            parse_and_verify_query(
+            parse_and_verify_playback_query(
                 &key,
                 &query,
                 &claims.provider,
                 &claims.version,
                 &claims.resource,
+                &claims.room_id,
             ),
             "encoded signed query should parse",
         );

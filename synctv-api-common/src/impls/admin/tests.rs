@@ -4983,9 +4983,10 @@ async fn test_get_playback_bypasses_room_membership_requirement_for_global_admin
             .await,
     )?;
 
+    let room_public_id = public_room_id(&admin_api, room.id);
     let response = api_ok(
         admin_api
-            .get_playback(&public_room_id(&admin_api, room.id), &global_admin.id, None)
+            .get_playback(&room_public_id, &global_admin.id, None)
             .await,
     )?;
 
@@ -5134,9 +5135,10 @@ async fn test_get_playback_for_provider_media_signs_proxy_urls_for_global_admin(
             .await,
     )?;
 
+    let room_public_id = public_room_id(&admin_api, room.id);
     let response = api_ok(
         admin_api
-            .get_playback(&public_room_id(&admin_api, room.id), &global_admin.id, None)
+            .get_playback(&room_public_id, &global_admin.id, None)
             .await,
     )?;
 
@@ -5147,9 +5149,9 @@ async fn test_get_playback_for_provider_media_signs_proxy_urls_for_global_admin(
         .ok_or_else(|| test_error("proxy_direct mode should be present"))?;
     assert_eq!(direct.medias.len(), 1);
     assert!(
-        direct.medias[0]
-            .url
-            .starts_with("/api/playback-providers/direct-url/"),
+        direct.medias[0].url.starts_with(&format!(
+            "/api/playback-providers/{room_public_id}/direct-url/"
+        )),
         "signed provider playback should expose proxy URL, got {}",
         direct.medias[0].url
     );
@@ -5223,13 +5225,10 @@ async fn test_get_playback_for_provider_media_signs_proxy_urls_for_local_managem
     )?;
 
     let management_actor = LOCAL_MANAGEMENT_ACTOR_USER_ID;
+    let room_public_id = public_room_id(&admin_api, room.id);
     let response = api_ok(
         admin_api
-            .get_playback(
-                &public_room_id(&admin_api, room.id),
-                &management_actor,
-                None,
-            )
+            .get_playback(&room_public_id, &management_actor, None)
             .await,
     )?;
 
@@ -5240,9 +5239,9 @@ async fn test_get_playback_for_provider_media_signs_proxy_urls_for_local_managem
         .ok_or_else(|| test_error("proxy_direct mode should be present"))?;
     assert_eq!(direct.medias.len(), 1);
     assert!(
-        direct.medias[0]
-            .url
-            .starts_with("/api/playback-providers/direct-url/"),
+        direct.medias[0].url.starts_with(&format!(
+            "/api/playback-providers/{room_public_id}/direct-url/"
+        )),
         "signed provider playback should expose proxy URL, got {}",
         direct.medias[0].url
     );
@@ -5458,6 +5457,8 @@ async fn test_update_playlist_bypasses_room_membership_requirement_for_global_ad
                     playlist_id: public_playlist_id(&admin_api, playlist.id),
                     name: "playlist-after".to_string(),
                     description: String::new(),
+                    source_config: None,
+                    provider_instance_name: None,
                 },
                 &global_admin.id,
             )
@@ -5986,6 +5987,8 @@ async fn test_edit_media_bypasses_room_membership_requirement_for_global_admin()
                     name: "media-edited".to_string(),
                     description: String::new(),
                     playback_proxy_mode: None,
+                    source_config: None,
+                    provider_instance_name: None,
                 },
                 &global_admin.id,
             )
@@ -6061,6 +6064,8 @@ async fn test_local_management_actor_preserves_username_in_media_notifications()
                     name: "management-media-updated".to_string(),
                     description: String::new(),
                     playback_proxy_mode: None,
+                    source_config: None,
+                    provider_instance_name: None,
                 },
                 &management_actor,
             )

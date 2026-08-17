@@ -10,6 +10,10 @@ pub struct RoomStreamCommand {
 pub enum RoomStreamSubcommand {
     /// List active RTMP publish sessions in a room
     List(RoomStreamListArgs),
+    /// Create a single-use RTMP publish key for a room media item
+    PublishKey(RoomStreamPublishKeyArgs),
+    /// Get the active RTMP stream state for one room media item
+    Get(RoomStreamGetArgs),
     /// Kick an active RTMP publish session in a room
     Kick(RoomStreamKickArgs),
 }
@@ -40,9 +44,30 @@ pub struct RoomStreamKickArgs {
     #[command(flatten)]
     pub room: RoomScopedRemoteArgs,
 
-    #[arg(long)]
+    #[arg(long, allow_hyphen_values = true)]
     pub media_id: String,
 
     #[arg(long)]
     pub reason: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct RoomStreamPublishKeyArgs {
+    #[command(flatten)]
+    pub room: RoomScopedRemoteArgs,
+
+    #[command(flatten)]
+    pub actor: ActorUserArgs,
+
+    #[arg(long, allow_hyphen_values = true)]
+    pub media_id: String,
+}
+
+#[derive(Debug, Args)]
+pub struct RoomStreamGetArgs {
+    #[command(flatten)]
+    pub room: RoomScopedRemoteArgs,
+
+    #[arg(long, allow_hyphen_values = true)]
+    pub media_id: String,
 }

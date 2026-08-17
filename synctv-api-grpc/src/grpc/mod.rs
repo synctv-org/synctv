@@ -41,7 +41,6 @@ use synctv_proto::providers::fnos::fnos_provider_service_server::FnosProviderSer
 use synctv_proto::providers::huya::huya_provider_service_server::HuyaProviderServiceServer;
 use synctv_proto::providers::nextcloud::nextcloud_provider_service_server::NextcloudProviderServiceServer;
 use synctv_proto::providers::qnap::qnap_provider_service_server::QnapProviderServiceServer;
-use synctv_proto::providers::rtmp::rtmp_provider_service_server::RtmpProviderServiceServer;
 use synctv_proto::providers::seafile::seafile_provider_service_server::SeafileProviderServiceServer;
 use synctv_proto::providers::synology::synology_provider_service_server::SynologyProviderServiceServer;
 use synctv_proto::providers::tiktok::tik_tok_provider_service_server::TikTokProviderServiceServer;
@@ -146,7 +145,6 @@ impl_grpc_service_ext!(<T> synctv_proto::providers::bilibili::bilibili_provider_
 impl_grpc_service_ext!(<T> synctv_proto::providers::cloudreve::cloudreve_provider_service_server::CloudreveProviderServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proto::providers::common::provider_common_service_server::ProviderCommonServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proto::providers::emby::emby_provider_service_server::EmbyProviderServiceServer<T>);
-impl_grpc_service_ext!(<T> synctv_proto::providers::rtmp::rtmp_provider_service_server::RtmpProviderServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proto::providers::twitch::twitch_provider_service_server::TwitchProviderServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proto::providers::youtube::youtube_provider_service_server::YoutubeProviderServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proto::providers::douyin::douyin_provider_service_server::DouyinProviderServiceServer<T>);
@@ -422,7 +420,6 @@ async fn set_registered_grpc_services_with_status(
         use synctv_proto::providers::huya::huya_provider_service_server::HuyaProviderServiceServer;
         use synctv_proto::providers::nextcloud::nextcloud_provider_service_server::NextcloudProviderServiceServer;
         use synctv_proto::providers::qnap::qnap_provider_service_server::QnapProviderServiceServer;
-        use synctv_proto::providers::rtmp::rtmp_provider_service_server::RtmpProviderServiceServer;
         use synctv_proto::providers::seafile::seafile_provider_service_server::SeafileProviderServiceServer;
         use synctv_proto::providers::synology::synology_provider_service_server::SynologyProviderServiceServer;
         use synctv_proto::providers::tiktok::tik_tok_provider_service_server::TikTokProviderServiceServer;
@@ -453,11 +450,6 @@ async fn set_registered_grpc_services_with_status(
             health_reporter,
             true,
             EmbyProviderServiceServer<providers::emby::EmbyProviderGrpcService>
-        );
-        set_service_status!(
-            health_reporter,
-            true,
-            RtmpProviderServiceServer<providers::rtmp::RtmpProviderGrpcService>
         );
         set_service_status!(
             health_reporter,
@@ -1644,17 +1636,7 @@ async fn build_axum_router_with_health(
                     &shared_api_runtime,
                     shared_api_runtime.request_executor.clone(),
                     Arc::new(runtime_settings.clone()),
-                ))
-                .with_transport_settings(
-                    max_message_size,
-                    runtime_settings.server.grpc_compression_enabled,
-                ),
-            );
-            routes.add_service(
-                RtmpProviderServiceServer::new(providers::rtmp::RtmpProviderGrpcService::new(
-                    &shared_api_runtime,
-                    shared_api_runtime.request_executor.clone(),
-                    Arc::new(runtime_settings.clone()),
+                    playback_provider_state.clone(),
                 ))
                 .with_transport_settings(
                     max_message_size,
@@ -1762,6 +1744,7 @@ async fn build_axum_router_with_health(
                     &shared_api_runtime,
                     shared_api_runtime.request_executor.clone(),
                     Arc::new(runtime_settings.clone()),
+                    playback_provider_state.clone(),
                 ))
                 .with_transport_settings(
                     max_message_size,
@@ -1773,6 +1756,7 @@ async fn build_axum_router_with_health(
                     &shared_api_runtime,
                     shared_api_runtime.request_executor.clone(),
                     Arc::new(runtime_settings.clone()),
+                    playback_provider_state.clone(),
                 ))
                 .with_transport_settings(
                     max_message_size,
@@ -1785,6 +1769,7 @@ async fn build_axum_router_with_health(
                         &shared_api_runtime,
                         shared_api_runtime.request_executor.clone(),
                         Arc::new(runtime_settings.clone()),
+                        playback_provider_state.clone(),
                     ),
                 )
                 .with_transport_settings(
@@ -1798,6 +1783,7 @@ async fn build_axum_router_with_health(
                         &shared_api_runtime,
                         shared_api_runtime.request_executor.clone(),
                         Arc::new(runtime_settings.clone()),
+                        playback_provider_state.clone(),
                     ),
                 )
                 .with_transport_settings(
@@ -1824,6 +1810,7 @@ async fn build_axum_router_with_health(
                         &shared_api_runtime,
                         shared_api_runtime.request_executor.clone(),
                         Arc::new(runtime_settings.clone()),
+                        playback_provider_state.clone(),
                     ),
                 )
                 .with_transport_settings(
@@ -2817,7 +2804,6 @@ mod tests {
             });
         let playback_provider_deps = synctv_core::service::PlaybackProviderServiceDeps {
             providers: providers_for_access.clone(),
-            provider_stores: provider_stores.clone(),
             playback_transport_services: playback_transport_services.clone(),
             provider_access_service: provider_access_service.clone(),
         };

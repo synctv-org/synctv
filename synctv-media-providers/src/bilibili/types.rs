@@ -746,14 +746,6 @@ pub struct LiveDurl {
     pub order: u32,
 }
 
-/// Live danmu info response
-#[derive(Debug, Clone, Deserialize)]
-pub struct GetLiveDanmuInfoResp {
-    pub data: LiveDanmuData,
-    pub message: String,
-    pub code: i32,
-}
-
 #[derive(Debug, Clone, Deserialize)]
 pub struct LiveDanmuData {
     pub token: String,

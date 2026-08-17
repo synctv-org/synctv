@@ -21,6 +21,7 @@ use synctv_api_common::impls::EndpointRateLimitCategory;
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DouyinResourcePath {
+    pub room_id: String,
     pub version: String,
     pub mode_name: String,
     pub media_index: u32,
@@ -29,6 +30,7 @@ pub struct DouyinResourcePath {
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DouyinHlsResourcePath {
+    pub room_id: String,
     pub version: String,
     pub mode_name: String,
     pub media_index: u32,
@@ -51,12 +53,13 @@ impl PlaybackProviderHttpResponse for DouyinHlsResourceResponse {
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/douyin/{version}/resources/{modeName}/{mediaIndex}",
+        path = "/api/playback-providers/{roomId}/douyin/{version}/resources/{modeName}/{mediaIndex}",
         tag = "Douyin Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path), ("modeName" = String, Path),
             ("mediaIndex" = u32, Path), ("sig" = String, Query),
-            ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)
+            ("uid" = String, Query), ("exp" = i64, Query)
         ),
         responses((status = 200, description = "Refreshed Douyin media resource"))
     )
@@ -103,8 +106,8 @@ async fn resource(
     query_string: String,
     method: Method,
 ) -> AppResult<axum::response::Response> {
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetDouyinResourceRequest {
         version: path.version,
         mode_name: path.mode_name,
@@ -140,14 +143,14 @@ async fn resource(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/douyin/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
+        path = "/api/playback-providers/{roomId}/douyin/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
         tag = "Douyin Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path), ("modeName" = String, Path),
             ("mediaIndex" = u32, Path), ("resourceKind" = String, Path),
             ("targetUrl" = String, Query),
-            ("sig" = String, Query), ("uid" = String, Query),
-            ("rid" = String, Query), ("exp" = i64, Query)
+            ("sig" = String, Query), ("uid" = String, Query), ("exp" = i64, Query)
         ),
         responses((status = 200, description = "Douyin HLS resource"))
     )
@@ -194,8 +197,8 @@ async fn hls_resource(
     query_string: String,
     method: Method,
 ) -> AppResult<axum::response::Response> {
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetDouyinHlsResourceRequest {
         version: path.version,
         target_url: target_url(&query_string).map_err(crate::http::error::map_api_error)?,
@@ -245,12 +248,13 @@ fn douyin_hls_resource_kind(value: &str) -> AppResult<i32> {
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/douyin/{version}/danmakus/{modeName}/{mediaIndex}",
+        path = "/api/playback-providers/{roomId}/douyin/{version}/danmakus/{modeName}/{mediaIndex}",
         tag = "Douyin Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path), ("modeName" = String, Path),
             ("mediaIndex" = u32, Path), ("sig" = String, Query),
-            ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)
+            ("uid" = String, Query), ("exp" = i64, Query)
         ),
         responses((
             status = 200,
@@ -267,8 +271,8 @@ pub async fn watch_danmaku(
     raw_query: RawQuery,
 ) -> AppResult<axum::response::Response> {
     let query_string = query(raw_query);
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = WatchDouyinDanmakuRequest {
         version: path.version,
         mode_name: path.mode_name,

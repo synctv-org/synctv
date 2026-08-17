@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, RawQuery, State},
+    extract::{Path, Query, RawQuery, State},
     http::{HeaderMap, Method},
     response::{
         sse::{KeepAlive, Sse},
@@ -7,26 +7,31 @@ use axum::{
     },
 };
 use base64::Engine as _;
-use futures::{FutureExt, StreamExt};
+use futures::{FutureExt, StreamExt as _};
 use synctv_proto::playback_provider::bilibili::{
     BilibiliDanmakuFileResponse, BilibiliDashManifestMode, BilibiliDashManifestResponse,
-    BilibiliDashResourceKind, BilibiliDashResourceResponse, BilibiliHlsManifestResponse,
-    BilibiliHlsResourceKind, BilibiliHlsResourceResponse, BilibiliMediaStreamResponse,
-    BilibiliSubtitleResponse, GetBilibiliDanmakuFileRequest, GetBilibiliDashManifestRequest,
-    GetBilibiliDashResourceRequest, GetBilibiliHlsManifestRequest, GetBilibiliHlsResourceRequest,
-    GetBilibiliMediaStreamRequest, GetBilibiliSubtitleRequest, WatchBilibiliLiveDanmakuRequest,
+    BilibiliDashResourceKind, BilibiliDashResourceResponse, BilibiliDynamicLiveDanmakuTarget,
+    BilibiliHlsManifestResponse, BilibiliHlsResourceKind, BilibiliHlsResourceResponse,
+    BilibiliMediaStreamResponse, BilibiliSubtitleResponse, GetBilibiliDanmakuFileRequest,
+    GetBilibiliDashManifestRequest, GetBilibiliDashResourceRequest, GetBilibiliHlsManifestRequest,
+    GetBilibiliHlsResourceRequest, GetBilibiliMediaStreamRequest, GetBilibiliSubtitleRequest,
+    WatchBilibiliLiveDanmakuRequest,
 };
 
-use crate::http::{middleware::RequestMetadata, AppResult, AppState};
-use crate::providers::playback_provider::transport::{
-    query, range_header, signed_query_fields, stream_http_response, target_url,
-    unsigned_query_field, PlaybackProviderHttpResponse,
+use crate::http::{
+    middleware::RequestMetadata, room::execute::execute_room_actor_endpoint_with_control,
+    AppResult, AppState,
 };
-use synctv_api_common::impls::EndpointRateLimitCategory;
+use crate::providers::playback_provider::transport::{
+    bilibili_danmaku_sse_event, query, range_header, signed_query_fields, stream_http_response,
+    target_url, unsigned_query_field, PlaybackProviderHttpResponse,
+};
+use synctv_api_common::impls::{EndpointRateLimitCategory, EndpointRateLimitScope};
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BilibiliIndexedPath {
+    pub room_id: String,
     pub version: String,
     pub mode_name: String,
     pub url_index: u32,
@@ -35,6 +40,7 @@ pub struct BilibiliIndexedPath {
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BilibiliDashManifestPath {
+    pub room_id: String,
     pub version: String,
     pub mode_name: String,
     #[serde(default)]
@@ -44,6 +50,7 @@ pub struct BilibiliDashManifestPath {
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BilibiliHlsResourcePath {
+    pub room_id: String,
     pub version: String,
     pub mode_name: String,
     pub media_index: u32,
@@ -53,12 +60,12 @@ pub struct BilibiliHlsResourcePath {
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BilibiliDashResourcePath {
+    pub room_id: String,
     pub version: String,
     pub mode_name: String,
     pub resource_kind: String,
     pub scope: String,
     pub uid: String,
-    pub rid: String,
     pub exp: i64,
     pub sig: String,
     #[serde(default)]
@@ -68,6 +75,7 @@ pub struct BilibiliDashResourcePath {
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BilibiliSubtitlePath {
+    pub room_id: String,
     pub version: String,
     pub mode_name: String,
     pub subtitle_index: u32,
@@ -76,14 +84,15 @@ pub struct BilibiliSubtitlePath {
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BilibiliDanmakuFilePath {
+    pub room_id: String,
     pub version: String,
     pub danmaku_index: u32,
 }
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct BilibiliLiveDanmakuPath {
-    pub media_id: String,
+pub struct BilibiliDynamicLiveDanmakuQuery {
+    pub live_room_id: u64,
 }
 
 impl PlaybackProviderHttpResponse for BilibiliMediaStreamResponse {
@@ -132,9 +141,9 @@ impl PlaybackProviderHttpResponse for BilibiliDanmakuFileResponse {
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/bilibili/{version}/media-streams/{modeName}/{urlIndex}",
+        path = "/api/playback-providers/{roomId}/bilibili/{version}/media-streams/{modeName}/{urlIndex}",
         tag = "Bilibili Playback Provider",
-        params(("version" = String, Path), ("modeName" = String, Path), ("urlIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
+        params(("roomId" = String, Path), ("version" = String, Path), ("modeName" = String, Path), ("urlIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("exp" = i64, Query)),
         responses((status = 200, description = "Bilibili media stream"), (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema))
     )
 )]
@@ -159,9 +168,9 @@ pub fn get_bilibili_media_stream(
     feature = "openapi",
     utoipa::path(
         head,
-        path = "/api/playback-providers/bilibili/{version}/media-streams/{modeName}/{urlIndex}",
+        path = "/api/playback-providers/{roomId}/bilibili/{version}/media-streams/{modeName}/{urlIndex}",
         tag = "Bilibili Playback Provider",
-        params(("version" = String, Path), ("modeName" = String, Path), ("urlIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
+        params(("roomId" = String, Path), ("version" = String, Path), ("modeName" = String, Path), ("urlIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("exp" = i64, Query)),
         responses((status = 200, description = "Bilibili media stream metadata"), (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema))
     )
 )]
@@ -190,8 +199,8 @@ async fn bilibili_media_stream(
     query_string: String,
     method: Method,
 ) -> AppResult<axum::response::Response> {
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetBilibiliMediaStreamRequest {
         version: path.version,
         mode_name: path.mode_name,
@@ -227,9 +236,9 @@ async fn bilibili_media_stream(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/bilibili/{version}/hls-manifests/{modeName}/{urlIndex}",
+        path = "/api/playback-providers/{roomId}/bilibili/{version}/hls-manifests/{modeName}/{urlIndex}",
         tag = "Bilibili Playback Provider",
-        params(("version" = String, Path), ("modeName" = String, Path), ("urlIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
+        params(("roomId" = String, Path), ("version" = String, Path), ("modeName" = String, Path), ("urlIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("exp" = i64, Query)),
         responses((status = 200, description = "Bilibili HLS manifest"), (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema))
     )
 )]
@@ -240,8 +249,8 @@ pub async fn get_bilibili_hls_manifest(
     raw_query: RawQuery,
 ) -> AppResult<axum::response::Response> {
     let query_string = query(raw_query);
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetBilibiliHlsManifestRequest {
         version: path.version,
         mode_name: path.mode_name,
@@ -275,9 +284,9 @@ pub async fn get_bilibili_hls_manifest(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/bilibili/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
+        path = "/api/playback-providers/{roomId}/bilibili/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
         tag = "Bilibili Playback Provider",
-        params(("version" = String, Path), ("modeName" = String, Path), ("mediaIndex" = u32, Path), ("resourceKind" = String, Path), ("targetUrl" = String, Query), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
+        params(("roomId" = String, Path), ("version" = String, Path), ("modeName" = String, Path), ("mediaIndex" = u32, Path), ("resourceKind" = String, Path), ("targetUrl" = String, Query), ("sig" = String, Query), ("uid" = String, Query), ("exp" = i64, Query)),
         responses((status = 200, description = "Bilibili HLS resource"), (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema))
     )
 )]
@@ -302,9 +311,9 @@ pub fn get_bilibili_hls_resource(
     feature = "openapi",
     utoipa::path(
         head,
-        path = "/api/playback-providers/bilibili/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
+        path = "/api/playback-providers/{roomId}/bilibili/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
         tag = "Bilibili Playback Provider",
-        params(("version" = String, Path), ("modeName" = String, Path), ("mediaIndex" = u32, Path), ("resourceKind" = String, Path), ("targetUrl" = String, Query), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
+        params(("roomId" = String, Path), ("version" = String, Path), ("modeName" = String, Path), ("mediaIndex" = u32, Path), ("resourceKind" = String, Path), ("targetUrl" = String, Query), ("sig" = String, Query), ("uid" = String, Query), ("exp" = i64, Query)),
         responses((status = 200, description = "Bilibili HLS resource metadata"), (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema))
     )
 )]
@@ -333,8 +342,8 @@ async fn bilibili_hls_resource(
     query_string: String,
     method: Method,
 ) -> AppResult<axum::response::Response> {
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetBilibiliHlsResourceRequest {
         version: path.version,
         target_url: target_url(&query_string).map_err(crate::http::error::map_api_error)?,
@@ -372,9 +381,9 @@ async fn bilibili_hls_resource(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/bilibili/{version}/dash-manifests/{modeName}/{manifestMode}",
+        path = "/api/playback-providers/{roomId}/bilibili/{version}/dash-manifests/{modeName}/{manifestMode}",
         tag = "Bilibili Playback Provider",
-        params(("version" = String, Path), ("modeName" = String, Path), ("manifestMode" = String, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
+        params(("roomId" = String, Path), ("version" = String, Path), ("modeName" = String, Path), ("manifestMode" = String, Path), ("sig" = String, Query), ("uid" = String, Query), ("exp" = i64, Query)),
         responses((status = 200, description = "Bilibili DASH manifest"), (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema))
     )
 )]
@@ -385,8 +394,8 @@ pub async fn get_bilibili_dash_manifest(
     raw_query: RawQuery,
 ) -> AppResult<axum::response::Response> {
     let query_string = query(raw_query);
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetBilibiliDashManifestRequest {
         version: path.version,
         mode_name: path.mode_name,
@@ -421,9 +430,9 @@ pub async fn get_bilibili_dash_manifest(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/bilibili/{version}/dash-resources/{modeName}/{resourceKind}/{scope}/{uid}/{rid}/{exp}/{sig}/{resourcePath}",
+        path = "/api/playback-providers/{roomId}/bilibili/{version}/dash-resources/{modeName}/{resourceKind}/{scope}/{uid}/{exp}/{sig}/{resourcePath}",
         tag = "Bilibili Playback Provider",
-        params(("version" = String, Path), ("modeName" = String, Path), ("resourceKind" = String, Path), ("scope" = String, Path), ("uid" = String, Path), ("rid" = String, Path), ("exp" = i64, Path), ("sig" = String, Path), ("resourcePath" = String, Path)),
+        params(("roomId" = String, Path), ("version" = String, Path), ("modeName" = String, Path), ("resourceKind" = String, Path), ("scope" = String, Path), ("uid" = String, Path), ("exp" = i64, Path), ("sig" = String, Path), ("resourcePath" = String, Path)),
         responses((status = 200, description = "Bilibili DASH resource"), (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema))
     )
 )]
@@ -448,9 +457,9 @@ pub fn get_bilibili_dash_resource(
     feature = "openapi",
     utoipa::path(
         head,
-        path = "/api/playback-providers/bilibili/{version}/dash-resources/{modeName}/{resourceKind}/{scope}/{uid}/{rid}/{exp}/{sig}/{resourcePath}",
+        path = "/api/playback-providers/{roomId}/bilibili/{version}/dash-resources/{modeName}/{resourceKind}/{scope}/{uid}/{exp}/{sig}/{resourcePath}",
         tag = "Bilibili Playback Provider",
-        params(("version" = String, Path), ("modeName" = String, Path), ("resourceKind" = String, Path), ("scope" = String, Path), ("uid" = String, Path), ("rid" = String, Path), ("exp" = i64, Path), ("sig" = String, Path), ("resourcePath" = String, Path)),
+        params(("roomId" = String, Path), ("version" = String, Path), ("modeName" = String, Path), ("resourceKind" = String, Path), ("scope" = String, Path), ("uid" = String, Path), ("exp" = i64, Path), ("sig" = String, Path), ("resourcePath" = String, Path)),
         responses((status = 200, description = "Bilibili DASH resource metadata"), (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema))
     )
 )]
@@ -500,7 +509,7 @@ async fn bilibili_dash_resource(
         resource_kind: bilibili_dash_resource_kind(&path.resource_kind)?,
         sig: path.sig,
         uid: path.uid,
-        rid: path.rid,
+        rid: path.room_id,
         exp: path.exp,
         range: range_header(&headers).map_err(crate::http::error::map_api_error)?,
         head: method == Method::HEAD,
@@ -529,9 +538,9 @@ async fn bilibili_dash_resource(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/bilibili/{version}/subtitles/{modeName}/{subtitleIndex}",
+        path = "/api/playback-providers/{roomId}/bilibili/{version}/subtitles/{modeName}/{subtitleIndex}",
         tag = "Bilibili Playback Provider",
-        params(("version" = String, Path), ("modeName" = String, Path), ("subtitleIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
+        params(("roomId" = String, Path), ("version" = String, Path), ("modeName" = String, Path), ("subtitleIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("exp" = i64, Query)),
         responses((status = 200, description = "Bilibili subtitle"), (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema))
     )
 )]
@@ -542,8 +551,8 @@ pub async fn get_bilibili_subtitle(
     raw_query: RawQuery,
 ) -> AppResult<axum::response::Response> {
     let query_string = query(raw_query);
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetBilibiliSubtitleRequest {
         version: path.version,
         mode_name: path.mode_name,
@@ -577,9 +586,9 @@ pub async fn get_bilibili_subtitle(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/bilibili/{version}/danmaku-files/{danmakuIndex}",
+        path = "/api/playback-providers/{roomId}/bilibili/{version}/danmaku-files/{danmakuIndex}",
         tag = "Bilibili Playback Provider",
-        params(("version" = String, Path), ("danmakuIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
+        params(("roomId" = String, Path), ("version" = String, Path), ("danmakuIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("exp" = i64, Query)),
         responses((status = 200, description = "Bilibili danmaku file"), (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema))
     )
 )]
@@ -590,8 +599,8 @@ pub async fn get_bilibili_danmaku_file(
     raw_query: RawQuery,
 ) -> AppResult<axum::response::Response> {
     let query_string = query(raw_query);
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetBilibiliDanmakuFileRequest {
         version: path.version,
         danmaku_index: path.danmaku_index,
@@ -620,57 +629,63 @@ pub async fn get_bilibili_danmaku_file(
     .await
 }
 
-#[cfg_attr(
-    feature = "openapi",
-    utoipa::path(
-        get,
-        path = "/api/playback-providers/bilibili/live-danmaku/{mediaId}",
-        tag = "Bilibili Playback Provider",
-        params(("mediaId" = String, Path)),
-        responses((status = 200, description = "Bilibili live danmaku SSE"), (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema))
-    )
-)]
 pub async fn watch_bilibili_live_danmaku(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Path(path): Path<BilibiliLiveDanmakuPath>,
+    Path(path): Path<synctv_proto::client::RoomMediaTargetPathRequest>,
 ) -> AppResult<Response> {
+    let synctv_proto::client::RoomMediaTargetPathRequest { room_id, media_id } = path;
     let req = WatchBilibiliLiveDanmakuRequest {
-        media_id: path.media_id,
+        target: Some(
+            synctv_proto::playback_provider::bilibili::watch_bilibili_live_danmaku_request::Target::MediaId(media_id),
+        ),
     };
-    let request_meta = request_meta
-        .0
-        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
-    let state_for_stream = state.clone();
-    let stream = state
-        .shared_api_runtime
-        .request_executor
-        .execute_user_with_control(
-            &request_meta,
-            EndpointRateLimitCategory::Streaming,
-            move |request_control, authenticated| {
-                let state = state_for_stream;
-                async move {
-                    synctv_api_common::playback_provider::bilibili::watch_bilibili_live_danmaku(
-                        synctv_api_common::playback_provider::bilibili::BilibiliLiveDanmakuDeps {
-                            playback_provider_service: &state
-                                .shared_api_runtime
-                                .bilibili_playback_provider_service,
-                            identity_runtime: super::playback_provider_identity_runtime(&state),
-                            actor_user_id: authenticated.user_id(),
-                            request_control: Some(&request_control),
-                        },
-                        req,
-                    )
-                    .await
-                }
-            },
-        )
-        .await
-        .map_err(crate::http::error::map_api_error)?;
-    let stream = stream
-        .map(super::transport::bilibili_danmaku_sse_event)
-        .boxed();
+    watch_bilibili_live_danmaku_stream(state, request_meta, room_id, req).await
+}
+
+pub async fn watch_bilibili_dynamic_live_danmaku(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<synctv_proto::client::RoomPlaylistTargetPathRequest>,
+    Query(query): Query<BilibiliDynamicLiveDanmakuQuery>,
+) -> AppResult<Response> {
+    let synctv_proto::client::RoomPlaylistTargetPathRequest {
+        room_id,
+        playlist_id,
+    } = path;
+    let req = WatchBilibiliLiveDanmakuRequest {
+        target: Some(
+            synctv_proto::playback_provider::bilibili::watch_bilibili_live_danmaku_request::Target::Dynamic(
+                BilibiliDynamicLiveDanmakuTarget {
+                    playlist_id,
+                    live_room_id: query.live_room_id,
+                },
+            ),
+        ),
+    };
+    watch_bilibili_live_danmaku_stream(state, request_meta, room_id, req).await
+}
+
+async fn watch_bilibili_live_danmaku_stream(
+    state: AppState,
+    request_meta: RequestMetadata,
+    room_id: String,
+    req: WatchBilibiliLiveDanmakuRequest,
+) -> AppResult<Response> {
+    let stream = execute_room_actor_endpoint_with_control(
+        &state,
+        request_meta,
+        room_id,
+        EndpointRateLimitCategory::Streaming,
+        EndpointRateLimitScope::RoomPlayback,
+        move |client_api, request_control, actor| async move {
+            client_api
+                .watch_bilibili_live_danmaku_for_actor(&actor, req, Some(&request_control))
+                .await
+        },
+    )
+    .await?;
+    let stream = stream.map(bilibili_danmaku_sse_event).boxed();
     Ok(Sse::new(stream)
         .keep_alive(KeepAlive::default())
         .into_response())

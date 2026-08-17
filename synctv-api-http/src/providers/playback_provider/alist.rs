@@ -19,6 +19,7 @@ use crate::providers::playback_provider::transport::{
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AlistIndexedPath {
+    pub room_id: String,
     pub version: String,
     pub mode_name: String,
     pub url_index: u32,
@@ -27,6 +28,7 @@ pub struct AlistIndexedPath {
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AlistHlsResourcePath {
+    pub room_id: String,
     pub version: String,
     pub mode_name: String,
     pub media_index: u32,
@@ -36,6 +38,7 @@ pub struct AlistHlsResourcePath {
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AlistSubtitlePath {
+    pub room_id: String,
     pub version: String,
     pub mode_name: String,
     pub subtitle_index: u32,
@@ -75,15 +78,15 @@ impl PlaybackProviderHttpResponse for AlistThumbnailResponse {
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/alist/{version}/files/{modeName}/{urlIndex}",
+        path = "/api/playback-providers/{roomId}/alist/{version}/files/{modeName}/{urlIndex}",
         tag = "Alist Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path),
             ("modeName" = String, Path),
             ("urlIndex" = u32, Path),
             ("sig" = String, Query),
             ("uid" = String, Query),
-            ("rid" = String, Query),
             ("exp" = i64, Query)
         ),
         responses(
@@ -114,15 +117,15 @@ pub fn get_alist_file_stream(
     feature = "openapi",
     utoipa::path(
         head,
-        path = "/api/playback-providers/alist/{version}/files/{modeName}/{urlIndex}",
+        path = "/api/playback-providers/{roomId}/alist/{version}/files/{modeName}/{urlIndex}",
         tag = "Alist Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path),
             ("modeName" = String, Path),
             ("urlIndex" = u32, Path),
             ("sig" = String, Query),
             ("uid" = String, Query),
-            ("rid" = String, Query),
             ("exp" = i64, Query)
         ),
         responses(
@@ -157,8 +160,8 @@ async fn alist_file_stream(
     query_string: String,
     method: Method,
 ) -> AppResult<axum::response::Response> {
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetAlistFileStreamRequest {
         version: path.version,
         mode_name: path.mode_name,
@@ -194,15 +197,15 @@ async fn alist_file_stream(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/alist/{version}/transcoded-hls-manifests/{modeName}/{urlIndex}",
+        path = "/api/playback-providers/{roomId}/alist/{version}/transcoded-hls-manifests/{modeName}/{urlIndex}",
         tag = "Alist Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path),
             ("modeName" = String, Path),
             ("urlIndex" = u32, Path),
             ("sig" = String, Query),
             ("uid" = String, Query),
-            ("rid" = String, Query),
             ("exp" = i64, Query)
         ),
         responses(
@@ -219,8 +222,8 @@ pub async fn get_alist_transcoded_hls_manifest(
     raw_query: RawQuery,
 ) -> AppResult<axum::response::Response> {
     let query_string = query(raw_query);
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetAlistTranscodedHlsManifestRequest {
         version: path.version,
         mode_name: path.mode_name,
@@ -254,14 +257,14 @@ pub async fn get_alist_transcoded_hls_manifest(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/alist/{version}/transcoded-hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
+        path = "/api/playback-providers/{roomId}/alist/{version}/transcoded-hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
         tag = "Alist Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path), ("modeName" = String, Path), ("mediaIndex" = u32, Path), ("resourceKind" = String, Path),
             ("targetUrl" = String, Query),
             ("sig" = String, Query),
             ("uid" = String, Query),
-            ("rid" = String, Query),
             ("exp" = i64, Query)
         ),
         responses(
@@ -292,14 +295,14 @@ pub fn get_alist_transcoded_hls_resource(
     feature = "openapi",
     utoipa::path(
         head,
-        path = "/api/playback-providers/alist/{version}/transcoded-hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
+        path = "/api/playback-providers/{roomId}/alist/{version}/transcoded-hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
         tag = "Alist Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path), ("modeName" = String, Path), ("mediaIndex" = u32, Path), ("resourceKind" = String, Path),
             ("targetUrl" = String, Query),
             ("sig" = String, Query),
             ("uid" = String, Query),
-            ("rid" = String, Query),
             ("exp" = i64, Query)
         ),
         responses(
@@ -334,8 +337,8 @@ async fn alist_transcoded_hls_resource(
     query_string: String,
     method: Method,
 ) -> AppResult<axum::response::Response> {
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetAlistTranscodedHlsResourceRequest {
         version: path.version,
         target_url: target_url(&query_string).map_err(crate::http::error::map_api_error)?,
@@ -373,15 +376,15 @@ async fn alist_transcoded_hls_resource(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/alist/{version}/subtitles/{modeName}/{subtitleIndex}",
+        path = "/api/playback-providers/{roomId}/alist/{version}/subtitles/{modeName}/{subtitleIndex}",
         tag = "Alist Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path),
             ("modeName" = String, Path),
             ("subtitleIndex" = u32, Path),
             ("sig" = String, Query),
             ("uid" = String, Query),
-            ("rid" = String, Query),
             ("exp" = i64, Query)
         ),
         responses(
@@ -398,8 +401,8 @@ pub async fn get_alist_subtitle(
     raw_query: RawQuery,
 ) -> AppResult<axum::response::Response> {
     let query_string = query(raw_query);
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetAlistSubtitleRequest {
         version: path.version,
         mode_name: path.mode_name,
@@ -433,13 +436,13 @@ pub async fn get_alist_subtitle(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/alist/{version}/thumbnail",
+        path = "/api/playback-providers/{roomId}/alist/{version}/thumbnail",
         tag = "Alist Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path),
             ("sig" = String, Query),
             ("uid" = String, Query),
-            ("rid" = String, Query),
             ("exp" = i64, Query)
         ),
         responses(
@@ -450,14 +453,14 @@ pub async fn get_alist_subtitle(
     )
 )]
 pub async fn get_alist_thumbnail(
-    Path(version): Path<String>,
+    Path((room_id, version)): Path<(String, String)>,
     State(state): State<AppState>,
     request_meta: RequestMetadata,
     raw_query: RawQuery,
 ) -> AppResult<axum::response::Response> {
     let query_string = query(raw_query);
     let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+        signed_query_fields(&query_string, &room_id).map_err(crate::http::error::map_api_error)?;
     let req = GetAlistThumbnailRequest {
         version,
         sig,

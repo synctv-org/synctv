@@ -5,10 +5,7 @@ use synctv_core::models::{
     UserRole, UserStatus,
 };
 use synctv_core::service::BanRecordTargetType;
-use synctv_proto::{
-    admin as admin_proto, client as client_proto, common as common_proto,
-    providers::rtmp as rtmp_proto,
-};
+use synctv_proto::{admin as admin_proto, client as client_proto, common as common_proto};
 
 #[derive(Debug, Clone)]
 pub struct ListUsersQuery {
@@ -904,13 +901,13 @@ pub trait AdminRuntime: Send + Sync {
         actor_user_id: &UserId,
         admin_user_id: &UserId,
         ctx: &RequestContext,
-    ) -> Result<rtmp_proto::CreatePublishKeyResponse, RuntimeError>;
+    ) -> Result<client_proto::CreateRoomPublishKeyResponse, RuntimeError>;
 
     async fn get_stream_info(
         &self,
         room_id: &str,
         media_id: &str,
-    ) -> Result<rtmp_proto::GetStreamInfoResponse, RuntimeError>;
+    ) -> Result<client_proto::GetRoomStreamInfoResponse, RuntimeError>;
 
     async fn list_room_streams(
         &self,

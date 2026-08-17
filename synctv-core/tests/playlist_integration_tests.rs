@@ -6,8 +6,9 @@
 use chrono::Utc;
 use synctv_core::{
     models::{
-        Playlist, PlaylistId, Room, RoomId, RoomMember, RoomRole, RoomStatus, User, UserId,
-        UserRole, UserStatus,
+        AlistPlaylistSourceConfig, PlaybackProxyMode, Playlist, PlaylistId, PlaylistSourceConfig,
+        Room, RoomId, RoomMember, RoomRole, RoomStatus, SourceProvider, User, UserId, UserRole,
+        UserStatus,
     },
     repository::{PlaylistRepository, RoomMemberRepository, RoomRepository, UserRepository},
     service::DeleteEntriesRequest,
@@ -78,6 +79,58 @@ fn make_playlist(
         updated_at: Utc::now(),
         version: 0,
     }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_update_playlist_replaces_complete_dynamic_source_config() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+    let playlist_repo = PlaylistRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("playlist_source_config_update_owner"))
+        .await
+        .checked("test operation should succeed");
+    let room = room_repo
+        .create(&make_room("Playlist source config update", &owner.id))
+        .await
+        .checked("test operation should succeed");
+    let mut playlist = make_playlist(&room.id, "Dynamic library", None, 0);
+    playlist.creator_id = Some(owner.id);
+    playlist.source_provider = Some(SourceProvider::Alist);
+    playlist.source_config = Some(PlaylistSourceConfig::Alist(AlistPlaylistSourceConfig {
+        server_id: "alist-main".to_string(),
+        path: "/library/original".to_string(),
+        password: Some("original-password".to_string()),
+        proxy_mode: PlaybackProxyMode::Auto,
+    }));
+    let created = playlist_repo
+        .create(&playlist)
+        .await
+        .checked("test operation should succeed");
+
+    let mut update = created.clone();
+    update.source_config = Some(PlaylistSourceConfig::Alist(AlistPlaylistSourceConfig {
+        server_id: "alist-reconfigured".to_string(),
+        path: "/library/updated".to_string(),
+        password: Some("updated-password".to_string()),
+        proxy_mode: PlaybackProxyMode::Only,
+    }));
+    let updated = playlist_repo
+        .update_with_version(&update, created.version)
+        .await
+        .checked("test operation should succeed");
+
+    assert_eq!(updated.source_provider, Some(SourceProvider::Alist));
+    assert_eq!(updated.source_config, update.source_config);
+    let persisted = playlist_repo
+        .get_by_room_and_id(&room.id, &created.id)
+        .await
+        .checked("test operation should succeed")
+        .checked("updated playlist should persist");
+    assert_eq!(persisted.source_config, update.source_config);
 }
 
 #[tokio::test]

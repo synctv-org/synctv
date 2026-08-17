@@ -3,6 +3,7 @@ syntax = "proto3";
 package synctv.provider.fnos;
 
 import "proto/providers/fnos.proto";
+import "proto/providers/common.proto";
 
 service FnosProviderService {
   rpc Login(LoginRequest) returns (LoginResponse);
@@ -14,4 +15,5 @@ service FnosProviderService {
   rpc GetServerInfo(GetServerInfoRequest) returns (GetServerInfoResponse);
   rpc Logout(LogoutRequest) returns (LogoutResponse);
   rpc GetBinds(GetBindsRequest) returns (GetBindsResponse);
+  rpc GetThumbnail(GetThumbnailRequest) returns (stream synctv.provider.common.ResourceResponse);
 }

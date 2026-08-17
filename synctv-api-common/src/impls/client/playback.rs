@@ -593,6 +593,7 @@ impl ClientApiImpl {
             )?,
             provider.as_ref(),
         );
+        ctx = ctx.with_playlist_id(*playlist_id);
         if let Some(state) = state {
             ctx = ctx
                 .with_playback_generation(state.playback_generation)

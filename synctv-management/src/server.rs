@@ -154,7 +154,31 @@ async fn spawn_management_tcp_server(
     let listener = tokio::net::TcpListener::bind(&bind_target)
         .await
         .with_context(|| format!("failed to bind management TCP address {bind_target}"))?;
-    info!("Management gRPC server listening on {}", bind_target);
+    spawn_management_tcp_server_with_listener(config, listener)
+}
+
+/// Start the TCP management service using a listener already owned by the caller.
+pub fn spawn_management_server_with_tcp_listener(
+    config: ManagementServerConfig,
+    listener: tokio::net::TcpListener,
+) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
+    if !matches!(config.settings.transport, ManagementTransport::Tcp) {
+        return Err(anyhow::anyhow!(
+            "a pre-bound TCP management listener requires management.transport=tcp"
+        ));
+    }
+
+    spawn_management_tcp_server_with_listener(config, listener)
+}
+
+fn spawn_management_tcp_server_with_listener(
+    config: ManagementServerConfig,
+    listener: tokio::net::TcpListener,
+) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
+    let listener_address = listener
+        .local_addr()
+        .context("failed to read management TCP listener address")?;
+    info!("Management gRPC server listening on {}", listener_address);
 
     let handle = tokio::spawn(async move {
         let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);

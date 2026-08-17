@@ -1465,7 +1465,7 @@ impl ToHuman for synctv_proto::providers::common::ProviderInstance {
     }
 }
 
-impl ToHuman for synctv_proto::providers::rtmp::StreamPublisherInfo {
+impl ToHuman for synctv_proto::client::RoomStreamPublisherInfo {
     type Human = HumanStreamPublisherInfo;
 
     fn to_human(&self) -> Self::Human {
@@ -1979,7 +1979,7 @@ impl ToHuman for GetPlaybackCliOutput {
     }
 }
 
-impl ToHuman for synctv_proto::providers::rtmp::CreatePublishKeyResponse {
+impl ToHuman for synctv_proto::client::CreateRoomPublishKeyResponse {
     type Human = HumanCreatePublishKeyResponse;
 
     fn to_human(&self) -> Self::Human {
@@ -1992,7 +1992,7 @@ impl ToHuman for synctv_proto::providers::rtmp::CreatePublishKeyResponse {
     }
 }
 
-impl ToHuman for synctv_proto::providers::rtmp::GetStreamInfoResponse {
+impl ToHuman for synctv_proto::client::GetRoomStreamInfoResponse {
     type Human = HumanGetStreamInfoResponse;
 
     fn to_human(&self) -> Self::Human {

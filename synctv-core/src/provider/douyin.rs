@@ -368,6 +368,7 @@ impl DouyinProvider {
             url: target.url,
             headers: target.headers,
             range_header: range_header.map(ToString::to_string),
+            proxy_strategy: super::PlaybackResourceProxyStrategy::SliceCache,
         })
     }
 

@@ -2616,6 +2616,7 @@ impl AlistProvider {
                 url: target.url,
                 headers: target.headers,
                 range_header: request.range_header.map(ToString::to_string),
+                proxy_strategy: super::PlaybackResourceProxyStrategy::SliceCache,
             },
         )
     }
@@ -2732,6 +2733,7 @@ impl AlistProvider {
                 url: target.url,
                 headers: target.headers,
                 range_header: None,
+                proxy_strategy: super::PlaybackResourceProxyStrategy::FullResponseCache,
             },
         )
     }
@@ -2812,6 +2814,7 @@ impl AlistProvider {
                 url,
                 headers,
                 range_header: None,
+                proxy_strategy: super::PlaybackResourceProxyStrategy::SliceCache,
             },
         )
     }

@@ -4,8 +4,9 @@ use futures::FutureExt;
 use synctv_proto::playback_provider::seafile::seafile_playback_provider_service_server::SeafilePlaybackProviderService;
 use synctv_proto::playback_provider::seafile::{
     GetSeafileHlsManifestRequest, GetSeafileHlsResourceRequest, GetSeafileResourceRequest,
-    GetSeafileSubtitleRequest, SeafileHlsManifestResponse, SeafileHlsResourceResponse,
-    SeafileResourceResponse, SeafileSubtitleResponse,
+    GetSeafileSubtitleRequest, GetSeafileThumbnailResourceRequest, SeafileHlsManifestResponse,
+    SeafileHlsResourceResponse, SeafileResourceResponse, SeafileSubtitleResponse,
+    SeafileThumbnailResourceResponse,
 };
 use tonic::{Request, Response, Status};
 
@@ -40,6 +41,7 @@ impl SeafilePlaybackProviderService for SeafilePlaybackProviderGrpcService {
     type GetHlsManifestStream = GrpcResponseStream<SeafileHlsManifestResponse>;
     type GetHlsResourceStream = GrpcResponseStream<SeafileHlsResourceResponse>;
     type GetSubtitleStream = GrpcResponseStream<SeafileSubtitleResponse>;
+    type GetThumbnailResourceStream = GrpcResponseStream<SeafileThumbnailResourceResponse>;
 
     async fn get_resource(
         &self,
@@ -115,6 +117,27 @@ impl SeafilePlaybackProviderService for SeafilePlaybackProviderGrpcService {
             let state = state.clone();
             async move {
                 synctv_api_common::playback_provider::seafile::get_seafile_subtitle(
+                    deps(&state, Some(&control)),
+                    req,
+                )
+                .await
+            }
+            .boxed()
+        })
+        .await
+    }
+
+    async fn get_thumbnail_resource(
+        &self,
+        request: Request<GetSeafileThumbnailResourceRequest>,
+    ) -> Result<Response<Self::GetThumbnailResourceStream>, Status> {
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
+        let req = request.into_inner();
+        let state = self.state.clone();
+        execute_playback_provider_stream(state.clone(), metadata, move |control| {
+            let state = state.clone();
+            async move {
+                synctv_api_common::playback_provider::seafile::get_seafile_thumbnail_resource(
                     deps(&state, Some(&control)),
                     req,
                 )

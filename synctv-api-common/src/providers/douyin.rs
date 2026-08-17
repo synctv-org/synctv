@@ -198,12 +198,10 @@ fn resolve_response(
             music_title: media.metadata.music_title,
             music_author: media.metadata.music_author,
         }),
-        room_id: media.room_id,
         variants: media
             .variants
             .into_iter()
             .map(|variant| proto::Variant {
-                url: variant.url,
                 format: match variant.format {
                     DouyinStreamFormat::Mp4 => proto::StreamFormat::Mp4,
                     DouyinStreamFormat::Flv => proto::StreamFormat::Flv,

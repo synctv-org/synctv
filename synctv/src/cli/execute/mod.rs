@@ -66,7 +66,6 @@ mod provider_bilibili;
 mod provider_douyin;
 mod provider_emby;
 mod provider_instance;
-mod provider_rtmp;
 mod provider_services;
 mod provider_tiktok;
 mod provider_twitch;
@@ -93,7 +92,6 @@ use provider_bilibili::execute_provider_bilibili;
 use provider_douyin::execute_provider_douyin;
 use provider_emby::execute_provider_emby;
 use provider_instance::execute_provider_instance;
-use provider_rtmp::execute_provider_rtmp;
 use provider_services::*;
 use provider_tiktok::execute_provider_tiktok;
 use provider_twitch::execute_provider_twitch;
@@ -341,6 +339,10 @@ fn merge_room_command_globals(command: &mut RoomCommand, root: &GlobalConfigArgs
         },
         RoomSubcommand::Stream(command) => match &mut command.command {
             RoomStreamSubcommand::List(args) => merge_room_scoped_remote_args(&mut args.room, root),
+            RoomStreamSubcommand::PublishKey(args) => {
+                merge_room_scoped_remote_args(&mut args.room, root);
+            }
+            RoomStreamSubcommand::Get(args) => merge_room_scoped_remote_args(&mut args.room, root),
             RoomStreamSubcommand::Kick(args) => merge_room_scoped_remote_args(&mut args.room, root),
         },
         RoomSubcommand::Batch(command) => match &mut command.command {
@@ -554,14 +556,6 @@ fn merge_provider_command_globals(command: &mut ProviderCommand, root: &GlobalCo
             }
             ProviderTwitchSubcommand::Schedule(args) => {
                 merge_remote_access_args(&mut args.access.remote, root);
-            }
-        },
-        ProviderSubcommand::Rtmp(command) => match &mut command.command {
-            ProviderRtmpSubcommand::CreatePublishKey(args) => {
-                merge_remote_access_args(&mut args.access.remote, root);
-            }
-            ProviderRtmpSubcommand::GetStreamInfo(args) => {
-                merge_remote_access_args(&mut args.remote, root);
             }
         },
         ProviderSubcommand::Acfun(command) => match &mut command.command {

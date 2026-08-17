@@ -15,11 +15,13 @@ fn cleanup_stale_meta_evicts_oldest_entries() -> TestResult {
         cache.meta.insert(
             format!("meta-{index}"),
             CachedResourceMeta {
+                status: None,
                 etag: None,
                 last_modified: None,
                 total_size: None,
                 supports_ranges: false,
                 content_type: None,
+                content_encoding: None,
                 validated_at: now,
                 last_accessed: now + Duration::from_secs(index),
             },
@@ -47,11 +49,13 @@ fn cleanup_stale_meta_skips_when_within_limit() -> TestResult {
         cache.meta.insert(
             format!("meta-{index}"),
             CachedResourceMeta {
+                status: None,
                 etag: None,
                 last_modified: None,
                 total_size: None,
                 supports_ranges: false,
                 content_type: None,
+                content_encoding: None,
                 validated_at: now,
                 last_accessed: now,
             },
@@ -73,11 +77,13 @@ fn put_resource_meta_applies_metadata_cap() -> TestResult {
         cache.put_resource_meta_by_key_with_limit(
             format!("meta-{index}"),
             CachedResourceMeta {
+                status: None,
                 etag: None,
                 last_modified: None,
                 total_size: None,
                 supports_ranges: false,
                 content_type: None,
+                content_encoding: None,
                 validated_at: now,
                 last_accessed: now + Duration::from_secs(index),
             },
@@ -109,11 +115,13 @@ async fn stats_reports_backend_and_runtime_counters() -> TestResult {
     cache.meta.insert(
         "meta-1".to_string(),
         CachedResourceMeta {
+            status: None,
             etag: Some("etag".to_string()),
             last_modified: None,
             total_size: Some(6),
             supports_ranges: true,
             content_type: Some("video/mp2t".to_string()),
+            content_encoding: None,
             validated_at: std::time::SystemTime::now(),
             last_accessed: std::time::SystemTime::now(),
         },
@@ -150,11 +158,13 @@ async fn purge_all_removes_entries_and_runtime_metadata() -> TestResult {
     cache.meta.insert(
         "meta-1".to_string(),
         CachedResourceMeta {
+            status: None,
             etag: None,
             last_modified: None,
             total_size: None,
             supports_ranges: false,
             content_type: None,
+            content_encoding: None,
             validated_at: std::time::SystemTime::now(),
             last_accessed: std::time::SystemTime::now(),
         },

@@ -1,7 +1,7 @@
 #![allow(clippy::missing_errors_doc, clippy::too_many_lines)]
 
-//! Filter entry points: `proxy_with_cache`, `stream_through_with_status`,
-//! `head_content_length`.
+//! Filter entry points: [`SliceCache::proxy`], stream-through, and HEAD
+//! content-length lookup.
 //!
 //! These correspond to nginx's header/body filter chain -- the top-level
 //! request handling that decides whether to use slice caching or passthrough.
@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use axum::body::Body;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use bytes::Bytes;
 use synctv_common::ExecutionControl;
@@ -33,7 +33,141 @@ use super::range::{
 };
 use super::status::CacheStatus;
 use super::store::SliceCache;
-use super::types::{CachedSlice, HeadResourceResult, SliceFetchResult};
+use super::types::{
+    CachedFullResponse, CachedSlice, FullResponseFetchResult, HeadResourceResult, SliceFetchResult,
+};
+
+/// Decides whether a failed range probe may be retried as an ordinary GET.
+///
+/// A `200 OK` response to a range probe already provides a valid complete
+/// response and is streamed directly. Error responses have no interoperable
+/// meaning for range support, so callers opt into a second request only when
+/// they recognize an origin-specific response shape.
+pub trait SliceRangeProbeFallback: Send + Sync {
+    fn retry_without_range(&self, status: StatusCode, headers: &HeaderMap) -> bool;
+}
+
+impl<F> SliceRangeProbeFallback for F
+where
+    F: Fn(StatusCode, &HeaderMap) -> bool + Send + Sync,
+{
+    fn retry_without_range(&self, status: StatusCode, headers: &HeaderMap) -> bool {
+        self(status, headers)
+    }
+}
+
+/// HTTP method executed through the shared proxy cache.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SliceCacheProxyMethod {
+    Get,
+    Head,
+}
+
+/// Cache behavior selected for a proxied resource.
+pub enum SliceCacheProxyStrategy<'a> {
+    /// Fixed-size byte-range cache for seekable media.
+    Slice {
+        /// Optional origin-specific handling for failed range probes.
+        range_probe_fallback: Option<&'a dyn SliceRangeProbeFallback>,
+    },
+    /// Bounded complete-response cache for documents that use ordinary GET.
+    FullResponse,
+    /// Forward an upstream response without cache storage.
+    Stream,
+}
+
+/// Complete execution parameters for a request served through [`SliceCache`].
+pub struct SliceCacheProxyRequest<'a> {
+    pub method: SliceCacheProxyMethod,
+    pub strategy: SliceCacheProxyStrategy<'a>,
+    pub cache_enabled: bool,
+    pub url: &'a str,
+    pub provider_headers: &'a ProviderHeaders,
+    pub range_header: Option<&'a str>,
+    pub request_control: Option<&'a ExecutionControl>,
+    pub upstream_header_timeout: Option<Duration>,
+}
+
+#[derive(Clone, Copy)]
+struct ProxyRequestContext<'a> {
+    cache_enabled: bool,
+    url: &'a str,
+    provider_headers: &'a ProviderHeaders,
+    range_header: Option<&'a str>,
+    request_control: Option<&'a ExecutionControl>,
+    upstream_header_timeout: Option<Duration>,
+}
+
+impl SliceCache {
+    /// Execute one proxy request with its cache strategy and request controls.
+    pub async fn proxy(
+        &self,
+        request: SliceCacheProxyRequest<'_>,
+    ) -> Result<Response, anyhow::Error> {
+        let SliceCacheProxyRequest {
+            method,
+            strategy,
+            cache_enabled,
+            url,
+            provider_headers,
+            range_header,
+            request_control,
+            upstream_header_timeout,
+        } = request;
+        let context = ProxyRequestContext {
+            cache_enabled,
+            url,
+            provider_headers,
+            range_header,
+            request_control,
+            upstream_header_timeout,
+        };
+
+        match (method, strategy) {
+            (
+                SliceCacheProxyMethod::Get,
+                SliceCacheProxyStrategy::Slice {
+                    range_probe_fallback,
+                },
+            ) => proxy_slice_cache(self, context, range_probe_fallback).await,
+            (SliceCacheProxyMethod::Get, SliceCacheProxyStrategy::FullResponse) => {
+                proxy_full_response_cache(self, context).await
+            }
+            (SliceCacheProxyMethod::Head, SliceCacheProxyStrategy::Slice { .. }) => {
+                proxy_head_slice_cache(self, context).await
+            }
+            (
+                SliceCacheProxyMethod::Head,
+                SliceCacheProxyStrategy::FullResponse | SliceCacheProxyStrategy::Stream,
+            ) => {
+                stream_head_through_with_status(StreamThroughRequest {
+                    client: self.client(),
+                    ssrf_guard: self.ssrf_guard(),
+                    url: context.url,
+                    provider_headers: context.provider_headers,
+                    range_header: context.range_header,
+                    cache_status: CacheStatus::Bypass,
+                    request_control: context.request_control,
+                    upstream_header_timeout: context.upstream_header_timeout,
+                })
+                .await
+            }
+            (SliceCacheProxyMethod::Get, SliceCacheProxyStrategy::Stream) => {
+                stream_through_with_status(StreamThroughRequest {
+                    client: self.client(),
+                    ssrf_guard: self.ssrf_guard(),
+                    url: context.url,
+                    provider_headers: context.provider_headers,
+                    range_header: context.range_header,
+                    cache_status: CacheStatus::Bypass,
+                    request_control: context.request_control,
+                    upstream_header_timeout: context.upstream_header_timeout,
+                })
+                .await
+            }
+        }
+    }
+}
 
 struct RangeSliceRequest<'a> {
     cache: &'a SliceCache,
@@ -192,6 +326,7 @@ async fn stream_original_range_with_learned_meta(
                 url,
                 provider_headers,
                 CachedResourceMeta {
+                    status: Some(resp.status().as_u16()),
                     etag: resp
                         .headers()
                         .get("etag")
@@ -207,6 +342,11 @@ async fn stream_original_range_with_learned_meta(
                     content_type: resp
                         .headers()
                         .get("content-type")
+                        .and_then(|v| v.to_str().ok())
+                        .map(ToString::to_string),
+                    content_encoding: resp
+                        .headers()
+                        .get("content-encoding")
                         .and_then(|v| v.to_str().ok())
                         .map(ToString::to_string),
                     validated_at: std::time::SystemTime::now(),
@@ -269,119 +409,25 @@ pub async fn head_content_length_with_control_and_timeout(
     .await
 }
 
-// proxy_with_cache  --  main entry point
-
-/// Serve a request through the slice cache.
+/// Serve a request through the slice cache with an optional origin-specific
+/// fallback from a failed range probe to an ordinary GET.
 ///
-/// Behaviour:
-/// - **Disabled cache**: streams through with `X-Cache-Status: BYPASS`.
-/// - **No Range header**: requests the first full slice from the origin; if
-///   the origin supports byte ranges, streams the complete resource as cached
-///   slices with a `200 OK` response; otherwise streams through with `BYPASS`.
-/// - **Single Range**: slice-cache path with `HIT` / `MISS` / `EXPIRED`
-///   / `STALE` / `UPDATING` / `REVALIDATED`.
-/// - **Multi-Range**: bypasses the slice cache and streams the original
-///   upstream response so standards-compliant multipart range requests remain
-///   valid without implementing multipart assembly in the cache.
-pub async fn proxy_with_cache(
+/// The default API has no fallback because status codes such as `416` and
+/// `503` do not identify range support. A caller that owns a known upstream
+/// may provide a callback after inspecting the status and response headers.
+async fn proxy_slice_cache(
     cache: &SliceCache,
-    range_header: Option<&str>,
-    url: &str,
-    provider_headers: &ProviderHeaders,
+    request: ProxyRequestContext<'_>,
+    range_probe_fallback: Option<&dyn SliceRangeProbeFallback>,
 ) -> Result<Response, anyhow::Error> {
-    proxy_with_cache_with_control(cache, range_header, url, provider_headers, None).await
-}
-
-pub async fn proxy_with_cache_with_control(
-    cache: &SliceCache,
-    range_header: Option<&str>,
-    url: &str,
-    provider_headers: &ProviderHeaders,
-    request_control: Option<&ExecutionControl>,
-) -> Result<Response, anyhow::Error> {
-    proxy_with_cache_with_control_and_timeout(
-        cache,
-        range_header,
+    let ProxyRequestContext {
+        cache_enabled,
         url,
         provider_headers,
-        request_control,
-        None,
-    )
-    .await
-}
-
-pub async fn proxy_with_cache_with_control_and_timeout(
-    cache: &SliceCache,
-    range_header: Option<&str>,
-    url: &str,
-    provider_headers: &ProviderHeaders,
-    request_control: Option<&ExecutionControl>,
-    upstream_header_timeout: Option<Duration>,
-) -> Result<Response, anyhow::Error> {
-    proxy_with_cache_enabled_with_control_and_timeout(
-        cache,
-        cache.config().enabled,
         range_header,
-        url,
-        provider_headers,
         request_control,
         upstream_header_timeout,
-    )
-    .await
-}
-
-/// Serve a request through the slice cache with an explicit runtime enable flag.
-///
-/// This allows callers that support dynamic runtime settings to bypass the
-/// startup-time `SliceCacheConfig.enabled` snapshot and decide cache usage from
-/// their live configuration source.
-pub async fn proxy_with_cache_enabled(
-    cache: &SliceCache,
-    cache_enabled: bool,
-    range_header: Option<&str>,
-    url: &str,
-    provider_headers: &ProviderHeaders,
-) -> Result<Response, anyhow::Error> {
-    proxy_with_cache_enabled_with_control(
-        cache,
-        cache_enabled,
-        range_header,
-        url,
-        provider_headers,
-        None,
-    )
-    .await
-}
-
-pub async fn proxy_with_cache_enabled_with_control(
-    cache: &SliceCache,
-    cache_enabled: bool,
-    range_header: Option<&str>,
-    url: &str,
-    provider_headers: &ProviderHeaders,
-    request_control: Option<&ExecutionControl>,
-) -> Result<Response, anyhow::Error> {
-    proxy_with_cache_enabled_with_control_and_timeout(
-        cache,
-        cache_enabled,
-        range_header,
-        url,
-        provider_headers,
-        request_control,
-        None,
-    )
-    .await
-}
-
-pub async fn proxy_with_cache_enabled_with_control_and_timeout(
-    cache: &SliceCache,
-    cache_enabled: bool,
-    range_header: Option<&str>,
-    url: &str,
-    provider_headers: &ProviderHeaders,
-    request_control: Option<&ExecutionControl>,
-    upstream_header_timeout: Option<Duration>,
-) -> Result<Response, anyhow::Error> {
+    } = request;
     if !cache_enabled {
         return stream_through_with_status(StreamThroughRequest {
             client: cache.client(),
@@ -403,6 +449,7 @@ pub async fn proxy_with_cache_enabled_with_control_and_timeout(
             provider_headers,
             request_control,
             upstream_header_timeout,
+            range_probe_fallback,
         )
         .await;
     };
@@ -478,35 +525,91 @@ pub async fn proxy_with_cache_enabled_with_control_and_timeout(
     .await
 }
 
-pub async fn proxy_head_with_cache_enabled_with_control(
+/// Serve an ordinary GET through the shared full-response cache.
+///
+/// This mode never sends a Range request upstream. It is intended for small,
+/// complete documents such as subtitles and static danmaku. A cache fill holds
+/// one per-resource lock; oversized responses bypass the cache and continue as
+/// a normal stream.
+async fn proxy_full_response_cache(
     cache: &SliceCache,
-    cache_enabled: bool,
-    range_header: Option<&str>,
-    url: &str,
-    provider_headers: &ProviderHeaders,
-    request_control: Option<&ExecutionControl>,
+    request: ProxyRequestContext<'_>,
 ) -> Result<Response, anyhow::Error> {
-    proxy_head_with_cache_enabled_with_control_and_timeout(
-        cache,
+    let ProxyRequestContext {
         cache_enabled,
-        range_header,
         url,
         provider_headers,
+        range_header,
         request_control,
-        None,
-    )
-    .await
+        upstream_header_timeout,
+    } = request;
+    if !cache_enabled || range_header.is_some() {
+        return stream_through_with_status(StreamThroughRequest {
+            client: cache.client(),
+            ssrf_guard: cache.ssrf_guard(),
+            url,
+            provider_headers,
+            range_header,
+            cache_status: CacheStatus::Bypass,
+            request_control,
+            upstream_header_timeout,
+        })
+        .await;
+    }
+
+    match cache
+        .get_or_fetch_full_response_with_control(
+            url,
+            provider_headers,
+            request_control,
+            upstream_header_timeout,
+        )
+        .await?
+    {
+        FullResponseFetchResult::Cached(response) => cached_full_response(response),
+        FullResponseFetchResult::Bypass(response) => {
+            stream_existing_response_with_status(response, CacheStatus::Bypass)
+        }
+    }
 }
 
-pub async fn proxy_head_with_cache_enabled_with_control_and_timeout(
+fn cached_full_response(response: CachedFullResponse) -> Result<Response, anyhow::Error> {
+    let mut builder = Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Length", response.data.len().to_string())
+        .header("X-Cache-Status", response.status.as_str())
+        .header("Cache-Control", "no-cache")
+        .header("Pragma", "no-cache")
+        .header("X-Content-Type-Options", "nosniff");
+    if let Some(content_type) = response.content_type {
+        builder = builder.header("Content-Type", content_type);
+    }
+    if let Some(content_encoding) = response.content_encoding {
+        builder = builder.header("Content-Encoding", content_encoding);
+    }
+    if let Some(etag) = response.etag {
+        builder = builder.header("ETag", etag);
+    }
+    if let Some(last_modified) = response.last_modified {
+        builder = builder.header("Last-Modified", last_modified);
+    }
+    builder
+        .body(Body::from(response.data))
+        .map_err(|error| anyhow::anyhow!("Failed to build cached full response: {error}"))
+}
+
+async fn proxy_head_slice_cache(
     cache: &SliceCache,
-    cache_enabled: bool,
-    range_header: Option<&str>,
-    url: &str,
-    provider_headers: &ProviderHeaders,
-    request_control: Option<&ExecutionControl>,
-    upstream_header_timeout: Option<Duration>,
+    request: ProxyRequestContext<'_>,
 ) -> Result<Response, anyhow::Error> {
+    let ProxyRequestContext {
+        cache_enabled,
+        url,
+        provider_headers,
+        range_header,
+        request_control,
+        upstream_header_timeout,
+    } = request;
     if !cache_enabled {
         return stream_head_through_with_status(StreamThroughRequest {
             client: cache.client(),
@@ -587,7 +690,7 @@ async fn range_slice_cache_path(request: RangeSliceRequest<'_>) -> Result<Respon
                 .map_err(proxy_error_from_client_range_error)?;
             start
         }
-        // MultiRange is bypassed in `proxy_with_cache_*` before this function
+        // MultiRange is bypassed before this function
         // is ever reached, so it can never appear here.
         ClientRangePlan::MultiRange => {
             unreachable!("MultiRange is bypassed before reaching the slice path")
@@ -616,6 +719,7 @@ async fn range_slice_cache_path(request: RangeSliceRequest<'_>) -> Result<Respon
     let response_header_slice = CachedSlice {
         total_size,
         content_type: first_slice.slice.content_type.clone(),
+        content_encoding: first_slice.slice.content_encoding.clone(),
         etag: first_slice.slice.etag.clone(),
         last_modified: first_slice.slice.last_modified.clone(),
         data: Bytes::new(),
@@ -714,6 +818,7 @@ async fn no_range_slice_cache_path(
     provider_headers: &ProviderHeaders,
     request_control: Option<&ExecutionControl>,
     upstream_header_timeout: Option<Duration>,
+    range_probe_fallback: Option<&dyn SliceRangeProbeFallback>,
 ) -> Result<Response, anyhow::Error> {
     let first_slice = match cache
         .get_or_fetch_slice_or_bypass_with_control(
@@ -728,7 +833,11 @@ async fn no_range_slice_cache_path(
     {
         SliceFetchResult::Slice(slice) => slice,
         SliceFetchResult::Bypass(resp) => {
-            if !resp.status().is_success() {
+            if !resp.status().is_success()
+                && range_probe_fallback.is_some_and(|fallback| {
+                    fallback.retry_without_range(resp.status(), resp.headers())
+                })
+            {
                 return stream_through_with_status(StreamThroughRequest {
                     client: cache.client(),
                     ssrf_guard: cache.ssrf_guard(),
@@ -744,7 +853,6 @@ async fn no_range_slice_cache_path(
             return stream_existing_response_with_status(resp, CacheStatus::Bypass);
         }
     };
-
     let total_size = first_slice.slice.total_size;
     let slice_size = cache.config().slice_size as u64;
     let total_slices = total_size.div_ceil(slice_size);
@@ -782,6 +890,9 @@ fn apply_cached_slice_response_headers(
 ) -> axum::http::response::Builder {
     if let Some(ref ct) = slice.content_type {
         builder = builder.header("Content-Type", ct.as_str());
+    }
+    if let Some(ref encoding) = slice.content_encoding {
+        builder = builder.header("Content-Encoding", encoding.as_str());
     }
     if let Some(ref etag) = slice.etag {
         builder = builder.header("ETag", etag.as_str());

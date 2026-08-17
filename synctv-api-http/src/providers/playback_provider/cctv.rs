@@ -16,6 +16,7 @@ use crate::providers::playback_provider::transport::{
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CctvResourcePath {
+    pub room_id: String,
     pub version: String,
     pub mode_name: String,
     pub media_index: u32,
@@ -37,12 +38,13 @@ impl PlaybackProviderHttpResponse for CctvSegmentResponse {
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/cctv/{version}/resources/{modeName}/{mediaIndex}",
+        path = "/api/playback-providers/{roomId}/cctv/{version}/resources/{modeName}/{mediaIndex}",
         tag = "CCTV Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path), ("modeName" = String, Path),
             ("mediaIndex" = u32, Path), ("sig" = String, Query),
-            ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)
+            ("uid" = String, Query), ("exp" = i64, Query)
         ),
         responses((status = 200, description = "Refreshed CCTV media resource"))
     )
@@ -89,8 +91,8 @@ async fn cctv_resource(
     query_string: String,
     method: Method,
 ) -> AppResult<axum::response::Response> {
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetCctvResourceRequest {
         version: path.version,
         mode_name: path.mode_name,
@@ -126,24 +128,25 @@ async fn cctv_resource(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/cctv/{version}/segments",
+        path = "/api/playback-providers/{roomId}/cctv/{version}/segments",
         tag = "CCTV Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path), ("targetUrl" = String, Query),
-            ("sig" = String, Query), ("uid" = String, Query),
-            ("rid" = String, Query), ("exp" = i64, Query)
+            ("sig" = String, Query), ("uid" = String, Query), ("exp" = i64, Query)
         ),
         responses((status = 200, description = "CCTV HLS segment"))
     )
 )]
 pub fn get_cctv_segment(
-    Path(version): Path<String>,
+    Path((room_id, version)): Path<(String, String)>,
     State(state): State<AppState>,
     request_meta: RequestMetadata,
     headers: HeaderMap,
     raw_query: RawQuery,
 ) -> impl futures::Future<Output = AppResult<axum::response::Response>> + Send + 'static {
     cctv_segment(
+        room_id,
         version,
         state,
         request_meta,
@@ -154,13 +157,14 @@ pub fn get_cctv_segment(
 }
 
 pub fn head_cctv_segment(
-    Path(version): Path<String>,
+    Path((room_id, version)): Path<(String, String)>,
     State(state): State<AppState>,
     request_meta: RequestMetadata,
     headers: HeaderMap,
     raw_query: RawQuery,
 ) -> impl futures::Future<Output = AppResult<axum::response::Response>> + Send + 'static {
     cctv_segment(
+        room_id,
         version,
         state,
         request_meta,
@@ -171,6 +175,7 @@ pub fn head_cctv_segment(
 }
 
 async fn cctv_segment(
+    room_id: String,
     version: String,
     state: AppState,
     request_meta: RequestMetadata,
@@ -179,7 +184,7 @@ async fn cctv_segment(
     method: Method,
 ) -> AppResult<axum::response::Response> {
     let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+        signed_query_fields(&query_string, &room_id).map_err(crate::http::error::map_api_error)?;
     let req = GetCctvSegmentRequest {
         version,
         target_url: target_url(&query_string).map_err(crate::http::error::map_api_error)?,

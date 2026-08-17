@@ -3711,8 +3711,9 @@ fn signed_provider_thumbnail_url(
         signing,
     );
     let version = path_segment_encode(version);
+    let room_id = path_segment_encode(signing.room_id);
     Ok(format!(
-        "/api/playback-providers/{provider}/{version}/thumbnail?{query}"
+        "/api/playback-providers/{room_id}/{provider}/{version}/thumbnail?{query}"
     ))
 }
 
@@ -3918,6 +3919,14 @@ fn danmaku_to_proto(
         headers: client_visible_headers(&url_value, &danmaku.upstream_headers()),
         expire_at: danmaku.expiration_timestamp(),
         p2p_delivery,
+        delivery: match danmaku.delivery() {
+            synctv_core::models::media::PlaybackDanmakuDelivery::Document => {
+                synctv_proto::client::PlaybackDanmakuDelivery::Document as i32
+            }
+            synctv_core::models::media::PlaybackDanmakuDelivery::EventStream => {
+                synctv_proto::client::PlaybackDanmakuDelivery::EventStream as i32
+            }
+        },
     })
 }
 
@@ -3961,7 +3970,7 @@ fn signed_provider_query(
 ) -> String {
     signing
         .signing_key
-        .build_signed_query(&crate::proxy_signature::ProxyUrlClaims {
+        .build_signed_playback_query(&crate::proxy_signature::ProxyUrlClaims {
             provider: provider.to_string(),
             version: version.to_string(),
             resource,
@@ -4497,12 +4506,13 @@ fn playback_media_url(
     };
     let signing = require_provider_signing(signing, "playback provider URL")?;
     let encoded_version = path_segment_encode(&version);
+    let room_id = path_segment_encode(signing.room_id);
     let query = signed_provider_query(provider, &version, expires_at, resource, signing);
     let route_provider = playback_provider_route_slug(provider);
     let separator = if path.contains('?') { '&' } else { '?' };
     Ok((
         format!(
-            "/api/playback-providers/{route_provider}/{encoded_version}/{path}{separator}{query}"
+            "/api/playback-providers/{room_id}/{route_provider}/{encoded_version}/{path}{separator}{query}"
         ),
         Some(expires_at),
     ))
@@ -4746,8 +4756,9 @@ fn playback_subtitle_url(
     let query = signed_provider_query(provider, version, expires_at, resource, signing);
     let version = path_segment_encode(version);
     let route_provider = playback_provider_route_slug(provider);
+    let room_id = path_segment_encode(signing.room_id);
     Ok(format!(
-        "/api/playback-providers/{route_provider}/{version}/subtitles/{mode}/{subtitle_index}?{query}"
+        "/api/playback-providers/{room_id}/{route_provider}/{version}/subtitles/{mode}/{subtitle_index}?{query}"
     ))
 }
 
@@ -4776,14 +4787,31 @@ fn playback_danmaku_url(
             let query =
                 signed_provider_query("bilibili", version, *expires_at, resource_name, signing);
             let version = path_segment_encode(version);
+            let room_id = path_segment_encode(signing.room_id);
             Ok(format!(
-                "/api/playback-providers/bilibili/{version}/danmaku-files/{danmaku_index}?{query}"
+                "/api/playback-providers/{room_id}/bilibili/{version}/danmaku-files/{danmaku_index}?{query}"
             ))
         }
-        PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::Live { media_id, .. }) => {
+        PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::Live { room_id, media_id }) => {
+            let room_id = public_id_codec
+                .encode_room_id(*room_id)
+                .map_err(|error| proto_encode_error("room", &error))?;
             let media_id = encode_media_id_for_proto(*media_id, public_id_codec)?;
             Ok(format!(
-                "/api/playback-providers/bilibili/live-danmaku/{media_id}"
+                "/api/playback-providers/{room_id}/bilibili/live-danmaku/{media_id}"
+            ))
+        }
+        PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::DynamicLive {
+            room_id,
+            playlist_id,
+            live_room_id,
+        }) => {
+            let room_id = public_id_codec
+                .encode_room_id(*room_id)
+                .map_err(|error| proto_encode_error("room", &error))?;
+            let playlist_id = encode_playlist_id_for_proto(*playlist_id, public_id_codec)?;
+            Ok(format!(
+                "/api/playback-providers/{room_id}/bilibili/live-danmaku/dynamic/{playlist_id}?liveRoomId={live_room_id}"
             ))
         }
         PlaybackDanmakuProvider::Twitch(PlaybackTwitchDanmaku::Proxy {
@@ -4801,8 +4829,9 @@ fn playback_danmaku_url(
                 resource,
                 signing,
             );
+            let room_id = path_segment_encode(signing.room_id);
             Ok(format!(
-                "/api/playback-providers/twitch/{}/chats/{}/{}?{query}",
+                "/api/playback-providers/{room_id}/twitch/{}/chats/{}/{}?{query}",
                 path_segment_encode(version),
                 path_segment_encode(mode_name),
                 media_index,
@@ -4826,8 +4855,9 @@ fn playback_danmaku_url(
                 resource,
                 signing,
             );
+            let room_id = path_segment_encode(signing.room_id);
             Ok(format!(
-                "/api/playback-providers/huya/{}/danmakus/{}/{}?{query}",
+                "/api/playback-providers/{room_id}/huya/{}/danmakus/{}/{}?{query}",
                 path_segment_encode(version),
                 path_segment_encode(mode_name),
                 media_index,
@@ -4851,8 +4881,9 @@ fn playback_danmaku_url(
                 resource,
                 signing,
             );
+            let room_id = path_segment_encode(signing.room_id);
             Ok(format!(
-                "/api/playback-providers/douyu/{}/danmakus/{}/{}?{query}",
+                "/api/playback-providers/{room_id}/douyu/{}/danmakus/{}/{}?{query}",
                 path_segment_encode(version),
                 path_segment_encode(mode_name),
                 media_index,
@@ -4876,8 +4907,9 @@ fn playback_danmaku_url(
                 resource,
                 signing,
             );
+            let room_id = path_segment_encode(signing.room_id);
             Ok(format!(
-                "/api/playback-providers/douyin/{}/danmakus/{}/{}?{query}",
+                "/api/playback-providers/{room_id}/douyin/{}/danmakus/{}/{}?{query}",
                 path_segment_encode(version),
                 path_segment_encode(mode_name),
                 media_index,
@@ -4901,8 +4933,9 @@ fn playback_danmaku_url(
                 resource,
                 signing,
             );
+            let room_id = path_segment_encode(signing.room_id);
             Ok(format!(
-                "/api/playback-providers/acfun/{}/danmaku-files/{}/{}?{query}",
+                "/api/playback-providers/{room_id}/acfun/{}/danmaku-files/{}/{}?{query}",
                 path_segment_encode(version),
                 path_segment_encode(mode_name),
                 media_index,
@@ -4923,8 +4956,9 @@ fn playback_danmaku_url(
                 resource,
                 signing,
             );
+            let room_id = path_segment_encode(signing.room_id);
             Ok(format!(
-                "/api/playback-providers/acfun/{}/danmakus/{}/{}?{query}",
+                "/api/playback-providers/{room_id}/acfun/{}/danmakus/{}/{}?{query}",
                 path_segment_encode(version),
                 path_segment_encode(mode_name),
                 media_index,
@@ -5143,16 +5177,17 @@ mod playback_conversion_tests {
                 assert_eq!(media.expire_at, Some(expires_at));
                 assert!(
                     media.url.starts_with(&format!(
-                        "/api/playback-providers/{provider_name}/storage%20v1/{route}/proxy%20mode/0?"
+                        "/api/playback-providers/room-1/{provider_name}/storage%20v1/{route}/proxy%20mode/0?"
                     )),
                     "unexpected {provider_name} {format} URL: {}",
                     media.url
                 );
-                key.parse_and_verify_query(
+                key.parse_and_verify_playback_query(
                     signed_query(&media.url),
                     provider_name,
                     "storage v1",
                     &expected_resource,
+                    "room-1",
                 )
                 .expect("storage signature should bind the selected route");
             }
@@ -5197,9 +5232,9 @@ mod playback_conversion_tests {
         .expect("playback should convert");
         let media = &proto.playback_infos["h264"].medias[0];
         assert!(
-            media
-                .url
-                .starts_with("/api/playback-providers/bilibili/v1/dash-manifests/h264/direct?"),
+            media.url.starts_with(
+                "/api/playback-providers/room-1/bilibili/v1/dash-manifests/h264/direct?"
+            ),
             "unexpected direct DASH URL: {}",
             media.url
         );
@@ -5251,7 +5286,7 @@ mod playback_conversion_tests {
         assert!(
             media
                 .url
-                .starts_with("/api/playback-providers/bilibili/v1/hls-manifests/mp4/0?"),
+                .starts_with("/api/playback-providers/room-1/bilibili/v1/hls-manifests/mp4/0?"),
             "unexpected direct DURL URL: {}",
             media.url
         );
@@ -5299,9 +5334,68 @@ mod playback_conversion_tests {
         let public_media_id = codec
             .encode_media_id(media_id)
             .expect("media id should encode");
+        let public_room_id = codec
+            .encode_room_id(room_id)
+            .expect("room id should encode");
         assert_eq!(
             danmaku.url,
-            format!("/api/playback-providers/bilibili/live-danmaku/{public_media_id}")
+            format!(
+                "/api/playback-providers/{public_room_id}/bilibili/live-danmaku/{public_media_id}"
+            )
+        );
+        assert!(danmaku.headers.is_empty());
+    }
+
+    #[test]
+    fn dynamic_live_danmaku_provider_converts_to_playback_provider_endpoint() {
+        let key = signing_key();
+        let signing = signing_context(&key);
+        let room_id = synctv_core::models::RoomId::new();
+        let playlist_id = synctv_core::models::PlaylistId::new();
+        let codec = codec();
+        let info = PlaybackInfo::builder()
+            .add_media(PlaybackMedia {
+                name: "Live HLS".to_string(),
+                format: "hls".to_string(),
+                expire_at: None,
+                metadata: None,
+                p2p_swarm_id: None,
+                provider: PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::Direct {
+                    url: "https://example.com/live.m3u8".to_string(),
+                    headers: HashMap::new(),
+                }),
+            })
+            .add_danmaku(PlaybackDanmaku {
+                name: "Bilibili Live Danmaku".to_string(),
+                format: Some("synctv-bilibili-live".to_string()),
+                p2p_swarm_id: None,
+                provider: PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::DynamicLive {
+                    room_id,
+                    playlist_id,
+                    live_room_id: 21_292_831,
+                }),
+            })
+            .default_danmaku_index(0)
+            .build();
+
+        let proto = try_playback_to_proto(
+            &playback_result_with_mode("hls", info),
+            &codec,
+            Some(&signing),
+        )
+        .expect("playback should convert");
+        let danmaku = &proto.playback_infos["hls"].danmakus[0];
+        let public_room_id = codec
+            .encode_room_id(room_id)
+            .expect("room id should encode");
+        let public_playlist_id = codec
+            .encode_playlist_id(playlist_id)
+            .expect("playlist id should encode");
+        assert_eq!(
+            danmaku.url,
+            format!(
+                "/api/playback-providers/{public_room_id}/bilibili/live-danmaku/dynamic/{public_playlist_id}?liveRoomId=21292831"
+            )
         );
         assert!(danmaku.headers.is_empty());
     }
@@ -5432,17 +5526,18 @@ mod playback_conversion_tests {
 
         assert!(
             media.url.starts_with(
-                "/api/playback-providers/direct-url/v%201/streams/My%20Source%2BMain/0?"
+                "/api/playback-providers/room-1/direct-url/v%201/streams/My%20Source%2BMain/0?"
             ),
             "unexpected proxy URL: {}",
             media.url
         );
         let claims = key
-            .parse_and_verify_query(
+            .parse_and_verify_playback_query(
                 signed_query(&media.url),
                 synctv_core::provider::DirectUrlProvider::NAME,
                 "v 1",
                 "streams/My Source+Main/0",
+                "room-1",
             )
             .expect("signature should bind decoded resource");
         assert_eq!(claims.resource, "streams/My Source+Main/0");
@@ -5495,24 +5590,26 @@ mod playback_conversion_tests {
         assert_eq!(media.expire_at, Some(expires_at));
 
         assert!(media.url.starts_with(
-            "/api/playback-providers/huya/huya%20v1/resources/%E8%93%9D%E5%85%89%20HLS/0?"
+            "/api/playback-providers/room-1/huya/huya%20v1/resources/%E8%93%9D%E5%85%89%20HLS/0?"
         ));
-        key.parse_and_verify_query(
+        key.parse_and_verify_playback_query(
             signed_query(&media.url),
             synctv_core::provider::HuyaProvider::NAME,
             version,
             "resources/蓝光 HLS/0",
+            "room-1",
         )
         .expect("media signature should bind its decoded resource");
 
         assert!(danmaku.url.starts_with(
-            "/api/playback-providers/huya/huya%20v1/danmakus/%E8%93%9D%E5%85%89%20HLS/0?"
+            "/api/playback-providers/room-1/huya/huya%20v1/danmakus/%E8%93%9D%E5%85%89%20HLS/0?"
         ));
-        key.parse_and_verify_query(
+        key.parse_and_verify_playback_query(
             signed_query(&danmaku.url),
             synctv_core::provider::HuyaProvider::NAME,
             version,
             "danmakus/蓝光 HLS/0",
+            "room-1",
         )
         .expect("danmaku signature should bind its decoded resource");
     }
@@ -5597,12 +5694,13 @@ mod playback_conversion_tests {
             (&info.medias[0].url, "resources/original_tct_hevc/0"),
             (&info.danmakus[0].url, "danmakus/original_tct_hevc/0"),
         ] {
-            assert!(url.starts_with("/api/playback-providers/douyu/douyu%20v1/"));
-            key.parse_and_verify_query(
+            assert!(url.starts_with("/api/playback-providers/room-1/douyu/douyu%20v1/"));
+            key.parse_and_verify_playback_query(
                 signed_query(url),
                 synctv_core::provider::DouyuProvider::NAME,
                 version,
                 resource,
+                "room-1",
             )
             .expect("Douyu signature should bind its resource");
         }
@@ -5644,16 +5742,17 @@ mod playback_conversion_tests {
         assert!(
             media
                 .url
-                .starts_with("/api/playback-providers/live-proxy/live%20v1/hls-master?"),
+                .starts_with("/api/playback-providers/room-1/live-proxy/live%20v1/hls-master?"),
             "unexpected live-proxy URL: {}",
             media.url
         );
         let claims = key
-            .parse_and_verify_query(
+            .parse_and_verify_playback_query(
                 signed_query(&media.url),
                 synctv_core::provider::LiveProxyProvider::NAME,
                 "live v1",
                 "hls-master",
+                "room-1",
             )
             .expect("signature should use internal provider name");
         assert_eq!(
@@ -5700,11 +5799,17 @@ mod playback_conversion_tests {
             .expect("playback info thumbnail should exist");
 
         assert!(
-            thumbnail.starts_with("/api/playback-providers/alist/v%201/thumbnail?"),
+            thumbnail.starts_with("/api/playback-providers/room-1/alist/v%201/thumbnail?"),
             "unexpected thumbnail URL: {thumbnail}"
         );
         let claims = key
-            .parse_and_verify_query(signed_query(thumbnail), "alist", "v 1", "thumbnail")
+            .parse_and_verify_playback_query(
+                signed_query(thumbnail),
+                "alist",
+                "v 1",
+                "thumbnail",
+                "room-1",
+            )
             .expect("thumbnail signature should verify");
         assert_eq!(claims.resource, "thumbnail");
     }
@@ -5837,6 +5942,14 @@ mod playback_conversion_tests {
 
         assert_ne!(media.swarm_id, subtitle.swarm_id);
         assert_ne!(subtitle.swarm_id, danmaku.swarm_id);
+        assert_eq!(
+            info.danmakus[0].delivery,
+            synctv_proto::client::PlaybackDanmakuDelivery::Document as i32
+        );
+        assert_eq!(
+            info.danmakus[1].delivery,
+            synctv_proto::client::PlaybackDanmakuDelivery::EventStream as i32
+        );
         assert!(info.danmakus[1].p2p_delivery.is_none());
         for delivery in [media, subtitle, danmaku] {
             signing

@@ -18,6 +18,7 @@ use crate::providers::playback_provider::transport::{
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CloudreveResourcePath {
+    pub room_id: String,
     pub version: String,
     pub mode_name: String,
     pub media_index: u32,
@@ -26,6 +27,7 @@ pub struct CloudreveResourcePath {
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CloudreveHlsResourcePath {
+    pub room_id: String,
     pub version: String,
     pub mode_name: String,
     pub media_index: u32,
@@ -35,6 +37,7 @@ pub struct CloudreveHlsResourcePath {
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CloudreveSubtitlePath {
+    pub room_id: String,
     pub version: String,
     pub mode_name: String,
     pub subtitle_index: u32,
@@ -64,7 +67,7 @@ impl PlaybackProviderHttpResponse for CloudreveSubtitleResponse {
     }
 }
 
-#[cfg_attr(feature = "openapi", utoipa::path(get, path = "/api/playback-providers/cloudreve/{version}/resources/{modeName}/{mediaIndex}", tag = "Cloudreve Playback Provider", params(("version" = String, Path), ("modeName" = String, Path), ("mediaIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)), responses((status = 200, description = "Cloudreve media resource"))))]
+#[cfg_attr(feature = "openapi", utoipa::path(get, path = "/api/playback-providers/{roomId}/cloudreve/{version}/resources/{modeName}/{mediaIndex}", tag = "Cloudreve Playback Provider", params(("roomId" = String, Path), ("version" = String, Path), ("modeName" = String, Path), ("mediaIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("exp" = i64, Query)), responses((status = 200, description = "Cloudreve media resource"))))]
 pub fn get_cloudreve_resource(
     Path(path): Path<CloudreveResourcePath>,
     State(state): State<AppState>,
@@ -107,8 +110,8 @@ async fn resource(
     query_string: String,
     method: Method,
 ) -> AppResult<axum::response::Response> {
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetCloudreveResourceRequest {
         version: path.version,
         mode_name: path.mode_name,
@@ -140,7 +143,7 @@ async fn resource(
     .await
 }
 
-#[cfg_attr(feature = "openapi", utoipa::path(get, path = "/api/playback-providers/cloudreve/{version}/hls-manifests/{modeName}/{mediaIndex}", tag = "Cloudreve Playback Provider", params(("version" = String, Path), ("modeName" = String, Path), ("mediaIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)), responses((status = 200, description = "Cloudreve HLS manifest"))))]
+#[cfg_attr(feature = "openapi", utoipa::path(get, path = "/api/playback-providers/{roomId}/cloudreve/{version}/hls-manifests/{modeName}/{mediaIndex}", tag = "Cloudreve Playback Provider", params(("roomId" = String, Path), ("version" = String, Path), ("modeName" = String, Path), ("mediaIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("exp" = i64, Query)), responses((status = 200, description = "Cloudreve HLS manifest"))))]
 pub async fn get_cloudreve_hls_manifest(
     Path(path): Path<CloudreveResourcePath>,
     State(state): State<AppState>,
@@ -166,8 +169,8 @@ async fn hls_manifest(
     query_string: String,
     method: Method,
 ) -> AppResult<axum::response::Response> {
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetCloudreveHlsManifestRequest {
         version: path.version,
         mode_name: path.mode_name,
@@ -198,7 +201,7 @@ async fn hls_manifest(
     .await
 }
 
-#[cfg_attr(feature = "openapi", utoipa::path(get, path = "/api/playback-providers/cloudreve/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}", tag = "Cloudreve Playback Provider", params(("version" = String, Path), ("modeName" = String, Path), ("mediaIndex" = u32, Path), ("resourceKind" = String, Path), ("targetUrl" = String, Query), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)), responses((status = 200, description = "Cloudreve HLS resource"))))]
+#[cfg_attr(feature = "openapi", utoipa::path(get, path = "/api/playback-providers/{roomId}/cloudreve/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}", tag = "Cloudreve Playback Provider", params(("roomId" = String, Path), ("version" = String, Path), ("modeName" = String, Path), ("mediaIndex" = u32, Path), ("resourceKind" = String, Path), ("targetUrl" = String, Query), ("sig" = String, Query), ("uid" = String, Query), ("exp" = i64, Query)), responses((status = 200, description = "Cloudreve HLS resource"))))]
 pub fn get_cloudreve_hls_resource(
     Path(path): Path<CloudreveHlsResourcePath>,
     State(state): State<AppState>,
@@ -241,8 +244,8 @@ async fn hls_resource(
     query_string: String,
     method: Method,
 ) -> AppResult<axum::response::Response> {
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetCloudreveHlsResourceRequest {
         version: path.version,
         target_url: target_url(&query_string).map_err(crate::http::error::map_api_error)?,
@@ -288,7 +291,7 @@ fn cloudreve_hls_resource_kind(value: &str) -> AppResult<i32> {
     }
 }
 
-#[cfg_attr(feature = "openapi", utoipa::path(get, path = "/api/playback-providers/cloudreve/{version}/subtitles/{modeName}/{subtitleIndex}", tag = "Cloudreve Playback Provider", params(("version" = String, Path), ("modeName" = String, Path), ("subtitleIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)), responses((status = 200, description = "Cloudreve subtitle"))))]
+#[cfg_attr(feature = "openapi", utoipa::path(get, path = "/api/playback-providers/{roomId}/cloudreve/{version}/subtitles/{modeName}/{subtitleIndex}", tag = "Cloudreve Playback Provider", params(("roomId" = String, Path), ("version" = String, Path), ("modeName" = String, Path), ("subtitleIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("exp" = i64, Query)), responses((status = 200, description = "Cloudreve subtitle"))))]
 pub async fn get_cloudreve_subtitle(
     Path(path): Path<CloudreveSubtitlePath>,
     State(state): State<AppState>,
@@ -296,8 +299,8 @@ pub async fn get_cloudreve_subtitle(
     raw_query: RawQuery,
 ) -> AppResult<axum::response::Response> {
     let query_string = query(raw_query);
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetCloudreveSubtitleRequest {
         version: path.version,
         mode_name: path.mode_name,

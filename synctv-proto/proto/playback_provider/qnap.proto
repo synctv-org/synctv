@@ -86,10 +86,26 @@ message QnapThumbnailResponse {
   synctv.playback_provider.common.StreamChunk chunk = 1;
 }
 
+message GetQnapThumbnailResourceRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  string credential_owner_id = 2 [(buf.validate.field).string.min_len = 1];
+  string path = 3 [(buf.validate.field).string.min_len = 1];
+  uint32 size = 4 [(buf.validate.field).uint32 = {gte: 1, lte: 640}];
+  string sig = 5 [(buf.validate.field).string.min_len = 1];
+  string uid = 6 [(buf.validate.field).string.min_len = 1];
+  string rid = 7 [(buf.validate.field).string.min_len = 1];
+  int64 exp = 8;
+}
+
+message QnapThumbnailResourceResponse {
+  synctv.playback_provider.common.StreamChunk chunk = 1;
+}
+
 service QnapPlaybackProviderService {
   rpc GetResource(GetQnapResourceRequest) returns (stream QnapResourceResponse);
   rpc GetHlsManifest(GetQnapHlsManifestRequest) returns (stream QnapHlsManifestResponse);
   rpc GetHlsResource(GetQnapHlsResourceRequest) returns (stream QnapHlsResourceResponse);
   rpc GetSubtitle(GetQnapSubtitleRequest) returns (stream QnapSubtitleResponse);
   rpc GetThumbnail(GetQnapThumbnailRequest) returns (stream QnapThumbnailResponse);
+  rpc GetThumbnailResource(GetQnapThumbnailResourceRequest) returns (stream QnapThumbnailResourceResponse);
 }

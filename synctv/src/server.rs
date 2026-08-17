@@ -33,7 +33,9 @@ use synctv_management::provider_runtime::{
     QnapRuntime, SeafileRuntime, SynologyRuntime, TikTokRuntime, TruenasRuntime, TwitchRuntime,
     YoutubeRuntime,
 };
-use synctv_management::server::{spawn_management_server, ManagementServerConfig};
+use synctv_management::server::{
+    spawn_management_server, spawn_management_server_with_tcp_listener, ManagementServerConfig,
+};
 use synctv_realtime::fanout::{RealtimeEventService, RealtimeFanoutService};
 use synctv_realtime::sync::ConnectionRuntime;
 use synctv_realtime::sync::RealtimeEvent;
@@ -61,6 +63,27 @@ use crate::shutdown::ShutdownCoordinator;
 pub struct LivestreamState {
     pub handle: synctv_livestream::LivestreamHandle,
     pub infrastructure: Arc<synctv_livestream::LiveStreamingInfrastructure>,
+}
+
+#[derive(Default)]
+pub(crate) struct ServerListenerOverrides {
+    api: Option<tokio::net::TcpListener>,
+    health: Option<tokio::net::TcpListener>,
+    management: Option<tokio::net::TcpListener>,
+    metrics: Option<tokio::net::TcpListener>,
+    cluster: Option<tokio::net::TcpListener>,
+}
+
+impl From<crate::app::ApplicationPreboundListeners> for ServerListenerOverrides {
+    fn from(listeners: crate::app::ApplicationPreboundListeners) -> Self {
+        Self {
+            api: listeners.api,
+            health: listeners.health,
+            management: listeners.management,
+            metrics: listeners.metrics,
+            cluster: listeners.cluster,
+        }
+    }
 }
 
 #[async_trait]
@@ -148,6 +171,7 @@ pub struct SyncTvServer {
     metrics_handle: Option<JoinHandle<anyhow::Result<()>>>,
     management_handle: Option<JoinHandle<anyhow::Result<()>>>,
     playback_lifecycle_event_source_handle: Option<JoinHandle<()>>,
+    listener_overrides: ServerListenerOverrides,
 }
 
 const STARTUP_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -534,7 +558,6 @@ fn build_provider_api_impls(
 #[allow(clippy::needless_pass_by_value)]
 fn build_playback_provider_services(
     providers: synctv_core::provider::ProviderSet,
-    provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver>,
     room_service: Arc<RoomService>,
     credential_repo: Arc<UserProviderCredentialRepository>,
     provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
@@ -553,7 +576,6 @@ fn build_playback_provider_services(
     });
     let deps = synctv_core::service::PlaybackProviderServiceDeps {
         providers,
-        provider_stores,
         playback_transport_services: playback_transport_services.clone(),
         provider_access_service,
     };
@@ -1701,7 +1723,16 @@ impl SyncTvServer {
             metrics_handle: None,
             management_handle: None,
             playback_lifecycle_event_source_handle: None,
+            listener_overrides: ServerListenerOverrides::default(),
         }
+    }
+
+    pub(crate) fn with_listener_overrides(
+        mut self,
+        listener_overrides: ServerListenerOverrides,
+    ) -> Self {
+        self.listener_overrides = listener_overrides;
+        self
     }
 
     /// Start all servers and wait for shutdown signal, using a `ShutdownCoordinator`
@@ -2648,7 +2679,6 @@ impl SyncTvServer {
         );
         let playback_provider_services = build_playback_provider_services(
             self.services.providers.clone(),
-            shared_provider_runtime.provider_stores.clone(),
             self.services.room_service.clone(),
             self.services.user_provider_credential_repository.clone(),
             provider_access_service.clone(),
@@ -2825,7 +2855,7 @@ impl SyncTvServer {
 
     /// Start unified REST + gRPC API server with graceful shutdown support
     async fn start_api_server(
-        &self,
+        &mut self,
         shutdown_rx: watch::Receiver<bool>,
         http_router: axum::Router,
         shared_http_app_state: Arc<synctv_api::AppState>,
@@ -2847,9 +2877,12 @@ impl SyncTvServer {
             .parse()
             .map_err(|e| anyhow::anyhow!("Invalid API address '{api_address}': {e}"))?;
 
-        let listener = tokio::net::TcpListener::bind(http_addr)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to bind HTTP address {http_addr}: {e}"))?;
+        let listener = match self.listener_overrides.api.take() {
+            Some(listener) => listener,
+            None => tokio::net::TcpListener::bind(http_addr)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to bind HTTP address {http_addr}: {e}"))?,
+        };
 
         info!("API server listening on {}", http_addr);
 
@@ -2909,7 +2942,7 @@ impl SyncTvServer {
     }
 
     async fn start_cluster_server(
-        &self,
+        &mut self,
         shutdown_rx: watch::Receiver<bool>,
         shared_http_app_state: Arc<synctv_api::AppState>,
         shared_provider_runtime: &SharedProviderPlaybackRuntime,
@@ -2928,9 +2961,14 @@ impl SyncTvServer {
         let listener_addr: std::net::SocketAddr = cluster_address
             .parse()
             .map_err(|e| anyhow::anyhow!("Invalid cluster address '{cluster_address}': {e}"))?;
-        let listener = tokio::net::TcpListener::bind(listener_addr)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to bind cluster address {listener_addr}: {e}"))?;
+        let listener = match self.listener_overrides.cluster.take() {
+            Some(listener) => listener,
+            None => tokio::net::TcpListener::bind(listener_addr)
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!("Failed to bind cluster address {listener_addr}: {e}")
+                })?,
+        };
         info!(target: "synctv::cluster", "Cluster server listening on http://{}", listener_addr);
 
         Ok(tokio::spawn(async move {
@@ -2951,7 +2989,7 @@ impl SyncTvServer {
     }
 
     async fn start_metrics_server(
-        &self,
+        &mut self,
         shutdown_rx: watch::Receiver<bool>,
         shared_http_app_state: Arc<synctv_api::AppState>,
     ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
@@ -2959,9 +2997,14 @@ impl SyncTvServer {
         let listener_addr: std::net::SocketAddr = metrics_address
             .parse()
             .map_err(|e| anyhow::anyhow!("Invalid metrics address '{metrics_address}': {e}"))?;
-        let listener = tokio::net::TcpListener::bind(listener_addr)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to bind metrics address {listener_addr}: {e}"))?;
+        let listener = match self.listener_overrides.metrics.take() {
+            Some(listener) => listener,
+            None => tokio::net::TcpListener::bind(listener_addr)
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!("Failed to bind metrics address {listener_addr}: {e}")
+                })?,
+        };
 
         let metrics_app =
             synctv_api::create_metrics_router().with_state(shared_http_app_state.as_ref().clone());
@@ -3032,7 +3075,7 @@ impl SyncTvServer {
     }
 
     async fn start_health_server(
-        &self,
+        &mut self,
         shutdown_rx: watch::Receiver<bool>,
         shared_http_app_state: Arc<synctv_api::AppState>,
     ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
@@ -3040,9 +3083,14 @@ impl SyncTvServer {
         let listener_addr: std::net::SocketAddr = health_address
             .parse()
             .map_err(|e| anyhow::anyhow!("Invalid health address '{health_address}': {e}"))?;
-        let listener = tokio::net::TcpListener::bind(listener_addr)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to bind health address {listener_addr}: {e}"))?;
+        let listener = match self.listener_overrides.health.take() {
+            Some(listener) => listener,
+            None => tokio::net::TcpListener::bind(listener_addr)
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!("Failed to bind health address {listener_addr}: {e}")
+                })?,
+        };
         let health_app =
             synctv_api::create_health_router().with_state(shared_http_app_state.as_ref().clone());
         info!(target: "synctv::health", "Health server listening on http://{}", listener_addr);
@@ -3065,7 +3113,7 @@ impl SyncTvServer {
     }
 
     async fn start_management_server(
-        &self,
+        &mut self,
         shutdown_rx: watch::Receiver<bool>,
         shared_http_app_state: Arc<synctv_api::AppState>,
     ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
@@ -3076,7 +3124,7 @@ impl SyncTvServer {
             .clone();
         let shared_client_api = shared_http_app_state.shared_api_runtime.client_api.clone();
 
-        spawn_management_server(ManagementServerConfig {
+        let management_config = ManagementServerConfig {
             settings: Arc::new(management_runtime_settings(&self.config)),
             user_service: self.services.user_service.clone(),
             admin_api: management_apis.admin,
@@ -3117,8 +3165,14 @@ impl SyncTvServer {
             server_state_runtime,
             lifecycle_controller: self.lifecycle_controller.clone(),
             shutdown_rx,
-        })
-        .await
+        };
+
+        match self.listener_overrides.management.take() {
+            Some(listener) => {
+                spawn_management_server_with_tcp_listener(management_config, listener)
+            }
+            None => spawn_management_server(management_config).await,
+        }
     }
 }
 
@@ -3305,7 +3359,6 @@ mod tests {
         );
         let playback_provider_services = build_playback_provider_services(
             providers.clone(),
-            shared_runtime.provider_stores.clone(),
             room_service.clone(),
             credential_repo.clone(),
             provider_access_service.clone(),

@@ -130,7 +130,6 @@ mod tests {
             ("synctv.provider.alist", "AlistProviderService"),
             ("synctv.provider.bilibili", "BilibiliProviderService"),
             ("synctv.provider.emby", "EmbyProviderService"),
-            ("synctv.provider.rtmp", "RtmpProviderService"),
         ];
 
         let embedded_provider_service = descriptor.file.iter().find_map(|file| {
@@ -163,7 +162,6 @@ mod tests {
             "src/synctv.provider.alist.rs",
             "src/synctv.provider.bilibili.rs",
             "src/synctv.provider.emby.rs",
-            "src/synctv.provider.rtmp.rs",
             "src/buf.validate.rs",
             "src/synctv.management.rs",
             "src/descriptor.bin",

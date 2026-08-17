@@ -18,6 +18,7 @@ use crate::providers::playback_provider::transport::{
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TikTokResourcePath {
+    pub room_id: String,
     pub version: String,
     pub mode_name: String,
     pub media_index: u32,
@@ -26,6 +27,7 @@ pub struct TikTokResourcePath {
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TikTokHlsResourcePath {
+    pub room_id: String,
     pub version: String,
     pub mode_name: String,
     pub media_index: u32,
@@ -35,6 +37,7 @@ pub struct TikTokHlsResourcePath {
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TikTokSubtitlePath {
+    pub room_id: String,
     pub version: String,
     pub mode_name: String,
     pub subtitle_index: u32,
@@ -57,12 +60,13 @@ impl_response!(TikTokSubtitleResponse);
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/tiktok/{version}/resources/{modeName}/{mediaIndex}",
+        path = "/api/playback-providers/{roomId}/tiktok/{version}/resources/{modeName}/{mediaIndex}",
         tag = "TikTok Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path), ("modeName" = String, Path),
             ("mediaIndex" = u32, Path), ("sig" = String, Query),
-            ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)
+            ("uid" = String, Query), ("exp" = i64, Query)
         ),
         responses((status = 200, description = "Refreshed TikTok media resource"))
     )
@@ -109,8 +113,8 @@ async fn tiktok_resource(
     query_string: String,
     method: Method,
 ) -> AppResult<axum::response::Response> {
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetTikTokResourceRequest {
         version: path.version,
         mode_name: path.mode_name,
@@ -146,14 +150,14 @@ async fn tiktok_resource(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/tiktok/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
+        path = "/api/playback-providers/{roomId}/tiktok/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
         tag = "TikTok Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path), ("modeName" = String, Path),
             ("mediaIndex" = u32, Path), ("resourceKind" = String, Path),
             ("targetUrl" = String, Query),
-            ("sig" = String, Query), ("uid" = String, Query),
-            ("rid" = String, Query), ("exp" = i64, Query)
+            ("sig" = String, Query), ("uid" = String, Query), ("exp" = i64, Query)
         ),
         responses((status = 200, description = "TikTok HLS resource"))
     )
@@ -200,8 +204,8 @@ async fn tiktok_hls_resource(
     query_string: String,
     method: Method,
 ) -> AppResult<axum::response::Response> {
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetTikTokHlsResourceRequest {
         version: path.version,
         target_url: target_url(&query_string).map_err(crate::http::error::map_api_error)?,
@@ -251,12 +255,13 @@ fn tiktok_hls_resource_kind(value: &str) -> AppResult<i32> {
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/tiktok/{version}/subtitles/{modeName}/{subtitleIndex}",
+        path = "/api/playback-providers/{roomId}/tiktok/{version}/subtitles/{modeName}/{subtitleIndex}",
         tag = "TikTok Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path), ("modeName" = String, Path),
             ("subtitleIndex" = u32, Path), ("sig" = String, Query),
-            ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)
+            ("uid" = String, Query), ("exp" = i64, Query)
         ),
         responses((status = 200, description = "TikTok WebVTT subtitle"))
     )
@@ -303,8 +308,8 @@ async fn tiktok_subtitle(
     query_string: String,
     method: Method,
 ) -> AppResult<axum::response::Response> {
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetTikTokSubtitleRequest {
         version: path.version,
         mode_name: path.mode_name,

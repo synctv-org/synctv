@@ -191,7 +191,7 @@ pub async fn get_alist_transcoded_hls_manifest(
     .await?;
     let segment_base = format!(
         "{}/{}/{}",
-        playback_provider_route_base("alist", &req.version, "transcoded-hls-resources"),
+        playback_provider_route_base(&req.rid, "alist", &req.version, "transcoded-hls-resources"),
         urlencoding::encode(&req.mode_name),
         req.url_index
     );
@@ -251,7 +251,12 @@ pub async fn get_alist_transcoded_hls_resource(
     let segment_base = (kind == AlistHlsResourceKind::Manifest).then(|| {
         format!(
             "{}/{}/{}",
-            playback_provider_route_base("alist", &req.version, "transcoded-hls-resources"),
+            playback_provider_route_base(
+                &req.rid,
+                "alist",
+                &req.version,
+                "transcoded-hls-resources"
+            ),
             urlencoding::encode(&req.mode_name),
             req.media_index
         )
@@ -535,14 +540,7 @@ mod tests {
 
     #[tokio::test]
     async fn head_transport_keeps_head_semantics_across_auth_retry() -> anyhow::Result<()> {
-        let mock_server = match std::net::TcpListener::bind("127.0.0.1:0") {
-            Ok(listener) => {
-                drop(listener);
-                MockServer::start().await
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => return Ok(()),
-            Err(error) => return Err(error.into()),
-        };
+        let mock_server = MockServer::start().await;
         let requests = Arc::new(AtomicUsize::new(0));
         Mock::given(method("HEAD"))
             .and(path("/movie.mp4"))
@@ -586,6 +584,8 @@ mod tests {
                     url: url.clone(),
                     headers: HashMap::new(),
                     range_header: None,
+                    proxy_strategy:
+                        synctv_core::provider::PlaybackResourceProxyStrategy::SliceCache,
                 };
                 async move {
                     playback_transport_action_to_chunk_stream(executor_deps, action, true).await

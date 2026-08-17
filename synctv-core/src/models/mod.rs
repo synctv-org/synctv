@@ -223,7 +223,6 @@ pub use playback_session::{
 };
 pub use playlist::{
     CreatePlaylistRequest, Playlist, PlaylistListQuery, PlaylistListSortBy, PlaylistWithCount,
-    UpdatePlaylistRequest,
 };
 pub use provider_instance::{
     is_valid_provider_instance_name, normalize_provider_instance_name,

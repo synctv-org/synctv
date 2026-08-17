@@ -74,9 +74,26 @@ message SeafileSubtitleResponse {
   synctv.playback_provider.common.StreamChunk chunk = 1;
 }
 
+message GetSeafileThumbnailResourceRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  string credential_owner_id = 2 [(buf.validate.field).string.min_len = 1];
+  string repository_id = 3 [(buf.validate.field).string.min_len = 1];
+  string path = 4 [(buf.validate.field).string.min_len = 1];
+  uint32 size = 5 [(buf.validate.field).uint32 = {gte: 32, lte: 2048}];
+  string sig = 6 [(buf.validate.field).string.min_len = 1];
+  string uid = 7 [(buf.validate.field).string.min_len = 1];
+  string rid = 8 [(buf.validate.field).string.min_len = 1];
+  int64 exp = 9;
+}
+
+message SeafileThumbnailResourceResponse {
+  synctv.playback_provider.common.StreamChunk chunk = 1;
+}
+
 service SeafilePlaybackProviderService {
   rpc GetResource(GetSeafileResourceRequest) returns (stream SeafileResourceResponse);
   rpc GetHlsManifest(GetSeafileHlsManifestRequest) returns (stream SeafileHlsManifestResponse);
   rpc GetHlsResource(GetSeafileHlsResourceRequest) returns (stream SeafileHlsResourceResponse);
   rpc GetSubtitle(GetSeafileSubtitleRequest) returns (stream SeafileSubtitleResponse);
+  rpc GetThumbnailResource(GetSeafileThumbnailResourceRequest) returns (stream SeafileThumbnailResourceResponse);
 }

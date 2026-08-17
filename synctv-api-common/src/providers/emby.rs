@@ -3,15 +3,15 @@
 //! Unified implementation for all Emby API operations.
 //! Used by both HTTP and gRPC handlers.
 
-use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use std::sync::Arc;
 use synctv_core::models::{EmbyPlaylistSource, UserId};
 use synctv_core::provider::{
     EmbyListRequest, EmbyMeRequest, EmbyProvider, ExecutionControl, ProviderAccessService,
 };
 use synctv_proto::providers::emby::{
-    BindInfo, GetBindsResponse, GetMeRequest, GetMeResponse, ListMode, ListRequest, ListResponse,
-    LoginRequest, LoginResponse, LogoutRequest, LogoutResponse, MediaItem,
+    BindInfo, GetBindsResponse, GetMeRequest, GetMeResponse, GetThumbnailRequest, ListMode,
+    ListRequest, ListResponse, LoginRequest, LoginResponse, LogoutRequest, LogoutResponse,
+    MediaItem,
 };
 use synctv_proto::source_config::{
     emby_playlist_source_config, media_source_config, playlist_source_config,
@@ -28,15 +28,6 @@ use super::{
     discovered_media, discovered_playlist, provider_instance_name_for_response,
     publish_provider_credential_changed, resolve_bound_instance_name,
 };
-
-fn emby_thumbnail_url(server_id: &str, credential_owner_id: &UserId, item_id: &str) -> String {
-    format!(
-        "/api/providers/emby/thumbnail/{item_id}?serverId={server_id}&credentialOwnerId={credential_owner_id}&maxHeight=300",
-        item_id = utf8_percent_encode(item_id, NON_ALPHANUMERIC),
-        server_id = utf8_percent_encode(server_id, NON_ALPHANUMERIC),
-        credential_owner_id = utf8_percent_encode(&credential_owner_id.to_string(), NON_ALPHANUMERIC),
-    )
-}
 
 /// Emby API implementation
 ///
@@ -77,6 +68,32 @@ impl EmbyApiImpl {
             access.emby_user_id,
             access.provider_instance_name,
         ))
+    }
+
+    pub async fn thumbnail_action(
+        &self,
+        caller_user_id: &UserId,
+        req: GetThumbnailRequest,
+        request_context: Option<&ExecutionControl>,
+    ) -> Result<synctv_core::provider::PlaybackTransportAction, crate::impls::ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let item_id = req.item_id.trim();
+        let server_id = req.server_id.trim();
+        if item_id.is_empty() || server_id.is_empty() {
+            return Err(crate::impls::ApiError::InvalidInput(
+                "Emby thumbnail item_id and server_id are required".to_string(),
+            ));
+        }
+        let max_height = if req.max_height == 0 {
+            300
+        } else {
+            req.max_height
+        };
+        let (host, api_key, _, _) = self
+            .resolve_credentials(caller_user_id, server_id, request_context)
+            .await?;
+        EmbyProvider::thumbnail_action(item_id, &host, &api_key, max_height, req.max_width)
+            .map_err(crate::impls::ApiError::from)
     }
 
     pub async fn login_with_context(
@@ -183,7 +200,12 @@ impl EmbyApiImpl {
             .filter_map(|item| {
                 let is_container = item.is_folder;
                 let thumbnail = if item.has_thumbnail {
-                    emby_thumbnail_url(&req.server_id, caller_user_id, &item.id)
+                    crate::emby_thumbnail_urls::provider_thumbnail_url(
+                        &req.server_id,
+                        &item.id,
+                        300,
+                        0,
+                    )
                 } else {
                     String::new()
                 };

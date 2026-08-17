@@ -5,7 +5,6 @@
 
 #![allow(clippy::unwrap_used)]
 use std::collections::HashMap;
-use std::net::TcpListener;
 use synctv_proxy::{proxy_fetch_and_forward, NoopMetrics, ProxyConfig};
 
 fn proxy_client() -> reqwest::Client {
@@ -15,20 +14,29 @@ fn proxy_client() -> reqwest::Client {
 
 // DNS-level SSRF protection tests
 
-/// Verify that a loopback target still fails when no local server is listening.
+/// Verify that an upstream connection failure is surfaced with the disabled policy.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_proxy_client_loopback_target_fails_without_listener() {
-    let listener =
-        TcpListener::bind("127.0.0.1:0").expect("test should reserve an unused loopback port");
-    let unused_port = listener
+async fn test_proxy_client_loopback_target_with_connection_close_fails() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("test listener should bind an ephemeral loopback port");
+    let address = listener
         .local_addr()
         .expect("test listener should expose its address")
-        .port();
-    drop(listener);
+        .to_string();
+    let connection_close_task = tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+
+        if let Ok((mut stream, _)) = listener.accept().await {
+            let mut buffer = [0u8; 1024];
+            let _ = stream.read(&mut buffer).await;
+            drop(stream);
+        }
+    });
 
     let client = proxy_client();
     let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
-    let url = format!("http://127.0.0.1:{unused_port}/admin");
+    let url = format!("http://{address}/admin");
     let cfg = ProxyConfig {
         ssrf_guard: &ssrf_guard,
         client: &client,
@@ -39,9 +47,10 @@ async fn test_proxy_client_loopback_target_fails_without_listener() {
         upstream_header_timeout: None,
     };
     let result = proxy_fetch_and_forward(cfg, &NoopMetrics).await;
+    connection_close_task.abort();
     assert!(
         result.is_err(),
-        "loopback target without a listener should fail when SSRF is explicitly disabled"
+        "loopback target with a closing connection should fail when SSRF is explicitly disabled"
     );
 }
 

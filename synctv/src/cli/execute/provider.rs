@@ -20,7 +20,6 @@ pub(super) async fn execute_provider(provider_command: ProviderCommand) -> Resul
         ProviderSubcommand::Douyin(command) => execute_provider_douyin(command).await,
         ProviderSubcommand::Tiktok(command) => execute_provider_tiktok(command).await,
         ProviderSubcommand::Twitch(command) => execute_provider_twitch(command).await,
-        ProviderSubcommand::Rtmp(command) => execute_provider_rtmp(command).await,
         ProviderSubcommand::Acfun(command) => execute_provider_acfun(command).await,
         ProviderSubcommand::Cctv(command) => execute_provider_cctv(command).await,
         ProviderSubcommand::Cloudreve(command) => execute_provider_cloudreve(command).await,

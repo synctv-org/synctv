@@ -669,7 +669,7 @@ impl QnapProvider {
             .parse::<UserId>()
             .map_err(ProviderError::InvalidConfig)?;
         let auth = self.authenticated(owner, server_id).await?;
-        super::playback_transport::transport_action_for_target_url(
+        super::playback_transport::full_response_cache_action_for_target_url(
             auth.client.download_url(&auth.login.sid, &subtitle.path)?,
             QnapClient::auth_headers(),
             None,

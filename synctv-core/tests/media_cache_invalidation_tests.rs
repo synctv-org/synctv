@@ -231,6 +231,8 @@ async fn test_edit_media_sends_notification() {
         name: Some("Updated Media".to_string()),
         description: None,
         playback_proxy_mode: None,
+        source_config: None,
+        provider_instance_name: None,
     };
 
     let updated_media = ok(
@@ -307,6 +309,8 @@ async fn test_edit_media_without_notification_service_succeeds() {
         name: Some("Updated Media".to_string()),
         description: None,
         playback_proxy_mode: None,
+        source_config: None,
+        provider_instance_name: None,
     };
 
     let updated_media = ok(

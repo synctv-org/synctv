@@ -2289,6 +2289,7 @@ impl EmbyProvider {
                 url,
                 headers: HashMap::from([("X-Emby-Token".to_string(), api_key.to_string())]),
                 range_header: None,
+                proxy_strategy: super::PlaybackResourceProxyStrategy::SliceCache,
             },
         )
     }
@@ -2319,6 +2320,7 @@ impl EmbyProvider {
                 url: url.to_string(),
                 headers: media.upstream_headers(),
                 range_header: range_header.map(ToString::to_string),
+                proxy_strategy: super::PlaybackResourceProxyStrategy::SliceCache,
             },
         )
     }
@@ -2376,6 +2378,7 @@ impl EmbyProvider {
                     url: request.target_url.to_string(),
                     headers: media.upstream_headers(),
                     range_header: request.range_header.map(ToString::to_string),
+                    proxy_strategy: super::PlaybackResourceProxyStrategy::SliceCache,
                 },
             )
         }
@@ -2405,6 +2408,7 @@ impl EmbyProvider {
                 url: subtitle.upstream_url().to_string(),
                 headers: subtitle.upstream_headers(),
                 range_header: None,
+                proxy_strategy: super::PlaybackResourceProxyStrategy::FullResponseCache,
             },
         )
     }

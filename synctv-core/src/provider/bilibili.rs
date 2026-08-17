@@ -54,7 +54,7 @@ const SMS_LOGIN_SESSION_TTL_SECONDS: i64 = 10 * 60;
 const SMS_LOGIN_SESSION_VERSION: &str = "v2";
 const SMS_LOGIN_DOMAIN_SEPARATOR: &[u8] = b"synctv-bilibili-sms-login";
 const SMS_LOGIN_TOKEN_NONCE_SIZE: usize = 12;
-const BILIBILI_PLAYBACK_CACHE_SCHEMA_VERSION: &str = "v3";
+const BILIBILI_PLAYBACK_CACHE_SCHEMA_VERSION: &str = "v6";
 type HmacSha256 = Hmac<sha2::Sha256>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2305,15 +2305,127 @@ fn bilibili_playback_proxy_policy(
     Ok(PlaybackProxyPolicy::all_modes(current_mode, auto_policies))
 }
 
+fn populate_bilibili_proxy_attachments(
+    original_info: &PlaybackInfo,
+    proxy_info: &mut PlaybackInfo,
+    version: &str,
+    expires_at: i64,
+    mode_name: &str,
+) {
+    proxy_info.subtitles = original_info
+        .subtitles
+        .iter()
+        .enumerate()
+        .map(|(subtitle_index, subtitle)| PlaybackSubtitle {
+            name: subtitle.name().to_string(),
+            language: subtitle.language().to_string(),
+            format: subtitle.format().to_string(),
+            p2p_swarm_id: subtitle.p2p_swarm_id.clone(),
+            provider: PlaybackSubtitleProvider::Bilibili(PlaybackBilibiliSubtitle::Proxy {
+                version: version.to_string(),
+                expires_at: subtitle
+                    .expiration_timestamp()
+                    .into_iter()
+                    .chain(std::iter::once(expires_at))
+                    .min()
+                    .unwrap_or(expires_at),
+                mode_name: mode_name.to_string(),
+                subtitle_index,
+                url: subtitle.upstream_url().to_string(),
+                headers: subtitle.upstream_headers(),
+            }),
+        })
+        .collect();
+    proxy_info.danmakus = original_info
+        .danmakus
+        .iter()
+        .enumerate()
+        .map(|(danmaku_index, danmaku)| {
+            let provider = match &danmaku.provider {
+                PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::Live {
+                    room_id,
+                    media_id,
+                }) => PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::Live {
+                    room_id: *room_id,
+                    media_id: *media_id,
+                }),
+                PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::DynamicLive {
+                    room_id,
+                    playlist_id,
+                    live_room_id,
+                }) => PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::DynamicLive {
+                    room_id: *room_id,
+                    playlist_id: *playlist_id,
+                    live_room_id: *live_room_id,
+                }),
+                _ => PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::FileProxy {
+                    version: version.to_string(),
+                    expires_at: danmaku
+                        .expiration_timestamp()
+                        .into_iter()
+                        .chain(std::iter::once(expires_at))
+                        .min()
+                        .unwrap_or(expires_at),
+                    danmaku_index,
+                    url: danmaku.upstream_url().unwrap_or_default().to_string(),
+                    headers: danmaku.upstream_headers(),
+                }),
+            };
+            PlaybackDanmaku {
+                name: danmaku.name().to_string(),
+                format: danmaku.format().map(ToString::to_string),
+                p2p_swarm_id: danmaku.p2p_swarm_id.clone(),
+                provider,
+            }
+        })
+        .collect();
+}
+
+fn attach_bilibili_live_danmaku(
+    result: &mut PlaybackResult,
+    context: Option<&ProviderContext<'_>>,
+) {
+    let Some(live_room_id) = result
+        .metadata
+        .as_ref()
+        .and_then(PlaybackMetadata::as_bilibili)
+        .filter(|metadata| metadata.kind == BilibiliPlaybackKind::Live && metadata.is_live)
+        .and_then(|metadata| metadata.room_id)
+    else {
+        return;
+    };
+    let track = context.and_then(|context| bilibili_live_danmaku_track(context, live_room_id));
+
+    for info in result.playback_infos.values_mut() {
+        info.danmakus.retain(|danmaku| {
+            !matches!(
+                danmaku.provider,
+                PlaybackDanmakuProvider::Bilibili(
+                    PlaybackBilibiliDanmaku::Live { .. }
+                        | PlaybackBilibiliDanmaku::DynamicLive { .. }
+                )
+            )
+        });
+        if let Some(track) = track.as_ref() {
+            info.danmakus.push(track.clone());
+            info.default_danmaku_index = Some(info.danmakus.len() - 1);
+        } else {
+            info.default_danmaku_index = (!info.danmakus.is_empty()).then_some(0);
+        }
+    }
+}
+
 fn mark_bilibili_playback_resources(
     result: &mut PlaybackResult,
     version: &str,
     expires_at: i64,
     proxy_mode: crate::models::PlaybackProxyMode,
+    context: Option<&ProviderContext<'_>>,
 ) {
     // DASH/MPD modes keep both direct and proxy manifests: app clients can
     // apply the returned Bilibili headers to the manifest and segment requests,
     // while proxy siblings remain as a server-mediated fallback.
+    attach_bilibili_live_danmaku(result, context);
     let selection = bilibili_route_selection(proxy_mode);
     let original_default_mode = result.default_mode.clone();
     let original_modes = result
@@ -2374,6 +2486,13 @@ fn mark_bilibili_playback_resources(
                             });
                     }
                 }
+                populate_bilibili_proxy_attachments(
+                    &original_info,
+                    &mut proxy_info,
+                    version,
+                    expires_at,
+                    &mode_name,
+                );
                 generated.insert(format!("proxy_{mode_name}"), proxy_info);
             }
             continue;
@@ -2505,66 +2624,13 @@ fn mark_bilibili_playback_resources(
                     })
                     .collect();
             }
-            proxy_info.subtitles = original_info
-                .subtitles
-                .iter()
-                .enumerate()
-                .map(|(subtitle_index, subtitle)| PlaybackSubtitle {
-                    name: subtitle.name().to_string(),
-                    language: subtitle.language().to_string(),
-                    format: subtitle.format().to_string(),
-                    p2p_swarm_id: subtitle.p2p_swarm_id.clone(),
-                    provider: PlaybackSubtitleProvider::Bilibili(PlaybackBilibiliSubtitle::Proxy {
-                        version: version.to_string(),
-                        expires_at: subtitle
-                            .expiration_timestamp()
-                            .into_iter()
-                            .chain(std::iter::once(expires_at))
-                            .min()
-                            .unwrap_or(expires_at),
-                        mode_name: mode_name.clone(),
-                        subtitle_index,
-                        url: subtitle.upstream_url().to_string(),
-                        headers: subtitle.upstream_headers(),
-                    }),
-                })
-                .collect();
-            proxy_info.danmakus = original_info
-                .danmakus
-                .iter()
-                .enumerate()
-                .map(|(danmaku_index, danmaku)| {
-                    let provider = match &danmaku.provider {
-                        PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::Live {
-                            room_id,
-                            media_id,
-                        }) => PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::Live {
-                            room_id: *room_id,
-                            media_id: *media_id,
-                        }),
-                        _ => {
-                            PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::FileProxy {
-                                version: version.to_string(),
-                                expires_at: danmaku
-                                    .expiration_timestamp()
-                                    .into_iter()
-                                    .chain(std::iter::once(expires_at))
-                                    .min()
-                                    .unwrap_or(expires_at),
-                                danmaku_index,
-                                url: danmaku.upstream_url().unwrap_or_default().to_string(),
-                                headers: danmaku.upstream_headers(),
-                            })
-                        }
-                    };
-                    PlaybackDanmaku {
-                        name: danmaku.name().to_string(),
-                        format: danmaku.format().map(ToString::to_string),
-                        p2p_swarm_id: danmaku.p2p_swarm_id.clone(),
-                        provider,
-                    }
-                })
-                .collect();
+            populate_bilibili_proxy_attachments(
+                &original_info,
+                &mut proxy_info,
+                version,
+                expires_at,
+                &mode_name,
+            );
             generated.insert(proxy_mode_name, proxy_info);
         }
     }
@@ -3498,7 +3564,13 @@ impl MediaProvider for BilibiliProvider {
             cache_ttl,
             _ctx,
             |result, version, expires_at| {
-                mark_bilibili_playback_resources(result, version, expires_at, proxy_mode);
+                mark_bilibili_playback_resources(
+                    result,
+                    version,
+                    expires_at,
+                    proxy_mode,
+                    Some(_ctx),
+                );
             },
             || async {
                 self.resolve_from_api_with_cookies(
@@ -4422,20 +4494,26 @@ mod tests {
     use super::{
         bilibili_dash_codec_slot, bilibili_dash_label, bilibili_dash_playback_infos,
         bilibili_dash_resource_candidates, bilibili_durl_media, bilibili_durl_resource_candidates,
-        bilibili_live_playback_infos, bilibili_upstream, build_bilibili_durl_manifest,
+        bilibili_live_danmaku_track, bilibili_live_playback_infos, bilibili_subtitle_track,
+        bilibili_upstream, bilibili_vod_danmaku_track, build_bilibili_durl_manifest,
         default_bilibili_live_mode, mark_bilibili_playback_resources, BilibiliProvider,
         BilibiliSmsLoginSession, BilibiliSmsLoginTokenCodec,
     };
     use crate::models::media::{
         BilibiliDashAudioStream, BilibiliDashManifest, BilibiliDashManifestSlot,
         BilibiliDashManifests, BilibiliDashVideoStream, BilibiliDurlSegment, BilibiliPlaybackKind,
-        BilibiliPlaybackMetadata, PlaybackBilibiliMedia, PlaybackMediaProvider, PlaybackMetadata,
+        BilibiliPlaybackMetadata, PlaybackBilibiliDanmaku, PlaybackBilibiliMedia,
+        PlaybackBilibiliSubtitle, PlaybackDanmakuProvider, PlaybackMediaProvider, PlaybackMetadata,
+        PlaybackSubtitleProvider,
     };
-    use crate::models::{BilibiliTarget, ProviderTarget};
+    use crate::models::{BilibiliTarget, PlaylistId, ProviderTarget, RoomId};
     use crate::provider::{
-        PlaybackInfo, PlaybackResult, ProviderActor, ProviderContext, SourceConfig,
+        InMemoryProviderStore, PlaybackInfo, PlaybackResult, PlaybackTransportAction,
+        ProviderActor, ProviderContext, ProviderStore, ProviderStoreExt, SourceConfig,
+        VersionedPlayback,
     };
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     type TestResult<T = ()> = anyhow::Result<T>;
 
@@ -4455,7 +4533,7 @@ mod tests {
 
         let (key, _) = provider_ok(super::playback_cache_entry(&config, "anonymous", None))?;
 
-        assert!(key.starts_with("playback:v3:video:"));
+        assert!(key.starts_with("playback:v6:video:"));
         Ok(())
     }
 
@@ -4729,6 +4807,95 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_live_playback_has_a_live_danmaku_track() {
+        let room_id = RoomId::new();
+        let playlist_id = PlaylistId::new();
+        let context = ProviderContext::new("test", ProviderActor::Guest)
+            .with_room_id(room_id)
+            .with_playlist_id(playlist_id);
+        let track = bilibili_live_danmaku_track(&context, 21_292_831)
+            .expect("dynamic live playback should expose a danmaku track");
+
+        assert!(matches!(
+            track.provider,
+            crate::models::media::PlaybackDanmakuProvider::Bilibili(
+                crate::models::media::PlaybackBilibiliDanmaku::DynamicLive {
+                    room_id: track_room_id,
+                    playlist_id: track_playlist_id,
+                    live_room_id: 21_292_831,
+                }
+            ) if track_room_id == room_id && track_playlist_id == playlist_id
+        ));
+    }
+
+    #[test]
+    fn cached_dynamic_live_playback_attaches_danmaku_to_proxy_route() {
+        let room_id = RoomId::new();
+        let playlist_id = PlaylistId::new();
+        let context = ProviderContext::new("test", ProviderActor::Guest)
+            .with_room_id(room_id)
+            .with_playlist_id(playlist_id);
+        let mut result = PlaybackResult {
+            playback_infos: HashMap::from([(
+                "main".to_string(),
+                PlaybackInfo {
+                    thumbnail: None,
+                    medias: vec![super::playback_media(
+                        "Live HLS".to_string(),
+                        "m3u8".to_string(),
+                        Some(456),
+                        None,
+                        PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::Direct {
+                            url: "https://live.example.com/main.m3u8".to_string(),
+                            headers: HashMap::new(),
+                        }),
+                    )],
+                    default_media_index: Some(0),
+                    subtitles: Vec::new(),
+                    default_subtitle_index: None,
+                    danmakus: Vec::new(),
+                    default_danmaku_index: None,
+                },
+            )]),
+            default_mode: "main".to_string(),
+            provider: crate::models::SourceProvider::Bilibili,
+            provider_instance_name: None,
+            duration_seconds: None,
+            playback_kind: Some(crate::models::PlaybackKind::Live),
+            metadata: Some(PlaybackMetadata::Bilibili(BilibiliPlaybackMetadata {
+                room_id: Some(21_292_831),
+                is_live: true,
+                is_currently_live: Some(true),
+                ..BilibiliPlaybackMetadata::new(BilibiliPlaybackKind::Live)
+            })),
+        };
+
+        mark_bilibili_playback_resources(
+            &mut result,
+            "version",
+            123,
+            crate::models::PlaybackProxyMode::Auto,
+            Some(&context),
+        );
+
+        let info = &result.playback_infos["proxy_main"];
+        assert_eq!(info.default_danmaku_index, Some(0));
+        assert!(matches!(
+            info.danmakus.as_slice(),
+            [crate::models::media::PlaybackDanmaku {
+                provider: PlaybackDanmakuProvider::Bilibili(
+                    PlaybackBilibiliDanmaku::DynamicLive {
+                        room_id: track_room_id,
+                        playlist_id: track_playlist_id,
+                        live_room_id: 21_292_831,
+                    }
+                ),
+                ..
+            }] if *track_room_id == room_id && *track_playlist_id == playlist_id
+        ));
+    }
+
+    #[test]
     fn live_playback_uses_the_transport_advertised_by_the_client() -> TestResult {
         let hls_profile = super::super::PlaybackClientProfile::default();
         assert!(super::bilibili_live_uses_hls(Some(&hls_profile)));
@@ -4863,10 +5030,15 @@ mod tests {
                     thumbnail: None,
                     medias: vec![media],
                     default_media_index: Some(0),
-                    subtitles: Vec::new(),
-                    default_subtitle_index: None,
-                    danmakus: Vec::new(),
-                    default_danmaku_index: None,
+                    subtitles: vec![bilibili_subtitle_track(
+                        None,
+                        "video:BV1test:cid:1",
+                        "Chinese",
+                        "https://subtitle.bilibili.com/subtitle.json?deadline=200".to_string(),
+                    )],
+                    default_subtitle_index: Some(0),
+                    danmakus: vec![bilibili_vod_danmaku_track(None, "video:BV1test:cid:1", 1)],
+                    default_danmaku_index: Some(0),
                 },
             )]),
             default_mode: "durl".to_string(),
@@ -4883,6 +5055,7 @@ mod tests {
             "version",
             123,
             crate::models::PlaybackProxyMode::Auto,
+            None,
         );
         assert_eq!(result.default_mode, "proxy_durl");
         assert!(result.playback_infos.contains_key("proxy_durl"));
@@ -4891,6 +5064,14 @@ mod tests {
             result.playback_infos["proxy_durl"].medias[0].provider,
             PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::DurlManifest { .. })
         ));
+        assert!(matches!(
+            result.playback_infos["proxy_durl"].subtitles[0].provider,
+            PlaybackSubtitleProvider::Bilibili(PlaybackBilibiliSubtitle::Proxy { .. })
+        ));
+        assert!(matches!(
+            result.playback_infos["proxy_durl"].danmakus[0].provider,
+            PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::FileProxy { .. })
+        ));
 
         let mut direct_only = direct_only_base.clone();
         mark_bilibili_playback_resources(
@@ -4898,6 +5079,7 @@ mod tests {
             "version",
             123,
             crate::models::PlaybackProxyMode::DirectOnly,
+            None,
         );
         assert_eq!(direct_only.default_mode, "durl");
         assert!(matches!(
@@ -4916,10 +5098,95 @@ mod tests {
             "version",
             123,
             crate::models::PlaybackProxyMode::Only,
+            None,
         );
         assert_eq!(proxy_only.default_mode, "proxy_durl");
         assert!(!proxy_only.playback_infos.contains_key("durl"));
         assert_eq!(proxy_only.playback_infos["proxy_durl"].medias.len(), 1);
+        assert!(matches!(
+            proxy_only.playback_infos["proxy_durl"].subtitles[0].provider,
+            PlaybackSubtitleProvider::Bilibili(PlaybackBilibiliSubtitle::Proxy { .. })
+        ));
+        assert!(matches!(
+            proxy_only.playback_infos["proxy_durl"].danmakus[0].provider,
+            PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::FileProxy { .. })
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn bilibili_subtitle_uses_full_response_cache_transport() -> TestResult {
+        let store: Arc<dyn ProviderStore> = Arc::new(InMemoryProviderStore::new(8));
+        let subtitle_url = "https://subtitle.bilibili.com/track.json";
+        let playback = PlaybackResult {
+            playback_infos: HashMap::from([(
+                "proxy_h264".to_string(),
+                PlaybackInfo {
+                    thumbnail: None,
+                    medias: Vec::new(),
+                    default_media_index: None,
+                    subtitles: vec![bilibili_subtitle_track(
+                        None,
+                        "video:BV1test:cid:1",
+                        "Chinese",
+                        subtitle_url.to_string(),
+                    )],
+                    default_subtitle_index: Some(0),
+                    danmakus: Vec::new(),
+                    default_danmaku_index: None,
+                },
+            )]),
+            default_mode: "proxy_h264".to_string(),
+            provider: crate::models::SourceProvider::Bilibili,
+            provider_instance_name: None,
+            duration_seconds: None,
+            playback_kind: Some(crate::models::PlaybackKind::Regular),
+            metadata: None,
+        };
+        store
+            .set(
+                "v:subtitle-test",
+                &VersionedPlayback {
+                    version: "subtitle-test".to_string(),
+                    result: playback,
+                    expires_at: crate::SystemClock.now().timestamp() + 60,
+                    playback_context: None,
+                },
+                std::time::Duration::from_secs(60),
+            )
+            .await?;
+
+        let provider = BilibiliProvider::new_local_only()?;
+        let action = provider
+            .get_subtitle(Some(&store), "subtitle-test", "proxy_h264", 0, None)
+            .await?;
+
+        let PlaybackTransportAction::FetchAndForward {
+            url,
+            headers,
+            range_header,
+            proxy_strategy,
+        } = action
+        else {
+            anyhow::bail!("Bilibili subtitles must use the full response cache transport");
+        };
+        assert_eq!(url, subtitle_url);
+        assert_eq!(range_header, None);
+        assert_eq!(
+            proxy_strategy,
+            crate::provider::PlaybackResourceProxyStrategy::FullResponseCache
+        );
+        assert_eq!(
+            headers.get("Referer").map(String::as_str),
+            Some("https://www.bilibili.com")
+        );
+        assert!(headers.contains_key("User-Agent"));
+        assert!(
+            !headers
+                .keys()
+                .any(|name| name.eq_ignore_ascii_case("range")),
+            "Bilibili subtitle provider headers must leave Range ownership to the transport layer"
+        );
         Ok(())
     }
 
@@ -5093,6 +5360,7 @@ mod tests {
             "version",
             123,
             crate::models::PlaybackProxyMode::Auto,
+            None,
         );
 
         assert_eq!(result.default_mode, "proxy_h264");
@@ -5115,7 +5383,7 @@ mod tests {
     }
 
     #[test]
-    fn live_streams_group_quality_variants_by_cdn_host() {
+    fn live_streams_group_quality_variants_by_cdn_host() -> TestResult {
         let stream = |quality, quality_name: &str, host: &str, suffix: &str, expires_at| {
             super::bilibili_upstream::LiveStream {
                 quality,
@@ -5130,7 +5398,7 @@ mod tests {
                 }],
             }
         };
-        let infos = bilibili_live_playback_infos(
+        let infos = provider_ok(bilibili_live_playback_infos(
             vec![
                 stream(400, "1080P", "https://main.example", "high", Some(400)),
                 stream(80, "流畅", "https://main.example", "low", Some(80)),
@@ -5138,7 +5406,7 @@ mod tests {
                 stream(80, "流畅", "https://backup.example", "low", None),
             ],
             &[],
-        );
+        ))?;
 
         assert_eq!(infos.len(), 2);
         assert_eq!(infos["main"].medias.len(), 2);
@@ -5164,10 +5432,11 @@ mod tests {
             Some(401)
         );
         assert_eq!(infos["backup_1"].medias[1].expire_at, None);
+        Ok(())
     }
 
     #[test]
-    fn live_streams_preserve_hls_and_flv_formats() {
+    fn live_streams_preserve_hls_and_flv_formats() -> TestResult {
         let stream =
             |protocol: &str, format: &str, url: &str| super::bilibili_upstream::LiveStream {
                 quality: 400,
@@ -5181,13 +5450,13 @@ mod tests {
                     expires_at: None,
                 }],
             };
-        let infos = bilibili_live_playback_infos(
+        let infos = provider_ok(bilibili_live_playback_infos(
             vec![
                 stream("http_hls", "fmp4", "https://fmp4.example/live.m3u8"),
                 stream("http_stream", "flv", "https://flv.example/live.flv"),
             ],
             &[],
-        );
+        ))?;
 
         let formats = infos
             .values()
@@ -5195,6 +5464,15 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(formats.contains(&"m3u8"));
         assert!(formats.contains(&"flv"));
+        Ok(())
+    }
+
+    #[test]
+    fn live_playback_rejects_an_empty_upstream_stream_set() {
+        assert!(matches!(
+            bilibili_live_playback_infos(Vec::new(), &[]),
+            Err(super::ProviderError::NotFound)
+        ));
     }
 
     #[test]
@@ -5316,6 +5594,7 @@ impl BilibiliProvider {
                     headers
                 },
                 range_header: range_header.map(ToString::to_string),
+                proxy_strategy: super::PlaybackResourceProxyStrategy::SliceCache,
             },
         )
     }
@@ -5423,6 +5702,7 @@ impl BilibiliProvider {
                     url: request.target_url.to_string(),
                     headers,
                     range_header: request.range_header.map(ToString::to_string),
+                    proxy_strategy: super::PlaybackResourceProxyStrategy::SliceCache,
                 },
             )
         }
@@ -5533,6 +5813,7 @@ impl BilibiliProvider {
                     headers
                 },
                 range_header: None,
+                proxy_strategy: super::PlaybackResourceProxyStrategy::FullResponseCache,
             },
         )
     }
@@ -5566,6 +5847,7 @@ impl BilibiliProvider {
                     headers
                 },
                 range_header: None,
+                proxy_strategy: super::PlaybackResourceProxyStrategy::FullResponseCache,
             },
         )
     }
@@ -5858,17 +6140,28 @@ fn bilibili_live_headers() -> HashMap<String, String> {
     headers
 }
 
-fn bilibili_live_danmaku_track(ctx: &ProviderContext<'_>) -> Option<PlaybackDanmaku> {
+fn bilibili_live_danmaku_track(
+    ctx: &ProviderContext<'_>,
+    live_room_id: u64,
+) -> Option<PlaybackDanmaku> {
     let room_id = ctx.room_id()?;
-    let media_id = ctx.media_id()?;
+    let provider = match (ctx.media_id(), ctx.playlist_id()) {
+        (Some(media_id), _) => PlaybackBilibiliDanmaku::Live {
+            room_id: *room_id,
+            media_id: *media_id,
+        },
+        (None, Some(playlist_id)) => PlaybackBilibiliDanmaku::DynamicLive {
+            room_id: *room_id,
+            playlist_id: *playlist_id,
+            live_room_id,
+        },
+        (None, None) => return None,
+    };
     Some(PlaybackDanmaku {
         name: LIVE_DANMAKU_TRACK_NAME.to_string(),
         format: Some(LIVE_DANMAKU_FORMAT.to_string()),
         p2p_swarm_id: None,
-        provider: PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::Live {
-            room_id: *room_id,
-            media_id: *media_id,
-        }),
+        provider: PlaybackDanmakuProvider::Bilibili(provider),
     })
 }
 
@@ -6332,9 +6625,10 @@ impl BilibiliProvider {
                     is_currently_live: Some(true),
                     ..BilibiliPlaybackMetadata::new(BilibiliPlaybackKind::Live)
                 });
-                let danmakus: Vec<_> = bilibili_live_danmaku_track(ctx).into_iter().collect();
-                let playback_infos =
-                    bilibili_live_playback_infos(live_resp.live_streams, &danmakus);
+                // The versioned result is keyed by upstream content. Room and
+                // playlist identifiers belong to the live danmaku route, so
+                // they are attached after cache lookup for each request.
+                let playback_infos = bilibili_live_playback_infos(live_resp.live_streams, &[])?;
 
                 let default_mode = default_bilibili_live_mode(&playback_infos);
 
@@ -6355,7 +6649,7 @@ impl BilibiliProvider {
 fn bilibili_live_playback_infos(
     mut live_streams: Vec<bilibili_upstream::LiveStream>,
     danmakus: &[PlaybackDanmaku],
-) -> HashMap<String, PlaybackInfo> {
+) -> Result<HashMap<String, PlaybackInfo>, ProviderError> {
     live_streams.sort_by(|left, right| {
         right
             .quality
@@ -6377,7 +6671,7 @@ fn bilibili_live_playback_infos(
         }
     }
 
-    route_hosts
+    let playback_infos = route_hosts
         .iter()
         .enumerate()
         .filter_map(|(route_index, route_host)| {
@@ -6430,7 +6724,13 @@ fn bilibili_live_playback_infos(
                 },
             ))
         })
-        .collect()
+        .collect::<HashMap<_, _>>();
+
+    if playback_infos.is_empty() {
+        return Err(ProviderError::NotFound);
+    }
+
+    Ok(playback_infos)
 }
 
 fn bilibili_live_media_format(stream: &bilibili_upstream::LiveStream) -> &'static str {

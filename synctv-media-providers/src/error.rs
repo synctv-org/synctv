@@ -64,13 +64,13 @@ pub async fn fetch_json<T: serde::de::DeserializeOwned>(
     json_with_limit(response).await
 }
 
-/// Read a response body with size limit and deserialize as JSON.
+/// Read a response body with the shared provider size limit.
 ///
-/// Checks `Content-Length` hint first (if available), then enforces the
-/// limit on the actual body bytes before deserializing.
-pub async fn json_with_limit<T: serde::de::DeserializeOwned>(
+/// Checks `Content-Length` first when available, then enforces the limit on
+/// every received chunk.
+pub async fn bytes_with_limit(
     mut response: reqwest::Response,
-) -> Result<T, ProviderClientError> {
+) -> Result<Vec<u8>, ProviderClientError> {
     if let Some(cl) = response.content_length() {
         if usize::try_from(cl).map_or(true, |s| s > MAX_RESPONSE_SIZE) {
             return Err(ProviderClientError::ResponseTooLarge { size: cl });
@@ -94,35 +94,20 @@ pub async fn json_with_limit<T: serde::de::DeserializeOwned>(
         }
         bytes.extend_from_slice(&chunk);
     }
-    if bytes.len() > MAX_RESPONSE_SIZE {
-        return Err(ProviderClientError::ResponseTooLarge {
-            size: bytes.len() as u64,
-        });
-    }
-    serde_json::from_slice(&bytes).map_err(Into::into)
+    Ok(bytes)
+}
+
+/// Read a response body with size limit and deserialize it as JSON.
+pub async fn json_with_limit<T: serde::de::DeserializeOwned>(
+    response: reqwest::Response,
+) -> Result<T, ProviderClientError> {
+    serde_json::from_slice(&bytes_with_limit(response).await?).map_err(Into::into)
 }
 
 /// Read a UTF-8 response body with the shared provider size limit.
-pub async fn text_with_limit(
-    mut response: reqwest::Response,
-) -> Result<String, ProviderClientError> {
-    if let Some(size) = response.content_length() {
-        if usize::try_from(size).map_or(true, |size| size > MAX_RESPONSE_SIZE) {
-            return Err(ProviderClientError::ResponseTooLarge { size });
-        }
-    }
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await? {
-        let size = bytes
-            .len()
-            .checked_add(chunk.len())
-            .ok_or(ProviderClientError::ResponseTooLarge { size: u64::MAX })?;
-        if size > MAX_RESPONSE_SIZE {
-            return Err(ProviderClientError::ResponseTooLarge { size: size as u64 });
-        }
-        bytes.extend_from_slice(&chunk);
-    }
-    String::from_utf8(bytes).map_err(|error| ProviderClientError::Parse(error.to_string()))
+pub async fn text_with_limit(response: reqwest::Response) -> Result<String, ProviderClientError> {
+    String::from_utf8(bytes_with_limit(response).await?)
+        .map_err(|error| ProviderClientError::Parse(error.to_string()))
 }
 
 /// Check HTTP response status before processing body.

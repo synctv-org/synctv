@@ -15,4 +15,5 @@ message StreamChunk {
   optional string expires = 10;
   optional string content_disposition = 11;
   optional string location = 12;
+  optional string content_encoding = 13;
 }

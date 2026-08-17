@@ -2,14 +2,16 @@ use futures::StreamExt;
 use synctv_core::provider::ExecutionControl;
 use synctv_core::service::NextcloudPlaybackProviderService;
 use synctv_proto::playback_provider::nextcloud::{
-    GetNextcloudHlsManifestRequest, GetNextcloudHlsResourceRequest, GetNextcloudResourceRequest,
-    GetNextcloudSubtitleRequest, NextcloudHlsManifestResponse, NextcloudHlsResourceKind,
-    NextcloudHlsResourceResponse, NextcloudResourceResponse, NextcloudSubtitleResponse,
+    GetNextcloudHlsManifestRequest, GetNextcloudHlsResourceRequest,
+    GetNextcloudPreviewResourceRequest, GetNextcloudResourceRequest, GetNextcloudSubtitleRequest,
+    NextcloudHlsManifestResponse, NextcloudHlsResourceKind, NextcloudHlsResourceResponse,
+    NextcloudPreviewResourceResponse, NextcloudResourceResponse, NextcloudSubtitleResponse,
 };
 
 use super::common::{
-    playback_provider_route_base, playback_transport_action_to_chunk_stream,
-    verify_playback_provider_access_with_deps, HasPlaybackProviderAccessFields, HlsRewriteSigning,
+    decode_playback_resource_owner, playback_provider_route_base,
+    playback_transport_action_to_chunk_stream, verify_playback_provider_access_with_deps,
+    verify_playback_resource_access_with_deps, HasPlaybackProviderAccessFields, HlsRewriteSigning,
     PlaybackProviderAccessRequest, PlaybackProviderApiRuntime, PlaybackTransportExecutorDeps,
 };
 use crate::impls::ApiError;
@@ -40,6 +42,13 @@ pub type NextcloudHlsResourceResponseStream = std::pin::Pin<
 
 pub type NextcloudSubtitleResponseStream = std::pin::Pin<
     Box<dyn futures::Stream<Item = Result<NextcloudSubtitleResponse, ApiError>> + Send + 'static>,
+>;
+pub type NextcloudPreviewResourceResponseStream = std::pin::Pin<
+    Box<
+        dyn futures::Stream<Item = Result<NextcloudPreviewResourceResponse, ApiError>>
+            + Send
+            + 'static,
+    >,
 >;
 
 pub async fn get_nextcloud_resource(
@@ -111,7 +120,7 @@ pub async fn get_nextcloud_hls_manifest(
         .await
         .map_err(ApiError::from)?;
     let (segment_base, resource) =
-        nextcloud_hls_rewrite_routes(&req.version, &req.mode_name, req.media_index);
+        nextcloud_hls_rewrite_routes(&req.rid, &req.version, &req.mode_name, req.media_index);
     let stream = playback_transport_action_to_chunk_stream(
         deps.chunk_deps_with_hls(&segment_base, &claims, &resource),
         action,
@@ -166,7 +175,7 @@ pub async fn get_nextcloud_hls_resource(
         .map_err(ApiError::from)?;
     let stream = if kind == NextcloudHlsResourceKind::Manifest {
         let (segment_base, resource) =
-            nextcloud_hls_rewrite_routes(&req.version, &req.mode_name, req.media_index);
+            nextcloud_hls_rewrite_routes(&req.rid, &req.version, &req.mode_name, req.media_index);
         playback_transport_action_to_chunk_stream(
             deps.chunk_deps_with_hls(&segment_base, &claims, &resource),
             action,
@@ -201,6 +210,7 @@ const fn nextcloud_hls_resource_kind_name(kind: NextcloudHlsResourceKind) -> &'s
 }
 
 fn nextcloud_hls_rewrite_routes(
+    room_id: &str,
     version: &str,
     mode_name: &str,
     media_index: u32,
@@ -208,7 +218,7 @@ fn nextcloud_hls_rewrite_routes(
     (
         format!(
             "{}/{}/{}",
-            playback_provider_route_base(PROVIDER, version, "hls-resources"),
+            playback_provider_route_base(room_id, PROVIDER, version, "hls-resources"),
             urlencoding::encode(mode_name),
             media_index
         ),
@@ -250,6 +260,55 @@ pub async fn get_nextcloud_subtitle(
         playback_transport_action_to_chunk_stream(deps.chunk_deps(), action, false).await?;
     Ok(Box::pin(stream.map(|chunk| {
         chunk.map(|chunk| NextcloudSubtitleResponse { chunk: Some(chunk) })
+    })))
+}
+
+pub async fn get_nextcloud_preview_resource(
+    deps: NextcloudPlaybackProviderDeps<'_>,
+    req: GetNextcloudPreviewResourceRequest,
+) -> Result<NextcloudPreviewResourceResponseStream, ApiError> {
+    crate::impls::validate_proto_request(&req)?;
+    let scope = crate::nextcloud_preview_urls::NextcloudPreviewScope {
+        server_id: &req.server_id,
+        credential_owner_id: &req.credential_owner_id,
+        file_id: req.file_id,
+        width: req.width,
+        height: req.height,
+        crop: req.crop,
+    };
+    let version = crate::nextcloud_preview_urls::signature_version(scope);
+    verify_playback_resource_access_with_deps(
+        &deps.access_deps(),
+        PROVIDER,
+        PlaybackProviderAccessRequest {
+            version: &version,
+            resource: "preview".to_string(),
+            signature: &req.sig,
+            user_id: &req.uid,
+            room_id: &req.rid,
+            expires_at: req.exp,
+            target_url: None,
+        },
+    )
+    .await?;
+    let credential_owner_id =
+        decode_playback_resource_owner(deps.runtime.public_id_codec, &req.credential_owner_id)?;
+    let action = deps
+        .playback_provider_service
+        .preview_resource_action(
+            credential_owner_id,
+            &req.server_id,
+            req.file_id,
+            req.width,
+            req.height,
+            req.crop,
+        )
+        .await
+        .map_err(ApiError::from)?;
+    let stream =
+        playback_transport_action_to_chunk_stream(deps.chunk_deps(), action, false).await?;
+    Ok(Box::pin(stream.map(|chunk| {
+        chunk.map(|chunk| NextcloudPreviewResourceResponse { chunk: Some(chunk) })
     })))
 }
 
@@ -305,11 +364,11 @@ mod tests {
 
     #[test]
     fn hls_rewrite_route_uses_an_encoded_http_path_and_signed_wildcard() {
-        let (segment_base, resource) = nextcloud_hls_rewrite_routes("v1", "proxy hls", 3);
+        let (segment_base, resource) = nextcloud_hls_rewrite_routes("room-1", "v1", "proxy hls", 3);
 
         assert_eq!(
             segment_base,
-            "/api/playback-providers/nextcloud/v1/hls-resources/proxy%20hls/3"
+            "/api/playback-providers/room-1/nextcloud/v1/hls-resources/proxy%20hls/3"
         );
         assert_eq!(resource, "hls-resources/proxy hls/3/*");
     }

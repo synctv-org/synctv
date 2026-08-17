@@ -482,6 +482,8 @@ async fn test_update_with_current_version() {
         .await
         .checked("operation should succeed");
 
+    insert_test_provider_instance(&pool, "alist-current-version", "alist").await;
+
     // Create root and child
     let root = PlaylistFixture::new().with_room_id(room.id).build();
     let created_root = playlist_repo
@@ -489,10 +491,13 @@ async fn test_update_with_current_version() {
         .await
         .checked("operation should succeed");
 
-    let child = PlaylistFixture::new_child(created_root.id)
+    let mut child = PlaylistFixture::new_child(created_root.id)
         .with_room_id(room.id)
         .with_name("Original Name")
         .build();
+    child.source_provider = Some(SourceProvider::Alist);
+    child.source_config = Some(alist_playlist_source_config("/original"));
+    child.provider_instance_name = Some("alist-current-version".to_string());
     let created = playlist_repo
         .create(&child)
         .await
@@ -504,7 +509,7 @@ async fn test_update_with_current_version() {
     updated.position = 5.0;
     updated.source_provider = Some(SourceProvider::Alist);
     updated.source_config = Some(alist_playlist_source_config("/changed"));
-    updated.provider_instance_name = Some("changed-instance".to_string());
+    updated.provider_instance_name = Some("alist-current-version".to_string());
 
     let result = playlist_repo
         .update_with_version(&updated, created.version)
@@ -512,11 +517,11 @@ async fn test_update_with_current_version() {
         .checked("operation should succeed");
     assert_eq!(result.name, "Updated Name");
     assert_position_eq(result.position, 5.0);
-    assert_eq!(result.source_provider, created.source_provider);
-    assert_eq!(result.source_config, created.source_config);
+    assert_eq!(result.source_provider, updated.source_provider);
+    assert_eq!(result.source_config, updated.source_config);
     assert_eq!(
         result.provider_instance_name,
-        created.provider_instance_name
+        updated.provider_instance_name
     );
     assert!(result.version > created.version); // Version should increment
 }

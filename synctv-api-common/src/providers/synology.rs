@@ -5,11 +5,11 @@ use synctv_core::provider::{
     ProviderError, SynologyProvider, SynologyVideoEntry, SynologyVideoEntryKind,
 };
 use synctv_proto::providers::synology::{
-    BindInfo, FileItem, GetBindsResponse, ListEpisodesRequest, ListFilesRequest, ListFilesResponse,
-    ListHomeVideosRequest, ListLibrariesRequest, ListLibrariesResponse, ListMoviesRequest,
-    ListTvRecordingsRequest, ListTvShowsRequest, ListVideoItemsResponse, LoginRequest,
-    LoginResponse, LogoutRequest, LogoutResponse, SynologyVideoEntryKind as ProtoKind, VideoFile,
-    VideoItem, VideoLibrary,
+    get_image_request, BindInfo, FileItem, GetBindsResponse, GetImageRequest, ListEpisodesRequest,
+    ListFilesRequest, ListFilesResponse, ListHomeVideosRequest, ListLibrariesRequest,
+    ListLibrariesResponse, ListMoviesRequest, ListTvRecordingsRequest, ListTvShowsRequest,
+    ListVideoItemsResponse, LoginRequest, LoginResponse, LogoutRequest, LogoutResponse,
+    SynologyVideoEntryKind as ProtoKind, VideoFile, VideoItem, VideoLibrary,
 };
 use synctv_proto::source_config::{
     media_source_config, playlist_source_config, synology_media_source_config,
@@ -373,6 +373,34 @@ impl SynologyApiImpl {
         self.provider
             .poster_action(user_id, server_id, item_id, media_type, poster_mtime)
             .await
+    }
+
+    pub async fn image_action(
+        &self,
+        user_id: UserId,
+        req: GetImageRequest,
+    ) -> Result<synctv_core::provider::PlaybackTransportAction, crate::impls::ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let server_id = req.server_id.trim();
+        match req.image {
+            Some(get_image_request::Image::File(file)) => self
+                .file_thumbnail_action(user_id, server_id, file.path.trim(), file.size.trim())
+                .await
+                .map_err(crate::impls::ApiError::from),
+            Some(get_image_request::Image::Poster(poster)) => self
+                .poster_action(
+                    user_id,
+                    server_id,
+                    poster.item_id,
+                    poster.media_type.trim(),
+                    poster.poster_mtime.as_deref(),
+                )
+                .await
+                .map_err(crate::impls::ApiError::from),
+            None => Err(crate::impls::ApiError::InvalidInput(
+                "Synology image source is required".to_string(),
+            )),
+        }
     }
 }
 

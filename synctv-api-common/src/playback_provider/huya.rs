@@ -71,7 +71,7 @@ pub async fn get_huya_resource(
             );
             ApiError::from(error)
         })?;
-    let segment_base = playback_provider_route_base("huya", &req.version, "segments.ts");
+    let segment_base = playback_provider_route_base(&req.rid, "huya", &req.version, "segments.ts");
     let stream = playback_transport_action_to_chunk_stream(
         deps.chunk_deps_with_hls(&segment_base, &claims),
         action,
@@ -106,7 +106,7 @@ pub async fn get_huya_segment(
         .playback_provider_service
         .segment_action(req.target_url, req.range.as_deref())
         .map_err(ApiError::from)?;
-    let segment_base = playback_provider_route_base("huya", &req.version, "segments.ts");
+    let segment_base = playback_provider_route_base(&req.rid, "huya", &req.version, "segments.ts");
     let stream = playback_transport_action_to_chunk_stream(
         deps.chunk_deps_with_hls(&segment_base, &claims),
         action,

@@ -141,16 +141,30 @@ pub fn build_update_playlist_request(
     public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<CoreSetPlaylistRequest, ApiError> {
     crate::impls::validate_proto_request(&req)?;
-    if req.name.trim().is_empty() && req.description.trim().is_empty() {
+    if req.name.trim().is_empty()
+        && req.description.trim().is_empty()
+        && req.source_config.is_none()
+        && req.provider_instance_name.is_none()
+    {
         return Err(ApiError::InvalidInput(
             "playlist update requires at least one changed field".to_string(),
         ));
     }
+    let source_config = req
+        .source_config
+        .map(|source_config| {
+            synctv_adapter::source_config::playlist_source_config_from_proto(Some(source_config))
+                .map(|(_, source_config)| source_config)
+                .map_err(|error| ApiError::InvalidInput(error.to_string()))
+        })
+        .transpose()?;
 
     Ok(CoreSetPlaylistRequest {
         playlist_id: crate::impls::proto_validated_playlist_id(req.playlist_id, public_id_codec)?,
         name: (!req.name.trim().is_empty()).then_some(req.name),
         description: (!req.description.trim().is_empty()).then_some(req.description),
+        source_config,
+        provider_instance_name: req.provider_instance_name,
     })
 }
 
@@ -923,6 +937,8 @@ mod tests {
                 playlist_id: codec_ok(codec.encode_playlist_id(PlaylistId::expect_positive(1)))?,
                 name: "a".repeat(256),
                 description: String::new(),
+                source_config: None,
+                provider_instance_name: None,
             },
             &codec,
         ))?;
@@ -930,6 +946,57 @@ mod tests {
         assert!(error.is_invalid_argument(), "{error:?}");
         let message = error.message();
         assert!(message.contains("name"), "{message}");
+        Ok(())
+    }
+
+    #[test]
+    fn build_update_playlist_request_replaces_complete_dynamic_source_config() -> TestResult {
+        let codec = synctv_adapter::PublicIdCodec::plain();
+        let request = api_ok(build_update_playlist_request(
+            synctv_proto::client::UpdatePlaylistRequest {
+                playlist_id: codec_ok(codec.encode_playlist_id(PlaylistId::expect_positive(1)))?,
+                name: String::new(),
+                description: String::new(),
+                source_config: alist_playlist_source_config("/updated-library"),
+                provider_instance_name: Some("alist-secondary".to_string()),
+            },
+            &codec,
+        ))?;
+
+        assert_eq!(
+            request.source_config,
+            Some(synctv_core_testing::alist_directory_playlist_source_config(
+                "alist-server",
+                "/updated-library"
+            ))
+        );
+        assert_eq!(
+            request.provider_instance_name.as_deref(),
+            Some("alist-secondary")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn build_update_playlist_request_allows_provider_instance_without_source_config() -> TestResult
+    {
+        let codec = synctv_adapter::PublicIdCodec::plain();
+        let request = api_ok(build_update_playlist_request(
+            synctv_proto::client::UpdatePlaylistRequest {
+                playlist_id: codec_ok(codec.encode_playlist_id(PlaylistId::expect_positive(1)))?,
+                name: String::new(),
+                description: String::new(),
+                source_config: None,
+                provider_instance_name: Some("alist-secondary".to_string()),
+            },
+            &codec,
+        ))?;
+
+        assert!(request.source_config.is_none());
+        assert_eq!(
+            request.provider_instance_name.as_deref(),
+            Some("alist-secondary")
+        );
         Ok(())
     }
 

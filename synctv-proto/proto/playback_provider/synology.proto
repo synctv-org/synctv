@@ -50,8 +50,38 @@ message SynologySubtitleResponse {
   synctv.playback_provider.common.StreamChunk chunk = 1;
 }
 
+message SynologyFileImageResource {
+  string path = 1 [(buf.validate.field).string.min_len = 1];
+  string size = 2 [(buf.validate.field).string.min_len = 1];
+}
+
+message SynologyPosterImageResource {
+  int64 item_id = 1;
+  string media_type = 2 [(buf.validate.field).string.min_len = 1];
+  optional string poster_mtime = 3;
+}
+
+message GetSynologyImageResourceRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  string credential_owner_id = 2 [(buf.validate.field).string.min_len = 1];
+  oneof image {
+    option (buf.validate.oneof).required = true;
+    SynologyFileImageResource file = 3;
+    SynologyPosterImageResource poster = 4;
+  }
+  string sig = 5 [(buf.validate.field).string.min_len = 1];
+  string uid = 6 [(buf.validate.field).string.min_len = 1];
+  string rid = 7 [(buf.validate.field).string.min_len = 1];
+  int64 exp = 8;
+}
+
+message SynologyImageResourceResponse {
+  synctv.playback_provider.common.StreamChunk chunk = 1;
+}
+
 service SynologyPlaybackProviderService {
   rpc GetResource(GetSynologyResourceRequest) returns (stream SynologyResourceResponse);
   rpc GetSegment(GetSynologySegmentRequest) returns (stream SynologySegmentResponse);
   rpc GetSubtitle(GetSynologySubtitleRequest) returns (stream SynologySubtitleResponse);
+  rpc GetImageResource(GetSynologyImageResourceRequest) returns (stream SynologyImageResourceResponse);
 }

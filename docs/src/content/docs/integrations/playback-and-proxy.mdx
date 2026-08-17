@@ -58,6 +58,22 @@ Provider 在请求上游资源前计算线路选择。只代理模式跳过直�
 
 客户端根据响应动态生成选择器和提示，也可以对已保存来源查询同一策略。Provider 新增媒体变体时同步更新策略返回值和播放生成测试。
 
+## Playback-provider 资源约定
+
+每个 Provider 管理自己生成的播放资源，包括媒体、字幕、普通弹幕、实时弹幕、缩略图、HLS playlist 与 segment、DASH manifest 与子资源，以及直播 FLV 或 HLS 资源。
+
+Provider 资源 URL 使用以下路径：
+
+```text
+/api/playback-providers/{roomId}/{provider}/...
+```
+
+路径中的房间 ID 属于签名 claim。签名播放查询包含 `sig`、`uid` 和 `exp`。重写后的 HLS 资源还包含已签名的 `targetUrl`。DASH 资源路由在路径中携带签名字段，上游资源查询保持独立。这个布局保留上游查询，并让公开路径只保留一个房间标识。
+
+Provider service 决定资源路由、上游 URL、header、直连或代理投递方式，以及 playlist 重写规则。HTTP 与 gRPC adapter 调用同一个 room actor 业务操作。共享传输层负责流式转发、Range、重定向、超时和缓存行为。
+
+`PlaybackDanmaku.delivery` 告诉客户端每个弹幕资源的加载方式。`DOCUMENT` 使用静态文档加载器。`EVENT_STREAM` 使用实时事件流加载器。客户端根据这个字段选择加载器。
+
 ## 客户端选择策略
 
 客户端应根据环境和能力选择播放结果：
@@ -97,6 +113,8 @@ SyncTV proxy slice cache 的边界：
 - 上游不支持 Range 时直接 bypass。
 - 文件后端可以跨进程重启保留数据，但没有跨进程共享索引或分布式锁。
 - 多副本可以用共享存储，但不要把 slice cache 当作强一致分布式缓存。
+
+Provider 可以为确定不支持 Range 的小型资源选择 full-response cache，例如字幕和静态弹幕。首次响应会记录状态、`Content-Length` 和内容类型等 metadata；只有状态成功且声明大小不超过 16 MiB 时才进入全量缓存并使用填充锁。未知大小、超限或其他不可缓存响应仍直接流式返回，大小限制不限制向客户端转发的数据量；后续请求根据 metadata 直接 bypass，避免让不会被缓存的资源串行请求。
 
 配置细节见 [Proxy slice cache](../../configuration/proxy-slice-cache/)。
 

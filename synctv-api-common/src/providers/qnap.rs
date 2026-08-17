@@ -4,7 +4,8 @@ use synctv_core::models::UserId;
 use synctv_core::provider::{ProviderError, QnapProvider};
 use synctv_proto::providers::qnap::{
     BindInfo, FileItem, GetBindsResponse, GetCapabilitiesRequest, GetCapabilitiesResponse,
-    ListRequest, ListResponse, LoginRequest, LoginResponse, LogoutRequest, LogoutResponse,
+    GetThumbnailRequest, ListRequest, ListResponse, LoginRequest, LoginResponse, LogoutRequest,
+    LogoutResponse,
 };
 use synctv_proto::source_config::{
     media_source_config, playlist_source_config, QnapMediaSourceConfig, QnapPlaylistSourceConfig,
@@ -190,13 +191,19 @@ impl QnapApiImpl {
     pub async fn thumbnail_action(
         &self,
         credential_owner_id: UserId,
-        server_id: &str,
-        path: &str,
-        size: u32,
-    ) -> Result<synctv_core::provider::PlaybackTransportAction, ProviderError> {
+        req: GetThumbnailRequest,
+    ) -> Result<synctv_core::provider::PlaybackTransportAction, crate::impls::ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let size = if req.size == 0 { 640 } else { req.size };
         self.provider
-            .thumbnail_action(credential_owner_id, server_id, path, size)
+            .thumbnail_action(
+                credential_owner_id,
+                req.server_id.trim(),
+                req.path.trim(),
+                size,
+            )
             .await
+            .map_err(crate::impls::ApiError::from)
     }
 }
 

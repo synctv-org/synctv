@@ -678,10 +678,6 @@ fn register_read_routes() -> Router<AppState> {
             get(room::watch_playback),
         )
         .route(
-            "/api/rooms/{roomId}/media/{mediaId}/danmaku/bilibili-live",
-            get(room::watch_bilibili_live_danmaku),
-        )
-        .route(
             "/api/rooms/{roomId}/watch/room-settings",
             get(room::watch_room_settings),
         )
@@ -980,491 +976,530 @@ fn register_all_routes() -> Router<AppState> {
                 )),
         )
         .route(
-            "/api/playback-providers/bilibili/live-danmaku/{mediaId}",
+            "/api/playback-providers/{roomId}/emby/thumbnail/{itemId}",
+            get(crate::providers::playback_provider::emby::get_emby_thumbnail_resource)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/{roomId}/fnos/image",
+            get(crate::providers::playback_provider::fnos::get_fnos_image_resource)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/{roomId}/qnap/thumbnail",
+            get(crate::providers::playback_provider::qnap::get_qnap_thumbnail_resource)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/{roomId}/nextcloud/preview",
+            get(crate::providers::playback_provider::nextcloud::get_nextcloud_preview_resource)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/{roomId}/seafile/thumbnail",
+            get(crate::providers::playback_provider::seafile::get_seafile_thumbnail_resource)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/{roomId}/synology/image",
+            get(crate::providers::playback_provider::synology::get_synology_image_resource)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/{roomId}/bilibili/live-danmaku/{mediaId}",
             get(crate::providers::playback_provider::bilibili::watch_bilibili_live_danmaku)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/bilibili/{version}/media-streams/{modeName}/{urlIndex}",
+            "/api/playback-providers/{roomId}/bilibili/live-danmaku/dynamic/{playlistId}",
+            get(crate::providers::playback_provider::bilibili::watch_bilibili_dynamic_live_danmaku)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/{roomId}/bilibili/{version}/media-streams/{modeName}/{urlIndex}",
             get(crate::providers::playback_provider::bilibili::get_bilibili_media_stream)
                 .head(crate::providers::playback_provider::bilibili::head_bilibili_media_stream)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/bilibili/{version}/hls-manifests/{modeName}/{urlIndex}",
+            "/api/playback-providers/{roomId}/bilibili/{version}/hls-manifests/{modeName}/{urlIndex}",
             get(crate::providers::playback_provider::bilibili::get_bilibili_hls_manifest)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/bilibili/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
+            "/api/playback-providers/{roomId}/bilibili/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
             get(crate::providers::playback_provider::bilibili::get_bilibili_hls_resource)
                 .head(crate::providers::playback_provider::bilibili::head_bilibili_hls_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/bilibili/{version}/dash-manifests/{modeName}",
+            "/api/playback-providers/{roomId}/bilibili/{version}/dash-manifests/{modeName}",
             get(crate::providers::playback_provider::bilibili::get_bilibili_dash_manifest)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/bilibili/{version}/dash-manifests/{modeName}/{manifestMode}",
+            "/api/playback-providers/{roomId}/bilibili/{version}/dash-manifests/{modeName}/{manifestMode}",
             get(crate::providers::playback_provider::bilibili::get_bilibili_dash_manifest)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/bilibili/{version}/dash-resources/{modeName}/{resourceKind}/{scope}/{uid}/{rid}/{exp}/{sig}",
+            "/api/playback-providers/{roomId}/bilibili/{version}/dash-resources/{modeName}/{resourceKind}/{scope}/{uid}/{exp}/{sig}",
             get(crate::providers::playback_provider::bilibili::get_bilibili_dash_resource)
                 .head(crate::providers::playback_provider::bilibili::head_bilibili_dash_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/bilibili/{version}/dash-resources/{modeName}/{resourceKind}/{scope}/{uid}/{rid}/{exp}/{sig}/{*resourcePath}",
+            "/api/playback-providers/{roomId}/bilibili/{version}/dash-resources/{modeName}/{resourceKind}/{scope}/{uid}/{exp}/{sig}/{*resourcePath}",
             get(crate::providers::playback_provider::bilibili::get_bilibili_dash_resource)
                 .head(crate::providers::playback_provider::bilibili::head_bilibili_dash_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/bilibili/{version}/subtitles/{modeName}/{subtitleIndex}",
+            "/api/playback-providers/{roomId}/bilibili/{version}/subtitles/{modeName}/{subtitleIndex}",
             get(crate::providers::playback_provider::bilibili::get_bilibili_subtitle)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/bilibili/{version}/danmaku-files/{danmakuIndex}",
+            "/api/playback-providers/{roomId}/bilibili/{version}/danmaku-files/{danmakuIndex}",
             get(crate::providers::playback_provider::bilibili::get_bilibili_danmaku_file)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/direct-url/{version}/streams/{modeName}/{urlIndex}",
+            "/api/playback-providers/{roomId}/direct-url/{version}/streams/{modeName}/{urlIndex}",
             get(crate::providers::playback_provider::direct_url::get_direct_url_stream)
                 .head(crate::providers::playback_provider::direct_url::head_direct_url_stream)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/direct-url/{version}/hls-manifests/{modeName}/{urlIndex}",
+            "/api/playback-providers/{roomId}/direct-url/{version}/hls-manifests/{modeName}/{urlIndex}",
             get(crate::providers::playback_provider::direct_url::get_direct_url_hls_manifest)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/direct-url/{version}/hls-resources/{modeName}/{urlIndex}/{resourceKind}",
+            "/api/playback-providers/{roomId}/direct-url/{version}/hls-resources/{modeName}/{urlIndex}/{resourceKind}",
             get(crate::providers::playback_provider::direct_url::get_direct_url_hls_resource)
                 .head(crate::providers::playback_provider::direct_url::head_direct_url_hls_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/direct-url/{version}/dash-manifests/{modeName}/{urlIndex}",
+            "/api/playback-providers/{roomId}/direct-url/{version}/dash-manifests/{modeName}/{urlIndex}",
             get(crate::providers::playback_provider::direct_url::get_direct_url_dash_manifest)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/direct-url/{version}/dash-resources/{modeName}/{urlIndex}/{resourceKind}/{scope}/{uid}/{rid}/{exp}/{sig}",
+            "/api/playback-providers/{roomId}/direct-url/{version}/dash-resources/{modeName}/{urlIndex}/{resourceKind}/{scope}/{uid}/{exp}/{sig}",
             get(crate::providers::playback_provider::direct_url::get_direct_url_dash_resource)
                 .head(crate::providers::playback_provider::direct_url::head_direct_url_dash_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/direct-url/{version}/dash-resources/{modeName}/{urlIndex}/{resourceKind}/{scope}/{uid}/{rid}/{exp}/{sig}/{*resourcePath}",
+            "/api/playback-providers/{roomId}/direct-url/{version}/dash-resources/{modeName}/{urlIndex}/{resourceKind}/{scope}/{uid}/{exp}/{sig}/{*resourcePath}",
             get(crate::providers::playback_provider::direct_url::get_direct_url_dash_resource)
                 .head(crate::providers::playback_provider::direct_url::head_direct_url_dash_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/direct-url/{version}/subtitles/{modeName}/{subtitleIndex}",
+            "/api/playback-providers/{roomId}/direct-url/{version}/subtitles/{modeName}/{subtitleIndex}",
             get(crate::providers::playback_provider::direct_url::get_direct_url_subtitle)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/twitch/{version}/resources/{modeName}/{mediaIndex}",
+            "/api/playback-providers/{roomId}/twitch/{version}/resources/{modeName}/{mediaIndex}",
             get(crate::providers::playback_provider::twitch::get_twitch_resource)
                 .head(crate::providers::playback_provider::twitch::head_twitch_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/twitch/{version}/segments",
+            "/api/playback-providers/{roomId}/twitch/{version}/segments",
             get(crate::providers::playback_provider::twitch::get_twitch_segment)
                 .head(crate::providers::playback_provider::twitch::head_twitch_segment)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/twitch/{version}/chats/{modeName}/{mediaIndex}",
+            "/api/playback-providers/{roomId}/twitch/{version}/chats/{modeName}/{mediaIndex}",
             get(crate::providers::playback_provider::twitch::watch_twitch_chat)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/youtube/{version}/resources/{modeName}/{mediaIndex}",
+            "/api/playback-providers/{roomId}/youtube/{version}/resources/{modeName}/{mediaIndex}",
             get(crate::providers::playback_provider::youtube::get_youtube_resource)
                 .head(crate::providers::playback_provider::youtube::head_youtube_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/youtube/{version}/segments",
+            "/api/playback-providers/{roomId}/youtube/{version}/segments",
             get(crate::providers::playback_provider::youtube::get_youtube_segment)
                 .head(crate::providers::playback_provider::youtube::head_youtube_segment)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/youtube/{version}/subtitles/{modeName}/{subtitleIndex}",
+            "/api/playback-providers/{roomId}/youtube/{version}/subtitles/{modeName}/{subtitleIndex}",
             get(crate::providers::playback_provider::youtube::get_youtube_subtitle)
                 .head(crate::providers::playback_provider::youtube::head_youtube_subtitle)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/huya/{version}/resources/{modeName}/{mediaIndex}",
+            "/api/playback-providers/{roomId}/huya/{version}/resources/{modeName}/{mediaIndex}",
             get(crate::providers::playback_provider::huya::get_huya_resource)
                 .head(crate::providers::playback_provider::huya::head_huya_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/huya/{version}/segments",
+            "/api/playback-providers/{roomId}/huya/{version}/segments",
             get(crate::providers::playback_provider::huya::get_huya_segment)
                 .head(crate::providers::playback_provider::huya::head_huya_segment)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/huya/{version}/segments.ts",
+            "/api/playback-providers/{roomId}/huya/{version}/segments.ts",
             get(crate::providers::playback_provider::huya::get_huya_segment)
                 .head(crate::providers::playback_provider::huya::head_huya_segment)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/huya/{version}/danmakus/{modeName}/{mediaIndex}",
+            "/api/playback-providers/{roomId}/huya/{version}/danmakus/{modeName}/{mediaIndex}",
             get(crate::providers::playback_provider::huya::watch_huya_danmaku)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/douyu/{version}/resources/{modeName}/{mediaIndex}",
+            "/api/playback-providers/{roomId}/douyu/{version}/resources/{modeName}/{mediaIndex}",
             get(crate::providers::playback_provider::douyu::get_douyu_resource)
                 .head(crate::providers::playback_provider::douyu::head_douyu_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/douyin/{version}/resources/{modeName}/{mediaIndex}",
+            "/api/playback-providers/{roomId}/douyin/{version}/resources/{modeName}/{mediaIndex}",
             get(crate::providers::playback_provider::douyin::get_resource)
                 .head(crate::providers::playback_provider::douyin::head_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/douyin/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
+            "/api/playback-providers/{roomId}/douyin/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
             get(crate::providers::playback_provider::douyin::get_hls_resource)
                 .head(crate::providers::playback_provider::douyin::head_hls_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/douyin/{version}/danmakus/{modeName}/{mediaIndex}",
+            "/api/playback-providers/{roomId}/douyin/{version}/danmakus/{modeName}/{mediaIndex}",
             get(crate::providers::playback_provider::douyin::watch_danmaku)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/tiktok/{version}/resources/{modeName}/{mediaIndex}",
+            "/api/playback-providers/{roomId}/tiktok/{version}/resources/{modeName}/{mediaIndex}",
             get(crate::providers::playback_provider::tiktok::get_tiktok_resource)
                 .head(crate::providers::playback_provider::tiktok::head_tiktok_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/tiktok/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
+            "/api/playback-providers/{roomId}/tiktok/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
             get(crate::providers::playback_provider::tiktok::get_tiktok_hls_resource)
                 .head(crate::providers::playback_provider::tiktok::head_tiktok_hls_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/tiktok/{version}/subtitles/{modeName}/{subtitleIndex}",
+            "/api/playback-providers/{roomId}/tiktok/{version}/subtitles/{modeName}/{subtitleIndex}",
             get(crate::providers::playback_provider::tiktok::get_tiktok_subtitle)
                 .head(crate::providers::playback_provider::tiktok::head_tiktok_subtitle)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/douyu/{version}/segments",
+            "/api/playback-providers/{roomId}/douyu/{version}/segments",
             get(crate::providers::playback_provider::douyu::get_douyu_segment)
                 .head(crate::providers::playback_provider::douyu::head_douyu_segment)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/douyu/{version}/danmakus/{modeName}/{mediaIndex}",
+            "/api/playback-providers/{roomId}/douyu/{version}/danmakus/{modeName}/{mediaIndex}",
             get(crate::providers::playback_provider::douyu::watch_douyu_danmaku)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/acfun/{version}/resources/{modeName}/{mediaIndex}",
+            "/api/playback-providers/{roomId}/acfun/{version}/resources/{modeName}/{mediaIndex}",
             get(crate::providers::playback_provider::acfun::get_acfun_resource)
                 .head(crate::providers::playback_provider::acfun::head_acfun_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/acfun/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
+            "/api/playback-providers/{roomId}/acfun/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
             get(crate::providers::playback_provider::acfun::get_acfun_hls_resource)
                 .head(crate::providers::playback_provider::acfun::head_acfun_hls_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/acfun/{version}/danmaku-files/{modeName}/{mediaIndex}",
+            "/api/playback-providers/{roomId}/acfun/{version}/danmaku-files/{modeName}/{mediaIndex}",
             get(crate::providers::playback_provider::acfun::get_acfun_danmaku_file)
                 .head(crate::providers::playback_provider::acfun::head_acfun_danmaku_file)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/acfun/{version}/danmakus/{modeName}/{mediaIndex}",
+            "/api/playback-providers/{roomId}/acfun/{version}/danmakus/{modeName}/{mediaIndex}",
             get(crate::providers::playback_provider::acfun::watch_acfun_danmaku)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/cctv/{version}/resources/{modeName}/{mediaIndex}",
+            "/api/playback-providers/{roomId}/cctv/{version}/resources/{modeName}/{mediaIndex}",
             get(crate::providers::playback_provider::cctv::get_cctv_resource)
                 .head(crate::providers::playback_provider::cctv::head_cctv_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/cctv/{version}/segments",
+            "/api/playback-providers/{roomId}/cctv/{version}/segments",
             get(crate::providers::playback_provider::cctv::get_cctv_segment)
                 .head(crate::providers::playback_provider::cctv::head_cctv_segment)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/fnos/{version}/resources/{modeName}/{mediaIndex}",
+            "/api/playback-providers/{roomId}/fnos/{version}/resources/{modeName}/{mediaIndex}",
             get(crate::providers::playback_provider::fnos::get_fnos_resource)
                 .head(crate::providers::playback_provider::fnos::head_fnos_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/fnos/{version}/segments",
+            "/api/playback-providers/{roomId}/fnos/{version}/segments",
             get(crate::providers::playback_provider::fnos::get_fnos_segment)
                 .head(crate::providers::playback_provider::fnos::head_fnos_segment)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/fnos/{version}/subtitles/{modeName}/{subtitleIndex}",
+            "/api/playback-providers/{roomId}/fnos/{version}/subtitles/{modeName}/{subtitleIndex}",
             get(crate::providers::playback_provider::fnos::get_fnos_subtitle)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/fnos/{version}/thumbnail",
+            "/api/playback-providers/{roomId}/fnos/{version}/thumbnail",
             get(crate::providers::playback_provider::fnos::get_fnos_thumbnail)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/qnap/{version}/resources/{modeName}/{mediaIndex}",
+            "/api/playback-providers/{roomId}/qnap/{version}/resources/{modeName}/{mediaIndex}",
             get(crate::providers::playback_provider::qnap::get_qnap_resource)
                 .head(crate::providers::playback_provider::qnap::head_qnap_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/qnap/{version}/hls-manifests/{modeName}/{mediaIndex}",
+            "/api/playback-providers/{roomId}/qnap/{version}/hls-manifests/{modeName}/{mediaIndex}",
             get(crate::providers::playback_provider::qnap::get_qnap_hls_manifest)
                 .head(crate::providers::playback_provider::qnap::head_qnap_hls_manifest)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/qnap/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
+            "/api/playback-providers/{roomId}/qnap/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
             get(crate::providers::playback_provider::qnap::get_qnap_hls_resource)
                 .head(crate::providers::playback_provider::qnap::head_qnap_hls_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/qnap/{version}/subtitles/{modeName}/{subtitleIndex}",
+            "/api/playback-providers/{roomId}/qnap/{version}/subtitles/{modeName}/{subtitleIndex}",
             get(crate::providers::playback_provider::qnap::get_qnap_subtitle)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/qnap/{version}/thumbnail",
+            "/api/playback-providers/{roomId}/qnap/{version}/thumbnail",
             get(crate::providers::playback_provider::qnap::get_qnap_thumbnail)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/synology/{version}/resources/{modeName}/{mediaIndex}",
+            "/api/playback-providers/{roomId}/synology/{version}/resources/{modeName}/{mediaIndex}",
             get(crate::providers::playback_provider::synology::get_synology_resource)
                 .head(crate::providers::playback_provider::synology::head_synology_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/cloudreve/{version}/resources/{modeName}/{mediaIndex}",
+            "/api/playback-providers/{roomId}/cloudreve/{version}/resources/{modeName}/{mediaIndex}",
             get(crate::providers::playback_provider::cloudreve::get_cloudreve_resource)
                 .head(crate::providers::playback_provider::cloudreve::head_cloudreve_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/cloudreve/{version}/hls-manifests/{modeName}/{mediaIndex}",
+            "/api/playback-providers/{roomId}/cloudreve/{version}/hls-manifests/{modeName}/{mediaIndex}",
             get(crate::providers::playback_provider::cloudreve::get_cloudreve_hls_manifest)
                 .head(crate::providers::playback_provider::cloudreve::head_cloudreve_hls_manifest)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/cloudreve/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
+            "/api/playback-providers/{roomId}/cloudreve/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
             get(crate::providers::playback_provider::cloudreve::get_cloudreve_hls_resource)
                 .head(crate::providers::playback_provider::cloudreve::head_cloudreve_hls_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/cloudreve/{version}/subtitles/{modeName}/{subtitleIndex}",
+            "/api/playback-providers/{roomId}/cloudreve/{version}/subtitles/{modeName}/{subtitleIndex}",
             get(crate::providers::playback_provider::cloudreve::get_cloudreve_subtitle)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/nextcloud/{version}/resources/{modeName}/{mediaIndex}",
+            "/api/playback-providers/{roomId}/nextcloud/{version}/resources/{modeName}/{mediaIndex}",
             get(crate::providers::playback_provider::nextcloud::get_nextcloud_resource)
                 .head(crate::providers::playback_provider::nextcloud::head_nextcloud_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/nextcloud/{version}/hls-manifests/{modeName}/{mediaIndex}",
+            "/api/playback-providers/{roomId}/nextcloud/{version}/hls-manifests/{modeName}/{mediaIndex}",
             get(crate::providers::playback_provider::nextcloud::get_nextcloud_hls_manifest)
                 .head(crate::providers::playback_provider::nextcloud::head_nextcloud_hls_manifest)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/nextcloud/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
+            "/api/playback-providers/{roomId}/nextcloud/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
             get(crate::providers::playback_provider::nextcloud::get_nextcloud_hls_resource)
                 .head(crate::providers::playback_provider::nextcloud::head_nextcloud_hls_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/nextcloud/{version}/subtitles/{modeName}/{subtitleIndex}",
+            "/api/playback-providers/{roomId}/nextcloud/{version}/subtitles/{modeName}/{subtitleIndex}",
             get(crate::providers::playback_provider::nextcloud::get_nextcloud_subtitle)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/seafile/{version}/resources/{modeName}/{mediaIndex}",
+            "/api/playback-providers/{roomId}/seafile/{version}/resources/{modeName}/{mediaIndex}",
             get(crate::providers::playback_provider::seafile::get_seafile_resource)
                 .head(crate::providers::playback_provider::seafile::head_seafile_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/seafile/{version}/hls-manifests/{modeName}/{mediaIndex}",
+            "/api/playback-providers/{roomId}/seafile/{version}/hls-manifests/{modeName}/{mediaIndex}",
             get(crate::providers::playback_provider::seafile::get_seafile_hls_manifest)
                 .head(crate::providers::playback_provider::seafile::head_seafile_hls_manifest)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/seafile/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
+            "/api/playback-providers/{roomId}/seafile/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
             get(crate::providers::playback_provider::seafile::get_seafile_hls_resource)
                 .head(crate::providers::playback_provider::seafile::head_seafile_hls_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/seafile/{version}/subtitles/{modeName}/{subtitleIndex}",
+            "/api/playback-providers/{roomId}/seafile/{version}/subtitles/{modeName}/{subtitleIndex}",
             get(crate::providers::playback_provider::seafile::get_seafile_subtitle)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/truenas/{version}/resources/{modeName}/{mediaIndex}",
+            "/api/playback-providers/{roomId}/truenas/{version}/resources/{modeName}/{mediaIndex}",
             get(crate::providers::playback_provider::truenas::get_truenas_resource)
                 .head(crate::providers::playback_provider::truenas::head_truenas_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/truenas/{version}/hls-manifests/{modeName}/{mediaIndex}",
+            "/api/playback-providers/{roomId}/truenas/{version}/hls-manifests/{modeName}/{mediaIndex}",
             get(crate::providers::playback_provider::truenas::get_truenas_hls_manifest)
                 .head(crate::providers::playback_provider::truenas::head_truenas_hls_manifest)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/truenas/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
+            "/api/playback-providers/{roomId}/truenas/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
             get(crate::providers::playback_provider::truenas::get_truenas_hls_resource)
                 .head(crate::providers::playback_provider::truenas::head_truenas_hls_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/truenas/{version}/subtitles/{modeName}/{subtitleIndex}",
+            "/api/playback-providers/{roomId}/truenas/{version}/subtitles/{modeName}/{subtitleIndex}",
             get(crate::providers::playback_provider::truenas::get_truenas_subtitle)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/synology/{version}/subtitles/{modeName}/{subtitleIndex}",
+            "/api/playback-providers/{roomId}/synology/{version}/subtitles/{modeName}/{subtitleIndex}",
             get(crate::providers::playback_provider::synology::get_synology_subtitle)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/synology/{version}/segments",
+            "/api/playback-providers/{roomId}/synology/{version}/segments",
             get(crate::providers::playback_provider::synology::get_synology_segment)
                 .head(crate::providers::playback_provider::synology::head_synology_segment)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/alist/{version}/files/{modeName}/{urlIndex}",
+            "/api/playback-providers/{roomId}/alist/{version}/files/{modeName}/{urlIndex}",
             get(crate::providers::playback_provider::alist::get_alist_file_stream)
                 .head(crate::providers::playback_provider::alist::head_alist_file_stream)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/alist/{version}/transcoded-hls-manifests/{modeName}/{urlIndex}",
+            "/api/playback-providers/{roomId}/alist/{version}/transcoded-hls-manifests/{modeName}/{urlIndex}",
             get(crate::providers::playback_provider::alist::get_alist_transcoded_hls_manifest)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/alist/{version}/transcoded-hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
+            "/api/playback-providers/{roomId}/alist/{version}/transcoded-hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
             get(crate::providers::playback_provider::alist::get_alist_transcoded_hls_resource)
                 .head(crate::providers::playback_provider::alist::head_alist_transcoded_hls_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/alist/{version}/subtitles/{modeName}/{subtitleIndex}",
+            "/api/playback-providers/{roomId}/alist/{version}/subtitles/{modeName}/{subtitleIndex}",
             get(crate::providers::playback_provider::alist::get_alist_subtitle)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/alist/{version}/thumbnail",
+            "/api/playback-providers/{roomId}/alist/{version}/thumbnail",
             get(crate::providers::playback_provider::alist::get_alist_thumbnail)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/emby/{version}/media-streams/{modeName}/{urlIndex}",
+            "/api/playback-providers/{roomId}/emby/{version}/media-streams/{modeName}/{urlIndex}",
             get(crate::providers::playback_provider::emby::get_emby_media_stream)
                 .head(crate::providers::playback_provider::emby::head_emby_media_stream)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/emby/{version}/hls-manifests/{modeName}/{urlIndex}",
+            "/api/playback-providers/{roomId}/emby/{version}/hls-manifests/{modeName}/{urlIndex}",
             get(crate::providers::playback_provider::emby::get_emby_hls_manifest)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/emby/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
+            "/api/playback-providers/{roomId}/emby/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
             get(crate::providers::playback_provider::emby::get_emby_hls_resource)
                 .head(crate::providers::playback_provider::emby::head_emby_hls_resource)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/emby/{version}/subtitles/{modeName}/{subtitleIndex}",
+            "/api/playback-providers/{roomId}/emby/{version}/subtitles/{modeName}/{subtitleIndex}",
             get(crate::providers::playback_provider::emby::get_emby_subtitle)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/rtmp/{version}/flv-stream",
+            "/api/playback-providers/{roomId}/rtmp/{mediaId}/publish-key",
+            post(room::create_room_publish_key),
+        )
+        .route(
+            "/api/playback-providers/{roomId}/rtmp/{version}/flv-stream",
             get(crate::providers::playback_provider::rtmp::get_rtmp_flv_stream)
                 .head(crate::providers::playback_provider::rtmp::head_rtmp_flv_stream)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/rtmp/{version}/hls-master",
+            "/api/playback-providers/{roomId}/rtmp/{version}/hls-master",
             get(crate::providers::playback_provider::rtmp::get_rtmp_hls_master)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/rtmp/{version}/hls/{generationId}/index.m3u8",
+            "/api/playback-providers/{roomId}/rtmp/{version}/hls/{generationId}/index.m3u8",
             get(crate::providers::playback_provider::rtmp::get_rtmp_hls_playlist)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/rtmp/{version}/hls/{generationId}/{segmentName}",
+            "/api/playback-providers/{roomId}/rtmp/{version}/hls/{generationId}/{segmentName}",
             get(crate::providers::playback_provider::rtmp::get_rtmp_hls_segment)
                 .head(crate::providers::playback_provider::rtmp::head_rtmp_hls_segment)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/live-proxy/{version}/flv-stream",
+            "/api/playback-providers/{roomId}/live-proxy/{version}/flv-stream",
             get(crate::providers::playback_provider::live_proxy::get_live_proxy_flv_stream)
                 .head(crate::providers::playback_provider::live_proxy::head_live_proxy_flv_stream)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/live-proxy/{version}/hls-master",
+            "/api/playback-providers/{roomId}/live-proxy/{version}/hls-master",
             get(crate::providers::playback_provider::live_proxy::get_live_proxy_hls_master)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/live-proxy/{version}/hls/{generationId}/index.m3u8",
+            "/api/playback-providers/{roomId}/live-proxy/{version}/hls/{generationId}/index.m3u8",
             get(crate::providers::playback_provider::live_proxy::get_live_proxy_hls_playlist)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/live-proxy/{version}/hls/{generationId}/{segmentName}",
+            "/api/playback-providers/{roomId}/live-proxy/{version}/hls/{generationId}/{segmentName}",
             get(crate::providers::playback_provider::live_proxy::get_live_proxy_hls_segment)
                 .head(crate::providers::playback_provider::live_proxy::head_live_proxy_hls_segment)
                 .options(providers::playback_provider_options_preflight),
@@ -1489,9 +1524,6 @@ fn register_all_routes() -> Router<AppState> {
                 get(oauth2::list_available_providers),
             ),
     );
-
-    router =
-        router.merge(Router::new().nest("/api/providers/rtmp", providers::rtmp::rtmp_routes()));
 
     router
 }

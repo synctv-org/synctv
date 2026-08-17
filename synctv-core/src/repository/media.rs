@@ -531,11 +531,12 @@ impl MediaRepository {
             MediaRow,
             r#"
             UPDATE media
-            SET name = $2, description = $3, position = $4, source_config = $5,
+            SET name = $2, description = $3, position = $4, source_provider = $5,
+                source_config = $6, provider_instance_name = $7,
                 version = version + 1
              WHERE id = $1
                AND deleted_at IS NULL
-               AND version = $6
+               AND version = $8
                AND (creator_id IS NULL OR EXISTS (
                    SELECT 1 FROM users u
                    WHERE u.id = media.creator_id AND u.deleted_at IS NULL
@@ -558,7 +559,9 @@ impl MediaRepository {
             media.name,
             media.description,
             media.position,
+            media.source_provider.as_i16(),
             source_config,
+            normalize_provider_instance_name(media.provider_instance_name.as_deref()),
             expected_version,
         )
         .fetch_optional(executor)

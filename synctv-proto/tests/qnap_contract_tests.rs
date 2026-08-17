@@ -6,12 +6,18 @@ fn qnap_services_are_registered_in_descriptor_pools() {
     let provider = synctv_proto::PROVIDERS_DESCRIPTOR_POOL
         .get_service_by_name("synctv.provider.qnap.QnapProviderService")
         .expect("QNAP provider service descriptor");
-    assert_eq!(provider.methods().count(), 5);
+    assert_eq!(provider.methods().count(), 6);
+    assert!(provider
+        .methods()
+        .any(|method| method.name() == "GetThumbnail" && method.is_server_streaming()));
 
     let playback = synctv_proto::PLAYBACK_PROVIDER_DESCRIPTOR_POOL
         .get_service_by_name("synctv.playback_provider.qnap.QnapPlaybackProviderService")
         .expect("QNAP playback provider service descriptor");
-    assert_eq!(playback.methods().count(), 5);
+    assert_eq!(playback.methods().count(), 6);
+    assert!(playback
+        .methods()
+        .any(|method| method.name() == "GetThumbnailResource"));
 }
 
 #[test]

@@ -2,13 +2,15 @@ use futures::StreamExt;
 use synctv_core::provider::ExecutionControl;
 use synctv_core::service::FnosPlaybackProviderService;
 use synctv_proto::playback_provider::fnos::{
-    FnosResourceResponse, FnosSegmentResponse, FnosSubtitleResponse, FnosThumbnailResponse,
-    GetFnosResourceRequest, GetFnosSegmentRequest, GetFnosSubtitleRequest, GetFnosThumbnailRequest,
+    FnosImageResourceResponse, FnosResourceResponse, FnosSegmentResponse, FnosSubtitleResponse,
+    FnosThumbnailResponse, GetFnosImageResourceRequest, GetFnosResourceRequest,
+    GetFnosSegmentRequest, GetFnosSubtitleRequest, GetFnosThumbnailRequest,
 };
 
 use super::common::{
-    playback_provider_route_base, playback_transport_action_to_chunk_stream,
-    verify_playback_provider_access_with_deps, HasPlaybackProviderAccessFields, HlsRewriteSigning,
+    decode_playback_resource_owner, playback_provider_route_base,
+    playback_transport_action_to_chunk_stream, verify_playback_provider_access_with_deps,
+    verify_playback_resource_access_with_deps, HasPlaybackProviderAccessFields, HlsRewriteSigning,
     PlaybackProviderAccessRequest, PlaybackProviderApiRuntime, PlaybackTransportExecutorDeps,
 };
 use crate::impls::ApiError;
@@ -32,6 +34,9 @@ pub type FnosSubtitleResponseStream = std::pin::Pin<
 >;
 pub type FnosThumbnailResponseStream = std::pin::Pin<
     Box<dyn futures::Stream<Item = Result<FnosThumbnailResponse, ApiError>> + Send + 'static>,
+>;
+pub type FnosImageResourceResponseStream = std::pin::Pin<
+    Box<dyn futures::Stream<Item = Result<FnosImageResourceResponse, ApiError>> + Send + 'static>,
 >;
 
 pub async fn get_fnos_resource(
@@ -65,7 +70,7 @@ pub async fn get_fnos_resource(
         )
         .await
         .map_err(ApiError::from)?;
-    let segment_base = playback_provider_route_base(PROVIDER, &req.version, "segments");
+    let segment_base = playback_provider_route_base(&req.rid, PROVIDER, &req.version, "segments");
     let stream = playback_transport_action_to_chunk_stream(
         deps.chunk_deps_with_hls(&segment_base, &claims),
         action,
@@ -107,7 +112,7 @@ pub async fn get_fnos_segment(
         )
         .await
         .map_err(ApiError::from)?;
-    let segment_base = playback_provider_route_base(PROVIDER, &req.version, "segments");
+    let segment_base = playback_provider_route_base(&req.rid, PROVIDER, &req.version, "segments");
     let stream = playback_transport_action_to_chunk_stream(
         deps.chunk_deps_with_hls(&segment_base, &claims),
         action,
@@ -184,6 +189,51 @@ pub async fn get_fnos_thumbnail(
         playback_transport_action_to_chunk_stream(deps.chunk_deps(), action, false).await?;
     Ok(Box::pin(stream.map(|chunk| {
         chunk.map(|chunk| FnosThumbnailResponse { chunk: Some(chunk) })
+    })))
+}
+
+pub async fn get_fnos_image_resource(
+    deps: FnosPlaybackProviderDeps<'_>,
+    req: GetFnosImageResourceRequest,
+) -> Result<FnosImageResourceResponseStream, ApiError> {
+    crate::impls::validate_proto_request(&req)?;
+    let scope = crate::fnos_thumbnail_urls::FnosThumbnailScope {
+        server_id: &req.server_id,
+        credential_owner_id: &req.credential_owner_id,
+        image_path: &req.image_path,
+        width: req.width,
+    };
+    let version = crate::fnos_thumbnail_urls::signature_version(scope);
+    verify_playback_resource_access_with_deps(
+        &deps.access_deps(),
+        PROVIDER,
+        PlaybackProviderAccessRequest {
+            version: &version,
+            resource: "thumbnail".to_string(),
+            signature: &req.sig,
+            user_id: &req.uid,
+            room_id: &req.rid,
+            expires_at: req.exp,
+            target_url: None,
+        },
+    )
+    .await?;
+    let credential_owner_id =
+        decode_playback_resource_owner(deps.runtime.public_id_codec, &req.credential_owner_id)?;
+    let action = deps
+        .playback_provider_service
+        .image_resource_action(
+            credential_owner_id,
+            &req.server_id,
+            &req.image_path,
+            req.width,
+        )
+        .await
+        .map_err(ApiError::from)?;
+    let stream =
+        playback_transport_action_to_chunk_stream(deps.chunk_deps(), action, false).await?;
+    Ok(Box::pin(stream.map(|chunk| {
+        chunk.map(|chunk| FnosImageResourceResponse { chunk: Some(chunk) })
     })))
 }
 

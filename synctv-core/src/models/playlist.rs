@@ -113,13 +113,6 @@ pub struct CreatePlaylistRequest {
     pub provider_instance_name: Option<String>,
 }
 
-/// Update playlist request
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UpdatePlaylistRequest {
-    pub name: Option<String>,
-    pub description: Option<String>,
-}
-
 /// Playlist with media count (for efficient queries)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlaylistWithCount {

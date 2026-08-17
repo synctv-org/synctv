@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Query, RawQuery, State},
+    extract::{Query, State},
     routing::{get, post},
     Json, Router,
 };
@@ -7,9 +7,9 @@ use futures::FutureExt;
 use serde::Deserialize;
 use synctv_proto::providers::common::ProviderInstanceQuery;
 use synctv_proto::providers::synology::{
-    GetBindsResponse, ListEpisodesRequest, ListFilesRequest, ListHomeVideosRequest,
-    ListLibrariesRequest, ListMoviesRequest, ListTvRecordingsRequest, ListTvShowsRequest,
-    LoginRequest, LogoutRequest,
+    get_image_request, FileImageRequest, GetBindsResponse, GetImageRequest, ListEpisodesRequest,
+    ListFilesRequest, ListHomeVideosRequest, ListLibrariesRequest, ListMoviesRequest,
+    ListTvRecordingsRequest, ListTvShowsRequest, LoginRequest, LogoutRequest, PosterImageRequest,
 };
 
 use super::common::{
@@ -20,18 +20,15 @@ use crate::http::{middleware::RequestMetadata, validation::ProtoQuery, AppResult
 use synctv_api_common::impls::EndpointRateLimitCategory;
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ImageQuery {
     kind: String,
     server_id: String,
-    credential_owner_id: Option<String>,
     path: Option<String>,
     size: Option<String>,
     item_id: Option<i64>,
     media_type: Option<String>,
     poster_mtime: Option<String>,
-    #[serde(default, rename = "sig")]
-    _sig: Option<String>,
 }
 
 pub(crate) fn synology_auth_routes() -> Router<AppState> {
@@ -226,7 +223,6 @@ pub(crate) async fn binds(
         params(
             ("kind" = String, Query),
             ("serverId" = String, Query),
-            ("credentialOwnerId" = Option<String>, Query),
             ("path" = Option<String>, Query),
             ("size" = Option<String>, Query),
             ("itemId" = Option<i64>, Query),
@@ -241,11 +237,10 @@ pub(crate) async fn image(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Query(query): Query<ImageQuery>,
-    RawQuery(raw_query): RawQuery,
 ) -> AppResult<axum::response::Response> {
-    let raw_query = raw_query.unwrap_or_default();
     let operation_state = state.clone();
     let metadata = provider_request_metadata(request_meta);
+    let req = provider_image_request(&query)?;
     let action = state
         .shared_api_runtime
         .client_api
@@ -254,120 +249,47 @@ pub(crate) async fn image(
             EndpointRateLimitCategory::Read,
             move |auth| async move {
                 let state = operation_state;
-                let public_user = state
+                state
                     .shared_api_runtime
-                    .public_id_codec
-                    .encode_user_id(auth.user_id())
-                    .map_err(synctv_api_common::impls::ApiError::Internal)?;
-                let public_owner = query
-                    .credential_owner_id
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .unwrap_or(&public_user)
-                    .to_string();
-                let scope = image_scope(&query, &public_owner)?;
-                let signed =
-                    url::form_urlencoded::parse(raw_query.as_bytes()).any(|(key, _)| key == "sig");
-                if signed || public_owner != public_user {
-                    let room_id = synctv_api_common::synology_image_urls::verify_synology_image_access(
-                        &state.shared_api_runtime.proxy_signing_key,
-                        &public_user,
-                        &raw_query,
-                        scope,
-                    )
-                    .map_err(|error| match error {
-                        synctv_api_common::synology_image_urls::SynologyImageAccessError::Invalid => {
-                            synctv_api_common::impls::ApiError::Authentication(
-                                "Invalid Synology image signature".to_string(),
-                            )
-                        }
-                        synctv_api_common::synology_image_urls::SynologyImageAccessError::WrongUser => {
-                            synctv_api_common::impls::ApiError::Authorization(
-                                "Synology image URL is scoped to another user".to_string(),
-                            )
-                        }
-                    })?;
-                    let room_id = state
-                        .shared_api_runtime
-                        .public_id_codec
-                        .decode_room_id(&room_id)
-                        .map_err(synctv_api_common::impls::ApiError::InvalidInput)?;
-                    super::playback_provider::playback_provider_api_runtime(&state)
-                        .validate_fresh_access(&room_id, &auth.user_id())
-                        .await?;
-                }
-                let owner = state
-                    .shared_api_runtime
-                    .public_id_codec
-                    .decode_user_id(&public_owner)
-                    .map_err(synctv_api_common::impls::ApiError::InvalidInput)?;
-                match scope {
-                    synctv_api_common::synology_image_urls::SynologyImageScope::File {
-                        server_id,
-                        path,
-                        size,
-                        ..
-                    } => state
-                        .shared_api_runtime
-                        .synology_api
-                        .file_thumbnail_action(owner, server_id, path, size)
-                        .await
-                        .map_err(synctv_api_common::impls::ApiError::from),
-                    synctv_api_common::synology_image_urls::SynologyImageScope::Poster {
-                        server_id,
-                        item_id,
-                        media_type,
-                        poster_mtime,
-                        ..
-                    } => state
-                        .shared_api_runtime
-                        .synology_api
-                        .poster_action(owner, server_id, item_id, media_type, poster_mtime)
-                        .await
-                        .map_err(synctv_api_common::impls::ApiError::from),
-                }
+                    .synology_api
+                    .image_action(auth.user_id(), req)
+                    .await
             },
         )
         .await
         .map_err(crate::http::error::map_api_error)?;
-    super::execute_playback_transport_with_state(&state, action, None).await
+    super::execute_provider_preview_transport(&state, action, None).await
 }
 
-fn image_scope<'a>(
-    query: &'a ImageQuery,
-    credential_owner_id: &'a str,
-) -> Result<
-    synctv_api_common::synology_image_urls::SynologyImageScope<'a>,
-    synctv_api_common::impls::ApiError,
-> {
-    let server_id = required(&query.server_id, "serverId")?;
-    match query.kind.trim() {
-        "file" => Ok(
-            synctv_api_common::synology_image_urls::SynologyImageScope::File {
-                server_id,
-                credential_owner_id,
-                path: required(query.path.as_deref().unwrap_or_default(), "path")?,
-                size: required(query.size.as_deref().unwrap_or("medium"), "size")?,
-            },
-        ),
-        "poster" => Ok(
-            synctv_api_common::synology_image_urls::SynologyImageScope::Poster {
-                server_id,
-                credential_owner_id,
-                item_id: query.item_id.filter(|value| *value > 0).ok_or_else(|| {
-                    synctv_api_common::impls::ApiError::InvalidInput(
-                        "itemId must be greater than zero".to_string(),
-                    )
-                })?,
-                media_type: required(query.media_type.as_deref().unwrap_or_default(), "mediaType")?,
-                poster_mtime: query.poster_mtime.as_deref(),
-            },
-        ),
-        _ => Err(synctv_api_common::impls::ApiError::InvalidInput(
-            "Synology image kind must be file or poster".to_string(),
-        )),
-    }
+fn provider_image_request(
+    query: &ImageQuery,
+) -> Result<GetImageRequest, synctv_api_common::impls::ApiError> {
+    let server_id = required(&query.server_id, "serverId")?.to_string();
+    let image = match query.kind.trim() {
+        "file" => get_image_request::Image::File(FileImageRequest {
+            path: required(query.path.as_deref().unwrap_or_default(), "path")?.to_string(),
+            size: required(query.size.as_deref().unwrap_or("medium"), "size")?.to_string(),
+        }),
+        "poster" => get_image_request::Image::Poster(PosterImageRequest {
+            item_id: query.item_id.filter(|value| *value > 0).ok_or_else(|| {
+                synctv_api_common::impls::ApiError::InvalidInput(
+                    "itemId must be greater than zero".to_string(),
+                )
+            })?,
+            media_type: required(query.media_type.as_deref().unwrap_or_default(), "mediaType")?
+                .to_string(),
+            poster_mtime: query.poster_mtime.clone(),
+        }),
+        _ => {
+            return Err(synctv_api_common::impls::ApiError::InvalidInput(
+                "Synology image kind must be file or poster".to_string(),
+            ));
+        }
+    };
+    Ok(GetImageRequest {
+        server_id,
+        image: Some(image),
+    })
 }
 
 fn required<'a>(

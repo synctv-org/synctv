@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            UPDATE media\n            SET name = $2, description = $3, position = $4, source_config = $5,\n                version = version + 1\n             WHERE id = $1\n               AND deleted_at IS NULL\n               AND version = $6\n               AND (creator_id IS NULL OR EXISTS (\n                   SELECT 1 FROM users u\n                   WHERE u.id = media.creator_id AND u.deleted_at IS NULL\n               ))\n             RETURNING id as \"id: MediaId\",\n                       playlist_id as \"playlist_id: PlaylistId\",\n                       room_id as \"room_id: RoomId\",\n                       creator_id as \"creator_id: UserId\",\n                       name,\n                       description,\n                       position,\n                       source_provider as \"source_provider: ProviderTypeName\",\n                       source_config as \"source_config: crate::models::MediaSourceConfig\",\n                       NULLIF(provider_instance_name, '') AS \"provider_instance_name?\",\n                       cover_file_reference_id,\n    thumbnail_file_reference_id,\n                       added_at, updated_at, version\n            ",
+  "query": "\n            UPDATE media\n            SET name = $2, description = $3, position = $4, source_provider = $5,\n                source_config = $6, provider_instance_name = $7,\n                version = version + 1\n             WHERE id = $1\n               AND deleted_at IS NULL\n               AND version = $8\n               AND (creator_id IS NULL OR EXISTS (\n                   SELECT 1 FROM users u\n                   WHERE u.id = media.creator_id AND u.deleted_at IS NULL\n               ))\n             RETURNING id as \"id: MediaId\",\n                       playlist_id as \"playlist_id: PlaylistId\",\n                       room_id as \"room_id: RoomId\",\n                       creator_id as \"creator_id: UserId\",\n                       name,\n                       description,\n                       position,\n                       source_provider as \"source_provider: ProviderTypeName\",\n                       source_config as \"source_config: crate::models::MediaSourceConfig\",\n                       NULLIF(provider_instance_name, '') AS \"provider_instance_name?\",\n                       cover_file_reference_id,\n    thumbnail_file_reference_id,\n                       added_at, updated_at, version\n            ",
   "describe": {
     "columns": [
       {
@@ -170,7 +170,9 @@
         "Varchar",
         "Text",
         "Float8",
+        "Int2",
         "Jsonb",
+        "Varchar",
         "Int4"
       ]
     },
@@ -192,5 +194,5 @@
       false
     ]
   },
-  "hash": "d7dab5a92115d08b565aad4273e00dd156c9fd8ec75dd1948fb937948fbcea01"
+  "hash": "837e8951eb1eede9055fea7b324583337b866aab19d7b6959b6bc8f5ff556531"
 }

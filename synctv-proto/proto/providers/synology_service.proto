@@ -3,6 +3,7 @@ syntax = "proto3";
 package synctv.provider.synology;
 
 import "proto/providers/synology.proto";
+import "proto/providers/common.proto";
 
 service SynologyProviderService {
   rpc Login(LoginRequest) returns (LoginResponse);
@@ -15,4 +16,5 @@ service SynologyProviderService {
   rpc ListTvRecordings(ListTvRecordingsRequest) returns (ListVideoItemsResponse);
   rpc Logout(LogoutRequest) returns (LogoutResponse);
   rpc GetBinds(GetBindsRequest) returns (GetBindsResponse);
+  rpc GetImage(GetImageRequest) returns (stream synctv.provider.common.ResourceResponse);
 }

@@ -39,7 +39,7 @@ use crate::bootstrap::cluster::{
     build_cluster_coordination_provider, init_cluster_discovery, ClusterCoordinationProvider,
     ClusterNodeActivator, DefaultClusterNodeActivator,
 };
-use crate::bootstrap::livestream::init_livestream;
+use crate::bootstrap::livestream::{init_livestream, LivestreamInitOptions};
 use crate::bootstrap::node_id::generate_node_id;
 use crate::bootstrap::webrtc::init_webrtc;
 use crate::bootstrap::{
@@ -53,7 +53,7 @@ use crate::resource_options::{
     connection_limits_options, core_services_options, database_init_options,
     leader_runtime_options, redis_connection_options, root_user_bootstrap_options, time_options,
 };
-use crate::server::{LivestreamState, Services, SyncTvServer};
+use crate::server::{LivestreamState, ServerListenerOverrides, Services, SyncTvServer};
 use crate::shutdown::{
     AuditFlushHook, CacheFenceRepairHook, CacheInvalidationStopHook, ProviderInvalidationHook,
     RoomSettingsServiceShutdownHook, SettingsListenHook, ShutdownCoordinator, SimpleShutdownHook,
@@ -293,15 +293,49 @@ pub struct Application {
     database_pools: DatabasePools,
     services: Services,
     livestream_state: Option<LivestreamState>,
+    listener_overrides: ServerListenerOverrides,
     shutdown: ShutdownCoordinator,
 }
 
-#[derive(Clone, Default)]
+/// TCP listeners supplied by the embedding process.
+///
+/// A supplied listener stays open from allocation through service startup. This
+/// makes kernel-assigned ports usable without a reserve-then-rebind race.
+#[derive(Default)]
+pub struct ApplicationPreboundListeners {
+    pub api: Option<tokio::net::TcpListener>,
+    pub health: Option<tokio::net::TcpListener>,
+    pub management: Option<tokio::net::TcpListener>,
+    pub rtmp: Option<tokio::net::TcpListener>,
+    pub metrics: Option<tokio::net::TcpListener>,
+    pub cluster: Option<tokio::net::TcpListener>,
+}
+
+impl std::fmt::Debug for ApplicationPreboundListeners {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let address = |listener: &Option<tokio::net::TcpListener>| {
+            listener
+                .as_ref()
+                .and_then(|listener| listener.local_addr().ok())
+        };
+        f.debug_struct("ApplicationPreboundListeners")
+            .field("api", &address(&self.api))
+            .field("health", &address(&self.health))
+            .field("management", &address(&self.management))
+            .field("rtmp", &address(&self.rtmp))
+            .field("metrics", &address(&self.metrics))
+            .field("cluster", &address(&self.cluster))
+            .finish()
+    }
+}
+
+#[derive(Default)]
 pub struct ApplicationBuildOptions {
     pub provider_address_overrides: HashMap<String, SocketAddr>,
     pub credential_encryption_key_override: Option<String>,
     pub allow_password_registration: bool,
     pub public_id_config: synctv_adapter::PublicIdConfig,
+    pub prebound_listeners: ApplicationPreboundListeners,
 }
 
 impl std::fmt::Debug for ApplicationBuildOptions {
@@ -322,8 +356,136 @@ impl std::fmt::Debug for ApplicationBuildOptions {
                 "allow_password_registration",
                 &self.allow_password_registration,
             )
+            .field("prebound_listeners", &self.prebound_listeners)
             .finish()
     }
+}
+
+async fn resolve_tcp_listener(
+    name: &str,
+    bind_target: String,
+    configured_port: &mut u16,
+    listener: &mut Option<tokio::net::TcpListener>,
+) -> Result<()> {
+    if let Some(listener) = listener {
+        let expected_address: SocketAddr = bind_target
+            .parse()
+            .map_err(|error| anyhow::anyhow!("parse {name} bind target {bind_target}: {error}"))?;
+        let actual_address = listener
+            .local_addr()
+            .map_err(|error| anyhow::anyhow!("read pre-bound {name} listener address: {error}"))?;
+        if actual_address.ip() != expected_address.ip() {
+            return Err(anyhow::anyhow!(
+                "pre-bound {name} listener uses address {actual_address}, while configuration specifies {expected_address}"
+            ));
+        }
+        let actual_port = actual_address.port();
+        if *configured_port == 0 {
+            *configured_port = actual_port;
+        } else if *configured_port != actual_port {
+            return Err(anyhow::anyhow!(
+                "pre-bound {name} listener uses port {actual_port}, while configuration specifies {configured_port}"
+            ));
+        }
+        return Ok(());
+    }
+
+    if *configured_port == 0 {
+        let bound_listener = tokio::net::TcpListener::bind(&bind_target)
+            .await
+            .map_err(|error| anyhow::anyhow!("bind {name} listener at {bind_target}: {error}"))?;
+        *configured_port = bound_listener
+            .local_addr()
+            .map_err(|error| anyhow::anyhow!("read {name} listener address: {error}"))?
+            .port();
+        *listener = Some(bound_listener);
+    }
+
+    Ok(())
+}
+
+fn reject_unused_listener(name: &str, listener: Option<&tokio::net::TcpListener>) -> Result<()> {
+    if listener.is_some() {
+        return Err(anyhow::anyhow!(
+            "a pre-bound {name} listener was supplied while that service is disabled"
+        ));
+    }
+    Ok(())
+}
+
+async fn resolve_prebound_listener_ports(
+    config: &mut Config,
+    listeners: &mut ApplicationPreboundListeners,
+) -> Result<()> {
+    resolve_tcp_listener(
+        "API",
+        config.api_address(),
+        &mut config.server.port,
+        &mut listeners.api,
+    )
+    .await?;
+    resolve_tcp_listener(
+        "RTMP",
+        config.livestream_address(),
+        &mut config.livestream.rtmp_port,
+        &mut listeners.rtmp,
+    )
+    .await?;
+
+    if config.health.enabled {
+        resolve_tcp_listener(
+            "health",
+            config.health_address(),
+            &mut config.health.port,
+            &mut listeners.health,
+        )
+        .await?;
+    } else {
+        reject_unused_listener("health", listeners.health.as_ref())?;
+    }
+
+    if config.metrics.enabled {
+        resolve_tcp_listener(
+            "metrics",
+            config.metrics_address(),
+            &mut config.metrics.port,
+            &mut listeners.metrics,
+        )
+        .await?;
+    } else {
+        reject_unused_listener("metrics", listeners.metrics.as_ref())?;
+    }
+
+    if config.cluster.enabled {
+        resolve_tcp_listener(
+            "cluster",
+            config.cluster_address(),
+            &mut config.cluster.port,
+            &mut listeners.cluster,
+        )
+        .await?;
+    } else {
+        reject_unused_listener("cluster", listeners.cluster.as_ref())?;
+    }
+
+    if config.management.enabled
+        && matches!(
+            config.management.transport,
+            crate::app_config::ManagementTransport::Tcp
+        )
+    {
+        resolve_tcp_listener(
+            "management",
+            config.management_bind_target(),
+            &mut config.management.port,
+            &mut listeners.management,
+        )
+        .await?;
+    } else {
+        reject_unused_listener("management", listeners.management.as_ref())?;
+    }
+
+    Ok(())
 }
 
 const fn cluster_runtime_enabled(config: &Config) -> bool {
@@ -669,9 +831,10 @@ impl Application {
 
     /// Build the application with explicit runtime wiring options.
     pub async fn build_with_options(
-        config: Config,
-        options: ApplicationBuildOptions,
+        mut config: Config,
+        mut options: ApplicationBuildOptions,
     ) -> Result<Self> {
+        resolve_prebound_listener_ports(&mut config, &mut options.prebound_listeners).await?;
         validate_startup_config(&config)?;
         let public_id_codec = Arc::new(
             synctv_adapter::PublicIdCodec::from_config(&options.public_id_config)
@@ -752,18 +915,32 @@ impl Application {
         Self::start_playback_background_tasks(&infra, &core, &cluster, &mut shutdown);
 
         // Phase 7: Server components (livestream, WebRTC, providers)
-        let servers =
-            match Self::init_servers(&infra, &core, &cluster, &leader, &mut shutdown).await {
-                Ok(servers) => servers,
-                Err(e) => {
-                    shutdown.shutdown().await;
-                    return Err(e);
-                }
-            };
+        let servers = match Self::init_servers(
+            &infra,
+            &core,
+            &cluster,
+            &leader,
+            &mut shutdown,
+            options.prebound_listeners.rtmp.take(),
+        )
+        .await
+        {
+            Ok(servers) => servers,
+            Err(e) => {
+                shutdown.shutdown().await;
+                return Err(e);
+            }
+        };
 
         // Assemble
         Ok(Self::assemble(
-            infra, core, cluster, servers, clock, shutdown,
+            infra,
+            core,
+            cluster,
+            servers,
+            clock,
+            ServerListenerOverrides::from(options.prebound_listeners),
+            shutdown,
         ))
     }
 
@@ -796,7 +973,8 @@ impl Application {
             self.livestream_state,
             self.database_pools,
             Arc::new(ManagementLifecycleController::new()),
-        );
+        )
+        .with_listener_overrides(self.listener_overrides);
         Box::pin(server.start_with_coordinator(self.shutdown)).await
     }
 
@@ -816,7 +994,8 @@ impl Application {
             self.livestream_state,
             self.database_pools,
             Arc::new(ManagementLifecycleController::new()),
-        );
+        )
+        .with_listener_overrides(self.listener_overrides);
         server
             .start_with_coordinator_and_shutdown_signal(self.shutdown, shutdown_signal)
             .await
@@ -1600,6 +1779,7 @@ impl Application {
         cluster: &ClusterState,
         leader: &LeaderState,
         shutdown: &mut ShutdownCoordinator,
+        rtmp_listener: Option<tokio::net::TcpListener>,
     ) -> Result<ServerComponents> {
         // Livestream
         let (livestream_state, live_infra, background_handles) = init_livestream(
@@ -1608,9 +1788,12 @@ impl Application {
             &core.services,
             cluster.realtime_event_service.clone(),
             infra.shared_runtime.clone(),
-            Arc::new(LeaderRuntimeCheck {
-                leader_runtime: leader.leader_runtime.clone(),
-            }),
+            LivestreamInitOptions {
+                hls_cleanup_leader: Arc::new(LeaderRuntimeCheck {
+                    leader_runtime: leader.leader_runtime.clone(),
+                }),
+                rtmp_listener,
+            },
             &infra.node_id,
         )
         .await?;
@@ -1656,6 +1839,7 @@ impl Application {
         cluster: ClusterState,
         servers: ServerComponents,
         clock: Arc<synctv_core::SyncedClock>,
+        listener_overrides: ServerListenerOverrides,
         shutdown: ShutdownCoordinator,
     ) -> Self {
         let services = Services {
@@ -1709,6 +1893,7 @@ impl Application {
             database_pools: infra.database_pools,
             services,
             livestream_state: servers.livestream_state,
+            listener_overrides,
             shutdown,
         }
     }
@@ -1732,6 +1917,40 @@ mod tests {
     };
     use synctv_core_testing::test_redis_key_prefix;
     use tokio::sync::{broadcast, RwLock};
+
+    #[tokio::test]
+    async fn kernel_assigned_listeners_stay_bound_until_server_startup() {
+        let mut config = Config::default();
+        config.server.host = "127.0.0.1".to_string();
+        config.server.port = 0;
+        config.livestream.rtmp_port = 0;
+        config.health.host = "127.0.0.1".to_string();
+        config.health.port = 0;
+        config.management.transport = crate::app_config::ManagementTransport::Tcp;
+        config.management.port = 0;
+        config.metrics.enabled = false;
+        config.cluster.enabled = false;
+
+        let mut listeners = ApplicationPreboundListeners::default();
+        resolve_prebound_listener_ports(&mut config, &mut listeners)
+            .await
+            .expect("kernel-assigned listeners should resolve");
+
+        for (name, port) in [
+            ("api", config.server.port),
+            ("rtmp", config.livestream.rtmp_port),
+            ("health", config.health.port),
+            ("management", config.management.port),
+        ] {
+            assert_ne!(port, 0, "{name} should receive a kernel-assigned port");
+        }
+
+        let rebound_api = tokio::net::TcpListener::bind(("127.0.0.1", config.server.port)).await;
+        assert!(
+            rebound_api.is_err(),
+            "the pre-bound API listener must retain ownership of its assigned port"
+        );
+    }
 
     #[tokio::test]
     async fn test_activate_cluster_node_registers_only_when_called() {

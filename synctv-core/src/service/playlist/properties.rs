@@ -1,6 +1,6 @@
 use crate::{
-    models::{Playlist, PlaylistId, RoomId, UserId},
-    service::optimistic_retry,
+    models::{Playlist, PlaylistId, PlaylistSourceConfig, RoomId, UserId},
+    service::{optimistic_retry, provider_binding::provider_instance_name_for_source_update},
     Error, Result,
 };
 
@@ -14,6 +14,10 @@ pub struct SetPlaylistRequest {
     pub playlist_id: PlaylistId,
     pub name: Option<String>,
     pub description: Option<String>,
+    /// Complete replacement config for an existing dynamic playlist.
+    pub source_config: Option<PlaylistSourceConfig>,
+    /// Replacement provider instance, optionally updated without changing the config.
+    pub provider_instance_name: Option<String>,
 }
 
 impl PlaylistService {
@@ -117,6 +121,42 @@ impl PlaylistService {
                         )));
                     }
                     playlist.description = description.clone();
+                }
+                if request.source_config.is_some() || request.provider_instance_name.is_some() {
+                    if !playlist.is_dynamic() {
+                        return Err(Error::InvalidInput(
+                            "source updates require a dynamic playlist".to_string(),
+                        ));
+                    }
+
+                    let source_config = request
+                        .source_config
+                        .clone()
+                        .or_else(|| playlist.source_config.clone())
+                        .ok_or_else(|| {
+                            Error::Internal(
+                                "Dynamic playlist is missing its source_config".to_string(),
+                            )
+                        })?;
+                    let source_provider = source_config.provider();
+                    let provider_instance_name = provider_instance_name_for_source_update(
+                        playlist.source_provider,
+                        source_provider,
+                        request.provider_instance_name.clone(),
+                        playlist.provider_instance_name.clone(),
+                    );
+                    let (source_provider, source_config, provider_instance_name) = self
+                        .validate_dynamic_playlist_source(
+                            &room_id,
+                            &user_id,
+                            source_provider,
+                            source_config,
+                            provider_instance_name,
+                        )
+                        .await?;
+                    playlist.source_provider = Some(source_provider);
+                    playlist.source_config = Some(source_config);
+                    playlist.provider_instance_name = provider_instance_name;
                 }
                 // Save with optimistic locking
                 let mut tx = self.playlist_repo.pool().begin().await?;

@@ -26,13 +26,15 @@ use super::backend::{CacheBackend, SliceCacheBackend};
 use super::config::{CacheBackendConfig, SliceCacheConfig};
 use super::etag::{CachedResourceMeta, StoredEntry};
 use super::head::HeadFetchContext;
-use super::keys::{resource_meta_key, slice_cache_key};
+use super::keys::{
+    full_response_cache_key, full_response_meta_key, resource_meta_key, slice_cache_key,
+};
 use super::maintenance::{ratio_u64, MetaEvictionCandidate, UpdatingKeyGuard};
 use super::range::{format_request_range, parse_content_range};
 use super::status::CacheStatus;
 use super::types::{
-    CachedSlice, FetchedSlice, HeadResourceResult, SliceCachePurgeResult, SliceCacheStats,
-    SliceFetchRequest, SliceFetchResult,
+    CachedFullResponse, CachedSlice, FetchedSlice, FullResponseFetchResult, HeadResourceResult,
+    SliceCachePurgeResult, SliceCacheStats, SliceFetchRequest, SliceFetchResult,
 };
 
 pub(super) fn cleanup_stale_resource_meta(
@@ -79,6 +81,11 @@ pub(super) fn cleanup_stale_resource_meta(
 const LOCK_CLEANUP_INTERVAL: u64 = 64;
 pub(super) const MAX_META_ENTRIES: usize = 100_000;
 const META_RETENTION_TARGET_DIVISOR: usize = 2;
+/// Largest complete response eligible for the non-slice cache.
+///
+/// Media streams stay streaming regardless of size. This cap only bounds a
+/// response that is fully buffered before being placed in the shared cache.
+const MAX_FULL_RESPONSE_CACHE_ENTRY_SIZE: usize = 16 * 1024 * 1024;
 
 // SliceCache
 
@@ -290,6 +297,7 @@ impl SliceCache {
             slice: CachedSlice {
                 total_size,
                 content_type: meta.and_then(|meta| meta.content_type.clone()),
+                content_encoding: meta.and_then(|meta| meta.content_encoding.clone()),
                 etag: meta.and_then(|meta| meta.etag.clone()),
                 last_modified: meta.and_then(|meta| meta.last_modified.clone()),
                 data,
@@ -657,6 +665,286 @@ impl SliceCache {
     /// Compute the key used to store per-resource metadata.
     pub(super) fn meta_key(url: &str, provider_headers: &ProviderHeaders) -> String {
         resource_meta_key(url, provider_headers)
+    }
+
+    /// Fetch a non-range response as one cacheable object.
+    ///
+    /// Every upstream response updates admission metadata. Requests without
+    /// metadata use the per-resource lock as a single-flight guard and check
+    /// metadata again after acquiring it. Resources already known to be
+    /// ineligible bypass the lock and stream directly.
+    pub(super) async fn get_or_fetch_full_response_with_control(
+        &self,
+        url: &str,
+        provider_headers: &ProviderHeaders,
+        request_control: Option<&ExecutionControl>,
+        upstream_header_timeout: Option<Duration>,
+    ) -> Result<FullResponseFetchResult, anyhow::Error> {
+        let key = full_response_cache_key(url, provider_headers);
+        let meta_key = full_response_meta_key(url, provider_headers);
+
+        let stored_metadata = self.meta.get(&meta_key).map(|metadata| metadata.clone());
+
+        if let Some(metadata) = stored_metadata {
+            if Self::full_response_metadata_allows_cache(&metadata) {
+                if let Some(cached) = self
+                    .get_cached_full_response(&key, &metadata, CacheStatus::Hit)
+                    .await
+                {
+                    return Ok(FullResponseFetchResult::Cached(cached));
+                }
+
+                return self
+                    .complete_full_response_cache_fill(
+                        &key,
+                        &meta_key,
+                        url,
+                        provider_headers,
+                        request_control,
+                        upstream_header_timeout,
+                    )
+                    .await;
+            }
+
+            let response = self
+                .fetch_full_response(
+                    url,
+                    provider_headers,
+                    request_control,
+                    upstream_header_timeout,
+                )
+                .await?;
+            let metadata = Self::full_response_resource_metadata(&response);
+            self.store_full_response_metadata(&key, &meta_key, metadata)
+                .await;
+            return Ok(FullResponseFetchResult::Bypass(response));
+        }
+
+        self.complete_full_response_cache_fill(
+            &key,
+            &meta_key,
+            url,
+            provider_headers,
+            request_control,
+            upstream_header_timeout,
+        )
+        .await
+    }
+
+    async fn fetch_full_response(
+        &self,
+        url: &str,
+        provider_headers: &ProviderHeaders,
+        request_control: Option<&ExecutionControl>,
+        upstream_header_timeout: Option<Duration>,
+    ) -> Result<reqwest::Response, anyhow::Error> {
+        let request = apply_provider_headers(self.client.get(url), url, provider_headers)?;
+        send_with_redirect_validation_with_control_and_timeout(
+            &self.client,
+            request,
+            &self.ssrf_guard,
+            request_control,
+            upstream_header_timeout,
+        )
+        .await
+        .context("Full response cache fetch failed")
+        .map(|proxy_response| proxy_response.response)
+    }
+
+    fn full_response_resource_metadata(response: &reqwest::Response) -> CachedResourceMeta {
+        let content_length = response.content_length();
+        let header = |name| {
+            response
+                .headers()
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+                .map(ToString::to_string)
+        };
+
+        CachedResourceMeta {
+            status: Some(response.status().as_u16()),
+            etag: header("etag"),
+            last_modified: header("last-modified"),
+            total_size: content_length,
+            supports_ranges: false,
+            content_type: header("content-type"),
+            content_encoding: header("content-encoding"),
+            validated_at: std::time::SystemTime::now(),
+            last_accessed: std::time::SystemTime::now(),
+        }
+    }
+
+    fn full_response_metadata_allows_cache(metadata: &CachedResourceMeta) -> bool {
+        metadata.status == Some(reqwest::StatusCode::OK.as_u16())
+            && metadata
+                .total_size
+                .and_then(|length| usize::try_from(length).ok())
+                .is_some_and(|length| length <= MAX_FULL_RESPONSE_CACHE_ENTRY_SIZE)
+    }
+
+    async fn store_full_response_metadata(
+        &self,
+        key: &str,
+        meta_key: &str,
+        metadata: CachedResourceMeta,
+    ) {
+        if !Self::full_response_metadata_allows_cache(&metadata) {
+            self.backend.remove(key).await;
+        }
+        self.put_resource_meta_by_key(meta_key.to_string(), metadata);
+        self.maybe_cleanup_locks();
+    }
+
+    async fn get_cached_full_response(
+        &self,
+        key: &str,
+        metadata: &CachedResourceMeta,
+        status: CacheStatus,
+    ) -> Option<CachedFullResponse> {
+        let entry = self.backend.get(key).await?;
+        if entry.is_expired() {
+            self.backend.remove(key).await;
+            return None;
+        }
+
+        Some(CachedFullResponse {
+            data: entry.data,
+            content_type: metadata.content_type.clone(),
+            content_encoding: metadata.content_encoding.clone(),
+            etag: metadata.etag.clone(),
+            last_modified: metadata.last_modified.clone(),
+            status,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn complete_full_response_cache_fill(
+        &self,
+        key: &str,
+        meta_key: &str,
+        url: &str,
+        provider_headers: &ProviderHeaders,
+        request_control: Option<&ExecutionControl>,
+        upstream_header_timeout: Option<Duration>,
+    ) -> Result<FullResponseFetchResult, anyhow::Error> {
+        let guard = self
+            .lock_slice_key(
+                key,
+                "Request cancelled while waiting for full response cache lock",
+                request_control,
+            )
+            .await?;
+
+        if let Some(metadata) = self.meta.get(meta_key).map(|metadata| metadata.clone()) {
+            if Self::full_response_metadata_allows_cache(&metadata) {
+                if let Some(cached) = self
+                    .get_cached_full_response(key, &metadata, CacheStatus::Hit)
+                    .await
+                {
+                    return Ok(FullResponseFetchResult::Cached(cached));
+                }
+            } else {
+                drop(guard);
+                self.maybe_cleanup_locks();
+
+                let response = self
+                    .fetch_full_response(
+                        url,
+                        provider_headers,
+                        request_control,
+                        upstream_header_timeout,
+                    )
+                    .await?;
+                let metadata = Self::full_response_resource_metadata(&response);
+                self.store_full_response_metadata(key, meta_key, metadata)
+                    .await;
+                return Ok(FullResponseFetchResult::Bypass(response));
+            }
+        }
+
+        let response = self
+            .fetch_full_response(
+                url,
+                provider_headers,
+                request_control,
+                upstream_header_timeout,
+            )
+            .await?;
+        let metadata = Self::full_response_resource_metadata(&response);
+        if !Self::full_response_metadata_allows_cache(&metadata) {
+            self.put_resource_meta_by_key(meta_key.to_string(), metadata);
+            drop(guard);
+            self.backend.remove(key).await;
+            self.maybe_cleanup_locks();
+            return Ok(FullResponseFetchResult::Bypass(response));
+        }
+        // File-backed bodies survive restarts while metadata does not. Remove
+        // any independently restored body before publishing the new metadata.
+        self.backend.remove(key).await;
+        self.store_full_response_metadata(key, meta_key, metadata.clone())
+            .await;
+
+        self.cache_full_response(key, metadata, response, request_control)
+            .await
+    }
+
+    async fn cache_full_response(
+        &self,
+        key: &str,
+        metadata: CachedResourceMeta,
+        mut response: reqwest::Response,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<FullResponseFetchResult, anyhow::Error> {
+        let content_length =
+            usize::try_from(metadata.total_size.ok_or_else(|| {
+                anyhow::anyhow!("Cacheable full response omitted Content-Length")
+            })?)
+            .map_err(|_| anyhow::anyhow!("Cacheable full response Content-Length exceeds usize"))?;
+        let mut body = Vec::with_capacity(content_length);
+        while let Some(chunk) = run_with_proxy_cancellation(
+            "full response cache body read",
+            request_control,
+            response.chunk(),
+        )
+        .await?
+        .map_err(|error| anyhow::anyhow!("Failed to read full response cache body: {error}"))?
+        {
+            let next_length = body
+                .len()
+                .checked_add(chunk.len())
+                .ok_or_else(|| anyhow::anyhow!("Full response cache body length overflow"))?;
+            body.extend_from_slice(&chunk);
+            if next_length > content_length {
+                return Err(anyhow::anyhow!(
+                    "Full response cache body exceeded declared Content-Length: got at least {next_length}, expected {content_length}"
+                ));
+            }
+        }
+
+        if body.len() != content_length {
+            return Err(anyhow::anyhow!(
+                "Full response cache body length mismatch: got {}, expected {content_length}",
+                body.len()
+            ));
+        }
+
+        let data = Bytes::from(body);
+        self.backend
+            .put(key, StoredEntry::new(data.clone(), self.config.segment_ttl))
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!("Failed to store full response cache entry: {error}")
+            })?;
+        self.maybe_cleanup_locks();
+
+        Ok(FullResponseFetchResult::Cached(CachedFullResponse {
+            data,
+            content_type: metadata.content_type,
+            content_encoding: metadata.content_encoding,
+            etag: metadata.etag,
+            last_modified: metadata.last_modified,
+            status: CacheStatus::Miss,
+        }))
     }
 
     fn cached_meta_and_total_size(
@@ -1180,6 +1468,11 @@ impl SliceCache {
             .get("content-type")
             .and_then(|v| v.to_str().ok())
             .map(ToString::to_string);
+        let resp_content_encoding = resp
+            .headers()
+            .get("content-encoding")
+            .and_then(|v| v.to_str().ok())
+            .map(ToString::to_string);
 
         // Early validator consistency check BEFORE reading the body (nginx header
         // filter pattern).  This avoids reading a full 2 MiB slice body only
@@ -1244,11 +1537,13 @@ impl SliceCache {
         self.put_resource_meta_by_key(
             mk,
             CachedResourceMeta {
+                status: Some(reqwest::StatusCode::PARTIAL_CONTENT.as_u16()),
                 etag: resp_etag.clone(),
                 last_modified: resp_last_modified.clone(),
                 total_size: Some(total_size),
                 supports_ranges: true,
                 content_type: resp_content_type.clone(),
+                content_encoding: resp_content_encoding.clone(),
                 validated_at: std::time::SystemTime::now(),
                 last_accessed: std::time::SystemTime::now(),
             },
@@ -1272,6 +1567,7 @@ impl SliceCache {
             slice: CachedSlice {
                 total_size,
                 content_type: resp_content_type,
+                content_encoding: resp_content_encoding,
                 etag: resp_etag,
                 last_modified: resp_last_modified,
                 data,

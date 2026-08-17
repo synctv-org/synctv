@@ -1,12 +1,13 @@
 use axum::{
-    extract::{Path, RawQuery, State},
+    extract::{Path, Query, RawQuery, State},
     http::{HeaderMap, Method},
 };
 use futures::FutureExt;
 use synctv_proto::playback_provider::emby::{
     EmbyHlsManifestResponse, EmbyHlsResourceKind, EmbyHlsResourceResponse, EmbyMediaStreamResponse,
-    EmbySubtitleResponse, GetEmbyHlsManifestRequest, GetEmbyHlsResourceRequest,
-    GetEmbyMediaStreamRequest, GetEmbySubtitleRequest,
+    EmbySubtitleResponse, EmbyThumbnailResourceResponse, GetEmbyHlsManifestRequest,
+    GetEmbyHlsResourceRequest, GetEmbyMediaStreamRequest, GetEmbySubtitleRequest,
+    GetEmbyThumbnailResourceRequest,
 };
 
 use crate::http::{middleware::RequestMetadata, AppResult, AppState};
@@ -18,6 +19,7 @@ use crate::providers::playback_provider::transport::{
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EmbyIndexedPath {
+    pub room_id: String,
     pub version: String,
     pub mode_name: String,
     pub url_index: u32,
@@ -26,6 +28,7 @@ pub struct EmbyIndexedPath {
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EmbyHlsResourcePath {
+    pub room_id: String,
     pub version: String,
     pub mode_name: String,
     pub media_index: u32,
@@ -35,9 +38,23 @@ pub struct EmbyHlsResourcePath {
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EmbySubtitlePath {
+    pub room_id: String,
     pub version: String,
     pub mode_name: String,
     pub subtitle_index: u32,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EmbyThumbnailResourceQuery {
+    pub server_id: String,
+    pub credential_owner_id: String,
+    pub max_height: u32,
+    #[serde(default)]
+    pub max_width: u32,
+    pub sig: String,
+    pub uid: String,
+    pub exp: i64,
 }
 
 impl PlaybackProviderHttpResponse for EmbyMediaStreamResponse {
@@ -64,19 +81,25 @@ impl PlaybackProviderHttpResponse for EmbySubtitleResponse {
     }
 }
 
+impl PlaybackProviderHttpResponse for EmbyThumbnailResourceResponse {
+    fn chunk(self) -> Option<synctv_proto::playback_provider::common::StreamChunk> {
+        self.chunk
+    }
+}
+
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/emby/{version}/media-streams/{modeName}/{urlIndex}",
+        path = "/api/playback-providers/{roomId}/emby/{version}/media-streams/{modeName}/{urlIndex}",
         tag = "Emby Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path),
             ("modeName" = String, Path),
             ("urlIndex" = u32, Path),
             ("sig" = String, Query),
             ("uid" = String, Query),
-            ("rid" = String, Query),
             ("exp" = i64, Query)
         ),
         responses(
@@ -107,15 +130,15 @@ pub fn get_emby_media_stream(
     feature = "openapi",
     utoipa::path(
         head,
-        path = "/api/playback-providers/emby/{version}/media-streams/{modeName}/{urlIndex}",
+        path = "/api/playback-providers/{roomId}/emby/{version}/media-streams/{modeName}/{urlIndex}",
         tag = "Emby Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path),
             ("modeName" = String, Path),
             ("urlIndex" = u32, Path),
             ("sig" = String, Query),
             ("uid" = String, Query),
-            ("rid" = String, Query),
             ("exp" = i64, Query)
         ),
         responses(
@@ -150,8 +173,8 @@ async fn emby_media_stream(
     query_string: String,
     method: Method,
 ) -> AppResult<axum::response::Response> {
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetEmbyMediaStreamRequest {
         version: path.version,
         mode_name: path.mode_name,
@@ -187,15 +210,15 @@ async fn emby_media_stream(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/emby/{version}/hls-manifests/{modeName}/{urlIndex}",
+        path = "/api/playback-providers/{roomId}/emby/{version}/hls-manifests/{modeName}/{urlIndex}",
         tag = "Emby Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path),
             ("modeName" = String, Path),
             ("urlIndex" = u32, Path),
             ("sig" = String, Query),
             ("uid" = String, Query),
-            ("rid" = String, Query),
             ("exp" = i64, Query)
         ),
         responses(
@@ -212,8 +235,8 @@ pub async fn get_emby_hls_manifest(
     raw_query: RawQuery,
 ) -> AppResult<axum::response::Response> {
     let query_string = query(raw_query);
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetEmbyHlsManifestRequest {
         version: path.version,
         mode_name: path.mode_name,
@@ -247,14 +270,14 @@ pub async fn get_emby_hls_manifest(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/emby/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
+        path = "/api/playback-providers/{roomId}/emby/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
         tag = "Emby Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path), ("modeName" = String, Path), ("mediaIndex" = u32, Path), ("resourceKind" = String, Path),
             ("targetUrl" = String, Query),
             ("sig" = String, Query),
             ("uid" = String, Query),
-            ("rid" = String, Query),
             ("exp" = i64, Query)
         ),
         responses(
@@ -285,14 +308,14 @@ pub fn get_emby_hls_resource(
     feature = "openapi",
     utoipa::path(
         head,
-        path = "/api/playback-providers/emby/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
+        path = "/api/playback-providers/{roomId}/emby/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}",
         tag = "Emby Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path), ("modeName" = String, Path), ("mediaIndex" = u32, Path), ("resourceKind" = String, Path),
             ("targetUrl" = String, Query),
             ("sig" = String, Query),
             ("uid" = String, Query),
-            ("rid" = String, Query),
             ("exp" = i64, Query)
         ),
         responses(
@@ -327,8 +350,8 @@ async fn emby_hls_resource(
     query_string: String,
     method: Method,
 ) -> AppResult<axum::response::Response> {
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetEmbyHlsResourceRequest {
         version: path.version,
         target_url: target_url(&query_string).map_err(crate::http::error::map_api_error)?,
@@ -366,15 +389,15 @@ async fn emby_hls_resource(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/emby/{version}/subtitles/{modeName}/{subtitleIndex}",
+        path = "/api/playback-providers/{roomId}/emby/{version}/subtitles/{modeName}/{subtitleIndex}",
         tag = "Emby Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path),
             ("modeName" = String, Path),
             ("subtitleIndex" = u32, Path),
             ("sig" = String, Query),
             ("uid" = String, Query),
-            ("rid" = String, Query),
             ("exp" = i64, Query)
         ),
         responses(
@@ -391,8 +414,8 @@ pub async fn get_emby_subtitle(
     raw_query: RawQuery,
 ) -> AppResult<axum::response::Response> {
     let query_string = query(raw_query);
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetEmbySubtitleRequest {
         version: path.version,
         mode_name: path.mode_name,
@@ -411,6 +434,59 @@ pub async fn get_emby_subtitle(
             let state = state_for_stream;
             async move {
                 synctv_api_common::playback_provider::emby::get_emby_subtitle(
+                    emby_deps(&state, Some(&request_control)),
+                    req,
+                )
+                .await
+            }
+            .boxed()
+        },
+    )
+    .await
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/playback-providers/{roomId}/emby/thumbnail/{itemId}",
+        tag = "Emby Playback Provider",
+        params(
+            ("roomId" = String, Path), ("itemId" = String, Path),
+            ("serverId" = String, Query), ("credentialOwnerId" = String, Query),
+            ("maxHeight" = u32, Query), ("maxWidth" = Option<u32>, Query),
+            ("sig" = String, Query), ("uid" = String, Query),
+            ("exp" = i64, Query)
+        ),
+        responses((status = 200, description = "Room-scoped Emby thumbnail"))
+    )
+)]
+pub async fn get_emby_thumbnail_resource(
+    Path((room_id, item_id)): Path<(String, String)>,
+    Query(query): Query<EmbyThumbnailResourceQuery>,
+    State(state): State<AppState>,
+    request_meta: RequestMetadata,
+) -> AppResult<axum::response::Response> {
+    let req = GetEmbyThumbnailResourceRequest {
+        item_id,
+        server_id: query.server_id,
+        credential_owner_id: query.credential_owner_id,
+        max_height: query.max_height,
+        max_width: query.max_width,
+        sig: query.sig,
+        uid: query.uid,
+        rid: room_id,
+        exp: query.exp,
+    };
+    let state_for_stream = state.clone();
+    stream_http_response::<EmbyThumbnailResourceResponse, _>(
+        state,
+        request_meta,
+        Method::GET,
+        move |request_control| {
+            let state = state_for_stream;
+            async move {
+                synctv_api_common::playback_provider::emby::get_emby_thumbnail_resource(
                     emby_deps(&state, Some(&request_control)),
                     req,
                 )

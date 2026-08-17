@@ -75,19 +75,11 @@ message Format {
   bool audio_only = 10;
 }
 
-message Subtitle {
-  string name = 1;
-  string language = 2;
-  bool automatic = 3;
-  bool translatable = 4;
-}
-
 message ResolveResponse {
   Metadata metadata = 1;
   repeated Format formats = 2;
-  repeated Subtitle subtitles = 3;
-  optional string storyboard_spec = 4;
-  synctv.provider.common.DiscoveredSource source = 5;
+  uint32 subtitle_count = 3;
+  synctv.provider.common.DiscoveredSource source = 4;
 }
 
 message ListRequest {

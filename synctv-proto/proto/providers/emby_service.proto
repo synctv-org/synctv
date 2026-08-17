@@ -3,6 +3,7 @@ syntax = "proto3";
 package synctv.provider.emby;
 
 import "proto/providers/emby.proto";
+import "proto/providers/common.proto";
 
 // Emby-compatible Provider Service
 //
@@ -22,4 +23,5 @@ service EmbyProviderService {
 
   // Get saved credentials (binds)
   rpc GetBinds(GetBindsRequest) returns (GetBindsResponse);
+  rpc GetThumbnail(GetThumbnailRequest) returns (stream synctv.provider.common.ResourceResponse);
 }

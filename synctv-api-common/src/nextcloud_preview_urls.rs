@@ -2,8 +2,8 @@ use sha2::{Digest, Sha256};
 
 use crate::proxy_signature::{ProxySigningKey, ProxySigningKeyQueryExt, ProxyUrlClaims};
 
-pub const PREVIEW_ROUTE: &str = "/api/providers/nextcloud/preview";
-const SIGNATURE_PROVIDER: &str = "nextcloud-preview";
+pub const PLAYBACK_PREVIEW_ROUTE_PREFIX: &str = "/api/playback-providers";
+pub const SIGNATURE_PROVIDER: &str = "nextcloud";
 
 #[derive(Clone, Copy)]
 pub struct NextcloudPreviewScope<'a> {
@@ -15,13 +15,7 @@ pub struct NextcloudPreviewScope<'a> {
     pub crop: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NextcloudPreviewAccessError {
-    Invalid,
-    WrongUser,
-}
-
-fn signature_version(scope: NextcloudPreviewScope<'_>) -> String {
+pub fn signature_version(scope: NextcloudPreviewScope<'_>) -> String {
     let mut hasher = Sha256::new();
     hasher.update(scope.server_id.as_bytes());
     hasher.update([0]);
@@ -34,99 +28,37 @@ fn signature_version(scope: NextcloudPreviewScope<'_>) -> String {
     hex::encode(hasher.finalize())
 }
 
-pub fn nextcloud_preview_url(
-    server_id: &str,
-    credential_owner_id: &str,
-    file_id: u64,
-    width: u32,
-    height: u32,
-    crop: bool,
-) -> String {
-    let query = url::form_urlencoded::Serializer::new(String::new())
-        .append_pair("serverId", server_id)
-        .append_pair("credentialOwnerId", credential_owner_id)
-        .append_pair("fileId", &file_id.to_string())
-        .append_pair("width", &width.clamp(1, 2048).to_string())
-        .append_pair("height", &height.clamp(1, 2048).to_string())
-        .append_pair("crop", if crop { "true" } else { "false" })
-        .finish();
-    format!("{PREVIEW_ROUTE}?{query}")
-}
-
-pub fn sign_nextcloud_preview_url(
-    url: &str,
+pub fn playback_preview_url(
+    signing_key: &ProxySigningKey,
     room_id: &str,
     user_id: &str,
-    signing_key: &ProxySigningKey,
-) -> Result<String, String> {
-    let raw_query = url
-        .strip_prefix(PREVIEW_ROUTE)
-        .and_then(|suffix| suffix.strip_prefix('?'))
-        .ok_or_else(|| "Invalid Nextcloud preview URL".to_string())?;
-    let params = url::form_urlencoded::parse(raw_query.as_bytes())
-        .map(|(key, value)| (key.into_owned(), value.into_owned()))
-        .collect::<std::collections::HashMap<_, _>>();
-    let required = |key: &str| {
-        params
-            .get(key)
-            .map(String::as_str)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| format!("Nextcloud preview URL missing {key}"))
-    };
+    scope: NextcloudPreviewScope<'_>,
+) -> String {
     let scope = NextcloudPreviewScope {
-        server_id: required("serverId")?,
-        credential_owner_id: required("credentialOwnerId")?,
-        file_id: required("fileId")?
-            .parse()
-            .map_err(|_| "Invalid Nextcloud fileId".to_string())?,
-        width: required("width")?
-            .parse::<u32>()
-            .map_err(|_| "Invalid Nextcloud width".to_string())?
-            .clamp(1, 2048),
-        height: required("height")?
-            .parse::<u32>()
-            .map_err(|_| "Invalid Nextcloud height".to_string())?
-            .clamp(1, 2048),
-        crop: required("crop")?
-            .parse()
-            .map_err(|_| "Invalid Nextcloud crop".to_string())?,
+        width: scope.width.clamp(1, 2048),
+        height: scope.height.clamp(1, 2048),
+        ..scope
     };
-    let expires_at =
-        synctv_core::SystemClock.now().timestamp() + ProxySigningKey::default_expiry_secs();
-    let query = signing_key.build_signed_query(&ProxyUrlClaims {
+    let claims = ProxyUrlClaims {
         provider: SIGNATURE_PROVIDER.to_string(),
         version: signature_version(scope),
         resource: "preview".to_string(),
         room_id: room_id.to_string(),
         user_id: user_id.to_string(),
-        expires_at,
+        expires_at: synctv_core::SystemClock.now().timestamp()
+            + ProxySigningKey::default_expiry_secs(),
         target_url: None,
-    });
-    Ok(format!("{url}&{query}"))
-}
-
-pub fn verify_nextcloud_preview_access(
-    signing_key: &ProxySigningKey,
-    auth_user_id: &str,
-    raw_query: &str,
-    scope: NextcloudPreviewScope<'_>,
-) -> Result<String, NextcloudPreviewAccessError> {
-    let signature_query = url::form_urlencoded::Serializer::new(String::new())
-        .extend_pairs(
-            url::form_urlencoded::parse(raw_query.as_bytes())
-                .filter(|(key, _)| matches!(key.as_ref(), "sig" | "uid" | "rid" | "exp")),
-        )
+    };
+    let resource_query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("serverId", scope.server_id)
+        .append_pair("credentialOwnerId", scope.credential_owner_id)
+        .append_pair("fileId", &scope.file_id.to_string())
+        .append_pair("width", &scope.width.to_string())
+        .append_pair("height", &scope.height.to_string())
+        .append_pair("crop", if scope.crop { "true" } else { "false" })
         .finish();
-    let claims = signing_key
-        .parse_and_verify_query(
-            &signature_query,
-            SIGNATURE_PROVIDER,
-            &signature_version(scope),
-            "preview",
-        )
-        .map_err(|_| NextcloudPreviewAccessError::Invalid)?;
-    if claims.user_id != auth_user_id {
-        return Err(NextcloudPreviewAccessError::WrongUser);
-    }
-    Ok(claims.room_id)
+    let signed_query = signing_key.build_signed_playback_query(&claims);
+    format!(
+        "{PLAYBACK_PREVIEW_ROUTE_PREFIX}/{room_id}/nextcloud/preview?{resource_query}&{signed_query}"
+    )
 }

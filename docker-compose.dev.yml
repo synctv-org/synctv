@@ -6,6 +6,9 @@ services:
       POSTGRES_USER: synctv
       POSTGRES_PASSWORD: synctv
       POSTGRES_DB: synctv
+    # make dev-serve runs the application on the host.
+    ports:
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_dev_data:/var/lib/postgresql
     healthcheck:
@@ -21,6 +24,9 @@ services:
   redis:
     image: redis:8
     container_name: synctv-redis-dev
+    # make dev-serve runs the application on the host.
+    ports:
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_dev_data:/data
     command: redis-server --appendonly yes

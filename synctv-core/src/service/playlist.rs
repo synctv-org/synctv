@@ -24,6 +24,8 @@ mod dynamic;
 mod movement;
 mod properties;
 mod queries;
+#[cfg(test)]
+use super::provider_binding::provider_instance_name_for_source_update;
 pub use cover::CreatePlaylistCoverUploadSession;
 pub use creation::CreatePlaylistRequest;
 #[cfg(test)]

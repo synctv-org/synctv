@@ -17,6 +17,7 @@ use crate::providers::playback_provider::transport::{
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct YoutubeResourcePath {
+    pub room_id: String,
     pub version: String,
     pub mode_name: String,
     pub media_index: u32,
@@ -25,6 +26,7 @@ pub struct YoutubeResourcePath {
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct YoutubeSubtitlePath {
+    pub room_id: String,
     pub version: String,
     pub mode_name: String,
     pub subtitle_index: u32,
@@ -47,12 +49,13 @@ impl_response!(YoutubeSubtitleResponse);
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/youtube/{version}/resources/{modeName}/{mediaIndex}",
+        path = "/api/playback-providers/{roomId}/youtube/{version}/resources/{modeName}/{mediaIndex}",
         tag = "YouTube Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path), ("modeName" = String, Path),
             ("mediaIndex" = u32, Path), ("sig" = String, Query),
-            ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)
+            ("uid" = String, Query), ("exp" = i64, Query)
         ),
         responses((status = 200, description = "Refreshed YouTube media resource"))
     )
@@ -99,8 +102,8 @@ async fn youtube_resource(
     query_string: String,
     method: Method,
 ) -> AppResult<axum::response::Response> {
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetYoutubeResourceRequest {
         version: path.version,
         mode_name: path.mode_name,
@@ -136,24 +139,25 @@ async fn youtube_resource(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/youtube/{version}/segments",
+        path = "/api/playback-providers/{roomId}/youtube/{version}/segments",
         tag = "YouTube Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path), ("targetUrl" = String, Query),
-            ("sig" = String, Query), ("uid" = String, Query),
-            ("rid" = String, Query), ("exp" = i64, Query)
+            ("sig" = String, Query), ("uid" = String, Query), ("exp" = i64, Query)
         ),
         responses((status = 200, description = "YouTube media segment"))
     )
 )]
 pub fn get_youtube_segment(
-    Path(version): Path<String>,
+    Path((room_id, version)): Path<(String, String)>,
     State(state): State<AppState>,
     request_meta: RequestMetadata,
     headers: HeaderMap,
     raw_query: RawQuery,
 ) -> impl futures::Future<Output = AppResult<axum::response::Response>> + Send + 'static {
     youtube_segment(
+        room_id,
         version,
         state,
         request_meta,
@@ -164,13 +168,14 @@ pub fn get_youtube_segment(
 }
 
 pub fn head_youtube_segment(
-    Path(version): Path<String>,
+    Path((room_id, version)): Path<(String, String)>,
     State(state): State<AppState>,
     request_meta: RequestMetadata,
     headers: HeaderMap,
     raw_query: RawQuery,
 ) -> impl futures::Future<Output = AppResult<axum::response::Response>> + Send + 'static {
     youtube_segment(
+        room_id,
         version,
         state,
         request_meta,
@@ -181,6 +186,7 @@ pub fn head_youtube_segment(
 }
 
 async fn youtube_segment(
+    room_id: String,
     version: String,
     state: AppState,
     request_meta: RequestMetadata,
@@ -189,7 +195,7 @@ async fn youtube_segment(
     method: Method,
 ) -> AppResult<axum::response::Response> {
     let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+        signed_query_fields(&query_string, &room_id).map_err(crate::http::error::map_api_error)?;
     let req = GetYoutubeSegmentRequest {
         version,
         target_url: target_url(&query_string).map_err(crate::http::error::map_api_error)?,
@@ -224,12 +230,13 @@ async fn youtube_segment(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/youtube/{version}/subtitles/{modeName}/{subtitleIndex}",
+        path = "/api/playback-providers/{roomId}/youtube/{version}/subtitles/{modeName}/{subtitleIndex}",
         tag = "YouTube Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path), ("modeName" = String, Path),
             ("subtitleIndex" = u32, Path), ("sig" = String, Query),
-            ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)
+            ("uid" = String, Query), ("exp" = i64, Query)
         ),
         responses((status = 200, description = "YouTube WebVTT subtitle"))
     )
@@ -276,8 +283,8 @@ async fn youtube_subtitle(
     query_string: String,
     method: Method,
 ) -> AppResult<axum::response::Response> {
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetYoutubeSubtitleRequest {
         version: path.version,
         mode_name: path.mode_name,

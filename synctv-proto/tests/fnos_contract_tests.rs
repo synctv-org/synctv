@@ -6,12 +6,18 @@ fn fnos_provider_services_are_in_descriptor_pools() {
     let provider = synctv_proto::PROVIDERS_DESCRIPTOR_POOL
         .get_service_by_name("synctv.provider.fnos.FnosProviderService")
         .expect("FNOS provider service descriptor");
-    assert_eq!(provider.methods().count(), 9);
+    assert_eq!(provider.methods().count(), 10);
+    assert!(provider
+        .methods()
+        .any(|method| method.name() == "GetThumbnail" && method.is_server_streaming()));
 
     let playback = synctv_proto::PLAYBACK_PROVIDER_DESCRIPTOR_POOL
         .get_service_by_name("synctv.playback_provider.fnos.FnosPlaybackProviderService")
         .expect("FNOS playback provider service descriptor");
-    assert_eq!(playback.methods().count(), 4);
+    assert_eq!(playback.methods().count(), 5);
+    assert!(playback
+        .methods()
+        .any(|method| method.name() == "GetImageResource"));
 }
 
 #[test]

@@ -18,8 +18,6 @@ pub trait PlaybackProviderHttpResponse {
 }
 
 /// Map Bilibili live danmaku events to SSE format.
-///
-/// Extracted to eliminate duplication between provider and room danmaku endpoints.
 pub fn bilibili_danmaku_sse_event(
     event: Result<synctv_proto::playback_provider::bilibili::BilibiliLiveDanmakuEvent, ApiError>,
 ) -> Result<Event, Infallible> {
@@ -180,17 +178,26 @@ pub fn query(raw_query: axum::extract::RawQuery) -> String {
     raw_query.0.unwrap_or_default()
 }
 
-pub fn signed_query_fields(query: &str) -> Result<(String, String, String, i64), ApiError> {
+pub fn signed_query_fields(
+    query: &str,
+    room_id: &str,
+) -> Result<(String, String, String, i64), ApiError> {
+    signed_query_fields_with_resource_params(query, room_id, &[])
+}
+
+pub fn signed_query_fields_with_resource_params(
+    query: &str,
+    room_id: &str,
+    resource_params: &[&str],
+) -> Result<(String, String, String, i64), ApiError> {
     let mut sig = None;
     let mut uid = None;
-    let mut rid = None;
     let mut exp = None;
 
     for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
         match key.as_ref() {
             "sig" => sig = Some(value.into_owned()),
             "uid" => uid = Some(value.into_owned()),
-            "rid" => rid = Some(value.into_owned()),
             "exp" => {
                 let value = value.into_owned();
                 exp = Some(
@@ -200,6 +207,7 @@ pub fn signed_query_fields(query: &str) -> Result<(String, String, String, i64),
                 );
             }
             "targetUrl" => {}
+            key if resource_params.contains(&key) => {}
             _ => {
                 return Err(ApiError::InvalidInput(format!(
                     "unknown signed query parameter '{key}'"
@@ -213,17 +221,24 @@ pub fn signed_query_fields(query: &str) -> Result<(String, String, String, i64),
             .ok_or_else(|| ApiError::Authentication("sig is required".to_string()))?,
         uid.filter(|value| !value.trim().is_empty())
             .ok_or_else(|| ApiError::Authentication("uid is required".to_string()))?,
-        rid.filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| ApiError::Authentication("rid is required".to_string()))?,
+        non_empty_path_room_id(room_id)?,
         exp.ok_or_else(|| ApiError::Authentication("exp is required".to_string()))?,
     ))
+}
+
+fn non_empty_path_room_id(room_id: &str) -> Result<String, ApiError> {
+    let room_id = room_id.trim();
+    if room_id.is_empty() {
+        return Err(ApiError::InvalidInput("roomId is required".to_string()));
+    }
+    Ok(room_id.to_string())
 }
 
 pub fn unsigned_query_field(query: &str, allowed_key: &str) -> Result<Option<String>, ApiError> {
     let mut found = None;
     for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
         match key.as_ref() {
-            "sig" | "uid" | "rid" | "exp" | "targetUrl" => {}
+            "sig" | "uid" | "exp" | "targetUrl" => {}
             key if key == allowed_key => found = Some(value.into_owned()),
             _ => {
                 return Err(ApiError::InvalidInput(format!(
@@ -386,6 +401,11 @@ where
 
 fn apply_stream_chunk_metadata(headers: &mut HeaderMap, chunk: &StreamChunk) -> AppResult<()> {
     insert_optional_header(headers, header::CONTENT_TYPE, chunk.content_type.as_deref())?;
+    insert_optional_header(
+        headers,
+        header::CONTENT_ENCODING,
+        chunk.content_encoding.as_deref(),
+    )?;
     if let Some(content_length) = chunk.content_length {
         insert_optional_header(
             headers,
@@ -457,8 +477,34 @@ mod tests {
 
     #[test]
     fn signed_query_fields_rejects_unknown_params() {
-        let error = signed_query_fields("sig=s&uid=u&rid=r&exp=1&extra=1")
+        let error = signed_query_fields("sig=s&uid=u&exp=1&extra=1", "room")
             .expect_err("unknown query parameter should be rejected");
         assert!(matches!(error, ApiError::InvalidInput(message) if message.contains("extra")));
+    }
+
+    #[test]
+    fn signed_query_fields_rejects_legacy_room_query() {
+        let error = signed_query_fields("sig=s&uid=u&rid=r&exp=1", "room")
+            .expect_err("playback provider query should reject rid");
+        assert!(matches!(error, ApiError::InvalidInput(message) if message.contains("rid")));
+    }
+
+    #[test]
+    fn stream_chunk_metadata_preserves_content_encoding() {
+        let mut headers = HeaderMap::new();
+        let chunk = StreamChunk {
+            content_encoding: Some("deflate".to_string()),
+            ..Default::default()
+        };
+
+        apply_stream_chunk_metadata(&mut headers, &chunk)
+            .expect("content encoding metadata should be a valid HTTP header");
+
+        assert_eq!(
+            headers
+                .get(header::CONTENT_ENCODING)
+                .and_then(|value| value.to_str().ok()),
+            Some("deflate")
+        );
     }
 }

@@ -12,7 +12,6 @@ mod fnos;
 mod huya;
 mod nextcloud;
 mod qnap;
-mod rtmp;
 mod seafile;
 mod shared;
 mod synology;
@@ -33,7 +32,6 @@ pub use fnos::*;
 pub use huya::*;
 pub use nextcloud::*;
 pub use qnap::*;
-pub use rtmp::*;
 pub use seafile::*;
 pub use shared::*;
 pub use synology::*;
@@ -64,8 +62,6 @@ pub enum ProviderSubcommand {
     Tiktok(ProviderTikTokCommand),
     /// Twitch provider service operations
     Twitch(ProviderTwitchCommand),
-    /// RTMP provider service operations
-    Rtmp(ProviderRtmpCommand),
     /// AcFun provider service operations
     Acfun(ProviderAcfunCommand),
     /// CCTV provider service operations

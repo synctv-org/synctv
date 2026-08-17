@@ -108,7 +108,7 @@ pub async fn get_cloudreve_hls_manifest(
         .await
         .map_err(ApiError::from)?;
     let (segment_base, resource) =
-        cloudreve_hls_rewrite_routes(&req.version, &req.mode_name, req.media_index);
+        cloudreve_hls_rewrite_routes(&req.rid, &req.version, &req.mode_name, req.media_index);
     let stream = playback_transport_action_to_chunk_stream(
         deps.chunk_deps_with_hls(&segment_base, &claims, &resource),
         action,
@@ -162,7 +162,7 @@ pub async fn get_cloudreve_hls_resource(
         .map_err(ApiError::from)?;
     let stream = if kind == CloudreveHlsResourceKind::Manifest {
         let (segment_base, resource) =
-            cloudreve_hls_rewrite_routes(&req.version, &req.mode_name, req.media_index);
+            cloudreve_hls_rewrite_routes(&req.rid, &req.version, &req.mode_name, req.media_index);
         playback_transport_action_to_chunk_stream(
             deps.chunk_deps_with_hls(&segment_base, &claims, &resource),
             action,
@@ -197,6 +197,7 @@ const fn cloudreve_hls_resource_kind_name(kind: CloudreveHlsResourceKind) -> &'s
 }
 
 fn cloudreve_hls_rewrite_routes(
+    room_id: &str,
     version: &str,
     mode_name: &str,
     media_index: u32,
@@ -204,7 +205,7 @@ fn cloudreve_hls_rewrite_routes(
     (
         format!(
             "{}/{}/{}",
-            playback_provider_route_base(PROVIDER, version, "hls-resources"),
+            playback_provider_route_base(room_id, PROVIDER, version, "hls-resources"),
             urlencoding::encode(mode_name),
             media_index
         ),

@@ -329,18 +329,6 @@ mod cluster_cleanup_tests {
     use tokio::net::TcpListener;
     use tokio_util::sync::CancellationToken;
 
-    async fn reserve_unused_port() -> u16 {
-        let listener = TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .expect("should reserve an ephemeral port");
-        let port = listener
-            .local_addr()
-            .expect("reserved listener should have local addr")
-            .port();
-        drop(listener);
-        port
-    }
-
     /// Verify that RealtimeManager's cancel_token can stop the heartbeat loop.
     ///
     /// When init_cluster_components fails after starting the heartbeat loop,
@@ -492,8 +480,8 @@ mod cluster_cleanup_tests {
         let mut config = super::cluster_test_config();
         config.database.url = database_url;
         config.redis.url = redis_url.clone();
-        config.server.port = reserve_unused_port().await;
-        config.livestream.rtmp_port = reserve_unused_port().await;
+        config.server.port = 0;
+        config.livestream.rtmp_port = 0;
         config.server.advertise_host = "127.0.0.1".to_string();
 
         let app = Box::pin(Application::build(config.clone()))

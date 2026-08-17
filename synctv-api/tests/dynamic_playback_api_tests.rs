@@ -953,9 +953,9 @@ async fn test_static_provider_playback_with_signing_key_uses_provider_store_regi
     let direct = playback.playback_infos.get("proxy_direct").unwrap();
     assert_eq!(direct.medias.len(), 1);
     assert!(
-        direct.medias[0]
-            .url
-            .starts_with("/api/playback-providers/direct-url/"),
+        direct.medias[0].url.starts_with(&format!(
+            "/api/playback-providers/{room_public_id}/direct-url/"
+        )),
         "signed provider playback should expose proxy URL, got {}",
         direct.medias[0].url
     );

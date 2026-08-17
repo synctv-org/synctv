@@ -1,12 +1,13 @@
 use axum::{
-    extract::{Path, RawQuery, State},
+    extract::{Path, Query, RawQuery, State},
     http::{HeaderMap, Method},
 };
 use futures::FutureExt;
 use synctv_proto::playback_provider::seafile::{
     GetSeafileHlsManifestRequest, GetSeafileHlsResourceRequest, GetSeafileResourceRequest,
-    GetSeafileSubtitleRequest, SeafileHlsManifestResponse, SeafileHlsResourceKind,
-    SeafileHlsResourceResponse, SeafileResourceResponse, SeafileSubtitleResponse,
+    GetSeafileSubtitleRequest, GetSeafileThumbnailResourceRequest, SeafileHlsManifestResponse,
+    SeafileHlsResourceKind, SeafileHlsResourceResponse, SeafileResourceResponse,
+    SeafileSubtitleResponse, SeafileThumbnailResourceResponse,
 };
 
 use crate::http::{middleware::RequestMetadata, AppResult, AppState};
@@ -18,6 +19,7 @@ use crate::providers::playback_provider::transport::{
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SeafileResourcePath {
+    pub room_id: String,
     pub version: String,
     pub mode_name: String,
     pub media_index: u32,
@@ -26,6 +28,7 @@ pub struct SeafileResourcePath {
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SeafileHlsResourcePath {
+    pub room_id: String,
     pub version: String,
     pub mode_name: String,
     pub media_index: u32,
@@ -35,9 +38,23 @@ pub struct SeafileHlsResourcePath {
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SeafileSubtitlePath {
+    pub room_id: String,
     pub version: String,
     pub mode_name: String,
     pub subtitle_index: u32,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SeafileThumbnailResourceQuery {
+    pub server_id: String,
+    pub credential_owner_id: String,
+    pub repository_id: String,
+    pub path: String,
+    pub size: u32,
+    pub sig: String,
+    pub uid: String,
+    pub exp: i64,
 }
 
 impl PlaybackProviderHttpResponse for SeafileResourceResponse {
@@ -64,7 +81,13 @@ impl PlaybackProviderHttpResponse for SeafileSubtitleResponse {
     }
 }
 
-#[cfg_attr(feature = "openapi", utoipa::path(get, path = "/api/playback-providers/seafile/{version}/resources/{modeName}/{mediaIndex}", tag = "Seafile Playback Provider", params(("version" = String, Path), ("modeName" = String, Path), ("mediaIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)), responses((status = 200, description = "Seafile media resource"))))]
+impl PlaybackProviderHttpResponse for SeafileThumbnailResourceResponse {
+    fn chunk(self) -> Option<synctv_proto::playback_provider::common::StreamChunk> {
+        self.chunk
+    }
+}
+
+#[cfg_attr(feature = "openapi", utoipa::path(get, path = "/api/playback-providers/{roomId}/seafile/{version}/resources/{modeName}/{mediaIndex}", tag = "Seafile Playback Provider", params(("roomId" = String, Path), ("version" = String, Path), ("modeName" = String, Path), ("mediaIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("exp" = i64, Query)), responses((status = 200, description = "Seafile media resource"))))]
 pub fn get_seafile_resource(
     Path(path): Path<SeafileResourcePath>,
     State(state): State<AppState>,
@@ -107,8 +130,8 @@ async fn resource(
     query_string: String,
     method: Method,
 ) -> AppResult<axum::response::Response> {
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetSeafileResourceRequest {
         version: path.version,
         mode_name: path.mode_name,
@@ -140,7 +163,7 @@ async fn resource(
     .await
 }
 
-#[cfg_attr(feature = "openapi", utoipa::path(get, path = "/api/playback-providers/seafile/{version}/hls-manifests/{modeName}/{mediaIndex}", tag = "Seafile Playback Provider", params(("version" = String, Path), ("modeName" = String, Path), ("mediaIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)), responses((status = 200, description = "Seafile HLS manifest"))))]
+#[cfg_attr(feature = "openapi", utoipa::path(get, path = "/api/playback-providers/{roomId}/seafile/{version}/hls-manifests/{modeName}/{mediaIndex}", tag = "Seafile Playback Provider", params(("roomId" = String, Path), ("version" = String, Path), ("modeName" = String, Path), ("mediaIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("exp" = i64, Query)), responses((status = 200, description = "Seafile HLS manifest"))))]
 pub async fn get_seafile_hls_manifest(
     Path(path): Path<SeafileResourcePath>,
     State(state): State<AppState>,
@@ -150,7 +173,7 @@ pub async fn get_seafile_hls_manifest(
     hls_manifest(path, state, request_meta, query(raw_query), Method::GET).await
 }
 
-#[cfg_attr(feature = "openapi", utoipa::path(head, path = "/api/playback-providers/seafile/{version}/hls-manifests/{modeName}/{mediaIndex}", tag = "Seafile Playback Provider", params(("version" = String, Path), ("modeName" = String, Path), ("mediaIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)), responses((status = 200, description = "Seafile HLS manifest metadata"))))]
+#[cfg_attr(feature = "openapi", utoipa::path(head, path = "/api/playback-providers/{roomId}/seafile/{version}/hls-manifests/{modeName}/{mediaIndex}", tag = "Seafile Playback Provider", params(("roomId" = String, Path), ("version" = String, Path), ("modeName" = String, Path), ("mediaIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("exp" = i64, Query)), responses((status = 200, description = "Seafile HLS manifest metadata"))))]
 pub async fn head_seafile_hls_manifest(
     Path(path): Path<SeafileResourcePath>,
     State(state): State<AppState>,
@@ -167,8 +190,8 @@ async fn hls_manifest(
     query_string: String,
     method: Method,
 ) -> AppResult<axum::response::Response> {
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetSeafileHlsManifestRequest {
         version: path.version,
         mode_name: path.mode_name,
@@ -199,7 +222,7 @@ async fn hls_manifest(
     .await
 }
 
-#[cfg_attr(feature = "openapi", utoipa::path(get, path = "/api/playback-providers/seafile/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}", tag = "Seafile Playback Provider", params(("version" = String, Path), ("modeName" = String, Path), ("mediaIndex" = u32, Path), ("resourceKind" = String, Path), ("targetUrl" = String, Query), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)), responses((status = 200, description = "Seafile HLS resource"))))]
+#[cfg_attr(feature = "openapi", utoipa::path(get, path = "/api/playback-providers/{roomId}/seafile/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}", tag = "Seafile Playback Provider", params(("roomId" = String, Path), ("version" = String, Path), ("modeName" = String, Path), ("mediaIndex" = u32, Path), ("resourceKind" = String, Path), ("targetUrl" = String, Query), ("sig" = String, Query), ("uid" = String, Query), ("exp" = i64, Query)), responses((status = 200, description = "Seafile HLS resource"))))]
 pub fn get_seafile_hls_resource(
     Path(path): Path<SeafileHlsResourcePath>,
     State(state): State<AppState>,
@@ -217,7 +240,7 @@ pub fn get_seafile_hls_resource(
     )
 }
 
-#[cfg_attr(feature = "openapi", utoipa::path(head, path = "/api/playback-providers/seafile/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}", tag = "Seafile Playback Provider", params(("version" = String, Path), ("modeName" = String, Path), ("mediaIndex" = u32, Path), ("resourceKind" = String, Path), ("targetUrl" = String, Query), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)), responses((status = 200, description = "Seafile HLS resource metadata"))))]
+#[cfg_attr(feature = "openapi", utoipa::path(head, path = "/api/playback-providers/{roomId}/seafile/{version}/hls-resources/{modeName}/{mediaIndex}/{resourceKind}", tag = "Seafile Playback Provider", params(("roomId" = String, Path), ("version" = String, Path), ("modeName" = String, Path), ("mediaIndex" = u32, Path), ("resourceKind" = String, Path), ("targetUrl" = String, Query), ("sig" = String, Query), ("uid" = String, Query), ("exp" = i64, Query)), responses((status = 200, description = "Seafile HLS resource metadata"))))]
 pub fn head_seafile_hls_resource(
     Path(path): Path<SeafileHlsResourcePath>,
     State(state): State<AppState>,
@@ -243,8 +266,8 @@ async fn hls_resource(
     query_string: String,
     method: Method,
 ) -> AppResult<axum::response::Response> {
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetSeafileHlsResourceRequest {
         version: path.version,
         target_url: target_url(&query_string).map_err(crate::http::error::map_api_error)?,
@@ -290,7 +313,7 @@ fn seafile_hls_resource_kind(value: &str) -> AppResult<i32> {
     }
 }
 
-#[cfg_attr(feature = "openapi", utoipa::path(get, path = "/api/playback-providers/seafile/{version}/subtitles/{modeName}/{subtitleIndex}", tag = "Seafile Playback Provider", params(("version" = String, Path), ("modeName" = String, Path), ("subtitleIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)), responses((status = 200, description = "Seafile subtitle"))))]
+#[cfg_attr(feature = "openapi", utoipa::path(get, path = "/api/playback-providers/{roomId}/seafile/{version}/subtitles/{modeName}/{subtitleIndex}", tag = "Seafile Playback Provider", params(("roomId" = String, Path), ("version" = String, Path), ("modeName" = String, Path), ("subtitleIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("exp" = i64, Query)), responses((status = 200, description = "Seafile subtitle"))))]
 pub async fn get_seafile_subtitle(
     Path(path): Path<SeafileSubtitlePath>,
     State(state): State<AppState>,
@@ -298,8 +321,8 @@ pub async fn get_seafile_subtitle(
     raw_query: RawQuery,
 ) -> AppResult<axum::response::Response> {
     let query_string = query(raw_query);
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetSeafileSubtitleRequest {
         version: path.version,
         mode_name: path.mode_name,
@@ -319,6 +342,59 @@ pub async fn get_seafile_subtitle(
             async move {
                 synctv_api_common::playback_provider::seafile::get_seafile_subtitle(
                     deps(&state, Some(&control)),
+                    req,
+                )
+                .await
+            }
+            .boxed()
+        },
+    )
+    .await
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/playback-providers/{roomId}/seafile/thumbnail",
+        tag = "Seafile Playback Provider",
+        params(
+            ("roomId" = String, Path), ("serverId" = String, Query),
+            ("credentialOwnerId" = String, Query), ("repositoryId" = String, Query),
+            ("path" = String, Query), ("size" = u32, Query),
+            ("sig" = String, Query), ("uid" = String, Query),
+            ("exp" = i64, Query)
+        ),
+        responses((status = 200, description = "Room-scoped Seafile thumbnail"))
+    )
+)]
+pub async fn get_seafile_thumbnail_resource(
+    Path(room_id): Path<String>,
+    Query(query): Query<SeafileThumbnailResourceQuery>,
+    State(state): State<AppState>,
+    request_meta: RequestMetadata,
+) -> AppResult<axum::response::Response> {
+    let req = GetSeafileThumbnailResourceRequest {
+        server_id: query.server_id,
+        credential_owner_id: query.credential_owner_id,
+        repository_id: query.repository_id,
+        path: query.path,
+        size: query.size,
+        sig: query.sig,
+        uid: query.uid,
+        rid: room_id,
+        exp: query.exp,
+    };
+    let state_for_stream = state.clone();
+    stream_http_response::<SeafileThumbnailResourceResponse, _>(
+        state,
+        request_meta,
+        Method::GET,
+        move |request_control| {
+            let state = state_for_stream;
+            async move {
+                synctv_api_common::playback_provider::seafile::get_seafile_thumbnail_resource(
+                    deps(&state, Some(&request_control)),
                     req,
                 )
                 .await

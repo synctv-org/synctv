@@ -17,12 +17,14 @@ use crate::providers::playback_provider::transport::{
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveProxyVersionPath {
+    pub room_id: String,
     pub version: String,
 }
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveProxySegmentPath {
+    pub room_id: String,
     pub version: String,
     pub generation_id: String,
     pub segment_name: String,
@@ -31,6 +33,7 @@ pub struct LiveProxySegmentPath {
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveProxyPlaylistPath {
+    pub room_id: String,
     pub version: String,
     pub generation_id: String,
 }
@@ -63,13 +66,13 @@ impl PlaybackProviderHttpResponse for LiveProxyHlsSegmentResponse {
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/live-proxy/{version}/flv-stream",
+        path = "/api/playback-providers/{roomId}/live-proxy/{version}/flv-stream",
         tag = "LiveProxy Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path),
             ("sig" = String, Query),
             ("uid" = String, Query),
-            ("rid" = String, Query),
             ("exp" = i64, Query)
         ),
         responses(
@@ -93,13 +96,13 @@ pub fn get_live_proxy_flv_stream(
     feature = "openapi",
     utoipa::path(
         head,
-        path = "/api/playback-providers/live-proxy/{version}/flv-stream",
+        path = "/api/playback-providers/{roomId}/live-proxy/{version}/flv-stream",
         tag = "LiveProxy Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path),
             ("sig" = String, Query),
             ("uid" = String, Query),
-            ("rid" = String, Query),
             ("exp" = i64, Query)
         ),
         responses(
@@ -128,8 +131,8 @@ async fn live_proxy_flv_stream(
     method: Method,
 ) -> AppResult<axum::response::Response> {
     let query_string = query(raw_query);
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetLiveProxyFlvStreamRequest {
         version: path.version,
         sig,
@@ -162,13 +165,13 @@ async fn live_proxy_flv_stream(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/live-proxy/{version}/hls-master",
+        path = "/api/playback-providers/{roomId}/live-proxy/{version}/hls-master",
         tag = "LiveProxy Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path),
             ("sig" = String, Query),
             ("uid" = String, Query),
-            ("rid" = String, Query),
             ("exp" = i64, Query)
         ),
         responses(
@@ -185,8 +188,8 @@ pub async fn get_live_proxy_hls_master(
     raw_query: RawQuery,
 ) -> AppResult<axum::response::Response> {
     let query_string = query(raw_query);
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetLiveProxyHlsMasterRequest {
         version: path.version,
         sig,
@@ -218,14 +221,14 @@ pub async fn get_live_proxy_hls_master(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/live-proxy/{version}/hls/{generationId}/index.m3u8",
+        path = "/api/playback-providers/{roomId}/live-proxy/{version}/hls/{generationId}/index.m3u8",
         tag = "LiveProxy Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path),
             ("generationId" = String, Path),
             ("sig" = String, Query),
             ("uid" = String, Query),
-            ("rid" = String, Query),
             ("exp" = i64, Query)
         ),
         responses(
@@ -242,8 +245,8 @@ pub async fn get_live_proxy_hls_playlist(
     raw_query: RawQuery,
 ) -> AppResult<axum::response::Response> {
     let query_string = query(raw_query);
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetLiveProxyHlsPlaylistRequest {
         version: path.version,
         generation_id: path.generation_id,
@@ -276,15 +279,15 @@ pub async fn get_live_proxy_hls_playlist(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/live-proxy/{version}/hls/{generationId}/{segmentName}",
+        path = "/api/playback-providers/{roomId}/live-proxy/{version}/hls/{generationId}/{segmentName}",
         tag = "LiveProxy Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path),
             ("generationId" = String, Path),
             ("segmentName" = String, Path),
             ("sig" = String, Query),
             ("uid" = String, Query),
-            ("rid" = String, Query),
             ("exp" = i64, Query)
         ),
         responses(
@@ -315,15 +318,15 @@ pub fn get_live_proxy_hls_segment(
     feature = "openapi",
     utoipa::path(
         head,
-        path = "/api/playback-providers/live-proxy/{version}/hls/{generationId}/{segmentName}",
+        path = "/api/playback-providers/{roomId}/live-proxy/{version}/hls/{generationId}/{segmentName}",
         tag = "LiveProxy Playback Provider",
         params(
+            ("roomId" = String, Path),
             ("version" = String, Path),
             ("generationId" = String, Path),
             ("segmentName" = String, Path),
             ("sig" = String, Query),
             ("uid" = String, Query),
-            ("rid" = String, Query),
             ("exp" = i64, Query)
         ),
         responses(
@@ -358,8 +361,8 @@ async fn live_proxy_hls_segment(
     query_string: String,
     method: Method,
 ) -> AppResult<axum::response::Response> {
-    let (sig, uid, rid, exp) =
-        signed_query_fields(&query_string).map_err(crate::http::error::map_api_error)?;
+    let (sig, uid, rid, exp) = signed_query_fields(&query_string, &path.room_id)
+        .map_err(crate::http::error::map_api_error)?;
     let req = GetLiveProxyHlsSegmentRequest {
         version: path.version,
         generation_id: path.generation_id,

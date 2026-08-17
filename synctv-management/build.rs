@@ -52,7 +52,6 @@ fn prost_config() -> tonic_prost_build::Config {
         "::synctv_proto::providers::twitch",
     );
     config.extern_path(".synctv.provider.emby", "::synctv_proto::providers::emby");
-    config.extern_path(".synctv.provider.rtmp", "::synctv_proto::providers::rtmp");
     for provider in [
         "acfun",
         "cctv",
@@ -328,7 +327,6 @@ fn build_pbjson(out_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
         "::synctv_proto::providers::common",
     );
     builder.extern_path(".synctv.provider.emby", "::synctv_proto::providers::emby");
-    builder.extern_path(".synctv.provider.rtmp", "::synctv_proto::providers::rtmp");
     for provider in [
         "acfun",
         "cctv",

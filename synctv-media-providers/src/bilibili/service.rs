@@ -25,6 +25,7 @@ use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::OnceCell;
 
 pub const BILIBILI_LIVE_DANMAKU_FORMAT: &str = "synctv-bilibili-live";
 
@@ -188,6 +189,7 @@ pub trait BilibiliInterface: Send + Sync {
 /// Used by both local callers and gRPC server.
 pub struct BilibiliService {
     client: Client,
+    live_danmaku_device_cookies: Arc<OnceCell<HashMap<String, String>>>,
     wbi_state: Arc<super::client::WbiState>,
     ssrf_guard: synctv_common::ssrf::SsrfGuard,
 }
@@ -195,9 +197,12 @@ pub struct BilibiliService {
 impl BilibiliService {
     pub fn new() -> Result<Self, reqwest::Error> {
         let ssrf_guard = synctv_common::ssrf::SsrfGuard::strict_policy();
-        let client = crate::build_provider_http_client(ssrf_guard.clone())?;
+        let client = crate::provider_http_client_builder(ssrf_guard.clone())
+            .user_agent(crate::PROVIDER_USER_AGENT)
+            .build()?;
         Ok(Self {
             client,
+            live_danmaku_device_cookies: Arc::new(OnceCell::new()),
             wbi_state: Arc::new(super::client::WbiState::default()),
             ssrf_guard,
         })
@@ -207,6 +212,7 @@ impl BilibiliService {
     pub fn with_client(client: Client) -> Self {
         Self {
             client,
+            live_danmaku_device_cookies: Arc::new(OnceCell::new()),
             wbi_state: Arc::new(super::client::WbiState::default()),
             ssrf_guard: synctv_common::ssrf::SsrfGuard::strict_policy(),
         }
@@ -219,6 +225,7 @@ impl BilibiliService {
     ) -> Self {
         Self {
             client,
+            live_danmaku_device_cookies: Arc::new(OnceCell::new()),
             wbi_state: Arc::new(super::client::WbiState::default()),
             ssrf_guard,
         }
@@ -759,7 +766,8 @@ impl BilibiliInterface for BilibiliService {
             &request.cookies,
             self.wbi_state.clone(),
             self.ssrf_guard.clone(),
-        );
+        )
+        .with_live_danmaku_device_cookies(self.live_danmaku_device_cookies.clone());
         let danmu_info = client.get_live_danmu_info(request.room_id).await?;
 
         Ok(GetLiveDanmuInfoResp {
@@ -1216,12 +1224,15 @@ impl BilibiliInterface for BilibiliService {
         &self,
         request: WatchBilibiliLiveDanmakuReq,
     ) -> Result<BilibiliLiveDanmakuStream, BilibiliError> {
-        let client = Arc::new(client_from_cookies_and_state(
-            self.client.clone(),
-            &request.cookies,
-            self.wbi_state.clone(),
-            self.ssrf_guard.clone(),
-        ));
+        let client = Arc::new(
+            client_from_cookies_and_state(
+                self.client.clone(),
+                &request.cookies,
+                self.wbi_state.clone(),
+                self.ssrf_guard.clone(),
+            )
+            .with_live_danmaku_device_cookies(self.live_danmaku_device_cookies.clone()),
+        );
         let mut connection = client
             .connect_live_danmaku_with_reconnect(
                 request.room_id,

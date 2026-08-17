@@ -109,3 +109,15 @@ message BindInfo {
 message GetBindsResponse {
   repeated BindInfo binds = 1;
 }
+
+message GetThumbnailRequest {
+  option (buf.validate.message).cel = {
+    id: "seafile.get_thumbnail.size"
+    message: "size must be 0 (use default) or between 32 and 2048"
+    expression: "this.size == 0 || (this.size >= 32 && this.size <= 2048)"
+  };
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  string repository_id = 2 [(buf.validate.field).string.min_len = 1];
+  string path = 3 [(buf.validate.field).string.min_len = 1];
+  uint32 size = 4;
+}

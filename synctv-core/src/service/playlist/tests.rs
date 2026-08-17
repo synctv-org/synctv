@@ -323,6 +323,42 @@ fn playlist_edit_requires_matching_creator() {
 }
 
 #[test]
+fn source_update_preserves_instance_for_same_provider() {
+    let instance_name = provider_instance_name_for_source_update(
+        Some(SourceProvider::Alist),
+        SourceProvider::Alist,
+        None,
+        Some("alist-main".to_string()),
+    );
+
+    assert_eq!(instance_name.as_deref(), Some("alist-main"));
+}
+
+#[test]
+fn source_update_clears_instance_when_provider_changes() {
+    let instance_name = provider_instance_name_for_source_update(
+        Some(SourceProvider::Alist),
+        SourceProvider::Bilibili,
+        None,
+        Some("alist-main".to_string()),
+    );
+
+    assert!(instance_name.is_none());
+}
+
+#[test]
+fn source_update_uses_requested_instance_when_provider_changes() {
+    let instance_name = provider_instance_name_for_source_update(
+        Some(SourceProvider::Alist),
+        SourceProvider::Bilibili,
+        Some("bilibili-secondary".to_string()),
+        Some("alist-main".to_string()),
+    );
+
+    assert_eq!(instance_name.as_deref(), Some("bilibili-secondary"));
+}
+
+#[test]
 fn dynamic_playlist_allows_default_provider_instance() {
     let (source_provider, source_config, provider_instance_name) = ok(
         normalize_dynamic_playlist_fields(

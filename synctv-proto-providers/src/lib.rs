@@ -48,19 +48,6 @@ pub mod providers {
 
     #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     #[allow(clippy::pedantic)]
-    pub mod rtmp {
-        include!(concat!(
-            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
-            "/synctv.provider.rtmp.rs"
-        ));
-        include!(concat!(
-            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
-            "/synctv.provider.rtmp.serde.rs"
-        ));
-    }
-
-    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
-    #[allow(clippy::pedantic)]
     pub mod bilibili {
         include!(concat!(
             env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),

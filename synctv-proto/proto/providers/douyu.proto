@@ -3,7 +3,6 @@ syntax = "proto3";
 package synctv.provider.douyu;
 
 import "proto/buf/validate/validate.proto";
-import "proto/source_config.proto";
 import "proto/providers/common.proto";
 
 enum StreamFormat {

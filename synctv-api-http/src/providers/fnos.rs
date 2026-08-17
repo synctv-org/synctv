@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Query, RawQuery, State},
+    extract::{Query, State},
     routing::{get, post},
     Json, Router,
 };
@@ -20,22 +20,12 @@ use super::common::{
 };
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ThumbnailQuery {
     server_id: String,
-    #[serde(default)]
-    credential_owner_id: Option<String>,
     image_path: String,
     #[serde(default = "default_thumbnail_width")]
     width: u32,
-    #[serde(default, rename = "sig")]
-    _sig: Option<String>,
-    #[serde(default, rename = "uid")]
-    _uid: Option<String>,
-    #[serde(default, rename = "rid")]
-    _rid: Option<String>,
-    #[serde(default, rename = "exp")]
-    _exp: Option<i64>,
 }
 
 const fn default_thumbnail_width() -> u32 {
@@ -68,7 +58,6 @@ pub(crate) fn fnos_read_routes() -> Router<AppState> {
         tag = "Provider",
         params(
             ("serverId" = String, Query),
-            ("credentialOwnerId" = Option<String>, Query),
             ("imagePath" = String, Query),
             ("width" = u32, Query)
         ),
@@ -80,23 +69,12 @@ pub(crate) async fn thumbnail(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Query(query): Query<ThumbnailQuery>,
-    RawQuery(raw_query): RawQuery,
 ) -> AppResult<axum::response::Response> {
-    let server_id = query.server_id.trim().to_string();
-    let image_path = query.image_path.trim().to_string();
-    let requested_owner_id = query
-        .credential_owner_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
-    if server_id.is_empty() || image_path.is_empty() {
-        return Err(crate::http::AppError::bad_request(
-            "FNOS thumbnail parameters must not be empty",
-        ));
-    }
-    let width = query.width.clamp(1, 1920);
-    let raw_query = raw_query.unwrap_or_default();
+    let req = synctv_proto::providers::fnos::GetThumbnailRequest {
+        server_id: query.server_id,
+        image_path: query.image_path,
+        width: query.width,
+    };
     let operation_state = state.clone();
     let request_meta = provider_request_metadata(request_meta);
     let action = state
@@ -107,65 +85,16 @@ pub(crate) async fn thumbnail(
             EndpointRateLimitCategory::Read,
             move |authenticated| async move {
                 let state = operation_state;
-                let public_auth_user_id = state
-                    .shared_api_runtime
-                    .public_id_codec
-                    .encode_user_id(authenticated.user_id())
-                    .map_err(synctv_api_common::impls::ApiError::Internal)?;
-                let public_owner_id = requested_owner_id
-                    .clone()
-                    .unwrap_or_else(|| public_auth_user_id.clone());
-                let has_signature =
-                    url::form_urlencoded::parse(raw_query.as_bytes()).any(|(key, _)| key == "sig");
-                if has_signature || public_owner_id != public_auth_user_id {
-                    let room_id = synctv_api_common::fnos_thumbnail_urls::verify_fnos_thumbnail_access(
-                        &state.shared_api_runtime.proxy_signing_key,
-                        &public_auth_user_id,
-                        &raw_query,
-                        synctv_api_common::fnos_thumbnail_urls::FnosThumbnailScope {
-                            server_id: &server_id,
-                            credential_owner_id: &public_owner_id,
-                            image_path: &image_path,
-                            width,
-                        },
-                    )
-                    .map_err(|error| match error {
-                        synctv_api_common::fnos_thumbnail_urls::FnosThumbnailAccessError::Invalid => {
-                            synctv_api_common::impls::ApiError::Authentication(
-                                "Invalid FNOS thumbnail signature".to_string(),
-                            )
-                        }
-                        synctv_api_common::fnos_thumbnail_urls::FnosThumbnailAccessError::WrongUser => {
-                            synctv_api_common::impls::ApiError::Authorization(
-                                "FNOS thumbnail URL is scoped to another user".to_string(),
-                            )
-                        }
-                    })?;
-                    let room_id = state
-                        .shared_api_runtime
-                        .public_id_codec
-                        .decode_room_id(&room_id)
-                        .map_err(synctv_api_common::impls::ApiError::InvalidInput)?;
-                    super::playback_provider::playback_provider_api_runtime(&state)
-                        .validate_fresh_access(&room_id, &authenticated.user_id())
-                        .await?;
-                }
-                let owner_id = state
-                    .shared_api_runtime
-                    .public_id_codec
-                    .decode_user_id(&public_owner_id)
-                    .map_err(synctv_api_common::impls::ApiError::InvalidInput)?;
                 state
                     .shared_api_runtime
                     .fnos_api
-                    .image_action(owner_id, &server_id, &image_path, width)
+                    .thumbnail_action(authenticated.user_id(), req)
                     .await
-                    .map_err(synctv_api_common::impls::ApiError::from)
             },
         )
         .await
         .map_err(crate::http::error::map_api_error)?;
-    super::execute_playback_transport_with_state(&state, action, None).await
+    super::execute_provider_preview_transport(&state, action, None).await
 }
 
 #[cfg_attr(

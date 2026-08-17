@@ -21,6 +21,28 @@ message PreparedMediaSource {
   synctv.source_config.PlaybackKind playback_kind = 3 [(buf.validate.field).enum.defined_only = true];
 }
 
+// Transport-neutral chunks for non-room provider resources such as images
+// shown while browsing before media is added to a room.
+message ResourceChunk {
+  bytes data = 1;
+  uint32 status = 2;
+  optional string content_type = 3;
+  optional uint64 content_length = 4;
+  optional string content_range = 5;
+  optional string accept_ranges = 6;
+  optional string cache_control = 7;
+  optional string etag = 8;
+  optional string last_modified = 9;
+  optional string expires = 10;
+  optional string content_disposition = 11;
+  optional string location = 12;
+  optional string content_encoding = 13;
+}
+
+message ResourceResponse {
+  ResourceChunk chunk = 1;
+}
+
 enum PlaybackProxyAutoReason {
   PLAYBACK_PROXY_AUTO_REASON_UNSPECIFIED = 0;
   PLAYBACK_PROXY_AUTO_REASON_PUBLIC_RESOURCE = 1;

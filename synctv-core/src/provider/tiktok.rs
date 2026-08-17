@@ -355,6 +355,7 @@ impl TikTokProvider {
             url: target.url,
             headers: target.headers,
             range_header: range_header.map(ToString::to_string),
+            proxy_strategy: super::PlaybackResourceProxyStrategy::SliceCache,
         })
     }
 
@@ -531,7 +532,7 @@ impl TikTokProvider {
             .into_iter()
             .find(|subtitle| subtitle.language == *language && subtitle.format == *format)
             .ok_or(ProviderError::NotFound)?;
-        super::playback_transport::transport_action_for_target_url(
+        super::playback_transport::full_response_cache_action_for_target_url(
             subtitle.url,
             tiktok_headers(session.cookie.as_deref(), TikTokMediaKind::Video),
             range_header,

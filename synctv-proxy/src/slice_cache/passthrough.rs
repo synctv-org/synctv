@@ -32,6 +32,7 @@ pub(super) struct StreamThroughRequest<'a> {
 const PASSTHROUGH_RESPONSE_HEADERS: &[&str] = &[
     "content-length",
     "content-type",
+    "content-encoding",
     "content-range",
     "accept-ranges",
     "cache-control",
@@ -63,7 +64,7 @@ pub(super) fn stream_existing_response_with_status(
 
     let stream = resp
         .bytes_stream()
-        .map(|result| result.map_err(|e| io::Error::other(format!("Stream error: {e}"))));
+        .map(|result| result.map_err(|error| io::Error::other(format!("Stream error: {error}"))));
 
     builder
         .body(Body::from_stream(stream))

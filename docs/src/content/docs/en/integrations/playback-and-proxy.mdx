@@ -58,6 +58,22 @@ Clients query a concrete `DiscoveredSource` through `POST /api/providers/playbac
 
 Clients build selectors and hints from this response. The same endpoint accepts an accessible persisted source for media-level inspection. A new Provider media variant must update both the policy response and playback generation tests.
 
+## Playback-Provider Resource Contract
+
+Each Provider owns the playback resources that it creates. This includes media, subtitles, danmaku documents, real-time danmaku streams, thumbnails, HLS playlists and segments, DASH manifests and child resources, and live FLV or HLS resources.
+
+Provider resource URLs use this path:
+
+```text
+/api/playback-providers/{roomId}/{provider}/...
+```
+
+The path room ID is part of the signed claim. A signed playback query contains `sig`, `uid`, and `exp`. A rewritten HLS resource also contains a signed `targetUrl`. DASH resource routes carry their signature fields in the path, while the upstream resource query remains separate. This layout keeps the upstream query intact and keeps the room identity in one public location.
+
+The Provider service decides the resource route, upstream URL, headers, direct or proxy delivery, and playlist rewrite rules. HTTP and gRPC adapters call the same room-actor business operation. The shared transport layer forwards streams, Range requests, redirects, timeouts, and cache behavior.
+
+`PlaybackDanmaku.delivery` tells the client how to load each danmaku resource. `DOCUMENT` uses the static document loader. `EVENT_STREAM` uses the real-time event-stream loader. Clients must use this field instead of Provider names, format strings, or URL patterns.
+
 ## Client Selection Strategy
 
 | Client condition | Handling |
@@ -95,6 +111,8 @@ Proxy slice cache boundaries:
 - Bypasses upstreams that do not support Range.
 - File backend can survive process restarts, but has no cross-process index or distributed lock.
 - Shared storage in multi-replica mode is possible, but this is not a strongly consistent distributed cache.
+
+A Provider can select full-response caching for small resources that are known not to support Range, such as subtitles and static danmaku. The first response records status, `Content-Length`, content type, and related metadata. Only successful responses with a declared size of at most 16 MiB enter the full-response cache and use a fill lock. Responses with an unknown or larger size continue streaming to the client without a response-size limit. Later requests use the metadata to bypass the lock for resources that cannot be cached.
 
 See [Proxy Slice Cache](../../configuration/proxy-slice-cache/).
 

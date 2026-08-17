@@ -11,6 +11,7 @@ use {
     },
     crate::bytesio::{
         bytes_writer::AsyncBytesWriter,
+        bytesio_errors::BytesIOErrorValue,
         net_io::{TNetIO, TcpIO},
     },
     crate::flv::amf0::Amf0ValueType,
@@ -350,6 +351,9 @@ impl ServerSession {
             match read_result {
                 Ok(data) => {
                     self.bytesio_data = data;
+                }
+                Err(err) if matches!(err.value, BytesIOErrorValue::TimeoutError(_)) => {
+                    return Ok(());
                 }
                 Err(err) => {
                     self.teardown_active_stream().await?;
@@ -1067,6 +1071,36 @@ mod tests {
         shutdowns: Arc<AtomicUsize>,
     }
 
+    struct ReadTimeoutNetIo;
+
+    #[async_trait]
+    impl TNetIO for ReadTimeoutNetIo {
+        async fn write(&mut self, _bytes: Bytes) -> Result<(), BytesIOError> {
+            Ok(())
+        }
+
+        async fn read(&mut self) -> Result<BytesMut, BytesIOError> {
+            std::future::pending().await
+        }
+
+        async fn read_timeout(&mut self, _duration: Duration) -> Result<BytesMut, BytesIOError> {
+            let elapsed = tokio::time::timeout(Duration::ZERO, std::future::pending::<()>())
+                .await
+                .expect_err("pending read should time out immediately");
+            Err(BytesIOError {
+                value: BytesIOErrorValue::TimeoutError(elapsed),
+            })
+        }
+
+        async fn shutdown(&mut self) -> Result<(), BytesIOError> {
+            Ok(())
+        }
+
+        fn get_net_type(&self) -> NetType {
+            NetType::TCP
+        }
+    }
+
     impl ChunkedNetIo {
         fn new(reads: Vec<BytesMut>) -> Self {
             Self {
@@ -1176,6 +1210,45 @@ mod tests {
             callbacks,
             media_mode: RtmpStreamMode::Default,
         }
+    }
+
+    #[tokio::test]
+    async fn read_poll_timeout_does_not_close_active_session() {
+        let (event_sender, _event_receiver) =
+            tokio::sync::mpsc::channel(STREAM_HUB_EVENT_CHANNEL_CAPACITY);
+        let mut session = build_test_session(
+            event_sender,
+            None,
+            Arc::new(StreamEventCallbacks::default()),
+        );
+        let io: Box<dyn TNetIO + Send + Sync> = Box::new(ReadTimeoutNetIo);
+        let io = Arc::new(Mutex::new(io));
+        session.io = Arc::clone(&io);
+        session.handshaker = HandshakeServer::new(io);
+
+        session
+            .read_parse_chunks()
+            .await
+            .expect("short read timeout should keep the RTMP session alive");
+    }
+
+    #[tokio::test]
+    async fn accumulated_session_idle_timeout_still_closes_session() {
+        let (event_sender, _event_receiver) =
+            tokio::sync::mpsc::channel(STREAM_HUB_EVENT_CHANNEL_CAPACITY);
+        let mut session = build_test_session(
+            event_sender,
+            None,
+            Arc::new(StreamEventCallbacks::default()),
+        );
+        session.last_message_time =
+            tokio::time::Instant::now() - SESSION_IDLE_TIMEOUT - Duration::from_secs(1);
+
+        let error = session
+            .read_parse_chunks()
+            .await
+            .expect_err("fully idle RTMP session should time out");
+        assert!(matches!(error.value, SessionErrorValue::Timeout));
     }
 
     fn build_c0c1() -> Vec<u8> {

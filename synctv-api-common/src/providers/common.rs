@@ -1,3 +1,4 @@
+use futures::StreamExt;
 use std::sync::Arc;
 use synctv_core::models::{
     normalize_provider_instance_name, resolve_provider_instance_binding,
@@ -23,6 +24,62 @@ use crate::impls::source_provider::{
     proto_source_provider_required, proto_source_provider_vec,
 };
 use crate::impls::{ApiError, EndpointRateLimitCategory, RequestExecutor, RequestMetadata};
+
+pub type ProviderResourceResponseStream = std::pin::Pin<
+    Box<
+        dyn futures::Stream<
+                Item = Result<synctv_proto::providers::common::ResourceResponse, ApiError>,
+            > + Send
+            + 'static,
+    >,
+>;
+
+pub struct ProviderResourceExecutorDeps<'a> {
+    pub proxy_signing_key: &'a crate::proxy_signature::ProxySigningKey,
+    pub proxy_http_client: &'a reqwest::Client,
+    pub ssrf_guard: &'a synctv_common::ssrf::SsrfGuard,
+    pub proxy_slice_cache: &'a synctv_proxy::slice_cache::SliceCache,
+    pub request_control: Option<&'a ExecutionControl>,
+}
+
+pub async fn provider_resource_action_to_stream(
+    deps: ProviderResourceExecutorDeps<'_>,
+    action: synctv_core::provider::PlaybackTransportAction,
+) -> Result<ProviderResourceResponseStream, ApiError> {
+    let stream = crate::playback_provider::common::playback_transport_action_to_chunk_stream(
+        crate::playback_provider::common::PlaybackTransportExecutorDeps {
+            proxy_signing_key: deps.proxy_signing_key,
+            proxy_http_client: deps.proxy_http_client,
+            ssrf_guard: deps.ssrf_guard,
+            proxy_slice_cache: deps.proxy_slice_cache,
+            request_control: deps.request_control,
+            hls_rewrite: None,
+        },
+        action,
+        false,
+    )
+    .await?;
+
+    Ok(Box::pin(stream.map(|result| {
+        result.map(|chunk| synctv_proto::providers::common::ResourceResponse {
+            chunk: Some(synctv_proto::providers::common::ResourceChunk {
+                data: chunk.data,
+                status: chunk.status,
+                content_type: chunk.content_type,
+                content_length: chunk.content_length,
+                content_range: chunk.content_range,
+                accept_ranges: chunk.accept_ranges,
+                cache_control: chunk.cache_control,
+                etag: chunk.etag,
+                last_modified: chunk.last_modified,
+                expires: chunk.expires,
+                content_disposition: chunk.content_disposition,
+                location: chunk.location,
+                content_encoding: chunk.content_encoding,
+            }),
+        })
+    })))
+}
 
 #[must_use]
 pub fn provider_instance_name_for_response(value: Option<String>) -> String {
@@ -112,25 +169,6 @@ fn core_playback_kind(
     }
 }
 
-fn normalize_direct_url_input(input: &mut synctv_proto::source_config::DirectUrlMediaSourceConfig) {
-    for media in &mut input.medias {
-        media.name = media.name.trim().to_string();
-        media.url = normalize_http_url(&media.url);
-        media.format = media.format.trim().to_string();
-    }
-    for subtitle in &mut input.subtitles {
-        subtitle.name = subtitle.name.trim().to_string();
-        subtitle.language = subtitle.language.trim().to_string();
-        subtitle.url = normalize_http_url(&subtitle.url);
-        subtitle.format = subtitle.format.trim().to_string();
-    }
-    for danmaku in &mut input.danmakus {
-        danmaku.name = danmaku.name.trim().to_string();
-        danmaku.url = normalize_http_url(&danmaku.url);
-        danmaku.format = danmaku.format.take().map(|value| value.trim().to_string());
-    }
-}
-
 fn normalize_http_url(value: &str) -> String {
     let value = value.trim();
     if value.is_empty() || url::Url::parse(value).is_ok() || value.contains("://") {
@@ -138,63 +176,6 @@ fn normalize_http_url(value: &str) -> String {
     } else {
         format!("https://{value}")
     }
-}
-
-fn core_direct_url_config(
-    input: &synctv_proto::source_config::DirectUrlMediaSourceConfig,
-) -> Result<synctv_core::models::DirectUrlMediaSourceConfig, ApiError> {
-    Ok(synctv_core::models::DirectUrlMediaSourceConfig {
-        playback_kind: core_playback_kind(input.playback_kind)?,
-        duration_seconds: input.duration_seconds,
-        proxy_mode: core_playback_proxy_mode(input.proxy_mode)?,
-        medias: input
-            .medias
-            .iter()
-            .map(|media| synctv_core::models::DirectUrlMediaResourceConfig {
-                name: media.name.clone(),
-                url: media.url.clone(),
-                headers: media.headers.clone(),
-                format: media.format.clone(),
-                expires_at: media.expires_at,
-            })
-            .collect(),
-        default_media_index: input
-            .default_media_index
-            .map(|value| usize::try_from(value).unwrap_or(usize::MAX)),
-        subtitles: input
-            .subtitles
-            .iter()
-            .map(
-                |subtitle| synctv_core::models::DirectUrlSubtitleSourceConfig {
-                    name: subtitle.name.clone(),
-                    language: subtitle.language.clone(),
-                    url: subtitle.url.clone(),
-                    headers: subtitle.headers.clone(),
-                    format: subtitle.format.clone(),
-                    expires_at: subtitle.expires_at,
-                },
-            )
-            .collect(),
-        default_subtitle_index: input
-            .default_subtitle_index
-            .map(|value| usize::try_from(value).unwrap_or(usize::MAX)),
-        danmakus: input
-            .danmakus
-            .iter()
-            .map(
-                |danmaku| synctv_core::models::DirectUrlDanmakuSourceConfig {
-                    name: danmaku.name.clone(),
-                    url: danmaku.url.clone(),
-                    headers: danmaku.headers.clone(),
-                    format: danmaku.format.clone(),
-                    expires_at: danmaku.expires_at,
-                },
-            )
-            .collect(),
-        default_danmaku_index: input
-            .default_danmaku_index
-            .map(|value| usize::try_from(value).unwrap_or(usize::MAX)),
-    })
 }
 
 fn core_playback_proxy_mode(
@@ -411,14 +392,32 @@ impl ProviderCommonApiImpl {
         req: synctv_proto::providers::common::PrepareDirectUrlRequest,
     ) -> Result<synctv_proto::providers::common::PreparedMediaSource, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let mut input = synctv_proto::source_config::DirectUrlMediaSourceConfig {
-            medias: vec![synctv_proto::source_config::DirectUrlMediaResourceConfig {
-                name: String::new(),
-                url: req.url,
-                headers: req.headers,
-                format: String::new(),
-                expires_at: req.expires_at,
+        let media = synctv_proto::source_config::DirectUrlMediaResourceConfig {
+            name: String::new(),
+            url: normalize_http_url(&req.url),
+            headers: req.headers,
+            format: String::new(),
+            expires_at: req.expires_at,
+        };
+        let core = synctv_core::models::DirectUrlMediaSourceConfig {
+            playback_kind: core_playback_kind(Some(req.playback_kind))?,
+            duration_seconds: None,
+            proxy_mode: core_playback_proxy_mode(req.proxy_mode)?,
+            medias: vec![synctv_core::models::DirectUrlMediaResourceConfig {
+                name: media.name.clone(),
+                url: media.url.clone(),
+                headers: media.headers.clone(),
+                format: media.format.clone(),
+                expires_at: media.expires_at,
             }],
+            default_media_index: Some(0),
+            subtitles: Vec::new(),
+            default_subtitle_index: None,
+            danmakus: Vec::new(),
+            default_danmaku_index: None,
+        };
+        let input = synctv_proto::source_config::DirectUrlMediaSourceConfig {
+            medias: vec![media],
             default_media_index: Some(0),
             subtitles: Vec::new(),
             default_subtitle_index: None,
@@ -428,8 +427,6 @@ impl ProviderCommonApiImpl {
             duration_seconds: None,
             proxy_mode: req.proxy_mode,
         };
-        normalize_direct_url_input(&mut input);
-        let core = core_direct_url_config(&input)?;
         DirectUrlProvider::new_with_ssrf_guard(self.providers_manager.ssrf_guard())
             .validate_prepared_config(&core)
             .map_err(ApiError::from)?;

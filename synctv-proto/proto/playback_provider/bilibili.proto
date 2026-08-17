@@ -32,6 +32,31 @@ enum BilibiliLiveDanmakuEventType {
   BILIBILI_LIVE_DANMAKU_EVENT_TYPE_UNKNOWN = 5;
 }
 
+message BilibiliDynamicLiveDanmakuTarget {
+  string playlist_id = 1 [(buf.validate.field).string.min_len = 1];
+  uint64 live_room_id = 2 [(buf.validate.field).uint64.gt = 0];
+}
+
+message WatchBilibiliLiveDanmakuRequest {
+  oneof target {
+    option (buf.validate.oneof).required = true;
+    string media_id = 1 [(buf.validate.field).string.min_len = 1];
+    BilibiliDynamicLiveDanmakuTarget dynamic = 2;
+  }
+}
+
+message BilibiliLiveDanmakuEvent {
+  string format = 1;
+  string event_type = 2;
+  string user = 3;
+  string message = 4;
+  uint64 timestamp = 5;
+  string gift_name = 6;
+  uint32 gift_count = 7;
+  uint32 online_count = 8;
+  BilibiliLiveDanmakuEventType type = 9;
+}
+
 message GetBilibiliMediaStreamRequest {
   string version = 1 [(buf.validate.field).string.min_len = 1];
   string mode_name = 2 [(buf.validate.field).string.min_len = 1];
@@ -138,22 +163,6 @@ message GetBilibiliDanmakuFileRequest {
 
 message BilibiliDanmakuFileResponse {
   synctv.playback_provider.common.StreamChunk chunk = 1;
-}
-
-message WatchBilibiliLiveDanmakuRequest {
-  string media_id = 1 [(buf.validate.field).string.min_len = 1];
-}
-
-message BilibiliLiveDanmakuEvent {
-  string format = 1;
-  string event_type = 2;
-  string user = 3;
-  string message = 4;
-  uint64 timestamp = 5;
-  string gift_name = 6;
-  uint32 gift_count = 7;
-  uint32 online_count = 8;
-  BilibiliLiveDanmakuEventType type = 9;
 }
 
 service BilibiliPlaybackProviderService {

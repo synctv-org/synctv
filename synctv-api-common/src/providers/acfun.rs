@@ -39,7 +39,6 @@ pub fn resolve_response(
             .into_iter()
             .map(|quality| Quality {
                 name: quality.name,
-                url: quality.url,
                 format: stream_format(quality.format),
                 bitrate: quality.bitrate,
                 width: quality.width,

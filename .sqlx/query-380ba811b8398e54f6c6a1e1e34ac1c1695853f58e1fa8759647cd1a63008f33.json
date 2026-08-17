@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            UPDATE playlists\n            SET name = $2, description = $3,\n                cover_file_reference_id = $4,\n                position = $5,\n                version = version + 1\n            WHERE id = $1\n              AND deleted_at IS NULL\n              AND version = $6\n              AND (creator_id IS NULL OR EXISTS (\n                  SELECT 1 FROM users u WHERE u.id = playlists.creator_id AND u.deleted_at IS NULL\n              ))\n              AND (parent_id IS NULL OR EXISTS (\n                  SELECT 1 FROM playlists parent\n                  WHERE parent.id = playlists.parent_id\n                    AND parent.deleted_at IS NULL\n                    AND (parent.creator_id IS NULL OR EXISTS (\n                        SELECT 1 FROM users u WHERE u.id = parent.creator_id AND u.deleted_at IS NULL\n                    ))\n              ))\n            RETURNING id as \"id: PlaylistId\",\n                      room_id as \"room_id: RoomId\",\n                      creator_id as \"creator_id: crate::models::UserId\",\n                      name,\n                      description,\n                      cover_file_reference_id,\n                      parent_id as \"parent_id: PlaylistId\",\n                      position,\n                      source_provider,\n                      source_config as \"source_config: crate::models::PlaylistSourceConfig\",\n                      NULLIF(provider_instance_name, '') AS \"provider_instance_name?\",\n                      created_at,\n                      updated_at,\n                      version\n            ",
+  "query": "\n            UPDATE playlists\n            SET name = $2, description = $3,\n                cover_file_reference_id = $4,\n                position = $5,\n                source_provider = $6,\n                source_config = $7,\n                provider_instance_name = $8,\n                version = version + 1\n            WHERE id = $1\n              AND deleted_at IS NULL\n              AND version = $9\n              AND (creator_id IS NULL OR EXISTS (\n                  SELECT 1 FROM users u WHERE u.id = playlists.creator_id AND u.deleted_at IS NULL\n              ))\n              AND (parent_id IS NULL OR EXISTS (\n                  SELECT 1 FROM playlists parent\n                  WHERE parent.id = playlists.parent_id\n                    AND parent.deleted_at IS NULL\n                    AND (parent.creator_id IS NULL OR EXISTS (\n                        SELECT 1 FROM users u WHERE u.id = parent.creator_id AND u.deleted_at IS NULL\n                    ))\n              ))\n            RETURNING id as \"id: PlaylistId\",\n                      room_id as \"room_id: RoomId\",\n                      creator_id as \"creator_id: crate::models::UserId\",\n                      name,\n                      description,\n                      cover_file_reference_id,\n                      parent_id as \"parent_id: PlaylistId\",\n                      position,\n                      source_provider,\n                      source_config as \"source_config: crate::models::PlaylistSourceConfig\",\n                      NULLIF(provider_instance_name, '') AS \"provider_instance_name?\",\n                      created_at,\n                      updated_at,\n                      version\n            ",
   "describe": {
     "columns": [
       {
@@ -160,6 +160,9 @@
         "Text",
         "Int8",
         "Float8",
+        "Int2",
+        "Jsonb",
+        "Varchar",
         "Int4"
       ]
     },
@@ -180,5 +183,5 @@
       false
     ]
   },
-  "hash": "42551f011172a5de7e314a36e0fc679ca152a6d79af8f8fd46483dec9339a8b3"
+  "hash": "380ba811b8398e54f6c6a1e1e34ac1c1695853f58e1fa8759647cd1a63008f33"
 }

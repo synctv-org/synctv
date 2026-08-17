@@ -453,7 +453,7 @@ impl TrueNasProvider {
             .client
             .download_ticket(&auth.api_key, &subtitle.path)
             .await?;
-        super::playback_transport::transport_action_for_target_url(
+        super::playback_transport::full_response_cache_action_for_target_url(
             ticket.url.to_string(),
             HashMap::new(),
             None,

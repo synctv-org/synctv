@@ -3,7 +3,6 @@ syntax = "proto3";
 package synctv.provider.douyin;
 
 import "proto/buf/validate/validate.proto";
-import "proto/source_config.proto";
 import "proto/providers/common.proto";
 
 message BindRequest {
@@ -99,23 +98,21 @@ message Metadata {
 }
 
 message Variant {
-  string url = 1;
-  StreamFormat format = 2;
-  string quality = 3;
-  optional string codec = 4;
-  optional uint32 width = 5;
-  optional uint32 height = 6;
-  optional uint32 fps = 7;
-  optional uint64 bitrate = 8;
-  bool audio_only = 9;
-  bool headers_required = 10;
+  StreamFormat format = 1;
+  string quality = 2;
+  optional string codec = 3;
+  optional uint32 width = 4;
+  optional uint32 height = 5;
+  optional uint32 fps = 6;
+  optional uint64 bitrate = 7;
+  bool audio_only = 8;
+  bool headers_required = 9;
 }
 
 message ResolveResponse {
   Metadata metadata = 1;
-  optional string room_id = 2;
-  repeated Variant variants = 3;
-  synctv.provider.common.DiscoveredSource source = 4;
+  repeated Variant variants = 2;
+  synctv.provider.common.DiscoveredSource source = 3;
 }
 
 message ListUserPostsRequest {

@@ -88,3 +88,9 @@ message BindInfo {
 message GetBindsResponse {
   repeated BindInfo binds = 1;
 }
+
+message GetThumbnailRequest {
+  string server_id = 1 [(buf.validate.field).string.min_len = 1];
+  string path = 2 [(buf.validate.field).string.min_len = 1];
+  uint32 size = 3 [(buf.validate.field).uint32.lte = 640];
+}

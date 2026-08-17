@@ -1274,6 +1274,30 @@ impl PlaylistRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
+        let source_provider_code = playlist.source_provider.map(SourceProvider::as_i16);
+        let source_config = match (playlist.source_provider, playlist.source_config.as_ref()) {
+            (Some(provider), Some(config)) => {
+                if config.provider() != provider {
+                    return Err(crate::Error::InvalidInput(format!(
+                        "playlist source_config provider '{}' does not match source_provider '{}'",
+                        config.provider(),
+                        provider
+                    )));
+                }
+                Some(sqlx::types::Json(config))
+            }
+            (None, None) => None,
+            (Some(provider), None) => {
+                return Err(crate::Error::InvalidInput(format!(
+                    "source_config is required for {provider} playlist"
+                )));
+            }
+            (None, Some(_)) => {
+                return Err(crate::Error::InvalidInput(
+                    "source_provider is required when source_config is present".to_string(),
+                ));
+            }
+        };
         let row = sqlx::query_as!(
             PlaylistRow,
             r#"
@@ -1281,10 +1305,13 @@ impl PlaylistRepository {
             SET name = $2, description = $3,
                 cover_file_reference_id = $4,
                 position = $5,
+                source_provider = $6,
+                source_config = $7,
+                provider_instance_name = $8,
                 version = version + 1
             WHERE id = $1
               AND deleted_at IS NULL
-              AND version = $6
+              AND version = $9
               AND (creator_id IS NULL OR EXISTS (
                   SELECT 1 FROM users u WHERE u.id = playlists.creator_id AND u.deleted_at IS NULL
               ))
@@ -1316,6 +1343,9 @@ impl PlaylistRepository {
             playlist.description,
             playlist.cover_file_reference_id,
             playlist.position,
+            source_provider_code,
+            source_config as _,
+            normalize_provider_instance_name(playlist.provider_instance_name.as_deref()),
             expected_version,
         )
         .fetch_optional(executor)

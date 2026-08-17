@@ -16,7 +16,6 @@ use super::{
     execute_playback_provider_stream, grpc_request_metadata, GrpcResponseStream,
     PlaybackProviderGrpcState,
 };
-use synctv_api_common::impls::EndpointRateLimitCategory;
 
 #[derive(Clone)]
 pub struct BilibiliPlaybackProviderGrpcService {
@@ -207,33 +206,19 @@ impl BilibiliPlaybackProviderService for BilibiliPlaybackProviderGrpcService {
         &self,
         request: Request<WatchBilibiliLiveDanmakuRequest>,
     ) -> Result<Response<Self::WatchLiveDanmakuStream>, Status> {
-        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
+        let (metadata, public_room_id) =
+            super::grpc_room_request_context(&self.state, &request, &self.runtime_settings)?;
         let req = request.into_inner();
-        let state = self.state.clone();
-        let state_for_stream = state.clone();
-
-        let stream = state
-            .shared_api_runtime
-            .request_executor
-            .execute_user_with_control(
+        let stream =
+            synctv_api_common::impls::ClientApiImpl::execute_room_actor_endpoint_with_control(
+                self.state.shared_api_runtime.client_api.clone(),
                 &metadata,
-                EndpointRateLimitCategory::Streaming,
-                move |request_control, authenticated| {
-                    let state = state_for_stream;
-                    async move {
-                        synctv_api_common::playback_provider::bilibili::watch_bilibili_live_danmaku(
-                            synctv_api_common::playback_provider::bilibili::BilibiliLiveDanmakuDeps {
-                                playback_provider_service: &state
-                                    .shared_api_runtime
-                                    .bilibili_playback_provider_service,
-                                identity_runtime: super::playback_provider_identity_runtime(&state),
-                                actor_user_id: authenticated.user_id(),
-                                request_control: Some(&request_control),
-                            },
-                            req,
-                        )
+                public_room_id,
+                synctv_api_common::impls::EndpointRateLimitCategory::Streaming,
+                move |client_api, request_control, actor| async move {
+                    client_api
+                        .watch_bilibili_live_danmaku_for_actor(&actor, req, Some(&request_control))
                         .await
-                    }
                 },
             )
             .await

@@ -1052,6 +1052,8 @@ message CreatePublishKeyRequest {
     UserRef actor = 1;
     string room_id = 2;
     string media_id = 3;
+    synctv.client.PublishKeyType type = 4;
+    optional int64 expires_at = 5;
 }
 
 message GetStreamInfoRequest {

@@ -4791,7 +4791,11 @@ async fn test_create_publish_key_bypasses_room_membership_requirement_for_global
         admin_api
             .create_publish_key_for_actor(
                 &public_room_id,
-                &public_media_id,
+                synctv_proto::client::CreateRoomPublishKeyRequest {
+                    media_id: public_media_id.clone(),
+                    r#type: synctv_proto::client::PublishKeyType::SingleUse as i32,
+                    expires_at: Some(chrono::Utc::now().timestamp() + 3600),
+                },
                 &owner.id,
                 &global_admin.id,
                 &RequestContext::default(),

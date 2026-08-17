@@ -84,11 +84,10 @@ pub async fn create_room_publish_key(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<RoomStreamPath>,
+    Json(mut req): Json<CreateRoomPublishKeyRequest>,
 ) -> AppResult<Json<CreateRoomPublishKeyResponse>> {
     let room_id = path.room_id;
-    let req = CreateRoomPublishKeyRequest {
-        media_id: path.media_id,
-    };
+    req.media_id = path.media_id;
     let response = execute_user_endpoint(
         &state,
         request_meta,

@@ -397,7 +397,8 @@ pub(in crate::cli) struct HumanCreatePublishKeyResponse {
     publish_key: String,
     rtmp_url: String,
     stream_key: String,
-    expires_at: String,
+    expires_at: Option<String>,
+    key_type: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1987,7 +1988,14 @@ impl ToHuman for synctv_proto::client::CreateRoomPublishKeyResponse {
             publish_key: self.publish_key.clone(),
             rtmp_url: self.rtmp_url.clone(),
             stream_key: self.stream_key.clone(),
-            expires_at: humanize_timestamp(self.expires_at),
+            expires_at: self.expires_at.map(humanize_timestamp),
+            key_type: match self.r#type() {
+                synctv_proto::client::PublishKeyType::SingleUse => "single_use",
+                synctv_proto::client::PublishKeyType::Expiring => "expiring",
+                synctv_proto::client::PublishKeyType::Permanent => "permanent",
+                synctv_proto::client::PublishKeyType::Unspecified => "unspecified",
+            }
+            .to_string(),
         }
     }
 }

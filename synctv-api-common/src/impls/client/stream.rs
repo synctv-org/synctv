@@ -1,10 +1,13 @@
-use synctv_core::models::{MediaId, Room, RoomId, UserId};
+use synctv_core::{
+    models::{MediaId, Room, RoomId, UserId},
+    service::{PublishKeyOptions, PublishKeyType as CorePublishKeyType},
+};
 
 use crate::impls::{ApiError, ClientApiImpl};
 use synctv_proto::client::{
     CreateRoomPublishKeyRequest, CreateRoomPublishKeyResponse, GetRoomStreamInfoRequest,
     GetRoomStreamInfoResponse, KickRoomStreamRequest, ListRoomStreamsRequest,
-    ListRoomStreamsResponse, RoomStreamPublisherInfo, SortDirection, StreamEntry,
+    ListRoomStreamsResponse, PublishKeyType, RoomStreamPublisherInfo, SortDirection, StreamEntry,
 };
 
 const LIVESTREAM_UNAVAILABLE_MESSAGE: &str = "Live streaming is not available on this server.";
@@ -111,6 +114,28 @@ fn build_publish_rtmp_url(runtime_settings: &crate::ApiRuntimeSettings, room_id:
     format!("rtmp://{rtmp_host}:{rtmp_port}/{room_id}")
 }
 
+pub(crate) fn publish_key_options(
+    req: &CreateRoomPublishKeyRequest,
+) -> Result<PublishKeyOptions, ApiError> {
+    let key_type = match PublishKeyType::try_from(req.r#type)
+        .map_err(|_| ApiError::InvalidInput("publish key type is invalid".to_string()))?
+    {
+        PublishKeyType::SingleUse => CorePublishKeyType::SingleUse,
+        PublishKeyType::Expiring => CorePublishKeyType::Expiring,
+        PublishKeyType::Permanent => CorePublishKeyType::Permanent,
+        PublishKeyType::Unspecified => {
+            return Err(ApiError::InvalidInput(
+                "publish key type must be specified".to_string(),
+            ));
+        }
+    };
+
+    Ok(PublishKeyOptions {
+        key_type,
+        expires_at: req.expires_at,
+    })
+}
+
 pub(crate) fn issue_room_publish_key(
     publish_key_service: &dyn synctv_core::service::StreamingPublishKeyService,
     runtime_settings: &crate::ApiRuntimeSettings,
@@ -118,10 +143,11 @@ pub(crate) fn issue_room_publish_key(
     room_id: RoomId,
     media_id: MediaId,
     actor_user_id: &UserId,
+    options: PublishKeyOptions,
 ) -> Result<CreateRoomPublishKeyResponse, ApiError> {
     let publish_key = publish_key_service
-        .generate_publish_key(&room_id, &media_id, actor_user_id)
-        .map_err(|error| ApiError::Internal(format!("Failed to generate publish key: {error}")))?;
+        .generate_publish_key_with_options(&room_id, &media_id, actor_user_id, options)
+        .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
     let room_id = public_id_codec
         .encode_room_id(room_id)
         .map_err(|error| ApiError::Internal(format!("Failed to encode room id: {error}")))?;
@@ -135,6 +161,11 @@ pub(crate) fn issue_room_publish_key(
         rtmp_url: build_publish_rtmp_url(runtime_settings, &room_id),
         stream_key,
         expires_at: publish_key.expires_at,
+        r#type: match publish_key.key_type {
+            CorePublishKeyType::SingleUse => PublishKeyType::SingleUse as i32,
+            CorePublishKeyType::Expiring => PublishKeyType::Expiring as i32,
+            CorePublishKeyType::Permanent => PublishKeyType::Permanent as i32,
+        },
     })
 }
 
@@ -177,6 +208,7 @@ impl ClientApiImpl {
         req: CreateRoomPublishKeyRequest,
     ) -> Result<CreateRoomPublishKeyResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
+        let options = publish_key_options(&req)?;
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
         let media_id = self
@@ -222,6 +254,7 @@ impl ClientApiImpl {
             rid,
             media_id,
             &uid,
+            options,
         )
     }
 

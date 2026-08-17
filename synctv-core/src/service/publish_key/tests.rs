@@ -214,7 +214,7 @@ async fn test_generate_publish_key_returns_valid_token() {
     assert_eq!(key.room_id, room_id.to_string());
     assert_eq!(key.media_id, media_id.to_string());
     assert_eq!(key.user_id, user_id.to_string());
-    assert!(key.expires_at > 0);
+    assert!(key.expires_at.is_some_and(|expires_at| expires_at > 0));
 }
 
 #[tokio::test]
@@ -232,11 +232,108 @@ async fn test_generate_publish_key_expiration_matches_ttl() {
     let now = test_clock().now().timestamp();
 
     let expected_exp = now + (2 * 3600);
-    let diff = (key.expires_at - expected_exp).abs();
+    let diff = (key.expires_at.expect("default key must expire") - expected_exp).abs();
     assert!(
         diff < 5,
         "Expiration time is off by more than 5 seconds: diff={diff}"
     );
+}
+
+#[tokio::test]
+async fn explicit_publish_key_types_enforce_their_lifecycle() {
+    let now = 1_700_000_000i64;
+    let clock = fixed_clock(now * 1000);
+    let service = ok(
+        PublishKeyService::new(create_jwt_service_with_clock(clock.clone()), clock, 24),
+        "publish key service should build",
+    );
+    let room_id = RoomId::new();
+    let media_id = MediaId::new();
+    let user_id = UserId::new();
+
+    let single_use = ok(
+        service.generate_publish_key_with_options(
+            &room_id,
+            &media_id,
+            &user_id,
+            PublishKeyOptions {
+                key_type: PublishKeyType::SingleUse,
+                expires_at: Some(now + 3600),
+            },
+        ),
+        "single-use key should generate",
+    );
+    assert!(service
+        .validate_publish_key(&single_use.token)
+        .await
+        .is_ok());
+    assert!(service
+        .validate_publish_key(&single_use.token)
+        .await
+        .is_err());
+
+    let expiring = ok(
+        service.generate_publish_key_with_options(
+            &room_id,
+            &media_id,
+            &user_id,
+            PublishKeyOptions {
+                key_type: PublishKeyType::Expiring,
+                expires_at: Some(now + 3600),
+            },
+        ),
+        "expiring key should generate",
+    );
+    assert!(service.validate_publish_key(&expiring.token).await.is_ok());
+    assert!(service.validate_publish_key(&expiring.token).await.is_ok());
+
+    let permanent = ok(
+        service.generate_publish_key_with_options(
+            &room_id,
+            &media_id,
+            &user_id,
+            PublishKeyOptions {
+                key_type: PublishKeyType::Permanent,
+                expires_at: None,
+            },
+        ),
+        "permanent key should generate",
+    );
+    assert_eq!(permanent.expires_at, None);
+    assert!(service.validate_publish_key(&permanent.token).await.is_ok());
+    assert!(service.validate_publish_key(&permanent.token).await.is_ok());
+}
+
+#[test]
+fn publish_key_options_reject_inconsistent_expiration() {
+    let now = 1_700_000_000i64;
+    let clock = fixed_clock(now * 1000);
+    let service = ok(
+        PublishKeyService::new(create_jwt_service_with_clock(clock.clone()), clock, 24),
+        "publish key service should build",
+    );
+    let room_id = RoomId::new();
+    let media_id = MediaId::new();
+    let user_id = UserId::new();
+
+    for options in [
+        PublishKeyOptions {
+            key_type: PublishKeyType::SingleUse,
+            expires_at: None,
+        },
+        PublishKeyOptions {
+            key_type: PublishKeyType::Expiring,
+            expires_at: Some(now),
+        },
+        PublishKeyOptions {
+            key_type: PublishKeyType::Permanent,
+            expires_at: Some(now + 3600),
+        },
+    ] {
+        assert!(service
+            .generate_publish_key_with_options(&room_id, &media_id, &user_id, options)
+            .is_err());
+    }
 }
 
 #[tokio::test]
@@ -262,7 +359,7 @@ async fn test_publish_key_uses_configured_clock_for_issue_and_validation() {
     );
 
     assert_eq!(claims.iat, now_secs);
-    assert_eq!(claims.exp, now_secs + 7_200);
+    assert_eq!(claims.exp, Some(now_secs + 7_200));
     assert_eq!(key.expires_at, claims.exp);
 }
 
@@ -311,8 +408,9 @@ async fn test_validate_publish_key_rejects_expired_token() {
         user_id: UserId::new().to_string(),
         perm_manage_live_streams: true,
         iat: now - 7200,
-        exp: now - 3600,
+        exp: Some(now - 3600),
         jti: "expired_publish_key_test".to_string(),
+        key_type: PublishKeyType::SingleUse,
     };
     let token = ok(
         jwt_service.sign_custom(&expired_claims),

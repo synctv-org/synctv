@@ -3587,7 +3587,8 @@ async fn test_room_stream_and_rtmp_playback_provider_routes_are_reachable_under_
         Request::builder()
             .method("POST")
             .uri("/api/playback-providers/room_AbC123xYz890/rtmp/med_ZyX098wVu765/publish-key")
-            .body(Body::empty()),
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(r#"{"type":3}"#)),
     )?;
     let api_response = test_response(app.clone().oneshot(api_request).await)?;
     assert_eq!(api_response.status(), StatusCode::UNAUTHORIZED);

@@ -4668,6 +4668,8 @@ async fn full_stack_cli_stream_commands_cover_publish_list_get_and_kick_with_rea
             &media_id,
             "--username",
             &owner_username,
+            "--key-type",
+            "permanent",
         ],
         "create rtmp publish key",
     )
@@ -5054,6 +5056,8 @@ async fn full_stack_public_rtmp_playback_serves_signed_flv_and_hls_over_http() {
             &media_id,
             "--username",
             &owner_username,
+            "--key-type",
+            "permanent",
         ],
         "create HTTP playback RTMP publish key",
     )
@@ -5507,6 +5511,8 @@ async fn full_stack_cli_management_actor_state_constraints_reject_invalid_room_o
             &media_id,
             "--username",
             &banned_username,
+            "--key-type",
+            "permanent",
         ],
         "banned actor publish key",
     )
@@ -5541,6 +5547,8 @@ async fn full_stack_cli_management_actor_state_constraints_reject_invalid_room_o
             &media_id,
             "--username",
             &owner_username,
+            "--key-type",
+            "permanent",
         ],
         "media creator publish key in banned room",
     )

@@ -754,6 +754,7 @@ impl JwtService {
         let mut validation = Validation::new(self.algorithm);
         validation.validate_exp = false;
         validation.validate_nbf = false;
+        validation.required_spec_claims.remove("exp");
 
         let token_data = decode(token, &self.decoding_key, &validation)
             .map_err(|e| map_jwt_error(&e, "Token"))?;

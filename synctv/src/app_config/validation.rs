@@ -145,6 +145,74 @@ impl AppConfig {
         self.validate_core()
     }
 
+    /// Collect non-blocking configuration diagnostics for emission after logging is ready.
+    pub(crate) fn startup_diagnostics(&self) -> Vec<StartupDiagnostic> {
+        let mut diagnostics = Vec::new();
+
+        if self.jwt.secret == "change-me-in-production"
+            || self.jwt.secret.starts_with("CHANGE_ME_")
+            || is_known_dev_secret(&self.jwt.secret, KNOWN_DEV_JWT_SECRETS)
+        {
+            diagnostics.push(StartupDiagnostic::Warning(
+                "JWT secret appears to be a placeholder. Set SYNCTV_JWT_SECRET to a strong random value (openssl rand -base64 48)".to_string(),
+            ));
+        }
+
+        if self.redis.url.trim().is_empty()
+            && !self.redis_split_config_present()
+            && !self.cluster_runtime_enabled()
+        {
+            diagnostics.push(StartupDiagnostic::Info(
+                "Redis is not configured - running in standalone mode with in-memory fallbacks. All features work, but data (rate limits, brute-force counters, token blacklist) will not persist across restarts.".to_string(),
+            ));
+        }
+
+        if self.cluster_runtime_enabled() {
+            match self.livestream.hls_storage.backend() {
+                HlsStorageBackend::S3 => {}
+                HlsStorageBackend::SharedFile => {
+                    let path = self.livestream.hls_storage.path();
+                    let is_obviously_local = path.starts_with("/tmp/")
+                        || path == "/tmp"
+                        || path.starts_with("/var/tmp/")
+                        || path.starts_with("/dev/shm/");
+                    if is_obviously_local {
+                        diagnostics.push(StartupDiagnostic::Warning(format!(
+                            "livestream.hls_storage.type='shared_file' but hls_storage.path '{path}' appears to be a local-only path. Ensure this path is actually mounted from shared storage (NFS, CSI volume) on every replica. Otherwise remote HLS segment requests will read from a path that is not shared."
+                        )));
+                    }
+                }
+                HlsStorageBackend::File => diagnostics.push(StartupDiagnostic::Warning(
+                    "Cluster mode is enabled with livestream.hls_storage.type='file'. HLS remains functional through publisher-node proxying, but shared_file or S3 is recommended for production multi-replica HLS.".to_string(),
+                )),
+                HlsStorageBackend::Memory => diagnostics.push(StartupDiagnostic::Warning(
+                    "Cluster mode is enabled with livestream.hls_storage.type='memory'. HLS remains functional through publisher-node proxying, but memory storage is node-local and lost on restart. Use livestream.hls_storage.type='shared_file' or 's3' for production multi-replica HLS.".to_string(),
+                )),
+            }
+        } else if self.livestream.hls_storage.backend() == HlsStorageBackend::Memory {
+            diagnostics.push(StartupDiagnostic::Warning(
+                "The default HLS storage backend is MemoryStorage, which is node-local. HLS segments are lost on restart. For production multi-replica HLS, configure livestream.hls_storage.type='shared_file' with shared filesystem storage or livestream.hls_storage.type='s3' with S3-compatible object storage.".to_string(),
+            ));
+        }
+
+        if self.server.cors_allowed_origins.is_empty() {
+            diagnostics.push(StartupDiagnostic::Warning(
+                "server.cors_allowed_origins is empty. CORS requests will be rejected. Set allowed origins.".to_string(),
+            ));
+        }
+
+        if self.webrtc.enable_builtin_stun && self.webrtc.stun_external_addr.is_empty() {
+            let message = if self.cluster_runtime_enabled() {
+                "webrtc.enable_builtin_stun=true but stun_external_addr is not set in cluster mode. Startup will attempt STUN external address auto-detection from advertise_host, STUN_EXTERNAL_IP, or cloud metadata, and will skip the built-in STUN server if no public address is found. For deterministic production behavior, set webrtc.stun_external_addr to a client-reachable public ip:port or DNS name:port."
+            } else {
+                "webrtc.enable_builtin_stun=true but stun_external_addr is not set. Startup will try advertise_host, STUN_EXTERNAL_IP, and cloud metadata, and will skip the built-in STUN server if no public address is found. Set webrtc.stun_external_addr to the server's public ip:port or DNS name:port."
+            };
+            diagnostics.push(StartupDiagnostic::Warning(message.to_string()));
+        }
+
+        diagnostics
+    }
+
     fn validate_local_provider_http_config(
         path: &str,
         config: &LocalProviderHttpConfig,
@@ -589,16 +657,11 @@ impl AppConfig {
         // Validate JWT secret
         if self.jwt.secret.is_empty() {
             errors.push("JWT secret is empty".to_string());
-        } else if self.jwt.secret == "change-me-in-production"
-            || self.jwt.secret.starts_with("CHANGE_ME_")
-            || is_known_dev_secret(&self.jwt.secret, KNOWN_DEV_JWT_SECRETS)
-        {
-            errors.push("JWT secret appears to be a placeholder. Set SYNCTV_JWT_SECRET to a strong random value (openssl rand -base64 48)".to_string());
-        } else if self.jwt.secret.len() < 32 {
+        } else if self.jwt.secret.chars().count() < 32 {
             errors.push(format!(
                 "JWT secret is too short ({} chars). Minimum 32 characters required for security. \
                  Set SYNCTV_JWT_SECRET to a strong random value.",
-                self.jwt.secret.len()
+                self.jwt.secret.chars().count()
             ));
         }
 
@@ -764,14 +827,6 @@ impl AppConfig {
         }
         if self.redis.pipeline_buffer_size == 0 {
             errors.push("redis.pipeline_buffer_size must be greater than 0".to_string());
-        }
-
-        if !redis_url_present && !redis_split_present && !self.cluster_runtime_enabled() {
-            tracing::info!(
-                "Redis is not configured — running in standalone mode with in-memory fallbacks. \
-                 All features work, but data (rate limits, brute-force counters, token blacklist) \
-                 will not persist across restarts."
-            );
         }
 
         // Validate connection limits
@@ -1150,56 +1205,6 @@ impl AppConfig {
             );
         }
 
-        // HLS storage validation in cluster mode.
-        // Local backends are functional because non-publisher nodes can proxy HLS
-        // playlist/segment reads to the publisher node. Shared storage is still
-        // preferable for high-traffic production HLS because it avoids routing
-        // every remote segment request through the publisher node.
-        if cluster_mode_active {
-            match self.livestream.hls_storage.backend() {
-                HlsStorageBackend::S3 => {}
-                HlsStorageBackend::SharedFile => {
-                    let path = self.livestream.hls_storage.path();
-                    let is_obviously_local = path.starts_with("/tmp/")
-                        || path == "/tmp"
-                        || path.starts_with("/var/tmp/")
-                        || path.starts_with("/dev/shm/");
-                    if is_obviously_local {
-                        tracing::warn!(
-                            storage_path = %path,
-                            "livestream.hls_storage.type='shared_file' but hls_storage.path '{}' appears \
-                             to be a local-only path. Ensure this path is actually mounted from \
-                             shared storage (NFS, CSI volume) on every replica. Otherwise remote \
-                             HLS segment requests will read from a path that is not shared.",
-                            path
-                        );
-                    }
-                }
-                HlsStorageBackend::File => {
-                    tracing::warn!(
-                        "Cluster mode is enabled with livestream.hls_storage.type='file'. \
-                         HLS remains functional through publisher-node proxying, but shared_file or S3 is recommended for production multi-replica HLS."
-                    );
-                }
-                HlsStorageBackend::Memory => {
-                    tracing::warn!(
-                        "Cluster mode is enabled with livestream.hls_storage.type='memory'. \
-                         HLS remains functional through publisher-node proxying, but memory storage is node-local and lost on restart. \
-                         Use livestream.hls_storage.type='shared_file' or 's3' for production multi-replica HLS."
-                    );
-                }
-            }
-        } else if self.livestream.hls_storage.backend() == HlsStorageBackend::Memory {
-            // Single-node: warn about MemoryStorage only when the effective
-            // storage backend is actually the in-memory default.
-            tracing::warn!(
-                "The default HLS storage backend is MemoryStorage, which is node-local. \
-                 HLS segments are lost on restart. For production multi-replica HLS, \
-                 configure livestream.hls_storage.type='shared_file' with shared filesystem storage \
-                 or livestream.hls_storage.type='s3' with S3-compatible object storage."
-            );
-        }
-
         // Require cluster.secret when distributed mode is enabled.
         // An empty `cluster.secret` means that ANY node claiming to be part of the
         // cluster can call inter-node transport endpoints without authentication.
@@ -1261,38 +1266,6 @@ impl AppConfig {
                     "cluster.advertise_host must resolve to a routable address when distributed mode is enabled. \
                      Use the pod IP, node IP, or service-reachable hostname."
                         .to_string(),
-                );
-            }
-        }
-
-        // Warn if cors_allowed_origins is empty
-        if self.server.cors_allowed_origins.is_empty() {
-            tracing::warn!(
-                "server.cors_allowed_origins is empty. \
-                 CORS requests will be rejected. Set allowed origins."
-            );
-        }
-
-        // Validate STUN external address.
-        // In cluster/K8s/NAT environments, an explicit public stun_external_addr
-        // is preferred, but runtime bootstrap can also try advertise_host,
-        // STUN_EXTERNAL_IP, and cloud metadata. Configuration validation should
-        // therefore not fail-closed just because the explicit field is empty.
-        if self.webrtc.enable_builtin_stun && self.webrtc.stun_external_addr.is_empty() {
-            if self.cluster_runtime_enabled() {
-                tracing::warn!(
-                    "webrtc.enable_builtin_stun=true but stun_external_addr is not set in cluster mode. \
-                     Startup will attempt STUN external address auto-detection from advertise_host, \
-                     STUN_EXTERNAL_IP, or cloud metadata, and will skip the built-in STUN server \
-                     if no public address is found. For deterministic production behavior, set \
-                     webrtc.stun_external_addr to a client-reachable public ip:port or DNS name:port."
-                );
-            } else {
-                tracing::warn!(
-                    "webrtc.enable_builtin_stun=true but stun_external_addr is not set. \
-                     Startup will try advertise_host, STUN_EXTERNAL_IP, and cloud metadata, and \
-                     will skip the built-in STUN server if no public address is found. \
-                     Set webrtc.stun_external_addr to the server's public ip:port or DNS name:port."
                 );
             }
         }
@@ -1404,8 +1377,33 @@ mod tests {
     };
     use crate::app_config::{
         AppConfig, ClusterChannelConfig, ClusterDiscoveryMode, LogFileOutput, LogOutput,
-        SecurityConfig, SsrfConfig,
+        SecurityConfig, SsrfConfig, StartupDiagnostic,
     };
+
+    #[test]
+    fn placeholder_jwt_secret_is_reported_as_a_startup_warning() {
+        let mut config = AppConfig::default();
+        config.jwt.secret = "CHANGE_ME_this-placeholder-is-long-enough".to_string();
+
+        assert!(config.startup_diagnostics().iter().any(|diagnostic| {
+            matches!(
+                diagnostic,
+                StartupDiagnostic::Warning(message)
+                    if message.contains("JWT secret appears to be a placeholder")
+            )
+        }));
+    }
+
+    #[test]
+    fn short_jwt_secret_remains_a_validation_error() {
+        let mut config = AppConfig::default();
+        config.jwt.secret = "Short-secret-with-2-classes".to_string();
+
+        let errors = config.validate().expect_err("short JWT secrets must fail");
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("JWT secret is too short")));
+    }
 
     #[test]
     fn project_url_accepts_http_urls_with_project_paths() {

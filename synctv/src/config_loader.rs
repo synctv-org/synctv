@@ -767,7 +767,7 @@ pub fn load_config_with_options(options: &LoadConfigOptions) -> Result<Config> {
             Ok(loaded) => {
                 if !loaded.unknown.is_empty() {
                     let message = loaded.unknown.strict_error_message();
-                    tracing::warn!("Ignoring unknown configuration setting(s): {message}");
+                    eprintln!("Warning: Ignoring unknown configuration setting(s): {message}");
                 }
                 if options.verbose {
                     tracing::info!(path = %display_path, "Config file loaded");
@@ -811,7 +811,7 @@ pub fn load_config_with_options(options: &LoadConfigOptions) -> Result<Config> {
             )?;
             if !loaded.unknown.is_empty() {
                 let message = loaded.unknown.strict_error_message();
-                tracing::warn!("Ignoring unknown configuration setting(s): {message}");
+                eprintln!("Warning: Ignoring unknown configuration setting(s): {message}");
             }
             loaded.config
         }
@@ -827,9 +827,6 @@ pub fn load_config_with_options(options: &LoadConfigOptions) -> Result<Config> {
     if options.validate {
         // Validate configuration (fail fast on misconfigurations)
         if let Err(errors) = config.validate() {
-            for error in &errors {
-                tracing::error!(%error, "Config validation error");
-            }
             return Err(anyhow::anyhow!(
                 "Configuration validation failed with {} error(s): {}",
                 errors.len(),

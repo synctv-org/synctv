@@ -9,6 +9,16 @@ pub(super) fn execute_config(config_command: ConfigCommand) -> Result<()> {
             } else {
                 context.validated_config()?
             };
+            for diagnostic in config.startup_diagnostics() {
+                match diagnostic {
+                    crate::app_config::StartupDiagnostic::Info(message) => {
+                        eprintln!("Info: {message}");
+                    }
+                    crate::app_config::StartupDiagnostic::Warning(message) => {
+                        eprintln!("Warning: {message}");
+                    }
+                }
+            }
             println!("Configuration is valid");
             println!("API address: {}", config.api_address());
             Ok(())

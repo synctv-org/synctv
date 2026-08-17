@@ -5,6 +5,7 @@ pub(super) async fn execute_db(db_command: DbCommand) -> Result<()> {
     let config = context.validated_config()?;
     let _log_guard =
         synctv_core::logging::init_logging(&crate::resource_options::logging_options(&config))?;
+    log_startup_diagnostics(&config);
 
     match db_command.command {
         DbSubcommand::Migrate(args) => {

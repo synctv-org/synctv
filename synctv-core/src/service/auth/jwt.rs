@@ -276,12 +276,11 @@ impl JwtService {
     fn validate_secret_entropy(secret: &str) -> Result<()> {
         // Requirement 1: Minimum length (32 characters = 256 bits minimum)
         const MIN_SECRET_LENGTH: usize = 32;
-        if secret.len() < MIN_SECRET_LENGTH {
+        let secret_char_count = secret.chars().count();
+        if secret_char_count < MIN_SECRET_LENGTH {
             return Err(Error::Internal(format!(
-                "JWT secret is too short ({} characters, need at least {}). \
-                 Use a secret with at least 32 characters for HMAC-SHA256.",
-                secret.len(),
-                MIN_SECRET_LENGTH
+                "JWT secret is too short ({secret_char_count} characters, need at least \
+                 {MIN_SECRET_LENGTH}). Use a secret with at least 32 characters for HMAC-SHA256."
             )));
         }
 
@@ -321,74 +320,54 @@ impl JwtService {
         // Requirement 3: Unique character ratio
         // Prevents "aaaa..." or "abcabcabc..." patterns
         let unique_chars: std::collections::HashSet<char> = secret.chars().collect();
-        let unique_ratio = usize_to_f64(unique_chars.len())? / usize_to_f64(secret.len())?;
+        let unique_ratio = usize_to_f64(unique_chars.len())? / usize_to_f64(secret_char_count)?;
 
-        // Require at least 25% unique characters
+        // Warn when fewer than 25% of the characters are unique.
         if unique_ratio < 0.25 {
-            return Err(Error::Internal(format!(
+            tracing::warn!(
                 "JWT secret has low character diversity ({:.0}% unique characters). \
                  Use a secret with more varied characters.",
                 unique_ratio * 100.0
-            )));
+            );
         }
 
-        // Requirement 4: Reject obvious patterns
-
-        // Check for all same character
-        if unique_chars.len() == 1 {
-            return Err(Error::Internal(
-                "JWT secret consists of a single repeated character. \
-                 Use a secret with varied characters."
-                    .to_string(),
-            ));
-        }
-
-        // Check for numeric-only secrets (even if long)
-        if secret.chars().all(|c| c.is_ascii_digit()) {
-            return Err(Error::Internal(
-                "JWT secret contains only digits. \
-                 Use a secret with mixed character types for better security."
-                    .to_string(),
-            ));
-        }
+        // Requirement 4: Warn about obvious patterns
 
         // Check for simple sequential patterns
         if Self::is_sequential_pattern(secret) {
-            return Err(Error::Internal(
+            tracing::warn!(
                 "JWT secret appears to be a simple sequential pattern. \
                  Use a randomly generated secret."
-                    .to_string(),
-            ));
+            );
         }
 
         // Check for repeated short patterns (e.g., "abcabcabc...")
         if Self::has_repeating_pattern(secret) {
-            return Err(Error::Internal(
+            tracing::warn!(
                 "JWT secret contains repeating patterns. \
                  Use a randomly generated secret without patterns."
-                    .to_string(),
-            ));
+            );
         }
 
         // Requirement 5: Shannon entropy calculation
         // More accurate than simple charset-based estimation
         let entropy = Self::calculate_shannon_entropy(secret)?;
         if entropy < MIN_SHANNON_ENTROPY {
-            return Err(Error::Internal(format!(
+            tracing::warn!(
                 "JWT secret has low entropy ({entropy:.1} bits/char, need at least {MIN_SHANNON_ENTROPY:.1}). \
                  Use a more random secret with varied characters."
-            )));
+            );
         }
 
         // Requirement 6: Estimate total entropy bits
         // Entropy = length * entropy_per_char
-        let estimated_entropy_bits = usize_to_f64(secret.len())? * entropy;
+        let estimated_entropy_bits = usize_to_f64(secret_char_count)? * entropy;
 
         if estimated_entropy_bits < MIN_JWT_SECRET_ENTROPY_BITS_F64 {
-            return Err(Error::Internal(format!(
+            tracing::warn!(
                 "JWT secret has insufficient total entropy ({estimated_entropy_bits:.0} bits, need at least {MIN_JWT_SECRET_ENTROPY_BITS} bits). \
                  Use a longer secret or one with more character variety."
-            )));
+            );
         }
 
         Ok(())
@@ -409,7 +388,7 @@ impl JwtService {
             *freq.entry(c).or_insert(0) += 1;
         }
 
-        let len = usize_to_f64(s.len())?;
+        let len = usize_to_f64(s.chars().count())?;
         let mut entropy = 0.0;
 
         for &count in freq.values() {
@@ -452,14 +431,15 @@ impl JwtService {
 
     /// Check if the string has a repeating pattern
     fn has_repeating_pattern(s: &str) -> bool {
-        if s.len() < 12 {
+        let chars: Vec<char> = s.chars().collect();
+        if chars.len() < 12 {
             return false;
         }
 
         // Check for patterns of length 2-8 that repeat
-        for pattern_len in 2..=8.min(s.len() / 3) {
-            let pattern = &s[..pattern_len];
-            let rest = &s[pattern_len..];
+        for pattern_len in 2..=8.min(chars.len() / 3) {
+            let pattern = &chars[..pattern_len];
+            let rest = &chars[pattern_len..];
 
             // Check if rest is mostly repetitions of pattern
             let repetitions = rest.len() / pattern_len;

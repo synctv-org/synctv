@@ -62,8 +62,8 @@ pub async fn list_room_streams(
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/rooms/{roomId}/streams/{mediaId}/publish-key",
-        tag = "Room",
+        path = "/api/playback-providers/{roomId}/rtmp/{mediaId}/publish-key",
+        tag = "RTMP Playback Provider",
         params(
             ("roomId" = String, Path, description = "Room ID"),
             ("mediaId" = String, Path, description = "Media ID")

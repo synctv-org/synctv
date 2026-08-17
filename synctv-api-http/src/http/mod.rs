@@ -561,14 +561,6 @@ fn register_write_routes() -> Router<AppState> {
             post(room::kick_room_stream),
         )
         .route(
-            "/api/rooms/{roomId}/streams/{mediaId}/publish-key",
-            post(room::create_room_publish_key),
-        )
-        .route(
-            "/api/providers/rtmp/rooms/{roomId}/publish-key/{mediaId}",
-            post(room::create_room_publish_key),
-        )
-        .route(
             "/api/rooms/{roomId}/settings/reset",
             post(room::reset_room_settings),
         )
@@ -623,10 +615,6 @@ fn register_read_routes() -> Router<AppState> {
         .route("/api/rooms/{roomId}/streams", get(room::list_room_streams))
         .route(
             "/api/rooms/{roomId}/streams/{mediaId}",
-            get(room::get_room_stream_info),
-        )
-        .route(
-            "/api/providers/rtmp/rooms/{roomId}/info/{mediaId}",
             get(room::get_room_stream_info),
         )
         .route(
@@ -1467,6 +1455,10 @@ fn register_all_routes() -> Router<AppState> {
             "/api/playback-providers/{roomId}/emby/{version}/subtitles/{modeName}/{subtitleIndex}",
             get(crate::providers::playback_provider::emby::get_emby_subtitle)
                 .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/{roomId}/rtmp/{mediaId}/publish-key",
+            post(room::create_room_publish_key),
         )
         .route(
             "/api/playback-providers/{roomId}/rtmp/{version}/flv-stream",

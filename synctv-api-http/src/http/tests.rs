@@ -3184,8 +3184,13 @@ async fn test_openapi_json_route_is_available() -> TestResult {
     assert!(json["paths"]["/api/providers/alist/login"].is_object());
     assert!(json["paths"]["/api/providers/instances"].is_object());
     assert!(json["paths"]["/api/rooms/{roomId}/streams"].is_object());
-    assert!(json["paths"]["/api/rooms/{roomId}/streams/{mediaId}/publish-key"].is_object());
+    assert!(
+        json["paths"]["/api/playback-providers/{roomId}/rtmp/{mediaId}/publish-key"].is_object()
+    );
     assert!(json["paths"]["/api/rooms/{roomId}/streams/{mediaId}"].is_object());
+    assert!(json["paths"]["/api/rooms/{roomId}/streams/{mediaId}/publish-key"].is_null());
+    assert!(json["paths"]["/api/providers/rtmp/rooms/{roomId}/publish-key/{mediaId}"].is_null());
+    assert!(json["paths"]["/api/providers/rtmp/rooms/{roomId}/info/{mediaId}"].is_null());
     assert_eq!(
         json["paths"]["/api/providers/alist/login"]["post"]["responses"]["200"]["content"]
             ["application/json"]["schema"]["$ref"],
@@ -3573,14 +3578,15 @@ async fn test_websocket_ticket_runtime_gate_does_not_leak_to_other_write_routes(
 
 #[tokio::test]
 #[ignore = "Requires Docker-backed PostgreSQL"]
-async fn test_room_stream_routes_and_legacy_aliases_are_reachable_under_api() -> TestResult {
+async fn test_room_stream_and_rtmp_playback_provider_routes_are_reachable_under_api() -> TestResult
+{
     let state = test_app_state();
     let app = register_all_routes().with_state(state);
 
     let api_request = test_request(
         Request::builder()
             .method("POST")
-            .uri("/api/rooms/room_AbC123xYz890/streams/med_ZyX098wVu765/publish-key")
+            .uri("/api/playback-providers/room_AbC123xYz890/rtmp/med_ZyX098wVu765/publish-key")
             .body(Body::empty()),
     )?;
     let api_response = test_response(app.clone().oneshot(api_request).await)?;
@@ -3595,23 +3601,6 @@ async fn test_room_stream_routes_and_legacy_aliases_are_reachable_under_api() ->
     let info_api_response = test_response(app.clone().oneshot(info_request).await)?;
     assert_eq!(info_api_response.status(), StatusCode::UNAUTHORIZED);
 
-    let legacy_publish_request = test_request(
-        Request::builder()
-            .method("POST")
-            .uri("/api/providers/rtmp/rooms/room_AbC123xYz890/publish-key/med_ZyX098wVu765")
-            .body(Body::empty()),
-    )?;
-    let legacy_publish_response = test_response(app.clone().oneshot(legacy_publish_request).await)?;
-    assert_eq!(legacy_publish_response.status(), StatusCode::UNAUTHORIZED);
-
-    let legacy_info_request = test_request(
-        Request::builder()
-            .method("GET")
-            .uri("/api/providers/rtmp/rooms/room_AbC123xYz890/info/med_ZyX098wVu765")
-            .body(Body::empty()),
-    )?;
-    let legacy_info_response = test_response(app.oneshot(legacy_info_request).await)?;
-    assert_eq!(legacy_info_response.status(), StatusCode::UNAUTHORIZED);
     Ok(())
 }
 

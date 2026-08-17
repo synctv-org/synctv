@@ -3573,7 +3573,7 @@ async fn test_websocket_ticket_runtime_gate_does_not_leak_to_other_write_routes(
 
 #[tokio::test]
 #[ignore = "Requires Docker-backed PostgreSQL"]
-async fn test_room_stream_routes_are_reachable_under_api() -> TestResult {
+async fn test_room_stream_routes_and_legacy_aliases_are_reachable_under_api() -> TestResult {
     let state = test_app_state();
     let app = register_all_routes().with_state(state);
 
@@ -3594,6 +3594,24 @@ async fn test_room_stream_routes_are_reachable_under_api() -> TestResult {
     )?;
     let info_api_response = test_response(app.clone().oneshot(info_request).await)?;
     assert_eq!(info_api_response.status(), StatusCode::UNAUTHORIZED);
+
+    let legacy_publish_request = test_request(
+        Request::builder()
+            .method("POST")
+            .uri("/api/providers/rtmp/rooms/room_AbC123xYz890/publish-key/med_ZyX098wVu765")
+            .body(Body::empty()),
+    )?;
+    let legacy_publish_response = test_response(app.clone().oneshot(legacy_publish_request).await)?;
+    assert_eq!(legacy_publish_response.status(), StatusCode::UNAUTHORIZED);
+
+    let legacy_info_request = test_request(
+        Request::builder()
+            .method("GET")
+            .uri("/api/providers/rtmp/rooms/room_AbC123xYz890/info/med_ZyX098wVu765")
+            .body(Body::empty()),
+    )?;
+    let legacy_info_response = test_response(app.oneshot(legacy_info_request).await)?;
+    assert_eq!(legacy_info_response.status(), StatusCode::UNAUTHORIZED);
     Ok(())
 }
 

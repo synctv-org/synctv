@@ -565,6 +565,10 @@ fn register_write_routes() -> Router<AppState> {
             post(room::create_room_publish_key),
         )
         .route(
+            "/api/providers/rtmp/rooms/{roomId}/publish-key/{mediaId}",
+            post(room::create_room_publish_key),
+        )
+        .route(
             "/api/rooms/{roomId}/settings/reset",
             post(room::reset_room_settings),
         )
@@ -619,6 +623,10 @@ fn register_read_routes() -> Router<AppState> {
         .route("/api/rooms/{roomId}/streams", get(room::list_room_streams))
         .route(
             "/api/rooms/{roomId}/streams/{mediaId}",
+            get(room::get_room_stream_info),
+        )
+        .route(
+            "/api/providers/rtmp/rooms/{roomId}/info/{mediaId}",
             get(room::get_room_stream_info),
         )
         .route(

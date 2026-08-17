@@ -669,11 +669,10 @@ impl SliceCache {
 
     /// Fetch a non-range response as one cacheable object.
     ///
-    /// Every upstream response updates admission metadata. Resources that are
-    /// ineligible for complete-response caching stream directly on later
-    /// requests and never wait for the per-resource fill lock. Eligible
-    /// responses acquire that lock only after their headers establish a
-    /// bounded complete body.
+    /// Every upstream response updates admission metadata. Requests without
+    /// metadata use the per-resource lock as a single-flight guard and check
+    /// metadata again after acquiring it. Resources already known to be
+    /// ineligible bypass the lock and stream directly.
     pub(super) async fn get_or_fetch_full_response_with_control(
         &self,
         url: &str,
@@ -699,7 +698,6 @@ impl SliceCache {
                     .complete_full_response_cache_fill(
                         &key,
                         &meta_key,
-                        None,
                         url,
                         provider_headers,
                         request_control,
@@ -722,28 +720,9 @@ impl SliceCache {
             return Ok(FullResponseFetchResult::Bypass(response));
         }
 
-        // An absent metadata record needs one ordinary request so its headers
-        // can establish admission. This request remains usable for the first
-        // cache fill when the resource is eligible.
-        let response = self
-            .fetch_full_response(
-                url,
-                provider_headers,
-                request_control,
-                upstream_header_timeout,
-            )
-            .await?;
-        let metadata = Self::full_response_resource_metadata(&response);
-        self.store_full_response_metadata(&key, &meta_key, metadata.clone())
-            .await;
-        if !Self::full_response_metadata_allows_cache(&metadata) {
-            return Ok(FullResponseFetchResult::Bypass(response));
-        }
-
         self.complete_full_response_cache_fill(
             &key,
             &meta_key,
-            Some(response),
             url,
             provider_headers,
             request_control,
@@ -843,13 +822,12 @@ impl SliceCache {
         &self,
         key: &str,
         meta_key: &str,
-        initial_response: Option<reqwest::Response>,
         url: &str,
         provider_headers: &ProviderHeaders,
         request_control: Option<&ExecutionControl>,
         upstream_header_timeout: Option<Duration>,
     ) -> Result<FullResponseFetchResult, anyhow::Error> {
-        let _guard = self
+        let guard = self
             .lock_slice_key(
                 key,
                 "Request cancelled while waiting for full response cache lock",
@@ -865,27 +843,43 @@ impl SliceCache {
                 {
                     return Ok(FullResponseFetchResult::Cached(cached));
                 }
+            } else {
+                drop(guard);
+                self.maybe_cleanup_locks();
+
+                let response = self
+                    .fetch_full_response(
+                        url,
+                        provider_headers,
+                        request_control,
+                        upstream_header_timeout,
+                    )
+                    .await?;
+                let metadata = Self::full_response_resource_metadata(&response);
+                self.store_full_response_metadata(key, meta_key, metadata)
+                    .await;
+                return Ok(FullResponseFetchResult::Bypass(response));
             }
         }
 
-        let response = match initial_response {
-            Some(response) => response,
-            None => {
-                self.fetch_full_response(
-                    url,
-                    provider_headers,
-                    request_control,
-                    upstream_header_timeout,
-                )
-                .await?
-            }
-        };
+        let response = self
+            .fetch_full_response(
+                url,
+                provider_headers,
+                request_control,
+                upstream_header_timeout,
+            )
+            .await?;
         let metadata = Self::full_response_resource_metadata(&response);
-        self.store_full_response_metadata(key, meta_key, metadata.clone())
-            .await;
         if !Self::full_response_metadata_allows_cache(&metadata) {
+            self.put_resource_meta_by_key(meta_key.to_string(), metadata);
+            drop(guard);
+            self.backend.remove(key).await;
+            self.maybe_cleanup_locks();
             return Ok(FullResponseFetchResult::Bypass(response));
         }
+        self.store_full_response_metadata(key, meta_key, metadata.clone())
+            .await;
 
         self.cache_full_response(key, metadata, response, request_control)
             .await

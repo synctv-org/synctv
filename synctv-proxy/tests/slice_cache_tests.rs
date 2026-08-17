@@ -328,7 +328,63 @@ async fn test_full_response_cache_fill_serializes_after_body_expiry() {
 }
 
 #[tokio::test]
-async fn test_oversized_full_response_streams_and_records_metadata_without_locking() {
+async fn test_full_response_missing_metadata_singleflights_first_fill() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct DelayedFirstDocument {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl Respond for DelayedFirstDocument {
+        fn respond(&self, _request: &Request) -> ResponseTemplate {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            ResponseTemplate::new(200)
+                .set_body_bytes(Bytes::from_static(b"subtitle document"))
+                .set_delay(Duration::from_millis(75))
+        }
+    }
+
+    let mock_server = MockServer::start().await;
+    let calls = Arc::new(AtomicUsize::new(0));
+    Mock::given(method("GET"))
+        .and(path("/first-document.json"))
+        .respond_with(DelayedFirstDocument {
+            calls: Arc::clone(&calls),
+        })
+        .mount(&mock_server)
+        .await;
+
+    let cache = slice_cache_for_mock(SliceCacheConfig::default(), &mock_server);
+    let url = mock_public_url(&mock_server, "/first-document.json");
+    let headers = HashMap::new();
+
+    let (first, second, third) = tokio::join!(
+        proxy_full_response(&cache, &url, &headers),
+        proxy_full_response(&cache, &url, &headers),
+        proxy_full_response(&cache, &url, &headers),
+    );
+    let responses = [
+        first.expect("first request should succeed"),
+        second.expect("second request should succeed"),
+        third.expect("third request should succeed"),
+    ];
+    let mut statuses = responses.map(|response| {
+        response
+            .headers()
+            .get("X-Cache-Status")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string()
+    });
+    statuses.sort_unstable();
+
+    assert_eq!(statuses, ["HIT", "HIT", "MISS"]);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn test_oversized_full_response_streams_and_releases_lock_after_headers() {
     let mock_server = MockServer::start().await;
     let body = Bytes::from(vec![0x5Au8; 16 * 1024 * 1024 + 1]);
     Mock::given(method("GET"))
@@ -358,6 +414,89 @@ async fn test_oversized_full_response_streams_and_records_metadata_without_locki
         assert_eq!(cache.backend().entry_count(), 0);
         assert_eq!(cache.stats().metadata_entries, 1);
     }
+}
+
+#[tokio::test]
+async fn test_oversized_full_response_releases_fill_lock_after_headers() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct SmallThenDelayedOversized {
+        calls: Arc<AtomicUsize>,
+        oversized_body: Bytes,
+    }
+
+    impl Respond for SmallThenDelayedOversized {
+        fn respond(&self, _request: &Request) -> ResponseTemplate {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                return ResponseTemplate::new(200)
+                    .set_body_bytes(Bytes::from_static(b"cached document"));
+            }
+
+            ResponseTemplate::new(200)
+                .set_body_bytes(self.oversized_body.clone())
+                .set_delay(Duration::from_millis(200))
+        }
+    }
+
+    let mock_server = MockServer::start().await;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let oversized_body = Bytes::from(vec![0x5Au8; 16 * 1024 * 1024 + 1]);
+    Mock::given(method("GET"))
+        .and(path("/changing-document.bin"))
+        .respond_with(SmallThenDelayedOversized {
+            calls: Arc::clone(&calls),
+            oversized_body,
+        })
+        .mount(&mock_server)
+        .await;
+
+    let cache = Arc::new(slice_cache_for_mock(
+        SliceCacheConfig {
+            segment_ttl: Duration::from_millis(1),
+            ..SliceCacheConfig::default()
+        },
+        &mock_server,
+    ));
+    let url = mock_public_url(&mock_server, "/changing-document.bin");
+    let headers = HashMap::new();
+
+    let initial = proxy_full_response(&cache, &url, &headers)
+        .await
+        .expect("initial response should populate the cache");
+    assert_eq!(initial.headers().get("X-Cache-Status").unwrap(), "MISS");
+    tokio::time::sleep(Duration::from_millis(10)).await;
+
+    let refresh_cache = Arc::clone(&cache);
+    let refresh_url = url.clone();
+    let refresh_headers = headers.clone();
+    let refreshes = tokio::spawn(async move {
+        tokio::join!(
+            proxy_full_response(&refresh_cache, &refresh_url, &refresh_headers),
+            proxy_full_response(&refresh_cache, &refresh_url, &refresh_headers),
+            proxy_full_response(&refresh_cache, &refresh_url, &refresh_headers),
+        )
+    });
+
+    tokio::time::timeout(Duration::from_millis(350), async {
+        while calls.load(Ordering::SeqCst) < 4 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("waiting refreshes should reach upstream together after oversized headers");
+
+    let results = tokio::time::timeout(Duration::from_secs(2), refreshes)
+        .await
+        .expect("oversized refreshes should not remain serialized")
+        .expect("refresh task should complete");
+    for response in [results.0, results.1, results.2] {
+        let response = response.expect("oversized response should stream through");
+        assert_eq!(response.headers().get("X-Cache-Status").unwrap(), "BYPASS");
+    }
+    assert_eq!(cache.stats().metadata_entries, 1);
+    assert_eq!(cache.backend().entry_count(), 0);
+    cache.cleanup_stale_locks();
+    assert_eq!(cache.lock_count(), 0);
 }
 
 struct HeaderAbsent(&'static str);

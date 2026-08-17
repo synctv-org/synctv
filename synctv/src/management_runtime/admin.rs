@@ -1251,6 +1251,7 @@ impl AdminRuntime for ManagementAdminRuntime {
             name: command.name,
             description: command.description,
             source_config: None,
+            provider_instance_name: None,
         };
         self.inner
             .update_playlist(&command.room_id, req, admin_user_id)
@@ -1330,6 +1331,8 @@ impl AdminRuntime for ManagementAdminRuntime {
             name: command.name,
             description: command.description,
             playback_proxy_mode: None,
+            source_config: None,
+            provider_instance_name: None,
         };
         self.inner
             .edit_media(&command.room_id, req, admin_user_id)

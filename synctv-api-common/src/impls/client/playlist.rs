@@ -144,12 +144,12 @@ pub fn build_update_playlist_request(
     if req.name.trim().is_empty()
         && req.description.trim().is_empty()
         && req.source_config.is_none()
+        && req.provider_instance_name.is_none()
     {
         return Err(ApiError::InvalidInput(
             "playlist update requires at least one changed field".to_string(),
         ));
     }
-
     let source_config = req
         .source_config
         .map(|source_config| {
@@ -164,6 +164,7 @@ pub fn build_update_playlist_request(
         name: (!req.name.trim().is_empty()).then_some(req.name),
         description: (!req.description.trim().is_empty()).then_some(req.description),
         source_config,
+        provider_instance_name: req.provider_instance_name,
     })
 }
 
@@ -937,6 +938,7 @@ mod tests {
                 name: "a".repeat(256),
                 description: String::new(),
                 source_config: None,
+                provider_instance_name: None,
             },
             &codec,
         ))?;
@@ -956,6 +958,7 @@ mod tests {
                 name: String::new(),
                 description: String::new(),
                 source_config: alist_playlist_source_config("/updated-library"),
+                provider_instance_name: Some("alist-secondary".to_string()),
             },
             &codec,
         ))?;
@@ -966,6 +969,33 @@ mod tests {
                 "alist-server",
                 "/updated-library"
             ))
+        );
+        assert_eq!(
+            request.provider_instance_name.as_deref(),
+            Some("alist-secondary")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn build_update_playlist_request_allows_provider_instance_without_source_config() -> TestResult
+    {
+        let codec = synctv_adapter::PublicIdCodec::plain();
+        let request = api_ok(build_update_playlist_request(
+            synctv_proto::client::UpdatePlaylistRequest {
+                playlist_id: codec_ok(codec.encode_playlist_id(PlaylistId::expect_positive(1)))?,
+                name: String::new(),
+                description: String::new(),
+                source_config: None,
+                provider_instance_name: Some("alist-secondary".to_string()),
+            },
+            &codec,
+        ))?;
+
+        assert!(request.source_config.is_none());
+        assert_eq!(
+            request.provider_instance_name.as_deref(),
+            Some("alist-secondary")
         );
         Ok(())
     }

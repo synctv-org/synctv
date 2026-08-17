@@ -22,7 +22,9 @@ use crate::{
     repository::{MediaRepository, PlaylistRepository, UserRepository},
     service::{
         notification::{MediaAddedNotification, NotificationService},
-        provider_binding::resolve_credential_provider_instance_binding,
+        provider_binding::{
+            provider_instance_name_for_source_update, resolve_credential_provider_instance_binding,
+        },
         source_config::validate_source_config_size,
         FileStorageService, PermissionService, ProvidersManager,
     },
@@ -88,6 +90,12 @@ pub struct EditMediaRequest {
     pub name: Option<String>,
     pub description: Option<String>,
     pub playback_proxy_mode: Option<crate::models::PlaybackProxyMode>,
+    /// Complete replacement source config, optionally updated without changing
+    /// the provider instance.
+    pub source_config: Option<MediaSourceConfig>,
+    /// Replacement provider instance, optionally updated without changing the
+    /// source config.
+    pub provider_instance_name: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -256,7 +264,8 @@ impl MediaService {
 
     async fn prepare_media_source(
         &self,
-        user_id: &UserId,
+        actor_user_id: &UserId,
+        credential_owner_id: &UserId,
         room_id: &RoomId,
         source_provider: SourceProvider,
         provider_instance_name: Option<&str>,
@@ -278,9 +287,9 @@ impl MediaService {
 
         let dependency_ctx = self.build_provider_context(
             provider.name(),
-            ProviderActor::User(*user_id),
+            ProviderActor::User(*actor_user_id),
             *room_id,
-            Some(*user_id),
+            Some(*credential_owner_id),
             explicit_provider_instance.as_deref(),
         );
 
@@ -306,9 +315,9 @@ impl MediaService {
         };
         let ctx = self.build_provider_context(
             provider.name(),
-            ProviderActor::User(*user_id),
+            ProviderActor::User(*actor_user_id),
             *room_id,
-            Some(*user_id),
+            Some(*credential_owner_id),
             bound_provider_instance.as_deref(),
         );
 
@@ -333,6 +342,44 @@ impl MediaService {
         })
     }
 
+    async fn prepare_media_source_update(
+        &self,
+        actor_user_id: &UserId,
+        credential_owner_id: &UserId,
+        room_id: &RoomId,
+        media: &Media,
+        request: &EditMediaRequest,
+    ) -> Result<Option<(SourceProvider, PreparedMediaSource)>> {
+        if request.source_config.is_none() && request.provider_instance_name.is_none() {
+            return Ok(None);
+        }
+
+        let source_config = request
+            .source_config
+            .clone()
+            .unwrap_or_else(|| media.source_config.clone());
+        let source_provider = source_config.provider();
+        let provider_instance_name = provider_instance_name_for_source_update(
+            Some(media.source_provider),
+            source_provider,
+            request.provider_instance_name.clone(),
+            media.provider_instance_name.clone(),
+        );
+        let prepared_source = self
+            .prepare_media_source(
+                actor_user_id,
+                credential_owner_id,
+                room_id,
+                source_provider,
+                provider_instance_name.as_deref(),
+                source_config,
+                Some(&media.name),
+            )
+            .await?;
+
+        Ok(Some((source_provider, prepared_source)))
+    }
+
     async fn validate_and_prepare_media_batch(
         &self,
         user_id: UserId,
@@ -353,6 +400,7 @@ impl MediaService {
 
                 let prepared_source = service
                     .prepare_media_source(
+                        &user_id,
                         &user_id,
                         &room_id,
                         item.source_provider,
@@ -600,6 +648,7 @@ impl MediaService {
 
         let prepared_source = self
             .prepare_media_source(
+                &user_id,
                 &user_id,
                 &room_id,
                 request.source_provider,
@@ -901,6 +950,14 @@ impl MediaService {
                     }
                     media.description = description.clone();
                 }
+                if let Some((source_provider, prepared_source)) = self
+                    .prepare_media_source_update(&user_id, &user_id, &room_id, &media, &request)
+                    .await?
+                {
+                    media.source_provider = source_provider;
+                    media.source_config = prepared_source.source_config;
+                    media.provider_instance_name = prepared_source.provider_instance_name;
+                }
                 if let Some(mode) = request.playback_proxy_mode {
                     let provider = self
                         .resolve_media_provider(
@@ -1014,6 +1071,39 @@ impl MediaService {
                 if let Some(ref name) = request.name {
                     validate_media_name(name)?;
                     media.name = name.clone();
+                }
+                if let Some(ref description) = request.description {
+                    if description.chars().count() > crate::validation::MEDIA_DESCRIPTION_MAX {
+                        return Err(Error::InvalidInput(format!(
+                            "Media description cannot exceed {} characters",
+                            crate::validation::MEDIA_DESCRIPTION_MAX
+                        )));
+                    }
+                    media.description = description.clone();
+                }
+                let credential_owner_id = media.creator_id.unwrap_or(admin_user_id);
+                if let Some((source_provider, prepared_source)) = self
+                    .prepare_media_source_update(
+                        &admin_user_id,
+                        &credential_owner_id,
+                        &room_id,
+                        &media,
+                        &request,
+                    )
+                    .await?
+                {
+                    media.source_provider = source_provider;
+                    media.source_config = prepared_source.source_config;
+                    media.provider_instance_name = prepared_source.provider_instance_name;
+                }
+                if let Some(mode) = request.playback_proxy_mode {
+                    let provider = self
+                        .resolve_media_provider(
+                            media.source_provider,
+                            media.provider_instance_name.as_deref(),
+                        )
+                        .await?;
+                    provider.set_playback_proxy_mode(&mut media.source_config, mode)?;
                 }
                 let mut tx = self.media_repo.pool().begin().await?;
                 match self

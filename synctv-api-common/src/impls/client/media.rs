@@ -1597,6 +1597,15 @@ pub fn build_edit_media_request(
             .map(synctv_adapter::source_config::playback_proxy_mode_from_proto)
             .transpose()
             .map_err(|error| ApiError::InvalidInput(error.to_string()))?,
+        source_config: req
+            .source_config
+            .map(|source_config| {
+                synctv_adapter::source_config::media_source_config_from_proto(Some(source_config))
+                    .map(|(_, source_config)| source_config)
+                    .map_err(|error| ApiError::InvalidInput(error.to_string()))
+            })
+            .transpose()?,
+        provider_instance_name: req.provider_instance_name,
     })
 }
 
@@ -1739,7 +1748,7 @@ impl ClientApiImpl {
         })
     }
 
-    /// Edit media metadata
+    /// Edit media properties
     pub async fn edit_media(
         &self,
         user_id: &UserId,
@@ -3343,6 +3352,8 @@ mod tests {
                 name: "Episode 1".to_string(),
                 description: String::new(),
                 playback_proxy_mode: None,
+                source_config: None,
+                provider_instance_name: None,
             },
             &codec,
         ));
@@ -3362,6 +3373,8 @@ mod tests {
                 playback_proxy_mode: Some(
                     synctv_proto::source_config::PlaybackProxyMode::DirectPrefer as i32,
                 ),
+                source_config: None,
+                provider_instance_name: None,
             },
             &codec,
         ))?;
@@ -3371,6 +3384,38 @@ mod tests {
         assert_eq!(
             request.playback_proxy_mode,
             Some(synctv_core::models::PlaybackProxyMode::DirectPrefer)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_build_edit_media_request_replaces_source_and_provider_instance() -> TestResult {
+        let codec = synctv_adapter::PublicIdCodec::plain();
+        let media_id = MediaId::expect_positive(123);
+        let request = api_ok(build_edit_media_request(
+            synctv_proto::client::EditMediaRequest {
+                media_id: codec_ok(codec.encode_media_id(media_id))?,
+                name: String::new(),
+                description: String::new(),
+                playback_proxy_mode: None,
+                source_config: direct_url_media_source_config(
+                    "https://example.com/replacement.mp4",
+                ),
+                provider_instance_name: Some("direct-url-secondary".to_string()),
+            },
+            &codec,
+        ))?;
+
+        assert_eq!(request.media_id, media_id);
+        assert_eq!(
+            request.source_config,
+            Some(synctv_core_testing::direct_url_media_source_config(
+                "https://example.com/replacement.mp4"
+            ))
+        );
+        assert_eq!(
+            request.provider_instance_name.as_deref(),
+            Some("direct-url-secondary")
         );
         Ok(())
     }

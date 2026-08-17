@@ -5458,6 +5458,7 @@ async fn test_update_playlist_bypasses_room_membership_requirement_for_global_ad
                     name: "playlist-after".to_string(),
                     description: String::new(),
                     source_config: None,
+                    provider_instance_name: None,
                 },
                 &global_admin.id,
             )
@@ -5986,6 +5987,8 @@ async fn test_edit_media_bypasses_room_membership_requirement_for_global_admin()
                     name: "media-edited".to_string(),
                     description: String::new(),
                     playback_proxy_mode: None,
+                    source_config: None,
+                    provider_instance_name: None,
                 },
                 &global_admin.id,
             )
@@ -6061,6 +6064,8 @@ async fn test_local_management_actor_preserves_username_in_media_notifications()
                     name: "management-media-updated".to_string(),
                     description: String::new(),
                     playback_proxy_mode: None,
+                    source_config: None,
+                    provider_instance_name: None,
                 },
                 &management_actor,
             )

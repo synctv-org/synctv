@@ -1,11 +1,28 @@
 use std::sync::Arc;
 
 use crate::{
-    models::{resolve_provider_instance_binding, CredentialProviderInstanceName},
+    models::{resolve_provider_instance_binding, CredentialProviderInstanceName, SourceProvider},
     provider::{MediaProvider, ProviderContext, SourceConfig},
     repository::UserProviderCredentialRepository,
     Error, Result,
 };
+
+/// Select the provider instance used for a source update.
+///
+/// An explicit request always wins. When a source config switches provider,
+/// its old instance cannot be reused; otherwise the existing instance remains.
+pub(crate) fn provider_instance_name_for_source_update(
+    current_provider: Option<SourceProvider>,
+    next_provider: SourceProvider,
+    requested_instance_name: Option<String>,
+    current_instance_name: Option<String>,
+) -> Option<String> {
+    requested_instance_name.or_else(|| {
+        (current_provider == Some(next_provider))
+            .then_some(current_instance_name)
+            .flatten()
+    })
+}
 
 /// Resolve the effective provider instance for source configs that depend on
 /// stored provider credentials.

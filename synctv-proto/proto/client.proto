@@ -1967,6 +1967,14 @@ message UpdatePlaylistRequest {
   // Replaces the complete source configuration of an existing dynamic
   // playlist. The provider is derived from this config.
   optional synctv.source_config.PlaylistSourceConfig source_config = 4;
+  // Optional replacement provider instance. This may be changed independently
+  // or together with source_config. When omitted, the current instance is
+  // retained only if the provider does not change.
+  optional string provider_instance_name = 5 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^[A-Za-z0-9_-]+$"
+  }];
 }
 
 message MovePlaylistRequest {
@@ -2393,6 +2401,16 @@ message EditMediaRequest {
   string description = 3 [(buf.validate.field).string.max_len = 5000];
   optional synctv.source_config.PlaybackProxyMode playback_proxy_mode = 4
       [(buf.validate.field).enum.defined_only = true];
+  // Complete replacement source config. This may be changed independently or
+  // together with provider_instance_name.
+  optional synctv.source_config.MediaSourceConfig source_config = 5;
+  // Optional replacement provider instance. When omitted, the current instance
+  // is retained only if the provider does not change.
+  optional string provider_instance_name = 6 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^[A-Za-z0-9_-]+$"
+  }];
 }
 
 // Clear Playlist

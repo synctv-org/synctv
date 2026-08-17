@@ -13,8 +13,8 @@ use synctv_core::{
     credential_encryption::CredentialEncryption,
     models::{
         AlistPlaylistSourceConfig, BilibiliMediaSourceConfig, BilibiliVideoSourceConfig,
-        MediaSourceConfig, Playlist, PlaylistSourceConfig, RoomMemberPermissionBits,
-        SourceProvider, User, UserId, UserRole, UserStatus,
+        MediaSourceConfig, NewProviderInstance, Playlist, PlaylistSourceConfig, ProviderInstance,
+        RoomMemberPermissionBits, SourceProvider, User, UserId, UserRole, UserStatus,
     },
     provider::DynamicListQuery,
     repository::{ProviderInstanceRepository, UserProviderCredentialRepository, UserRepository},
@@ -139,16 +139,37 @@ async fn create_top_level_playlist(
 
 /// Register the default local `direct_url` provider used when `provider_instance_name` is `None`.
 async fn register_direct_url_provider(room_service: &RoomService) {
+    register_direct_url_provider_instance(room_service, "direct_url").await;
+}
+
+async fn register_direct_url_provider_instance(room_service: &RoomService, instance_name: &str) {
     if let Err(error) = room_service
         .media_service()
         .providers_manager()
-        .create_provider_with_default_config("direct_url", "direct_url")
+        .create_provider_with_default_config("direct_url", instance_name)
         .await
     {
         std::panic::panic_any(format!(
-            "direct_url provider should be registered: {error:?}"
+            "direct_url provider instance should be registered: {error:?}"
         ));
     }
+}
+
+async fn create_provider_instance(pool: &PgPool, name: &str, providers: Vec<SourceProvider>) {
+    ProviderInstanceRepository::new(pool.clone())
+        .create(&ProviderInstance::new_remote(NewProviderInstance {
+            name: name.to_string(),
+            endpoint: format!("http://{name}.example.test:50051"),
+            comment: None,
+            jwt_secret: None,
+            custom_ca: None,
+            timeout_seconds: 10,
+            tls: false,
+            insecure_tls: false,
+            providers,
+        }))
+        .await
+        .checked("provider instance should be created");
 }
 
 async fn register_bilibili_provider(room_service: &RoomService) {
@@ -923,6 +944,8 @@ async fn test_edit_media_optimistic_lock_retry_exhaustion() {
         name: Some("Updated Name".to_string()),
         description: None,
         playback_proxy_mode: None,
+        source_config: None,
+        provider_instance_name: None,
     };
 
     let result = media_service
@@ -1009,6 +1032,8 @@ async fn test_edit_media_persists_playback_proxy_mode_and_preserves_source_confi
                 name: Some("Metadata Only".to_string()),
                 description: None,
                 playback_proxy_mode: None,
+                source_config: None,
+                provider_instance_name: None,
             },
         )
         .await
@@ -1025,6 +1050,8 @@ async fn test_edit_media_persists_playback_proxy_mode_and_preserves_source_confi
                 name: None,
                 description: None,
                 playback_proxy_mode: Some(synctv_core::models::PlaybackProxyMode::DirectOnly),
+                source_config: None,
+                provider_instance_name: None,
             },
         )
         .await
@@ -1048,6 +1075,123 @@ async fn test_edit_media_persists_playback_proxy_mode_and_preserves_source_confi
     assert_eq!(persisted.name, mode_updated.name);
     assert_eq!(persisted.version, mode_updated.version);
     assert_eq!(persisted.source_config, mode_updated.source_config);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_edit_media_can_switch_provider_instance_without_replacing_source_config() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = Arc::new(make_room_service(pool.clone()));
+    let creator = user_repo
+        .create(&make_user("edit_media_provider_instance"))
+        .await
+        .checked("test operation should succeed");
+    let (room, _) = room_service
+        .create_room(
+            "Edit Media Provider Instance Room".to_string(),
+            String::new(),
+            creator.id,
+            None,
+            None,
+        )
+        .await
+        .checked("test operation should succeed");
+
+    register_direct_url_provider(&room_service).await;
+    create_provider_instance(
+        &pool,
+        "direct-url-secondary",
+        vec![SourceProvider::DirectUrl],
+    )
+    .await;
+    register_direct_url_provider_instance(&room_service, "direct-url-secondary").await;
+    let playlist = create_top_level_playlist(&pool, &room.id).await;
+    let media_service = room_service.media_service();
+    let created = media_service
+        .add_media(
+            room.id,
+            creator.id,
+            AddMediaRequest {
+                playlist_id: Some(playlist.id),
+                name: "Original Name".to_string(),
+                description: String::new(),
+                source_provider: SourceProvider::DirectUrl,
+                provider_instance_name: None,
+                source_config: synctv_core_testing::direct_url_media_source_config(
+                    "https://example.com/original.mp4",
+                ),
+            },
+        )
+        .await
+        .checked("test operation should succeed");
+
+    let instance_updated = media_service
+        .edit_media(
+            room.id,
+            creator.id,
+            EditMediaRequest {
+                media_id: created.id,
+                name: None,
+                description: None,
+                playback_proxy_mode: None,
+                source_config: None,
+                provider_instance_name: Some("direct-url-secondary".to_string()),
+            },
+        )
+        .await
+        .checked("provider instance update should succeed");
+    assert_eq!(
+        instance_updated.provider_instance_name.as_deref(),
+        Some("direct-url-secondary")
+    );
+    assert_eq!(instance_updated.source_config, created.source_config);
+
+    let source_updated = media_service
+        .edit_media(
+            room.id,
+            creator.id,
+            EditMediaRequest {
+                media_id: created.id,
+                name: None,
+                description: None,
+                playback_proxy_mode: None,
+                source_config: Some(synctv_core_testing::direct_url_media_source_config(
+                    "https://example.com/replacement.mp4",
+                )),
+                provider_instance_name: None,
+            },
+        )
+        .await
+        .checked("source config update should preserve its provider instance");
+    assert_eq!(
+        source_updated.provider_instance_name.as_deref(),
+        Some("direct-url-secondary")
+    );
+    assert_ne!(source_updated.source_config, created.source_config);
+
+    media_service
+        .providers_manager()
+        .create_provider_with_default_config("rtmp", "rtmp")
+        .await
+        .checked("rtmp provider should be registered");
+    let provider_updated = media_service
+        .edit_media(
+            room.id,
+            creator.id,
+            EditMediaRequest {
+                media_id: created.id,
+                name: None,
+                description: None,
+                playback_proxy_mode: None,
+                source_config: Some(synctv_core_testing::rtmp_managed_live_media_source_config()),
+                provider_instance_name: None,
+            },
+        )
+        .await
+        .checked("cross-provider source update should succeed");
+    assert_eq!(provider_updated.source_provider, SourceProvider::Rtmp);
+    assert!(provider_updated.provider_instance_name.is_none());
 }
 
 #[tokio::test]

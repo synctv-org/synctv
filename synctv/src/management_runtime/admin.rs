@@ -1141,7 +1141,7 @@ impl AdminRuntime for ManagementAdminRuntime {
     async fn create_publish_key_for_actor(
         &self,
         room_id: &str,
-        media_id: &str,
+        request: client_proto::CreateRoomPublishKeyRequest,
         actor_user_id: &UserId,
         admin_user_id: &UserId,
         ctx: &RequestContext,
@@ -1149,7 +1149,7 @@ impl AdminRuntime for ManagementAdminRuntime {
         self.inner
             .create_publish_key_for_actor(
                 room_id,
-                media_id,
+                request,
                 actor_user_id,
                 admin_user_id,
                 &api_request_context(ctx),

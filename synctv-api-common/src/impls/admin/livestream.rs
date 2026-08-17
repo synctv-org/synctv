@@ -209,15 +209,14 @@ impl AdminApiImpl {
     pub async fn create_publish_key_for_actor(
         &self,
         room_id: &str,
-        media_id: &str,
+        request: synctv_proto::client::CreateRoomPublishKeyRequest,
         actor_user_id: &UserId,
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<synctv_proto::client::CreateRoomPublishKeyResponse, ApiError> {
-        let request = synctv_proto::client::CreateRoomPublishKeyRequest {
-            media_id: media_id.to_string(),
-        };
         crate::impls::validate_proto_request(&request)?;
+        let options = crate::impls::client::stream::publish_key_options(&request)?;
+        let public_media_id = request.media_id.clone();
         let room_id_value =
             crate::impls::parse_room_id_param(room_id, "room_id", &self.public_id_codec)?;
         let media_id_value =
@@ -247,11 +246,12 @@ impl AdminApiImpl {
             room_id_value,
             media_id_value,
             actor_user_id,
+            options,
         )?;
 
         tracing::info!(
             room_id,
-            media_id,
+            media_id = public_media_id,
             actor_user_id = %actor_user_id,
             admin_user_id = %admin_user_id,
             ip_address = ctx.ip_address.as_deref().unwrap_or(""),

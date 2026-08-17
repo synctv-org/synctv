@@ -897,7 +897,7 @@ pub trait AdminRuntime: Send + Sync {
     async fn create_publish_key_for_actor(
         &self,
         room_id: &str,
-        media_id: &str,
+        request: client_proto::CreateRoomPublishKeyRequest,
         actor_user_id: &UserId,
         admin_user_id: &UserId,
         ctx: &RequestContext,

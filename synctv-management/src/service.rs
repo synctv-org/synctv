@@ -3147,11 +3147,16 @@ impl ManagementService for ManagementServiceImpl {
         let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
         let actor_user_id = self.resolve_client_actor_user_id(req.actor).await?;
+        let publish_key_request = client_proto::CreateRoomPublishKeyRequest {
+            media_id: req.media_id,
+            r#type: req.r#type,
+            expires_at: req.expires_at,
+        };
         let response = self
             .admin_api
             .create_publish_key_for_actor(
                 &req.room_id,
-                &req.media_id,
+                publish_key_request,
                 &actor_user_id,
                 &validated.user_id,
                 &ctx,

@@ -181,8 +181,8 @@ pub use presence::{
 };
 pub use providers_manager::{LocalProviderHttpOptions, MediaProvidersOptions, ProvidersManager};
 pub use publish_key::{
-    InMemoryJtiStore, JtiStore, PublishClaims, PublishKey, PublishKeyService, RedisJtiStore,
-    StreamingPublishKeyService,
+    InMemoryJtiStore, JtiStore, PublishClaims, PublishKey, PublishKeyOptions, PublishKeyService,
+    PublishKeyType, RedisJtiStore, StreamingPublishKeyService,
 };
 pub use rate_limit::{RateLimitConfig, RateLimitError, RateLimiter, RequestRateLimiterService};
 pub use realtime_outbox::RealtimeOutboxService;

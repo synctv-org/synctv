@@ -546,6 +546,8 @@ pub(super) async fn execute_room(room_command: RoomCommand) -> Result<()> {
                         actor: Some(args.actor.to_management_proto()?),
                         room_id: args.room.room_id,
                         media_id: args.media_id,
+                        r#type: args.key_type.to_proto(),
+                        expires_at: args.expires_at,
                     }
                 )?;
                 args.room.remote.print_output(&response)

@@ -10,7 +10,7 @@ pub struct RoomStreamCommand {
 pub enum RoomStreamSubcommand {
     /// List active RTMP publish sessions in a room
     List(RoomStreamListArgs),
-    /// Create a single-use RTMP publish key for a room media item
+    /// Create an RTMP publish key for a room media item
     PublishKey(RoomStreamPublishKeyArgs),
     /// Get the active RTMP stream state for one room media item
     Get(RoomStreamGetArgs),
@@ -61,6 +61,30 @@ pub struct RoomStreamPublishKeyArgs {
 
     #[arg(long, allow_hyphen_values = true)]
     pub media_id: String,
+
+    #[arg(long, value_enum)]
+    pub key_type: CliPublishKeyType,
+
+    /// Unix timestamp. Required for single-use and expiring keys.
+    #[arg(long)]
+    pub expires_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum CliPublishKeyType {
+    SingleUse,
+    Expiring,
+    Permanent,
+}
+
+impl CliPublishKeyType {
+    pub const fn to_proto(self) -> i32 {
+        match self {
+            Self::SingleUse => synctv_proto::client::PublishKeyType::SingleUse as i32,
+            Self::Expiring => synctv_proto::client::PublishKeyType::Expiring as i32,
+            Self::Permanent => synctv_proto::client::PublishKeyType::Permanent as i32,
+        }
+    }
 }
 
 #[derive(Debug, Args)]

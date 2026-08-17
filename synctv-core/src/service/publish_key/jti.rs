@@ -36,8 +36,21 @@ pub trait JtiStore: Send + Sync {
 pub struct RedisJtiStore {
     pub(super) redis_runtime: Arc<dyn RedisConnectionRuntime>,
     key_builder: KeyBuilder,
-    local_cache: moka::future::Cache<String, ()>,
+    local_cache: moka::future::Cache<String, u64>,
     fail_closed: bool,
+}
+
+struct JtiExpiry;
+
+impl moka::Expiry<String, u64> for JtiExpiry {
+    fn expire_after_create(
+        &self,
+        _key: &String,
+        ttl_secs: &u64,
+        _created_at: std::time::Instant,
+    ) -> Option<Duration> {
+        Some(Duration::from_secs(*ttl_secs))
+    }
 }
 
 impl RedisJtiStore {
@@ -45,14 +58,14 @@ impl RedisJtiStore {
     pub fn from_runtime(
         redis_runtime: Arc<dyn RedisConnectionRuntime>,
         key_prefix: String,
-        cache_ttl_secs: u64,
+        _cache_ttl_secs: u64,
     ) -> Self {
         Self {
             redis_runtime,
             key_builder: KeyBuilder::new(key_prefix),
             local_cache: moka::future::Cache::builder()
                 .max_capacity(100_000)
-                .time_to_live(Duration::from_secs(cache_ttl_secs))
+                .expire_after(JtiExpiry)
                 .build(),
             fail_closed: false,
         }
@@ -75,14 +88,14 @@ impl RedisJtiStore {
     pub fn from_runtime_fail_closed(
         redis_runtime: Arc<dyn RedisConnectionRuntime>,
         key_prefix: String,
-        cache_ttl_secs: u64,
+        _cache_ttl_secs: u64,
     ) -> Self {
         Self {
             redis_runtime,
             key_builder: KeyBuilder::new(key_prefix),
             local_cache: moka::future::Cache::builder()
                 .max_capacity(100_000)
-                .time_to_live(Duration::from_secs(cache_ttl_secs))
+                .expire_after(JtiExpiry)
                 .build(),
             fail_closed: true,
         }
@@ -128,11 +141,11 @@ impl JtiStore for RedisJtiStore {
 
         match set_result {
             Ok(Some(_)) => {
-                self.local_cache.insert(jti.to_string(), ()).await;
+                self.local_cache.insert(jti.to_string(), ttl_secs).await;
                 Ok(true)
             }
             Ok(None) => {
-                self.local_cache.insert(jti.to_string(), ()).await;
+                self.local_cache.insert(jti.to_string(), ttl_secs).await;
                 Ok(false)
             }
             Err(error) => {
@@ -153,7 +166,7 @@ impl JtiStore for RedisJtiStore {
                 if self.local_cache.contains_key(jti) {
                     Ok(false)
                 } else {
-                    self.local_cache.insert(jti.to_string(), ()).await;
+                    self.local_cache.insert(jti.to_string(), ttl_secs).await;
                     Ok(true)
                 }
             }
@@ -174,16 +187,16 @@ impl JtiStore for RedisJtiStore {
 }
 
 pub struct InMemoryJtiStore {
-    cache: moka::future::Cache<String, ()>,
+    cache: moka::future::Cache<String, u64>,
 }
 
 impl InMemoryJtiStore {
     #[must_use]
-    pub fn new(cache_ttl_secs: u64) -> Self {
+    pub fn new(_cache_ttl_secs: u64) -> Self {
         Self {
             cache: moka::future::Cache::builder()
                 .max_capacity(100_000)
-                .time_to_live(Duration::from_secs(cache_ttl_secs))
+                .expire_after(JtiExpiry)
                 .build(),
         }
     }
@@ -191,7 +204,7 @@ impl InMemoryJtiStore {
 
 #[async_trait]
 impl JtiStore for InMemoryJtiStore {
-    async fn try_claim(&self, jti: &str, _ttl_secs: u64) -> Result<bool> {
+    async fn try_claim(&self, jti: &str, ttl_secs: u64) -> Result<bool> {
         use moka::ops::compute::Op;
         let entry = self
             .cache
@@ -200,7 +213,7 @@ impl JtiStore for InMemoryJtiStore {
                 if maybe_entry.is_some() {
                     Op::Nop
                 } else {
-                    Op::Put(())
+                    Op::Put(ttl_secs)
                 }
             })
             .await;

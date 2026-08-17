@@ -1752,19 +1752,31 @@ message ListRoomStreamsResponse {
   int32 total = 2;
 }
 
+enum PublishKeyType {
+  PUBLISH_KEY_TYPE_UNSPECIFIED = 0;
+  PUBLISH_KEY_TYPE_SINGLE_USE = 1;
+  PUBLISH_KEY_TYPE_EXPIRING = 2;
+  PUBLISH_KEY_TYPE_PERMANENT = 3;
+}
+
 message CreateRoomPublishKeyRequest {
   string media_id = 1 [(buf.validate.field).string = {
     min_len: 1
     max_len: 64
     pattern: "^med_[A-Za-z0-9]+$"
   }];
+  PublishKeyType type = 2 [(buf.validate.field).enum = {
+    defined_only: true
+  }];
+  optional int64 expires_at = 3;
 }
 
 message CreateRoomPublishKeyResponse {
   string publish_key = 1;
   string rtmp_url = 2;
   string stream_key = 3;
-  int64 expires_at = 4;
+  optional int64 expires_at = 4;
+  PublishKeyType type = 5;
 }
 
 message GetRoomStreamInfoRequest {

@@ -1,7 +1,7 @@
 //! Publish key generation for RTMP live streaming
 //!
 //! Generates JWT tokens for RTMP push authentication.
-//! Includes single-use enforcement to prevent TOCTOU races.
+//! Supports single-use, reusable expiring, and permanent publish keys.
 //!
 //! ## JTI Deduplication Backends
 //!
@@ -32,8 +32,54 @@ pub struct PublishKey {
     pub media_id: String,
     /// User ID who requested the key
     pub user_id: String,
-    /// Expiration timestamp
-    pub expires_at: i64,
+    /// Expiration timestamp, absent for permanent keys
+    pub expires_at: Option<i64>,
+    /// Key lifecycle type
+    pub key_type: PublishKeyType,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PublishKeyType {
+    #[default]
+    SingleUse,
+    Expiring,
+    Permanent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PublishKeyOptions {
+    pub key_type: PublishKeyType,
+    pub expires_at: Option<i64>,
+}
+
+impl PublishKeyOptions {
+    fn validate(self, now: i64) -> Result<Self> {
+        match (self.key_type, self.expires_at) {
+            (PublishKeyType::SingleUse | PublishKeyType::Expiring, Some(expires_at))
+                if expires_at > now =>
+            {
+                Ok(self)
+            }
+            (PublishKeyType::SingleUse | PublishKeyType::Expiring, Some(_)) => Err(
+                Error::InvalidInput("publish key expiration must be in the future".to_string()),
+            ),
+            (PublishKeyType::SingleUse | PublishKeyType::Expiring, None) => {
+                Err(Error::InvalidInput(format!(
+                    "{} publish keys require an expiration time",
+                    match self.key_type {
+                        PublishKeyType::SingleUse => "single-use",
+                        PublishKeyType::Expiring => "expiring",
+                        PublishKeyType::Permanent => unreachable!(),
+                    }
+                )))
+            }
+            (PublishKeyType::Permanent, None) => Ok(self),
+            (PublishKeyType::Permanent, Some(_)) => Err(Error::InvalidInput(
+                "permanent publish keys must not have an expiration time".to_string(),
+            )),
+        }
+    }
 }
 
 /// Claims for RTMP publish token
@@ -49,26 +95,25 @@ pub struct PublishClaims {
     pub perm_manage_live_streams: bool,
     /// Issued at timestamp
     pub iat: i64,
-    /// Expiration timestamp
-    pub exp: i64,
+    /// Expiration timestamp, absent for permanent keys
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exp: Option<i64>,
     /// JWT ID (unique token identifier)
     pub jti: String,
+    /// Key lifecycle type
+    #[serde(default)]
+    pub key_type: PublishKeyType,
 }
 
-fn cache_ttl_secs(token_ttl_hours: i64) -> Result<u64> {
-    if token_ttl_hours <= 0 {
-        tracing::warn!(
-            token_ttl_hours,
-            "Publish key token TTL must be positive; using deduplication grace window only"
-        );
-        return Ok(300);
-    }
-    let hours = u64::try_from(token_ttl_hours)
-        .map_err(|_| Error::InvalidInput("publish key token TTL is invalid".to_string()))?;
-    hours
-        .checked_mul(3600)
-        .and_then(|seconds| seconds.checked_add(300))
-        .ok_or_else(|| Error::InvalidInput("publish key cache TTL is too large".to_string()))
+/// Publish key service for generating RTMP streaming tokens.
+///
+/// Single-use keys use a pluggable `JtiStore` backend for deduplication.
+#[derive(Clone)]
+pub struct PublishKeyService {
+    jwt_service: JwtService,
+    clock: Arc<dyn Clock>,
+    token_ttl_hours: i64,
+    jti_store: Arc<dyn JtiStore>,
 }
 
 fn token_lifetime_secs(token_ttl_hours: i64) -> Result<i64> {
@@ -82,17 +127,19 @@ fn token_lifetime_secs(token_ttl_hours: i64) -> Result<i64> {
         .ok_or_else(|| Error::InvalidInput("publish key token TTL is too large".to_string()))
 }
 
-/// Publish key service for generating RTMP streaming tokens.
-///
-/// Includes single-use enforcement: each publish key `jti` can only be
-/// consumed once by `validate_publish_key`. Uses a pluggable `JtiStore`
-/// backend for deduplication.
-#[derive(Clone)]
-pub struct PublishKeyService {
-    jwt_service: JwtService,
-    clock: Arc<dyn Clock>,
+fn default_publish_key_options(
+    clock: &dyn Clock,
     token_ttl_hours: i64,
-    jti_store: Arc<dyn JtiStore>,
+) -> Result<PublishKeyOptions> {
+    let expires_at = clock
+        .now()
+        .timestamp()
+        .checked_add(token_lifetime_secs(token_ttl_hours)?)
+        .ok_or_else(|| Error::InvalidInput("publish key expiration overflow".to_string()))?;
+    Ok(PublishKeyOptions {
+        key_type: PublishKeyType::SingleUse,
+        expires_at: Some(expires_at),
+    })
 }
 
 #[async_trait]
@@ -102,6 +149,14 @@ pub trait StreamingPublishKeyService: Send + Sync {
         room_id: &RoomId,
         media_id: &MediaId,
         user_id: &UserId,
+    ) -> Result<PublishKey>;
+
+    fn generate_publish_key_with_options(
+        &self,
+        room_id: &RoomId,
+        media_id: &MediaId,
+        user_id: &UserId,
+        options: PublishKeyOptions,
     ) -> Result<PublishKey>;
 
     async fn validate_publish_key(&self, token: &str) -> Result<PublishClaims>;
@@ -138,13 +193,23 @@ impl PublishKeyService {
     fn decode_publish_claims(&self, token: &str) -> Result<PublishClaims> {
         let claims: PublishClaims = self
             .jwt_service
-            .verify_custom(token)
+            .verify_custom_with_optional_exp(token)
             .map_err(|e| Error::Authentication(format!("Invalid token format: {e}")))?;
 
         let now = self.clock.now().timestamp();
 
-        if now > claims.exp {
-            return Err(Error::Authentication("Token has expired".to_string()));
+        match (claims.key_type, claims.exp) {
+            (PublishKeyType::SingleUse | PublishKeyType::Expiring, Some(expires_at)) => {
+                if now > expires_at {
+                    return Err(Error::Authentication("Token has expired".to_string()));
+                }
+            }
+            (PublishKeyType::Permanent, None) => {}
+            _ => {
+                return Err(Error::Authentication(
+                    "Publish key lifecycle claims are invalid".to_string(),
+                ));
+            }
         }
 
         if !claims.perm_manage_live_streams {
@@ -157,7 +222,13 @@ impl PublishKeyService {
     }
 
     async fn claim_publish_key(&self, claims: &PublishClaims) -> Result<()> {
-        let ttl_secs = (claims.exp - claims.iat)
+        if claims.key_type != PublishKeyType::SingleUse {
+            return Ok(());
+        }
+        let expires_at = claims.exp.ok_or_else(|| {
+            Error::Authentication("Single-use publish key has no expiration".to_string())
+        })?;
+        let ttl_secs = (expires_at - self.clock.now().timestamp())
             .max(0)
             .cast_unsigned()
             .saturating_add(300);
@@ -216,12 +287,10 @@ impl PublishKeyService {
         clock: Arc<dyn Clock>,
         token_ttl_hours: i64,
     ) -> Result<Self> {
-        let cache_ttl_secs = cache_ttl_secs(token_ttl_hours)?;
-        let store = Arc::new(InMemoryJtiStore::new(cache_ttl_secs));
+        let store = Arc::new(InMemoryJtiStore::new(0));
         Ok(Self::from_store(jwt_service, clock, token_ttl_hours, store))
     }
 
-    /// Create a new publish key service with default TTL (24 hours)
     pub fn with_default_ttl(jwt_service: JwtService, clock: Arc<dyn Clock>) -> Result<Self> {
         Self::new(jwt_service, clock, 24)
     }
@@ -233,12 +302,7 @@ impl PublishKeyService {
         redis_runtime: Arc<dyn RedisConnectionRuntime>,
         key_prefix: String,
     ) -> Result<Self> {
-        let cache_ttl_secs = cache_ttl_secs(token_ttl_hours)?;
-        let store = Arc::new(RedisJtiStore::from_runtime(
-            redis_runtime,
-            key_prefix,
-            cache_ttl_secs,
-        ));
+        let store = Arc::new(RedisJtiStore::from_runtime(redis_runtime, key_prefix, 0));
         Ok(Self::from_store(jwt_service, clock, token_ttl_hours, store))
     }
 
@@ -249,11 +313,10 @@ impl PublishKeyService {
         redis_runtime: Arc<dyn RedisConnectionRuntime>,
         key_prefix: String,
     ) -> Result<Self> {
-        let cache_ttl_secs = cache_ttl_secs(token_ttl_hours)?;
         let store = Arc::new(RedisJtiStore::from_runtime_fail_closed(
             redis_runtime,
             key_prefix,
-            cache_ttl_secs,
+            0,
         ));
         Ok(Self::from_store(jwt_service, clock, token_ttl_hours, store))
     }
@@ -290,10 +353,19 @@ impl PublishKeyService {
         media_id: &MediaId,
         user_id: &UserId,
     ) -> Result<PublishKey> {
+        let options = default_publish_key_options(self.clock.as_ref(), self.token_ttl_hours)?;
+        self.generate_publish_key_with_options(room_id, media_id, user_id, options)
+    }
+
+    pub fn generate_publish_key_with_options(
+        &self,
+        room_id: &RoomId,
+        media_id: &MediaId,
+        user_id: &UserId,
+        options: PublishKeyOptions,
+    ) -> Result<PublishKey> {
         let now = self.clock.now().timestamp();
-        let exp = now
-            .checked_add(token_lifetime_secs(self.token_ttl_hours)?)
-            .ok_or_else(|| Error::InvalidInput("publish key expiration overflow".to_string()))?;
+        let options = options.validate(now)?;
 
         let claims = PublishClaims {
             room_id: room_id.to_string(),
@@ -301,8 +373,9 @@ impl PublishKeyService {
             user_id: user_id.to_string(),
             perm_manage_live_streams: true,
             iat: now,
-            exp,
+            exp: options.expires_at,
             jti: synctv_common::snanoid!(32),
+            key_type: options.key_type,
         };
 
         let token = self.jwt_service.sign_custom(&claims)?;
@@ -312,7 +385,8 @@ impl PublishKeyService {
             room_id: room_id.to_string(),
             media_id: media_id.to_string(),
             user_id: user_id.to_string(),
-            expires_at: exp,
+            expires_at: options.expires_at,
+            key_type: options.key_type,
         })
     }
 
@@ -398,6 +472,18 @@ impl StreamingPublishKeyService for PublishKeyService {
         user_id: &UserId,
     ) -> Result<PublishKey> {
         PublishKeyService::generate_publish_key(self, room_id, media_id, user_id)
+    }
+
+    fn generate_publish_key_with_options(
+        &self,
+        room_id: &RoomId,
+        media_id: &MediaId,
+        user_id: &UserId,
+        options: PublishKeyOptions,
+    ) -> Result<PublishKey> {
+        PublishKeyService::generate_publish_key_with_options(
+            self, room_id, media_id, user_id, options,
+        )
     }
 
     async fn validate_publish_key(&self, token: &str) -> Result<PublishClaims> {

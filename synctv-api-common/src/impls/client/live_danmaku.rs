@@ -66,37 +66,29 @@ fn guest_is_current_bilibili_dynamic_live(
     state.playing_playlist_id.as_ref() == Some(playlist_id) && state.target.as_ref() == Some(target)
 }
 
+fn require_current_bilibili_live_danmaku_target(target_is_current: bool) -> Result<(), ApiError> {
+    if target_is_current {
+        Ok(())
+    } else {
+        Err(ApiError::Authorization(
+            "Bilibili live danmaku is available only for the current playback".to_string(),
+        ))
+    }
+}
+
 impl ClientApiImpl {
     async fn authorize_bilibili_live_danmaku_access(
         &self,
         actor: &RoomActor,
-        guest_target_is_current: impl FnOnce(&synctv_core::models::RoomPlaybackState) -> bool,
+        target_is_current: impl FnOnce(&synctv_core::models::RoomPlaybackState) -> bool,
     ) -> Result<(), ApiError> {
-        match actor {
-            RoomActor::User { .. } => {
-                self.require_room_permission(
-                    actor,
-                    synctv_core::models::RoomPermission::BROWSE_LIBRARY,
-                )
-                .await
-            }
-            RoomActor::Guest(_) => {
-                let room_id = actor.room_id();
-                let state = self
-                    .room_service
-                    .get_playback_state(&room_id)
-                    .await
-                    .map_err(ApiError::from)?;
-                if guest_target_is_current(&state) {
-                    Ok(())
-                } else {
-                    Err(ApiError::Authorization(
-                        "Guests can watch Bilibili live danmaku only for the current playback"
-                            .to_string(),
-                    ))
-                }
-            }
-        }
+        let room_id = actor.room_id();
+        let state = self
+            .room_service
+            .get_playback_state(&room_id)
+            .await
+            .map_err(ApiError::from)?;
+        require_current_bilibili_live_danmaku_target(target_is_current(&state))
     }
 
     pub async fn watch_bilibili_live_danmaku_for_actor(
@@ -293,10 +285,22 @@ impl ClientApiImpl {
 
 #[cfg(test)]
 mod tests {
-    use super::{guest_is_current_bilibili_dynamic_live, guest_is_current_bilibili_live_media};
+    use super::{
+        guest_is_current_bilibili_dynamic_live, guest_is_current_bilibili_live_media,
+        require_current_bilibili_live_danmaku_target,
+    };
 
     #[test]
-    fn guest_live_danmaku_access_is_limited_to_the_current_playback() {
+    fn live_danmaku_requires_the_current_playback_target() {
+        assert!(require_current_bilibili_live_danmaku_target(true).is_ok());
+        assert!(matches!(
+            require_current_bilibili_live_danmaku_target(false),
+            Err(crate::impls::ApiError::Authorization(_))
+        ));
+    }
+
+    #[test]
+    fn live_danmaku_target_matching_covers_media_and_dynamic_playback() {
         let room_id = synctv_core::models::RoomId::expect_positive(1);
         let media_id = synctv_core::models::MediaId::expect_positive(2);
         let playlist_id = synctv_core::models::PlaylistId::expect_positive(3);

@@ -878,6 +878,9 @@ impl SliceCache {
             self.maybe_cleanup_locks();
             return Ok(FullResponseFetchResult::Bypass(response));
         }
+        // File-backed bodies survive restarts while metadata does not. Remove
+        // any independently restored body before publishing the new metadata.
+        self.backend.remove(key).await;
         self.store_full_response_metadata(key, meta_key, metadata.clone())
             .await;
 

@@ -384,6 +384,99 @@ async fn test_full_response_missing_metadata_singleflights_first_fill() {
 }
 
 #[tokio::test]
+async fn test_full_response_restart_does_not_pair_old_body_with_new_metadata() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (address, headers_sent, release_body, server_task) =
+        start_versioned_full_response_listener().await;
+    let config = SliceCacheConfig {
+        backend: synctv_proxy::slice_cache::CacheBackendConfig::File {
+            cache_dir: tmp.path().to_path_buf(),
+            dir_levels: (2, 2),
+        },
+        ..SliceCacheConfig::default()
+    };
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .resolve("cdn.example.com", address)
+        .build()
+        .unwrap();
+    let guard = synctv_common::ssrf::SsrfGuard::builder()
+        .extra_allowed_host("cdn.example.com".to_string())
+        .build();
+    let url = format!("http://cdn.example.com:{}/subtitle.json", address.port());
+    let headers = HashMap::new();
+
+    let initial_cache = SliceCache::try_new_with_client_and_ssrf_guard(
+        config.clone(),
+        client.clone(),
+        guard.clone(),
+    )
+    .await
+    .unwrap();
+    let initial = proxy_full_response(&initial_cache, &url, &headers)
+        .await
+        .unwrap();
+    assert_eq!(
+        axum::body::to_bytes(initial.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+        Bytes::from_static(b"old-body")
+    );
+    drop(initial_cache);
+
+    let restarted_cache = Arc::new(
+        SliceCache::try_new_with_client_and_ssrf_guard(config, client, guard)
+            .await
+            .unwrap(),
+    );
+    let first_cache = Arc::clone(&restarted_cache);
+    let first_url = url.clone();
+    let first_headers = headers.clone();
+    let first_refresh =
+        tokio::spawn(
+            async move { proxy_full_response(&first_cache, &first_url, &first_headers).await },
+        );
+    headers_sent.await.unwrap();
+
+    let second_cache = Arc::clone(&restarted_cache);
+    let second_url = url.clone();
+    let second_headers = headers.clone();
+    let mut second_refresh = tokio::spawn(async move {
+        proxy_full_response(&second_cache, &second_url, &second_headers).await
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(250), &mut second_refresh)
+            .await
+            .is_err(),
+        "a concurrent read must wait while the restarted cache replaces the old body"
+    );
+
+    release_body.send(()).unwrap();
+    let first = first_refresh.await.unwrap().unwrap();
+    let second = second_refresh.await.unwrap().unwrap();
+    let mut statuses = [
+        first.headers().get("X-Cache-Status").unwrap().clone(),
+        second.headers().get("X-Cache-Status").unwrap().clone(),
+    ];
+    statuses.sort_unstable();
+    assert_eq!(statuses[0], "HIT");
+    assert_eq!(statuses[1], "MISS");
+    for response in [first, second] {
+        assert_eq!(
+            response.headers().get("content-type").unwrap(),
+            "application/json"
+        );
+        assert_eq!(
+            axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+            Bytes::from_static(b"new-body")
+        );
+    }
+    server_task.await.unwrap();
+}
+
+#[tokio::test]
 async fn test_oversized_full_response_streams_and_releases_lock_after_headers() {
     let mock_server = MockServer::start().await;
     let body = Bytes::from(vec![0x5Au8; 16 * 1024 * 1024 + 1]);
@@ -542,6 +635,72 @@ async fn start_request_close_listener() -> (std::net::SocketAddr, tokio::task::J
         }
     });
     (address, task)
+}
+
+async fn read_test_http_request(stream: &mut tokio::net::TcpStream) {
+    use tokio::io::AsyncReadExt;
+
+    let mut request = Vec::new();
+    loop {
+        let mut buffer = [0u8; 2048];
+        let read = stream
+            .read(&mut buffer)
+            .await
+            .expect("read test HTTP request");
+        assert!(read > 0, "test HTTP request ended before its headers");
+        request.extend_from_slice(&buffer[..read]);
+        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+            return;
+        }
+        assert!(request.len() < 64 * 1024, "test HTTP headers are too large");
+    }
+}
+
+async fn start_versioned_full_response_listener() -> (
+    std::net::SocketAddr,
+    tokio::sync::oneshot::Receiver<()>,
+    tokio::sync::oneshot::Sender<()>,
+    tokio::task::JoinHandle<()>,
+) {
+    use tokio::io::AsyncWriteExt;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("test listener should bind an ephemeral loopback port");
+    let address = listener
+        .local_addr()
+        .expect("test listener should expose its address");
+    let (headers_sent_tx, headers_sent_rx) = tokio::sync::oneshot::channel();
+    let (release_body_tx, release_body_rx) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        let (mut initial, _) = listener.accept().await.expect("initial request");
+        read_test_http_request(&mut initial).await;
+        initial
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nold-body",
+            )
+            .await
+            .expect("write initial response");
+        initial.shutdown().await.expect("close initial response");
+
+        let (mut refresh, _) = listener.accept().await.expect("refresh request");
+        read_test_http_request(&mut refresh).await;
+        refresh
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n",
+            )
+            .await
+            .expect("write refresh headers");
+        refresh.flush().await.expect("flush refresh headers");
+        headers_sent_tx.send(()).expect("signal refresh headers");
+        release_body_rx.await.expect("wait to release refresh body");
+        refresh
+            .write_all(b"new-body")
+            .await
+            .expect("write refresh body");
+        refresh.shutdown().await.expect("close refresh response");
+    });
+    (address, headers_sent_rx, release_body_tx, task)
 }
 
 // SliceCacheConfig tests

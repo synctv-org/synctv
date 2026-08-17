@@ -114,6 +114,16 @@ struct PreparedMediaSource {
     source_config: MediaSourceConfig,
 }
 
+struct PrepareMediaSourceRequest<'a> {
+    actor_user_id: &'a UserId,
+    credential_owner_id: &'a UserId,
+    room_id: &'a RoomId,
+    source_provider: SourceProvider,
+    provider_instance_name: Option<&'a str>,
+    source_config: MediaSourceConfig,
+    item_name: Option<&'a str>,
+}
+
 pub struct BackendPlaybackRequest<'a> {
     pub room_id: RoomId,
     pub media_id: Option<MediaId>,
@@ -264,14 +274,17 @@ impl MediaService {
 
     async fn prepare_media_source(
         &self,
-        actor_user_id: &UserId,
-        credential_owner_id: &UserId,
-        room_id: &RoomId,
-        source_provider: SourceProvider,
-        provider_instance_name: Option<&str>,
-        source_config: MediaSourceConfig,
-        item_name: Option<&str>,
+        request: PrepareMediaSourceRequest<'_>,
     ) -> Result<PreparedMediaSource> {
+        let PrepareMediaSourceRequest {
+            actor_user_id,
+            credential_owner_id,
+            room_id,
+            source_provider,
+            provider_instance_name,
+            source_config,
+            item_name,
+        } = request;
         let explicit_provider_instance =
             normalize_provider_instance_name(provider_instance_name).map(str::to_string);
         let config_provider = source_config.provider();
@@ -366,15 +379,15 @@ impl MediaService {
             media.provider_instance_name.clone(),
         );
         let prepared_source = self
-            .prepare_media_source(
+            .prepare_media_source(PrepareMediaSourceRequest {
                 actor_user_id,
                 credential_owner_id,
                 room_id,
                 source_provider,
-                provider_instance_name.as_deref(),
+                provider_instance_name: provider_instance_name.as_deref(),
                 source_config,
-                Some(&media.name),
-            )
+                item_name: Some(&media.name),
+            })
             .await?;
 
         Ok(Some((source_provider, prepared_source)))
@@ -399,15 +412,15 @@ impl MediaService {
                 }
 
                 let prepared_source = service
-                    .prepare_media_source(
-                        &user_id,
-                        &user_id,
-                        &room_id,
-                        item.source_provider,
-                        item.provider_instance_name.as_deref(),
-                        item.source_config.clone(),
-                        Some(&item.name),
-                    )
+                    .prepare_media_source(PrepareMediaSourceRequest {
+                        actor_user_id: &user_id,
+                        credential_owner_id: &user_id,
+                        room_id: &room_id,
+                        source_provider: item.source_provider,
+                        provider_instance_name: item.provider_instance_name.as_deref(),
+                        source_config: item.source_config.clone(),
+                        item_name: Some(&item.name),
+                    })
                     .await?;
 
                 Ok((item, prepared_source))
@@ -647,15 +660,15 @@ impl MediaService {
         }
 
         let prepared_source = self
-            .prepare_media_source(
-                &user_id,
-                &user_id,
-                &room_id,
-                request.source_provider,
-                request.provider_instance_name.as_deref(),
-                request.source_config,
-                None,
-            )
+            .prepare_media_source(PrepareMediaSourceRequest {
+                actor_user_id: &user_id,
+                credential_owner_id: &user_id,
+                room_id: &room_id,
+                source_provider: request.source_provider,
+                provider_instance_name: request.provider_instance_name.as_deref(),
+                source_config: request.source_config,
+                item_name: None,
+            })
             .await?;
 
         // Use a transaction to atomically get the next position and insert,

@@ -38,9 +38,10 @@ pub struct PublishKey {
     pub key_type: PublishKeyType,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PublishKeyType {
+    #[default]
     SingleUse,
     Expiring,
     Permanent,
@@ -100,6 +101,7 @@ pub struct PublishClaims {
     /// JWT ID (unique token identifier)
     pub jti: String,
     /// Key lifecycle type
+    #[serde(default)]
     pub key_type: PublishKeyType,
 }
 
@@ -191,7 +193,7 @@ impl PublishKeyService {
     fn decode_publish_claims(&self, token: &str) -> Result<PublishClaims> {
         let claims: PublishClaims = self
             .jwt_service
-            .verify_custom(token)
+            .verify_custom_with_optional_exp(token)
             .map_err(|e| Error::Authentication(format!("Invalid token format: {e}")))?;
 
         let now = self.clock.now().timestamp();

@@ -304,6 +304,55 @@ async fn explicit_publish_key_types_enforce_their_lifecycle() {
     assert!(service.validate_publish_key(&permanent.token).await.is_ok());
 }
 
+#[tokio::test]
+async fn legacy_publish_keys_without_key_type_default_to_single_use() {
+    #[derive(Serialize)]
+    struct LegacyPublishClaims {
+        room_id: String,
+        media_id: String,
+        user_id: String,
+        perm_manage_live_streams: bool,
+        iat: i64,
+        exp: i64,
+        jti: String,
+    }
+
+    let now = 1_700_000_000i64;
+    let clock = fixed_clock(now * 1000);
+    let jwt = create_jwt_service_with_clock(clock.clone());
+    let service = ok(
+        PublishKeyService::new(jwt.clone(), clock, 24),
+        "publish key service should build",
+    );
+    let room_id = RoomId::new();
+    let media_id = MediaId::new();
+    let user_id = UserId::new();
+    let token = ok(
+        jwt.sign_custom(&LegacyPublishClaims {
+            room_id: room_id.to_string(),
+            media_id: media_id.to_string(),
+            user_id: user_id.to_string(),
+            perm_manage_live_streams: true,
+            iat: now,
+            exp: now + 3600,
+            jti: "legacy-publish-key".to_string(),
+        }),
+        "legacy publish key should sign",
+    );
+
+    let claims = ok(
+        service
+            .validate_publish_key_for_stream_claims(&token, &room_id, &media_id)
+            .await,
+        "legacy publish key should remain valid",
+    );
+    assert_eq!(claims.key_type, PublishKeyType::SingleUse);
+    assert!(service
+        .validate_publish_key_for_stream_claims(&token, &room_id, &media_id)
+        .await
+        .is_err());
+}
+
 #[test]
 fn publish_key_options_reject_inconsistent_expiration() {
     let now = 1_700_000_000i64;

@@ -754,6 +754,32 @@ impl JwtService {
         let mut validation = Validation::new(self.algorithm);
         validation.validate_exp = false;
         validation.validate_nbf = false;
+
+        let token_data = decode(token, &self.decoding_key, &validation)
+            .map_err(|e| map_jwt_error(&e, "Token"))?;
+
+        validate_serialized_claims_expiration(
+            self.clock.as_ref(),
+            &token_data.claims,
+            self.clock_skew_leeway_secs,
+            "Token",
+        )?;
+
+        Ok(token_data.claims)
+    }
+
+    /// Verify a custom token whose claims may intentionally omit expiration.
+    ///
+    /// This is reserved for credential types with their own lifecycle checks,
+    /// such as permanent publish keys. General custom tokens must use
+    /// [`Self::verify_custom`] so an expiration claim remains required.
+    pub fn verify_custom_with_optional_exp<T>(&self, token: &str) -> Result<T>
+    where
+        T: DeserializeOwned + Serialize,
+    {
+        let mut validation = Validation::new(self.algorithm);
+        validation.validate_exp = false;
+        validation.validate_nbf = false;
         validation.required_spec_claims.remove("exp");
 
         let token_data = decode(token, &self.decoding_key, &validation)

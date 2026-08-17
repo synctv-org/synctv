@@ -674,6 +674,27 @@ fn test_sign_and_verify_custom_token() {
 }
 
 #[test]
+fn test_custom_token_requires_expiration_by_default() {
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    struct NonExpiringClaims {
+        sub: String,
+    }
+
+    let jwt = create_jwt_service();
+    let token = ok(
+        jwt.sign_custom(&NonExpiringClaims {
+            sub: "custom_subject".to_string(),
+        }),
+        "non-expiring custom token should sign",
+    );
+
+    assert!(jwt.verify_custom::<NonExpiringClaims>(&token).is_err());
+    assert!(jwt
+        .verify_custom_with_optional_exp::<NonExpiringClaims>(&token)
+        .is_ok());
+}
+
+#[test]
 fn test_custom_token_wrong_secret_rejected() {
     #[derive(Debug, serde::Serialize, serde::Deserialize)]
     struct CustomClaims {

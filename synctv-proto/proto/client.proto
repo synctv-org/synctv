@@ -1767,7 +1767,6 @@ message CreateRoomPublishKeyRequest {
   }];
   PublishKeyType type = 2 [(buf.validate.field).enum = {
     defined_only: true
-    not_in: [0]
   }];
   optional int64 expires_at = 3;
 }

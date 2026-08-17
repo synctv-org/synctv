@@ -3961,6 +3961,8 @@ fn cli_parses_room_stream_publish_key_and_get() {
         "alice",
         "--media-id",
         "media-1",
+        "--key-type",
+        "single-use",
     ]);
     match cli_publish_key.command {
         Commands::Room(RoomCommand {
@@ -3972,6 +3974,7 @@ fn cli_parses_room_stream_publish_key_and_get() {
             assert_eq!(args.room.room_id, "room-1");
             assert_eq!(args.actor.username.as_deref(), Some("alice"));
             assert_eq!(args.media_id, "media-1");
+            assert!(matches!(args.key_type, CliPublishKeyType::SingleUse));
         }
         other => panic!("unexpected command parsed: {other:?}"),
     }

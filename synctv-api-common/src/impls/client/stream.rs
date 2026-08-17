@@ -116,24 +116,25 @@ fn build_publish_rtmp_url(runtime_settings: &crate::ApiRuntimeSettings, room_id:
 
 pub(crate) fn publish_key_options(
     req: &CreateRoomPublishKeyRequest,
-) -> Result<PublishKeyOptions, ApiError> {
+) -> Result<Option<PublishKeyOptions>, ApiError> {
     let key_type = match PublishKeyType::try_from(req.r#type)
         .map_err(|_| ApiError::InvalidInput("publish key type is invalid".to_string()))?
     {
         PublishKeyType::SingleUse => CorePublishKeyType::SingleUse,
         PublishKeyType::Expiring => CorePublishKeyType::Expiring,
         PublishKeyType::Permanent => CorePublishKeyType::Permanent,
+        PublishKeyType::Unspecified if req.expires_at.is_none() => return Ok(None),
         PublishKeyType::Unspecified => {
             return Err(ApiError::InvalidInput(
-                "publish key type must be specified".to_string(),
+                "publish key type is required when expiration is provided".to_string(),
             ));
         }
     };
 
-    Ok(PublishKeyOptions {
+    Ok(Some(PublishKeyOptions {
         key_type,
         expires_at: req.expires_at,
-    })
+    }))
 }
 
 pub(crate) fn issue_room_publish_key(
@@ -143,11 +144,18 @@ pub(crate) fn issue_room_publish_key(
     room_id: RoomId,
     media_id: MediaId,
     actor_user_id: &UserId,
-    options: PublishKeyOptions,
+    options: Option<PublishKeyOptions>,
 ) -> Result<CreateRoomPublishKeyResponse, ApiError> {
-    let publish_key = publish_key_service
-        .generate_publish_key_with_options(&room_id, &media_id, actor_user_id, options)
-        .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
+    let publish_key = match options {
+        Some(options) => publish_key_service.generate_publish_key_with_options(
+            &room_id,
+            &media_id,
+            actor_user_id,
+            options,
+        ),
+        None => publish_key_service.generate_publish_key(&room_id, &media_id, actor_user_id),
+    }
+    .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
     let room_id = public_id_codec
         .encode_room_id(room_id)
         .map_err(|error| ApiError::Internal(format!("Failed to encode room id: {error}")))?;
@@ -370,6 +378,7 @@ impl ClientApiImpl {
 mod tests {
     use super::{
         build_room_streams_request, build_room_streams_response, ensure_room_accepts_live_publish,
+        publish_key_options,
     };
     use crate::impls::ApiError;
 
@@ -411,6 +420,33 @@ mod tests {
         assert!(message.contains("page"), "{message}");
         assert!(message.contains("page_size"), "{message}");
         assert!(message.contains("search"), "{message}");
+        Ok(())
+    }
+
+    #[test]
+    fn publish_key_options_preserves_legacy_default() -> TestResult {
+        let options = api_ok(publish_key_options(
+            &synctv_proto::client::CreateRoomPublishKeyRequest {
+                media_id: "med_AbC123".to_string(),
+                ..Default::default()
+            },
+        ))?;
+
+        assert!(options.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn publish_key_options_rejects_ambiguous_legacy_expiration() -> TestResult {
+        let error = api_err(publish_key_options(
+            &synctv_proto::client::CreateRoomPublishKeyRequest {
+                media_id: "med_AbC123".to_string(),
+                expires_at: Some(1_800_000_000),
+                ..Default::default()
+            },
+        ))?;
+
+        assert!(error.is_invalid_argument(), "{error:?}");
         Ok(())
     }
 

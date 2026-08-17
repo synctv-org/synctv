@@ -496,6 +496,7 @@ pub struct GoogleRpcStatusSchema {
             client::RefreshTokenRequest,
             client::RefreshTokenResponse,
             client::LogoutResponse,
+            client::CreateRoomPublishKeyRequest,
             client::CreateRoomPublishKeyResponse,
             client::RequestPasswordResetRequest,
             client::RequestPasswordResetResponse,
@@ -1974,6 +1975,24 @@ mod tests {
             required,
             Some(true),
             "mark-all-as-read should not document its request body as required"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn openapi_marks_publish_key_body_optional() -> TestResult {
+        let doc = openapi_json()?;
+
+        let request_body = &doc["paths"]
+            ["/api/playback-providers/{roomId}/rtmp/{mediaId}/publish-key"]["post"]["requestBody"];
+        assert!(
+            request_body.is_object(),
+            "publish-key creation should document its request body schema"
+        );
+        assert_ne!(
+            request_body["required"].as_bool(),
+            Some(true),
+            "legacy publish-key creation may omit the request body"
         );
         Ok(())
     }

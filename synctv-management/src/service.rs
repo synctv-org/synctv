@@ -2825,14 +2825,23 @@ impl ManagementService for ManagementServiceImpl {
         request: Request<UpdateRoomVisibilityRequest>,
     ) -> Result<Response<client_proto::Room>, Status> {
         self.check_admin_get_validated(&request)?;
-        let req = request.into_inner();
-        let actor_user_id = self.resolve_client_actor_user_id(req.actor).await?;
-        let room_id = room_id_from_public(&req.room_id, &self.public_id_codec)?;
-        let room = self
-            .room_service
-            .update_room_visibility(&room_id, &actor_user_id, req.is_public)
-            .await
-            .map_err(Self::map_room_access_error)?;
+        let UpdateRoomVisibilityRequest {
+            room_id: public_room_id,
+            actor,
+            is_public,
+        } = request.into_inner();
+        let room_id = room_id_from_public(&public_room_id, &self.public_id_codec)?;
+        let room = if let Some(actor) = actor {
+            let actor_user_id = self.resolve_client_actor_user_id(Some(actor)).await?;
+            self.room_service
+                .update_room_visibility(&room_id, &actor_user_id, is_public)
+                .await
+        } else {
+            self.room_service
+                .admin_update_room_visibility(&room_id, is_public)
+                .await
+        }
+        .map_err(Self::map_room_access_error)?;
         self.room_cache_fanout.publish_invalidation(&room_id);
         self.client_room_response(&room).await.map(Response::new)
     }

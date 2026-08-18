@@ -70,7 +70,7 @@ pub(super) async fn execute_room(room_command: RoomCommand) -> Result<()> {
                 update_room_visibility,
                 management_proto::UpdateRoomVisibilityRequest {
                     room_id: args.room_id,
-                    actor: Some(args.actor.to_management_proto()?),
+                    actor: args.actor.to_management_proto()?,
                     is_public,
                 }
             )?;

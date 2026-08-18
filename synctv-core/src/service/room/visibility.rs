@@ -17,6 +17,25 @@ impl RoomService {
             .check_permission_no_cache(room_id, user_id, RoomPermission::MANAGE_ROOM_SETTINGS)
             .await?;
 
+        self.update_room_visibility_unchecked(room_id, is_public)
+            .await
+    }
+
+    /// Update visibility from an already authenticated management/system plane.
+    pub async fn admin_update_room_visibility(
+        &self,
+        room_id: &RoomId,
+        is_public: bool,
+    ) -> Result<Room> {
+        self.update_room_visibility_unchecked(room_id, is_public)
+            .await
+    }
+
+    async fn update_room_visibility_unchecked(
+        &self,
+        room_id: &RoomId,
+        is_public: bool,
+    ) -> Result<Room> {
         let mut tx = self.pool.begin().await?;
         let mut room = self
             .room_repo

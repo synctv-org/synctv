@@ -25,6 +25,7 @@ pub struct CreateRoomWithTaxonomyRequest {
     pub settings: Option<RoomSettings>,
     pub category_id: Option<RoomCategoryId>,
     pub label_ids: Vec<RoomLabelId>,
+    pub is_public: bool,
 }
 
 fn initial_room_settings(settings: Option<RoomSettings>) -> RoomSettings {
@@ -71,6 +72,7 @@ impl RoomService {
                 settings,
                 category_id: None,
                 label_ids: Vec::new(),
+                is_public: true,
             },
             outbox_event_factory,
         )
@@ -124,6 +126,7 @@ impl RoomService {
             settings,
             category_id,
             label_ids,
+            is_public,
         } = command;
         let password_enabled = password.is_some();
         let room_settings = initial_room_settings(settings);
@@ -201,6 +204,7 @@ impl RoomService {
                         label_ids: &label_ids,
                         settings: &room_settings,
                         password: password.as_deref(),
+                        is_public,
                     },
                 )
                 .await?;
@@ -267,7 +271,8 @@ impl RoomService {
         self.ensure_room_name_available_for_creator_tx(&mut tx, &created_by, &name)
             .await?;
 
-        let room = Room::new_with_description(name, description, created_by);
+        let mut room = Room::new_with_description(name, description, created_by);
+        room.is_public = is_public;
         let created_room = self
             .room_repo
             .create_with_taxonomy_executor(&room, category_id, &mut *tx)

@@ -598,6 +598,7 @@ fn make_test_room(status: RoomStatus) -> synctv_core::models::Room {
         created_by: UserId::expect_positive(202),
         status,
         is_banned: false,
+        is_public: true,
         closed_at: None,
         created_at: synctv_core::SystemClock.now(),
         updated_at: synctv_core::SystemClock.now(),

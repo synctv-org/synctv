@@ -36,6 +36,8 @@ pub enum RoomSubcommand {
     Get(RoomGetArgs),
     /// Manage room settings
     Settings(RoomSettingsCommand),
+    /// Change whether a room is public or private
+    Visibility(RoomVisibilityArgs),
     /// Manage room categories
     Category(RoomCategoryCommand),
     /// Manage room labels
@@ -96,6 +98,43 @@ pub struct RoomCreateArgs {
     /// Room label public ID. Repeat or pass comma-separated values.
     #[arg(long = "label-id", value_delimiter = ',', allow_hyphen_values = true)]
     pub label_ids: Vec<String>,
+
+    /// Hide the room from discovery and deny anonymous guest access
+    #[arg(long = "private")]
+    pub private_room: bool,
+}
+
+#[derive(Debug, Args)]
+#[command(group(
+    ArgGroup::new("room_visibility")
+        .args(["public_room", "private_room"])
+        .required(true)
+        .multiple(false)
+))]
+pub struct RoomVisibilityArgs {
+    #[command(flatten)]
+    pub remote: RemoteAccessArgs,
+
+    /// Room public ID
+    #[arg(value_name = "ROOM_ID", allow_hyphen_values = true)]
+    pub room_id: String,
+
+    #[command(flatten)]
+    pub actor: ActorUserArgs,
+
+    /// List the room in discovery and allow anonymous guest access
+    #[arg(long = "public", group = "room_visibility")]
+    pub public_room: bool,
+
+    /// Hide the room from discovery and deny anonymous guest access
+    #[arg(long = "private", group = "room_visibility")]
+    pub private_room: bool,
+}
+
+impl RoomVisibilityArgs {
+    pub(in crate::cli) const fn is_public(&self) -> bool {
+        self.public_room
+    }
 }
 
 #[derive(Debug, Args)]

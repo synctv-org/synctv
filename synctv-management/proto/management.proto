@@ -68,6 +68,7 @@ service ManagementService {
     rpc KickMember(KickMemberRequest) returns (synctv.client.KickMemberResponse);
     rpc GetRoomSettings(GetRoomSettingsRequest) returns (synctv.admin.GetRoomSettingsResponse);
     rpc UpdateRoomSettings(synctv.admin.UpdateRoomSettingsRequest) returns (synctv.admin.Room);
+    rpc UpdateRoomVisibility(UpdateRoomVisibilityRequest) returns (synctv.client.Room);
     rpc ResetRoomSettings(ResetRoomSettingsRequest) returns (synctv.admin.Room);
     rpc TransferRoomOwnership(TransferRoomOwnershipRequest) returns (synctv.client.Room);
     rpc FavoriteRoom(FavoriteRoomRequest) returns (synctv.client.FavoriteRoomResponse);
@@ -880,6 +881,7 @@ message CreateRoomRequest {
     synctv.client.RoomSettings settings = 5;
     string category_id = 6;
     repeated string label_ids = 7;
+    optional bool is_public = 8;
 }
 
 message ListRoomsRequest {
@@ -924,6 +926,12 @@ message TransferRoomOwnershipRequest {
     string room_id = 1;
     UserRef actor = 2;
     UserRef new_owner = 3;
+}
+
+message UpdateRoomVisibilityRequest {
+    string room_id = 1;
+    UserRef actor = 2;
+    bool is_public = 3;
 }
 
 message FavoriteRoomRequest {

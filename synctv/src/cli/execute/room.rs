@@ -17,6 +17,7 @@ pub(super) async fn execute_room(room_command: RoomCommand) -> Result<()> {
                     password: args.password.unwrap_or_default(),
                     category_id: args.category_id.unwrap_or_default(),
                     label_ids: args.label_ids,
+                    is_public: args.private_room.then_some(false),
                 }
             )?;
             args.remote.print_output(&response)
@@ -56,6 +57,21 @@ pub(super) async fn execute_room(room_command: RoomCommand) -> Result<()> {
                 get_room,
                 management_proto::GetRoomRequest {
                     room_id: args.room_id,
+                }
+            )?;
+            args.remote.print_output(&response)
+        }
+        RoomSubcommand::Visibility(args) => {
+            let is_public = args.is_public();
+            let session = connect_remote_access(&args.remote).await?;
+            let response = management_unary_call!(
+                session,
+                "update room visibility",
+                update_room_visibility,
+                management_proto::UpdateRoomVisibilityRequest {
+                    room_id: args.room_id,
+                    actor: Some(args.actor.to_management_proto()?),
+                    is_public,
                 }
             )?;
             args.remote.print_output(&response)

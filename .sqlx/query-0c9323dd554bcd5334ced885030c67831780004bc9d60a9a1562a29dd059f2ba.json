@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT r.id AS \"id: RoomId\",\n                   r.name,\n                   r.description,\n                   r.cover_file_reference_id,\n                   rc.id AS \"category_id?: RoomCategoryId\",\n                   rc.key AS \"category_key?\",\n                   rc.name AS \"category_name?\",\n                   rc.description AS \"category_description?\",\n                   rc.sort_order AS \"category_sort_order?\",\n                   rc.is_enabled AS \"category_is_enabled?\",\n                   rc.created_at AS \"category_created_at?\",\n                   rc.updated_at AS \"category_updated_at?\",\n                   r.created_by AS \"created_by: UserId\",\n                   r.closed_at,\n                   r.created_at,\n                   r.updated_at,\n                   r.deleted_at,\n                   r.version,\n                   r.last_activity_at,\n                   EXISTS (\n                       SELECT 1 FROM room_bans rb\n                       WHERE rb.room_id = r.id\n                         AND rb.revoked_at IS NULL\n                         AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)\n                   ) AS \"is_banned!\"\n            FROM rooms r\n            LEFT JOIN room_categories rc ON rc.id = r.category_id\n            WHERE r.id = ANY($1)\n              AND r.deleted_at IS NULL\n              AND r.closed_at IS NULL\n              AND NOT EXISTS (\n                  SELECT 1 FROM room_bans rb\n                  WHERE rb.room_id = r.id\n                    AND rb.revoked_at IS NULL\n                    AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)\n              )\n            ",
+  "query": "\n            SELECT r.id AS \"id: RoomId\",\n                   r.name,\n                   r.description,\n                   r.cover_file_reference_id,\n                   rc.id AS \"category_id?: RoomCategoryId\",\n                   rc.key AS \"category_key?\",\n                   rc.name AS \"category_name?\",\n                   rc.description AS \"category_description?\",\n                   rc.sort_order AS \"category_sort_order?\",\n                   rc.is_enabled AS \"category_is_enabled?\",\n                   rc.created_at AS \"category_created_at?\",\n                   rc.updated_at AS \"category_updated_at?\",\n                   r.created_by AS \"created_by: UserId\",\n                   r.closed_at,\n                   r.created_at,\n                   r.updated_at,\n                   r.deleted_at,\n                   r.version,\n                   r.last_activity_at,\n                   r.is_public,\n                   EXISTS (\n                       SELECT 1 FROM room_bans rb\n                       WHERE rb.room_id = r.id\n                         AND rb.revoked_at IS NULL\n                         AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)\n                   ) AS \"is_banned!\",\n                   COALESCE(COUNT(rm.user_id), 0)::int AS \"member_count!\"\n            FROM rooms r\n            LEFT JOIN room_categories rc ON rc.id = r.category_id\n            LEFT JOIN room_members rm ON r.id = rm.room_id\n            WHERE r.created_by = $1 AND r.deleted_at IS NULL\n            GROUP BY r.id, r.name, r.description, r.cover_file_reference_id, r.category_id,\n                     rc.id, rc.key, rc.name, rc.description, rc.sort_order, rc.is_enabled,\n                     rc.created_at, rc.updated_at, r.created_by,\n                     r.closed_at, r.created_at, r.updated_at, r.deleted_at, r.version,\n                     r.last_activity_at, r.is_public\n            ORDER BY r.created_at DESC\n            LIMIT $2 OFFSET $3\n            ",
   "describe": {
     "columns": [
       {
@@ -214,14 +214,33 @@
       },
       {
         "ordinal": 19,
+        "name": "is_public",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "rooms",
+            "name": "is_public"
+          }
+        }
+      },
+      {
+        "ordinal": 20,
         "name": "is_banned!",
         "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 21,
+        "name": "member_count!",
+        "type_info": "Int4",
         "origin": "Expression"
       }
     ],
     "parameters": {
       "Left": [
-        "Int8Array"
+        "Int8",
+        "Int8",
+        "Int8"
       ]
     },
     "nullable": [
@@ -229,14 +248,14 @@
       false,
       false,
       true,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
       false,
       true,
       false,
@@ -244,8 +263,10 @@
       true,
       false,
       false,
+      false,
+      null,
       null
     ]
   },
-  "hash": "2b2a5a791bdb7ce84af0b7174a237ecb4e55ee351199d49b8bc931ff7ba5e251"
+  "hash": "0c9323dd554bcd5334ced885030c67831780004bc9d60a9a1562a29dd059f2ba"
 }

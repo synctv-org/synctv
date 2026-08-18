@@ -457,6 +457,7 @@ fn create_test_room(created_by: UserId) -> Room {
         created_by,
         status: RoomStatus::Active,
         is_banned: false,
+        is_public: true,
         closed_at: None,
         created_at: now,
         updated_at: now,

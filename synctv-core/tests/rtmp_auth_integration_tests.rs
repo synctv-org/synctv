@@ -119,6 +119,7 @@ async fn create_test_room(pool: &sqlx::PgPool, creator_id: UserId, name: &str) -
         created_by: creator_id,
         status: RoomStatus::Active,
         is_banned: false,
+        is_public: true,
         closed_at: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),

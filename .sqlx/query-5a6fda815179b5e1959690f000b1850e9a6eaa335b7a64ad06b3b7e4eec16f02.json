@@ -1,11 +1,11 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT r.id AS \"id: RoomId\",\n                   r.name,\n                   r.description,\n                   r.cover_file_reference_id,\n                   rc.id AS \"category_id?: RoomCategoryId\",\n                   rc.key AS \"category_key?\",\n                   rc.name AS \"category_name?\",\n                   rc.description AS \"category_description?\",\n                   rc.sort_order AS \"category_sort_order?\",\n                   rc.is_enabled AS \"category_is_enabled?\",\n                   rc.created_at AS \"category_created_at?\",\n                   rc.updated_at AS \"category_updated_at?\",\n                   r.created_by AS \"created_by: UserId\",\n                   r.closed_at,\n                   EXISTS (\n                       SELECT 1 FROM room_bans rb\n                       WHERE rb.room_id = r.id\n                         AND rb.revoked_at IS NULL\n                         AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)\n                   ) AS \"is_banned!\",\n                   r.created_at,\n                   r.updated_at,\n                   r.deleted_at,\n                   r.version,\n                   r.last_activity_at\n            FROM rooms r\n            LEFT JOIN room_categories rc ON rc.id = r.category_id\n            WHERE r.id = $1 AND r.deleted_at IS NULL\n            FOR UPDATE OF r\n            ",
+  "query": "\n             WITH updated AS (\n                 UPDATE rooms\n                 SET name = $2, description = $3,\n                     cover_file_reference_id = $4,\n                     category_id = $5,\n                     closed_at = $6,\n                     is_public = $7,\n                     version = version + 1\n                 WHERE id = $1 AND deleted_at IS NULL AND version = $8\n                 RETURNING id,\n                           name,\n                           description,\n                           cover_file_reference_id,\n                           category_id,\n                           created_by,\n                           closed_at,\n                           created_at,\n                           updated_at,\n                           deleted_at,\n                           version,\n                           last_activity_at,\n                           is_public\n             )\n             SELECT u.id AS \"id!: RoomId\",\n                    u.name,\n                    u.description,\n                    u.cover_file_reference_id,\n                    rc.id AS \"category_id?: RoomCategoryId\",\n                    rc.key AS \"category_key?\",\n                    rc.name AS \"category_name?\",\n                    rc.description AS \"category_description?\",\n                    rc.sort_order AS \"category_sort_order?\",\n                    rc.is_enabled AS \"category_is_enabled?\",\n                    rc.created_at AS \"category_created_at?\",\n                    rc.updated_at AS \"category_updated_at?\",\n                    u.created_by AS \"created_by!: UserId\",\n                    u.closed_at,\n                    EXISTS (\n                        SELECT 1 FROM room_bans rb\n                        WHERE rb.room_id = u.id\n                          AND rb.revoked_at IS NULL\n                          AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)\n                    ) AS \"is_banned!\",\n                    u.created_at,\n                    u.updated_at,\n                    u.deleted_at,\n                    u.version,\n                    u.last_activity_at,\n                    u.is_public\n             FROM updated u\n             LEFT JOIN room_categories rc ON rc.id = u.category_id\n            ",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "id: RoomId",
+        "name": "id!: RoomId",
         "type_info": "Int8",
         "origin": {
           "Table": {
@@ -137,7 +137,7 @@
       },
       {
         "ordinal": 12,
-        "name": "created_by: UserId",
+        "name": "created_by!: UserId",
         "type_info": "Int8",
         "origin": {
           "Table": {
@@ -217,11 +217,29 @@
             "name": "last_activity_at"
           }
         }
+      },
+      {
+        "ordinal": 20,
+        "name": "is_public",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "rooms",
+            "name": "is_public"
+          }
+        }
       }
     ],
     "parameters": {
       "Left": [
-        "Int8"
+        "Int8",
+        "Text",
+        "Text",
+        "Int8",
+        "Int8",
+        "Timestamptz",
+        "Bool",
+        "Int4"
       ]
     },
     "nullable": [
@@ -229,14 +247,14 @@
       false,
       false,
       true,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
       false,
       true,
       null,
@@ -244,8 +262,9 @@
       false,
       true,
       false,
+      false,
       false
     ]
   },
-  "hash": "087ba38356b22ed1612549bd7698571e35f418295e5d5cde376c4e18bfd0b53b"
+  "hash": "5a6fda815179b5e1959690f000b1850e9a6eaa335b7a64ad06b3b7e4eec16f02"
 }

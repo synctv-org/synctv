@@ -167,9 +167,16 @@ pub fn room_event_to_realtime_event(
             deleted_by: system_user_id(),
             timestamp,
         }),
+        synctv_core::service::RoomEvent::GuestKicked { message, .. } => {
+            Some(RealtimeEvent::GuestAccessRevoked {
+                event_id: synctv_common::snanoid!(16),
+                room_id: *room_id,
+                reason: message.clone(),
+                timestamp,
+            })
+        }
         synctv_core::service::RoomEvent::ChatMessage { .. }
         | synctv_core::service::RoomEvent::MemberKicked { .. }
-        | synctv_core::service::RoomEvent::GuestKicked { .. }
         | synctv_core::service::RoomEvent::StreamStarted { .. }
         | synctv_core::service::RoomEvent::StreamStopped { .. } => None,
     }
@@ -194,6 +201,30 @@ mod tests {
                 assert_eq!(room_id, RoomId::expect_positive(120_007));
             }
             other => panic!("expected RoomDeleted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_room_event_to_realtime_event_maps_guest_kick() {
+        let room_id = RoomId::expect_positive(120_020);
+
+        let event = room_event_to_realtime_event(
+            &room_id,
+            &synctv_core::service::RoomEvent::GuestKicked {
+                reason: synctv_core::service::GuestKickReason::RoomMadePrivate,
+                message: "This room is no longer public".to_string(),
+            },
+        )
+        .expect("GuestKicked should bridge to RealtimeEvent");
+
+        match event {
+            RealtimeEvent::GuestAccessRevoked {
+                room_id, reason, ..
+            } => {
+                assert_eq!(room_id, RoomId::expect_positive(120_020));
+                assert_eq!(reason, "This room is no longer public");
+            }
+            other => panic!("expected GuestAccessRevoked, got {other:?}"),
         }
     }
 
@@ -318,10 +349,6 @@ mod tests {
 
         let events = [
             synctv_core::service::RoomEvent::MemberKicked { user_id },
-            synctv_core::service::RoomEvent::GuestKicked {
-                reason: synctv_core::service::GuestKickReason::AdminKick,
-                message: "guest removed".to_string(),
-            },
             synctv_core::service::RoomEvent::StreamStarted {
                 media_id: MediaId::expect_positive(120_018),
                 user_id,

@@ -18,6 +18,7 @@ pub(super) struct PendingRoomCreationRequest {
     pub(super) label_ids: Vec<RoomLabelId>,
     pub(super) settings: RoomSettings,
     pub(super) opaque_password_record: Option<OpaquePasswordRecord>,
+    pub(super) is_public: bool,
 }
 
 struct PendingRoomCreationRequestRow {
@@ -31,6 +32,7 @@ struct PendingRoomCreationRequestRow {
     opaque_password_credential_identifier: Option<Vec<u8>>,
     opaque_password_ciphersuite: Option<String>,
     opaque_password_server_setup_version: Option<i32>,
+    is_public: bool,
 }
 
 impl PendingRoomCreationRequestRow {
@@ -67,6 +69,7 @@ impl PendingRoomCreationRequestRow {
             label_ids: Vec::new(),
             settings,
             opaque_password_record,
+            is_public: self.is_public,
         })
     }
 }
@@ -79,6 +82,7 @@ pub(super) struct RoomCreationRequestDraft<'a> {
     pub(super) label_ids: &'a [RoomLabelId],
     pub(super) settings: &'a RoomSettings,
     pub(super) password: Option<&'a str>,
+    pub(super) is_public: bool,
 }
 
 impl RoomService {
@@ -95,13 +99,14 @@ impl RoomService {
             label_ids,
             settings,
             password,
+            is_public,
         } = draft;
         let request_id = sqlx::query_scalar!(
             r"
             INSERT INTO room_creation_requests (
-                requested_by, name, description, category_id, settings_payload, status, requested_at
+                requested_by, name, description, category_id, settings_payload, is_public, status, requested_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP)
             RETURNING id
             ",
             requested_by.as_i64(),
@@ -109,6 +114,7 @@ impl RoomService {
             description,
             category_id.map(|id| id.as_i64()),
             settings as &RoomSettings,
+            is_public,
             i16::from(ReviewStatus::Pending)
         )
         .fetch_one(&mut **tx)
@@ -117,6 +123,7 @@ impl RoomService {
         let mut room =
             Room::new_with_description(name.to_string(), description.to_string(), requested_by);
         room.id = RoomId::try_from(request_id).map_err(Error::Internal)?;
+        room.is_public = is_public;
         if let Some(category_id) = category_id {
             room.category = self
                 .taxonomy_repo
@@ -176,7 +183,8 @@ impl RoomService {
                    opaque_password_record,
                    opaque_password_credential_identifier,
                    opaque_password_ciphersuite,
-                   opaque_password_server_setup_version
+                   opaque_password_server_setup_version,
+                   is_public
             FROM room_creation_requests
             WHERE id = $1 AND reviewed_at IS NULL AND status = $2
             FOR UPDATE

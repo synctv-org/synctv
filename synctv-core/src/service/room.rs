@@ -178,6 +178,7 @@ mod settings_effects;
 mod settings_validation;
 mod settings_writes;
 mod taxonomy;
+mod visibility;
 pub use creation::CreateRoomWithTaxonomyRequest;
 pub(super) use permission_checks::has_active_room_membership_in_tx;
 #[cfg(test)]

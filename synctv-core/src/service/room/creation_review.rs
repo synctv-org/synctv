@@ -72,11 +72,12 @@ impl RoomService {
             .resolve_enabled_room_taxonomy(request.category_id, &request.label_ids)
             .await?;
 
-        let room = Room::new_with_description(
+        let mut room = Room::new_with_description(
             request.name.clone(),
             request.description.clone(),
             request.requested_by,
         );
+        room.is_public = request.is_public;
         let mut updated = self
             .room_repo
             .create_with_taxonomy_executor(&room, category_id, &mut *tx)
@@ -207,6 +208,7 @@ impl RoomService {
         let mut updated =
             Room::new_with_description(request.name, request.description, request.requested_by);
         updated.id = request.id;
+        updated.is_public = request.is_public;
 
         // Audit log
         self.audit_log(
@@ -265,6 +267,7 @@ impl RoomService {
                    requested_by AS "requested_by: UserId",
                    name,
                    description,
+                   is_public,
                    requested_at
             FROM room_creation_requests
             WHERE reviewed_at IS NULL AND status = $1
@@ -292,6 +295,7 @@ impl RoomService {
                     created_by: row.requested_by,
                     status: RoomStatus::Active,
                     is_banned: false,
+                    is_public: row.is_public,
                     closed_at: None,
                     created_at: requested_at,
                     updated_at: requested_at,

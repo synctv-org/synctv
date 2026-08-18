@@ -85,6 +85,7 @@ struct MyRoomListRow {
     version: i32,
     last_activity_at: chrono::DateTime<chrono::Utc>,
     is_banned: bool,
+    is_public: bool,
     user_role: RoomRole,
     member_count: i32,
 }
@@ -424,6 +425,7 @@ impl RoomMemberRepository {
             created_by: row.created_by,
             status,
             is_banned: row.is_banned,
+            is_public: row.is_public,
             closed_at: row.closed_at,
             created_at: row.created_at,
             updated_at: row.updated_at,
@@ -2648,6 +2650,7 @@ impl RoomMemberRepository {
                 rc.updated_at AS category_updated_at,
                 r.created_by, r.closed_at,
                 r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,
+                r.is_public,
                 {ACTIVE_ROOM_BAN_EXISTS_SQL} AS is_banned,
                 rm.role as user_role,
                 COUNT(rm2.user_id)::int as member_count
@@ -2748,6 +2751,7 @@ impl RoomMemberRepository {
                 rc.updated_at AS category_updated_at,
                 r.created_by, r.closed_at,
                 r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,
+                r.is_public,
                 {ACTIVE_ROOM_BAN_EXISTS_SQL} AS is_banned,
                 rm.role as user_role,
                 COUNT(rm2.user_id)::int as member_count

@@ -269,6 +269,7 @@ fn merge_user_command_globals(command: &mut UserCommand, root: &GlobalConfigArgs
 fn merge_room_command_globals(command: &mut RoomCommand, root: &GlobalConfigArgs) {
     match &mut command.command {
         RoomSubcommand::Create(args) => merge_remote_access_args(&mut args.remote, root),
+        RoomSubcommand::Visibility(args) => merge_remote_access_args(&mut args.remote, root),
         RoomSubcommand::List(args) => merge_remote_access_args(&mut args.remote, root),
         RoomSubcommand::Get(args) => merge_remote_access_args(&mut args.remote, root),
         RoomSubcommand::TransferOwner(args) => merge_remote_access_args(&mut args.remote, root),

@@ -353,6 +353,19 @@ impl Clone for StreamMessageHandler {
     }
 }
 
+fn guest_access_revocation_reason<'a>(
+    principal: &RealtimePrincipal,
+    event: &'a RealtimeEvent,
+) -> Option<&'a str> {
+    if !principal.is_guest() {
+        return None;
+    }
+    match event {
+        RealtimeEvent::GuestAccessRevoked { reason, .. } => Some(reason),
+        _ => None,
+    }
+}
+
 impl StreamMessageHandler {
     #[must_use]
     pub fn generate_connection_id() -> ConnectionId {
@@ -1260,6 +1273,22 @@ impl StreamMessageHandler {
                 // Realtime event (broadcast to client)
                 event = event_rx.recv() => {
                     if let Some(event) = event {
+                        if let Some(reason) =
+                            guest_access_revocation_reason(&self.principal, &event)
+                        {
+                            tracing::info!(
+                                room_id = %self.room_id,
+                                actor = %self.username,
+                                reason,
+                                "Guest access was revoked, disconnecting"
+                            );
+                            self.send_realtime_termination(
+                                stream,
+                                "Guest access to this room has ended",
+                                RealtimeTerminationCode::GuestAccessRevoked,
+                            );
+                            break;
+                        }
                         self.apply_connection_state_from_room_event(&event);
                         self.apply_rtc_access_change(&event).await;
                         match self.webrtc_event_server_message_for_current_connection(&event) {
@@ -2242,6 +2271,31 @@ impl StreamMessageHandler {
                     event = rx_events.recv() => {
                         match event {
                             Some(event) => {
+                                if let Some(reason) = guest_access_revocation_reason(
+                                    &event_handler.principal,
+                                    &event,
+                                )
+                                {
+                                    tracing::info!(
+                                        room_id = %event_handler.room_id,
+                                        actor = %event_handler.username,
+                                        reason,
+                                        "Guest access was revoked in start(), disconnecting"
+                                    );
+                                    if let Err(error) = event_handler.send_server_message(
+                                        realtime_termination_server_message(
+                                            "Guest access to this room has ended",
+                                            RealtimeTerminationCode::GuestAccessRevoked,
+                                        ),
+                                    ) {
+                                        tracing::debug!(
+                                            error = %error,
+                                            "Failed to send guest access termination before cancellation"
+                                        );
+                                    }
+                                    event_token.cancel();
+                                    break;
+                                }
                                 event_handler.apply_connection_state_from_room_event(&event);
                                 event_handler.apply_rtc_access_change(&event).await;
                                 let is_room_shutdown = matches!(

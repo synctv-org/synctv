@@ -305,6 +305,7 @@ fn create_room_request(
         password: password.to_string(),
         category_id: String::new(),
         label_ids: Vec::new(),
+        is_public: None,
     }
 }
 
@@ -2847,6 +2848,7 @@ async fn full_stack_cli_user_and_room_commands_use_remote_management_endpoint() 
         password: String::new(),
         category_id: String::new(),
         label_ids: Vec::new(),
+        is_public: None,
     });
     create_room
         .metadata_mut()
@@ -2899,6 +2901,7 @@ async fn full_stack_cli_room_ban_and_unban_commands_manage_room_lifecycle() {
         password: String::new(),
         category_id: String::new(),
         label_ids: Vec::new(),
+        is_public: None,
     });
     create_room
         .metadata_mut()
@@ -2983,6 +2986,7 @@ async fn full_stack_cli_room_settings_commands_manage_room_settings_lifecycle() 
         password: String::new(),
         category_id: String::new(),
         label_ids: Vec::new(),
+        is_public: None,
     });
     create_room
         .metadata_mut()
@@ -7465,6 +7469,7 @@ async fn full_stack_grpc_create_room_requires_auth_and_returns_created_room() {
             password: String::new(),
             category_id: String::new(),
             label_ids: Vec::new(),
+            is_public: None,
         })
         .await
         .expect_err("missing auth should be rejected");
@@ -7477,6 +7482,7 @@ async fn full_stack_grpc_create_room_requires_auth_and_returns_created_room() {
         password: String::new(),
         category_id: String::new(),
         label_ids: Vec::new(),
+        is_public: None,
     });
     request
         .metadata_mut()
@@ -7543,6 +7549,7 @@ async fn full_stack_grpc_room_context_flow_requires_membership_and_room_metadata
         password: String::new(),
         category_id: String::new(),
         label_ids: Vec::new(),
+        is_public: None,
     });
     create_room
         .metadata_mut()
@@ -7685,6 +7692,7 @@ async fn full_stack_grpc_message_stream_establishes_and_acks_heartbeat() {
         password: String::new(),
         category_id: String::new(),
         label_ids: Vec::new(),
+        is_public: None,
     });
     create_room
         .metadata_mut()
@@ -9602,6 +9610,7 @@ async fn full_stack_grpc_message_stream_requires_membership() {
         password: String::new(),
         category_id: String::new(),
         label_ids: Vec::new(),
+        is_public: None,
     });
     create_room
         .metadata_mut()

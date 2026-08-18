@@ -1,11 +1,11 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT r.id AS \"id: RoomId\",\n                   r.name,\n                   r.description,\n                   r.cover_file_reference_id,\n                   rc.id AS \"category_id?: RoomCategoryId\",\n                   rc.key AS \"category_key?\",\n                   rc.name AS \"category_name?\",\n                   rc.description AS \"category_description?\",\n                   rc.sort_order AS \"category_sort_order?\",\n                   rc.is_enabled AS \"category_is_enabled?\",\n                   rc.created_at AS \"category_created_at?\",\n                   rc.updated_at AS \"category_updated_at?\",\n                   r.created_by AS \"created_by: UserId\",\n                   r.closed_at,\n                   r.created_at,\n                   r.updated_at,\n                   r.deleted_at,\n                   r.version,\n                   r.last_activity_at,\n                   EXISTS (\n                       SELECT 1 FROM room_bans rb\n                       WHERE rb.room_id = r.id\n                         AND rb.revoked_at IS NULL\n                         AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)\n                   ) AS \"is_banned!\"\n            FROM rooms r\n            LEFT JOIN room_categories rc ON rc.id = r.category_id\n            WHERE r.created_by = $1 AND r.deleted_at IS NULL\n            ORDER BY created_at DESC\n            LIMIT $2 OFFSET $3\n            ",
+  "query": "\n             WITH inserted AS (\n                 INSERT INTO rooms (name, description, cover_file_reference_id, category_id,\n                                created_by, closed_at, created_at, updated_at, version,\n                                last_activity_at, is_public)\n                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)\n                 RETURNING id,\n                           name,\n                           description,\n                           cover_file_reference_id,\n                           category_id,\n                           created_by,\n                           closed_at,\n                           created_at,\n                           updated_at,\n                           deleted_at,\n                           version,\n                           last_activity_at,\n                           is_public\n             )\n             SELECT i.id AS \"id!: RoomId\",\n                    i.name,\n                    i.description,\n                    i.cover_file_reference_id,\n                    rc.id AS \"category_id?: RoomCategoryId\",\n                    rc.key AS \"category_key?\",\n                    rc.name AS \"category_name?\",\n                    rc.description AS \"category_description?\",\n                    rc.sort_order AS \"category_sort_order?\",\n                    rc.is_enabled AS \"category_is_enabled?\",\n                    rc.created_at AS \"category_created_at?\",\n                    rc.updated_at AS \"category_updated_at?\",\n                    i.created_by AS \"created_by!: UserId\",\n                    i.closed_at,\n                    false AS \"is_banned!\",\n                    i.created_at,\n                    i.updated_at,\n                    i.deleted_at,\n                    i.version,\n                    i.last_activity_at,\n                    i.is_public\n             FROM inserted i\n             LEFT JOIN room_categories rc ON rc.id = i.category_id\n            ",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "id: RoomId",
+        "name": "id!: RoomId",
         "type_info": "Int8",
         "origin": {
           "Table": {
@@ -137,7 +137,7 @@
       },
       {
         "ordinal": 12,
-        "name": "created_by: UserId",
+        "name": "created_by!: UserId",
         "type_info": "Int8",
         "origin": {
           "Table": {
@@ -159,6 +159,12 @@
       },
       {
         "ordinal": 14,
+        "name": "is_banned!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 15,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -169,7 +175,7 @@
         }
       },
       {
-        "ordinal": 15,
+        "ordinal": 16,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -180,7 +186,7 @@
         }
       },
       {
-        "ordinal": 16,
+        "ordinal": 17,
         "name": "deleted_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -191,7 +197,7 @@
         }
       },
       {
-        "ordinal": 17,
+        "ordinal": 18,
         "name": "version",
         "type_info": "Int4",
         "origin": {
@@ -202,7 +208,7 @@
         }
       },
       {
-        "ordinal": 18,
+        "ordinal": 19,
         "name": "last_activity_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -213,17 +219,30 @@
         }
       },
       {
-        "ordinal": 19,
-        "name": "is_banned!",
+        "ordinal": 20,
+        "name": "is_public",
         "type_info": "Bool",
-        "origin": "Expression"
+        "origin": {
+          "Table": {
+            "table": "rooms",
+            "name": "is_public"
+          }
+        }
       }
     ],
     "parameters": {
       "Left": [
+        "Text",
+        "Text",
         "Int8",
         "Int8",
-        "Int8"
+        "Int8",
+        "Timestamptz",
+        "Timestamptz",
+        "Timestamptz",
+        "Int4",
+        "Timestamptz",
+        "Bool"
       ]
     },
     "nullable": [
@@ -231,23 +250,24 @@
       false,
       false,
       true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
       false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
+      true,
+      null,
       false,
       false,
       true,
       false,
       false,
-      true,
-      false,
-      false,
-      null
+      false
     ]
   },
-  "hash": "0ce6b887ea796ed1aa77fb2d8eead81eab3926fc99ab7954430c991720dbbd04"
+  "hash": "2def339266911adf5c48b143ccb6f12e61e05d9c34f73fbcd95e11ac3e0e4cd2"
 }

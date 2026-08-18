@@ -76,6 +76,7 @@ fn make_room(creator_id: UserId) -> Room {
         created_by: creator_id,
         status: synctv_core::models::RoomStatus::Active,
         is_banned: false,
+        is_public: true,
         closed_at: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),

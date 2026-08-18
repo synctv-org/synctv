@@ -169,17 +169,13 @@ impl CachedRoom {
 }
 
 /// Convert a `Room` model to a `CachedRoom`.
-///
-/// `is_public` defaults to `false` because the `Room` model does not have
-/// an `is_public` field -- it is determined by room settings. Callers with
-/// a complete room/settings snapshot should use [`CachedRoom::from_snapshot`].
 impl From<&crate::models::Room> for CachedRoom {
     fn from(room: &crate::models::Room) -> Self {
         Self {
             id: room.id.to_string(),
             name: room.name.clone(),
             owner_id: room.created_by.to_string(),
-            is_public: false, // determined by room settings, not the Room model
+            is_public: room.is_public,
             status: room.status,
             is_banned: room.is_banned,
             deleted_at: room.deleted_at,

@@ -397,6 +397,15 @@ pub enum RealtimeEvent {
         timestamp: DateTime<Utc>,
     },
 
+    /// Revoke all anonymous guest access to a room without disconnecting
+    /// authenticated room members.
+    GuestAccessRevoked {
+        event_id: String,
+        room_id: RoomId,
+        reason: String,
+        timestamp: DateTime<Utc>,
+    },
+
     /// A new room was created.
     /// Broadcast replica-wide so other replicas can update room lists / caches.
     RoomCreated {
@@ -532,6 +541,7 @@ impl RealtimeEvent {
             | Self::KickPublisher { event_id, .. }
             | Self::KickUser { event_id, .. }
             | Self::KickUserFromRoom { event_id, .. }
+            | Self::GuestAccessRevoked { event_id, .. }
             | Self::RoomCreated { event_id, .. }
             | Self::RoomDeleted { event_id, .. }
             | Self::RoomBanned { event_id, .. }
@@ -572,6 +582,7 @@ impl RealtimeEvent {
             | Self::LiveStreamChanged { room_id, .. }
             | Self::KickPublisher { room_id, .. }
             | Self::KickUserFromRoom { room_id, .. }
+            | Self::GuestAccessRevoked { room_id, .. }
             | Self::RoomCreated { room_id, .. }
             | Self::RoomDeleted { room_id, .. }
             | Self::RoomBanned { room_id, .. }
@@ -591,6 +602,7 @@ impl RealtimeEvent {
             Self::RoomCreated { .. }
             | Self::KickPublisher { .. }
             | Self::KickUserFromRoom { .. }
+            | Self::GuestAccessRevoked { .. }
             | Self::RoomDeleted { .. }
             | Self::RoomBanned { .. }
             | Self::RoomOwnerInactive { .. } => RealtimeDeliveryRoute::RoomAndAdmin,
@@ -680,6 +692,7 @@ impl RealtimeEvent {
             | Self::GuestLeft { .. }
             | Self::SystemNotification { .. }
             | Self::KickPublisher { .. }
+            | Self::GuestAccessRevoked { .. }
             | Self::CacheInvalidate { .. } => None,
         }
     }
@@ -716,6 +729,7 @@ impl RealtimeEvent {
             | Self::KickPublisher { timestamp, .. }
             | Self::KickUser { timestamp, .. }
             | Self::KickUserFromRoom { timestamp, .. }
+            | Self::GuestAccessRevoked { timestamp, .. }
             | Self::RoomCreated { timestamp, .. }
             | Self::RoomDeleted { timestamp, .. }
             | Self::RoomBanned { timestamp, .. }
@@ -735,6 +749,7 @@ impl RealtimeEvent {
             Self::KickPublisher { .. }
                 | Self::KickUser { .. }
                 | Self::KickUserFromRoom { .. }
+                | Self::GuestAccessRevoked { .. }
                 | Self::UserLeft { .. }
                 | Self::MediaSwarmPeerLeft { .. }
                 | Self::LiveStreamChanged { .. }
@@ -757,6 +772,9 @@ impl RealtimeEvent {
             Self::KickUserFromRoom {
                 user_id, room_id, ..
             } => format!("kick_user_from_room:{user_id}:{room_id}"),
+            Self::GuestAccessRevoked { room_id, .. } => {
+                format!("guest_access_revoked:{room_id}")
+            }
             Self::RoomBanned { room_id, .. } => format!("room_banned:{room_id}"),
             Self::RoomOwnerInactive { room_id, .. } => {
                 format!("room_owner_inactive:{room_id}")
@@ -808,6 +826,7 @@ impl RealtimeEvent {
             Self::KickPublisher { .. } => "kick_publisher",
             Self::KickUser { .. } => "kick_user",
             Self::KickUserFromRoom { .. } => "kick_user_from_room",
+            Self::GuestAccessRevoked { .. } => "guest_access_revoked",
             Self::RoomCreated { .. } => "room_created",
             Self::RoomBanned { .. } => "room_banned",
             Self::RoomOwnerInactive { .. } => "room_owner_inactive",

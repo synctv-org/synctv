@@ -78,6 +78,7 @@ async fn setup_test_context(suffix: &str) -> TestContext {
                     created_by: owner.id,
                     status: RoomStatus::Active,
                     is_banned: false,
+                    is_public: true,
                     closed_at: None,
                     created_at: now,
                     updated_at: now,

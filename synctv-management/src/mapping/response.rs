@@ -1200,6 +1200,7 @@ pub(crate) fn created_room_to_client_proto(
             .iter()
             .map(|label| room_label_to_client_proto(label, public_id_codec))
             .collect::<Result<Vec<_>, _>>()?,
+        is_public: Some(room.is_public),
     })
 }
 

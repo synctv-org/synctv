@@ -77,6 +77,7 @@ fn make_room(name: &str, description: &str, owner: &UserId) -> Room {
         created_by: *owner,
         status: RoomStatus::Active,
         is_banned: false,
+        is_public: true,
         closed_at: None,
         created_at: now,
         updated_at: now,

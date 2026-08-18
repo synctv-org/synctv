@@ -3278,7 +3278,7 @@ message ObserveSelfRoomMember {
 }
 
 message ObserveOnlineCount {
-  // Empty filters return the whole-room online user count.
+  // Empty filters return the whole-room member and guest online counts.
   // Use role filters or user_ids to reduce the aggregation scope for member list views.
   repeated common.RoomMemberRole roles = 1 [(buf.validate.field).repeated = {
     max_items: 4
@@ -4413,7 +4413,8 @@ message HeartbeatAck {
 }
 
 message OnlineCount {
-  int32 count = 1;
+  int32 online_member_count = 1;
+  int32 online_guest_count = 2;
 }
 
 enum OnlineEventKind {

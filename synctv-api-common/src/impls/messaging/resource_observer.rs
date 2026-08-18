@@ -130,6 +130,12 @@ struct ResourceEvaluation {
     payload: synctv_proto::client::resource_event::Payload,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct OnlineCountSnapshot {
+    members: usize,
+    guests: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum ObservationEvaluationKey {
     PlaybackState {
@@ -3372,7 +3378,7 @@ impl ResourceObserver {
                 (version, None, payload)
             }
             ObservedResource::OnlineCount { roles, user_ids } => {
-                let count = self
+                let counts = self
                     .online_count_for_filters(roles, user_ids)
                     .await
                     .map_err(|error| error.clone())?;
@@ -3384,11 +3390,16 @@ impl ResourceObserver {
                     }
                     ResourceDeliveryMode::Unspecified | ResourceDeliveryMode::PushSnapshot => {
                         Payload::OnlineCount(synctv_proto::client::OnlineCount {
-                            count: i32::try_from(count).unwrap_or(i32::MAX),
+                            online_member_count: i32::try_from(counts.members).unwrap_or(i32::MAX),
+                            online_guest_count: i32::try_from(counts.guests).unwrap_or(i32::MAX),
                         })
                     }
                 };
-                (count.to_string(), expires_at, payload)
+                (
+                    format!("{}:{}", counts.members, counts.guests),
+                    expires_at,
+                    payload,
+                )
             }
         };
 
@@ -3403,14 +3414,17 @@ impl ResourceObserver {
         &self,
         roles: &[RoomRole],
         user_ids: &[UserId],
-    ) -> Result<usize, String> {
+    ) -> Result<OnlineCountSnapshot, String> {
         if roles.is_empty() && user_ids.is_empty() {
-            return Ok(self
+            let stats = self
                 .presence_service
                 .room_stats(self.room_id)
                 .await
-                .map_err(|error| error.to_string())?
-                .online_user_count);
+                .map_err(|error| error.to_string())?;
+            return Ok(OnlineCountSnapshot {
+                members: stats.online_member_count,
+                guests: stats.online_guest_count,
+            });
         }
 
         let mut filtered_user_ids = user_ids.iter().copied().collect::<HashSet<_>>();
@@ -3428,16 +3442,21 @@ impl ResourceObserver {
         }
 
         if filtered_user_ids.is_empty() {
-            return Ok(0);
+            return Ok(OnlineCountSnapshot {
+                members: 0,
+                guests: 0,
+            });
         }
 
         let mut sorted_user_ids = filtered_user_ids.into_iter().collect::<Vec<_>>();
         sorted_user_ids.sort_unstable();
-        self.presence_service
+        let members = self
+            .presence_service
             .room_online_user_ids(self.room_id, &sorted_user_ids)
             .await
             .map(|ids| ids.len())
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        Ok(OnlineCountSnapshot { members, guests: 0 })
     }
 
     async fn user_ids_for_room_role(

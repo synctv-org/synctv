@@ -36,7 +36,7 @@ impl crate::cli::human_output::ToHuman for SettingsImportOutput {
 }
 
 fn settings_json_value<T: serde::Serialize>(value: &T) -> serde_json::Value {
-    serde_json::to_value(value).unwrap_or_else(|_| serde_json::Value::Null)
+    serde_json::to_value(value).unwrap_or(serde_json::Value::Null)
 }
 
 #[derive(Debug, Clone, Copy)]

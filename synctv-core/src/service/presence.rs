@@ -34,7 +34,8 @@ pub struct PresenceConnection {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OnlineRoomStats {
     pub room_id: RoomId,
-    pub online_user_count: usize,
+    pub online_member_count: usize,
+    pub online_guest_count: usize,
     pub connection_count: usize,
     pub node_connection_counts: BTreeMap<String, usize>,
     pub sampled_at_ms: i64,
@@ -56,7 +57,8 @@ pub struct OnlineUserStats {
 pub struct OnlineNodeStats {
     pub node_id: String,
     pub connection_count: usize,
-    pub online_user_count: usize,
+    pub online_member_count: usize,
+    pub online_guest_count: usize,
     pub room_count: usize,
     pub sampled_at_ms: i64,
     pub version: u64,
@@ -64,7 +66,8 @@ pub struct OnlineNodeStats {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PresenceOverview {
-    pub online_user_count: usize,
+    pub online_member_count: usize,
+    pub online_guest_count: usize,
     pub connection_count: usize,
     pub active_room_count: usize,
     pub nodes: Vec<OnlineNodeStats>,
@@ -105,6 +108,19 @@ struct PresenceState {
     user_room_connections: HashMap<(UserId, RoomId), HashSet<String>>,
     node_connections: HashMap<String, HashSet<String>>,
     pending_renewals: HashSet<String>,
+}
+
+fn record_actor_kind(
+    actor: &RealtimeActor,
+    member_actors: &mut HashSet<String>,
+    guest_actors: &mut HashSet<String>,
+) {
+    let actor_key = actor.connection_key();
+    if actor.is_guest() {
+        guest_actors.insert(actor_key);
+    } else {
+        member_actors.insert(actor_key);
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -507,11 +523,16 @@ impl OnlinePresenceService {
         let mut stats = Vec::with_capacity(room_ids.len());
         for room_id in room_ids {
             let stat = self.local_room_stats(room_id);
-            if stat.online_user_count > 0 {
+            if stat.online_member_count > 0 || stat.online_guest_count > 0 {
                 stats.push(stat);
             }
         }
-        stats.sort_by_key(|stat| (std::cmp::Reverse(stat.online_user_count), stat.room_id));
+        stats.sort_by_key(|stat| {
+            (
+                std::cmp::Reverse(stat.online_member_count + stat.online_guest_count),
+                stat.room_id,
+            )
+        });
         self.cache.lock().hot_room_stats = Some(cache_entry(stats.clone(), now));
         Ok(stats)
     }
@@ -654,19 +675,16 @@ impl OnlinePresenceService {
         let nodes = self.all_node_stats().await?;
         let connection_count = nodes.iter().map(|node| node.connection_count).sum();
         let active_room_count = self.hot_room_stats().await?.len();
-        let online_user_count = if self.redis_runtime.is_some() {
-            self.redis_all_online_user_count()
+        let (online_member_count, online_guest_count) = if self.redis_runtime.is_some() {
+            self.redis_all_online_actor_counts()
                 .await?
-                .unwrap_or_else(|| {
-                    let state = self.state.lock();
-                    state.user_connections.len()
-                })
+                .unwrap_or_else(|| self.local_actor_counts())
         } else {
-            let state = self.state.lock();
-            state.user_connections.len()
+            self.local_actor_counts()
         };
         let stats = PresenceOverview {
-            online_user_count,
+            online_member_count,
+            online_guest_count,
             connection_count,
             active_room_count,
             nodes,
@@ -841,6 +859,16 @@ impl OnlinePresenceService {
         Ok(self.local_user_stats(user_id))
     }
 
+    fn local_actor_counts(&self) -> (usize, usize) {
+        let state = self.state.lock();
+        let mut member_actors = HashSet::new();
+        let mut guest_actors = HashSet::new();
+        for connection in state.connections.values() {
+            record_actor_kind(&connection.actor, &mut member_actors, &mut guest_actors);
+        }
+        (member_actors.len(), guest_actors.len())
+    }
+
     fn local_room_stats(&self, room_id: RoomId) -> OnlineRoomStats {
         let state = self.state.lock();
         let connection_ids = state
@@ -848,11 +876,12 @@ impl OnlinePresenceService {
             .get(&room_id)
             .cloned()
             .unwrap_or_default();
-        let mut actors = HashSet::new();
+        let mut member_actors = HashSet::new();
+        let mut guest_actors = HashSet::new();
         let mut node_connection_counts = BTreeMap::new();
         for connection_id in &connection_ids {
             if let Some(connection) = state.connections.get(connection_id) {
-                actors.insert(connection.actor.connection_key());
+                record_actor_kind(&connection.actor, &mut member_actors, &mut guest_actors);
                 *node_connection_counts
                     .entry(connection.node_id.clone())
                     .or_default() += 1;
@@ -860,7 +889,8 @@ impl OnlinePresenceService {
         }
         OnlineRoomStats {
             room_id,
-            online_user_count: actors.len(),
+            online_member_count: member_actors.len(),
+            online_guest_count: guest_actors.len(),
             connection_count: connection_ids.len(),
             node_connection_counts,
             sampled_at_ms: now_ms(),
@@ -907,11 +937,12 @@ impl OnlinePresenceService {
             .get(node_id)
             .cloned()
             .unwrap_or_default();
-        let mut actors = HashSet::new();
+        let mut member_actors = HashSet::new();
+        let mut guest_actors = HashSet::new();
         let mut rooms = HashSet::new();
         for connection_id in &connection_ids {
             if let Some(connection) = state.connections.get(connection_id) {
-                actors.insert(connection.actor.connection_key());
+                record_actor_kind(&connection.actor, &mut member_actors, &mut guest_actors);
                 if let Some(room_id) = connection.room_id {
                     rooms.insert(room_id);
                 }
@@ -920,7 +951,8 @@ impl OnlinePresenceService {
         OnlineNodeStats {
             node_id: node_id.to_string(),
             connection_count: connection_ids.len(),
-            online_user_count: actors.len(),
+            online_member_count: member_actors.len(),
+            online_guest_count: guest_actors.len(),
             room_count: rooms.len(),
             sampled_at_ms: now_ms(),
             version: self.next_version(),
@@ -1290,17 +1322,19 @@ impl OnlinePresenceService {
                 connection.room_id == Some(room_id)
             })
             .await?;
-        let mut actors = HashSet::new();
+        let mut member_actors = HashSet::new();
+        let mut guest_actors = HashSet::new();
         let mut node_connection_counts = BTreeMap::new();
         for connection in &connections {
-            actors.insert(connection.actor.connection_key());
+            record_actor_kind(&connection.actor, &mut member_actors, &mut guest_actors);
             *node_connection_counts
                 .entry(connection.node_id.clone())
                 .or_default() += 1;
         }
         Ok(Some(OnlineRoomStats {
             room_id,
-            online_user_count: actors.len(),
+            online_member_count: member_actors.len(),
+            online_guest_count: guest_actors.len(),
             connection_count: connections.len(),
             node_connection_counts,
             sampled_at_ms: now_ms(),
@@ -1351,10 +1385,17 @@ impl OnlinePresenceService {
         )
         .map(|room_id| self.redis_room_stats(room_id))
         .buffered(PRESENCE_BATCH_CONCURRENCY)
-        .try_filter_map(|stat| async move { Ok(stat.filter(|stat| stat.online_user_count > 0)) })
+        .try_filter_map(|stat| async move {
+            Ok(stat.filter(|stat| stat.online_member_count > 0 || stat.online_guest_count > 0))
+        })
         .try_collect::<Vec<_>>()
         .await?;
-        stats.sort_by_key(|stat| (std::cmp::Reverse(stat.online_user_count), stat.room_id));
+        stats.sort_by_key(|stat| {
+            (
+                std::cmp::Reverse(stat.online_member_count + stat.online_guest_count),
+                stat.room_id,
+            )
+        });
         Ok(Some(stats))
     }
 
@@ -1399,10 +1440,11 @@ impl OnlinePresenceService {
                 connection.node_id == node_id
             })
             .await?;
-        let mut actors = HashSet::new();
+        let mut member_actors = HashSet::new();
+        let mut guest_actors = HashSet::new();
         let mut rooms = HashSet::new();
         for connection in &connections {
-            actors.insert(connection.actor.connection_key());
+            record_actor_kind(&connection.actor, &mut member_actors, &mut guest_actors);
             if let Some(room_id) = connection.room_id {
                 rooms.insert(room_id);
             }
@@ -1410,7 +1452,8 @@ impl OnlinePresenceService {
         Ok(Some(OnlineNodeStats {
             node_id: node_id.to_string(),
             connection_count: connections.len(),
-            online_user_count: actors.len(),
+            online_member_count: member_actors.len(),
+            online_guest_count: guest_actors.len(),
             room_count: rooms.len(),
             sampled_at_ms: now_ms(),
             version: self.next_version(),
@@ -1441,7 +1484,7 @@ impl OnlinePresenceService {
         Ok(Some(stats))
     }
 
-    async fn redis_all_online_user_count(&self) -> Result<Option<usize>> {
+    async fn redis_all_online_actor_counts(&self) -> Result<Option<(usize, usize)>> {
         let Some(mut redis) = self
             .redis_connection("read global user presence stats")
             .await?
@@ -1452,7 +1495,8 @@ impl OnlinePresenceService {
             .smembers(self.nodes_key())
             .await
             .map_err(|error| Error::Internal(format!("read presence node directory: {error}")))?;
-        let mut users = HashSet::new();
+        let mut member_actors = HashSet::new();
+        let mut guest_actors = HashSet::new();
         for node_id in node_ids {
             let connections = self
                 .load_scoped_connections_for_index(
@@ -1461,13 +1505,11 @@ impl OnlinePresenceService {
                     |connection| connection.node_id == node_id,
                 )
                 .await?;
-            users.extend(
-                connections
-                    .into_iter()
-                    .filter_map(|connection| connection.actor.user_id()),
-            );
+            for connection in connections {
+                record_actor_kind(&connection.actor, &mut member_actors, &mut guest_actors);
+            }
         }
-        Ok(Some(users.len()))
+        Ok(Some((member_actors.len(), guest_actors.len())))
     }
 
     async fn redis_user_room_stats(
@@ -1659,7 +1701,8 @@ mod tests {
 
         let stats = presence.room_stats(room_id(10)).await?;
         assert_eq!(stats.connection_count, 2);
-        assert_eq!(stats.online_user_count, 1);
+        assert_eq!(stats.online_member_count, 1);
+        assert_eq!(stats.online_guest_count, 0);
         assert_eq!(stats.node_connection_counts.get("node-a"), Some(&1));
         assert_eq!(stats.node_connection_counts.get("node-b"), Some(&1));
         Ok(())
@@ -1694,7 +1737,8 @@ mod tests {
 
         let fresh = presence.room_stats_fresh(room_id(10)).await?;
         assert_eq!(fresh.connection_count, 2);
-        assert_eq!(fresh.online_user_count, 2);
+        assert_eq!(fresh.online_member_count, 2);
+        assert_eq!(fresh.online_guest_count, 0);
 
         presence
             .cache
@@ -1706,7 +1750,8 @@ mod tests {
 
         let refreshed = presence.room_stats(room_id(10)).await?;
         assert_eq!(refreshed.connection_count, 2);
-        assert_eq!(refreshed.online_user_count, 2);
+        assert_eq!(refreshed.online_member_count, 2);
+        assert_eq!(refreshed.online_guest_count, 0);
         Ok(())
     }
 
@@ -1730,7 +1775,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn node_stats_count_connections_users_and_rooms() -> anyhow::Result<()> {
+    async fn node_and_overview_stats_separate_members_and_guests() -> anyhow::Result<()> {
         let presence = OnlinePresenceService::local();
         presence
             .register_connection(
@@ -1753,19 +1798,43 @@ mod tests {
                 RealtimeActor::user(user_id(2), "2"),
             )
             .await?;
+        presence
+            .register_connection(
+                "conn-guest-a".to_string(),
+                "node-a".to_string(),
+                RealtimeActor::guest("gst_local"),
+            )
+            .await?;
+        presence
+            .register_connection(
+                "conn-guest-b".to_string(),
+                "node-a".to_string(),
+                RealtimeActor::guest("gst_local"),
+            )
+            .await?;
         presence.join_room("conn-a", room_id(10)).await?;
         presence.join_room("conn-b", room_id(11)).await?;
         presence.join_room("conn-c", room_id(11)).await?;
+        presence.join_room("conn-guest-a", room_id(10)).await?;
+        presence.join_room("conn-guest-b", room_id(10)).await?;
 
         let node_a = presence.node_stats("node-a").await?;
-        assert_eq!(node_a.connection_count, 2);
-        assert_eq!(node_a.online_user_count, 2);
+        assert_eq!(node_a.connection_count, 4);
+        assert_eq!(node_a.online_member_count, 2);
+        assert_eq!(node_a.online_guest_count, 1);
         assert_eq!(node_a.room_count, 2);
 
         let node_b = presence.node_stats("node-b").await?;
         assert_eq!(node_b.connection_count, 1);
-        assert_eq!(node_b.online_user_count, 1);
+        assert_eq!(node_b.online_member_count, 1);
+        assert_eq!(node_b.online_guest_count, 0);
         assert_eq!(node_b.room_count, 1);
+
+        let overview = presence.overview().await?;
+        assert_eq!(overview.online_member_count, 2);
+        assert_eq!(overview.online_guest_count, 1);
+        assert_eq!(overview.connection_count, 5);
+        assert_eq!(overview.active_room_count, 2);
         Ok(())
     }
 
@@ -1843,8 +1912,20 @@ mod tests {
             .await?;
         presence.join_room("guest-a", room_id(10)).await?;
         presence.join_room("guest-b", room_id(10)).await?;
+        presence
+            .register_connection(
+                "member-a".to_string(),
+                "node-a".to_string(),
+                RealtimeActor::user(user_id(1), "1"),
+            )
+            .await?;
+        presence.join_room("member-a", room_id(10)).await?;
 
         assert_eq!(guest.user_id(), None);
+        let stats = presence.room_stats(room_id(10)).await?;
+        assert_eq!(stats.online_member_count, 1);
+        assert_eq!(stats.online_guest_count, 1);
+        assert_eq!(stats.connection_count, 3);
         assert_eq!(
             presence
                 .actor_connection_count_in_room(&guest, room_id(10))
@@ -1883,15 +1964,24 @@ mod tests {
                 RealtimeActor::user(user_id(3), "3"),
             )
             .await?;
+        presence_b
+            .register_connection(
+                "conn-guest".to_string(),
+                "node-b".to_string(),
+                RealtimeActor::guest("gst_cross_replica"),
+            )
+            .await?;
         presence_a.join_room("conn-a", room_id(10)).await?;
         presence_b.join_room("conn-b", room_id(10)).await?;
         presence_b.join_room("conn-c", room_id(11)).await?;
+        presence_b.join_room("conn-guest", room_id(10)).await?;
 
         let room = presence_a.room_stats(room_id(10)).await?;
-        assert_eq!(room.connection_count, 2);
-        assert_eq!(room.online_user_count, 2);
+        assert_eq!(room.connection_count, 3);
+        assert_eq!(room.online_member_count, 2);
+        assert_eq!(room.online_guest_count, 1);
         assert_eq!(room.node_connection_counts.get("node-a"), Some(&1));
-        assert_eq!(room.node_connection_counts.get("node-b"), Some(&1));
+        assert_eq!(room.node_connection_counts.get("node-b"), Some(&2));
 
         let online = presence_a
             .room_online_user_ids(room_id(10), &[user_id(1), user_id(2), user_id(3)])
@@ -1899,9 +1989,16 @@ mod tests {
         assert_eq!(online, vec![user_id(1), user_id(2)]);
 
         let node_b = presence_a.node_stats("node-b").await?;
-        assert_eq!(node_b.connection_count, 2);
-        assert_eq!(node_b.online_user_count, 2);
+        assert_eq!(node_b.connection_count, 3);
+        assert_eq!(node_b.online_member_count, 2);
+        assert_eq!(node_b.online_guest_count, 1);
         assert_eq!(node_b.room_count, 2);
+
+        let overview = presence_a.overview().await?;
+        assert_eq!(overview.online_member_count, 3);
+        assert_eq!(overview.online_guest_count, 1);
+        assert_eq!(overview.connection_count, 4);
+        assert_eq!(overview.active_room_count, 2);
 
         let all_nodes = presence_a.all_node_stats().await?;
         assert_eq!(
@@ -1914,7 +2011,8 @@ mod tests {
 
         let hot = presence_a.hot_room_stats().await?;
         assert_eq!(hot[0].room_id, room_id(10));
-        assert_eq!(hot[0].online_user_count, 2);
+        assert_eq!(hot[0].online_member_count, 2);
+        assert_eq!(hot[0].online_guest_count, 1);
         Ok(())
     }
 
@@ -1941,7 +2039,8 @@ mod tests {
 
         let room = presence.room_stats(room_id(10)).await?;
         assert_eq!(room.connection_count, 0);
-        assert_eq!(room.online_user_count, 0);
+        assert_eq!(room.online_member_count, 0);
+        assert_eq!(room.online_guest_count, 0);
 
         let user_room = presence.user_room_stats(user_id(1), room_id(10)).await?;
         assert!(!user_room.is_online);

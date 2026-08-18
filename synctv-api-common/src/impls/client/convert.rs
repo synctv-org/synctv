@@ -1960,7 +1960,8 @@ pub fn room_presence_stats_to_proto(
     stats: &synctv_core::service::OnlineRoomStats,
 ) -> Result<synctv_proto::common::RoomPresenceStats, crate::impls::ApiError> {
     Ok(synctv_proto::common::RoomPresenceStats {
-        online_user_count: usize_to_i32(stats.online_user_count, "online user count")?,
+        online_member_count: usize_to_i32(stats.online_member_count, "online member count")?,
+        online_guest_count: usize_to_i32(stats.online_guest_count, "online guest count")?,
         connection_count: usize_to_i32(stats.connection_count, "room connection count")?,
         node_connection_counts: node_connection_counts_to_proto(&stats.node_connection_counts)?,
         sampled_at: stats.sampled_at_ms / 1000,
@@ -2008,7 +2009,8 @@ pub fn node_presence_stats_to_proto(
     Ok(synctv_proto::common::NodePresenceStats {
         node_id: stats.node_id.clone(),
         connection_count: usize_to_i32(stats.connection_count, "node connection count")?,
-        online_user_count: usize_to_i32(stats.online_user_count, "node online user count")?,
+        online_member_count: usize_to_i32(stats.online_member_count, "node online member count")?,
+        online_guest_count: usize_to_i32(stats.online_guest_count, "node online guest count")?,
         room_count: usize_to_i32(stats.room_count, "node room count")?,
         sampled_at: stats.sampled_at_ms / 1000,
         version: stats.version,
@@ -2019,7 +2021,8 @@ pub fn presence_overview_to_proto(
     stats: &synctv_core::service::PresenceOverview,
 ) -> Result<synctv_proto::common::PresenceOverview, crate::impls::ApiError> {
     Ok(synctv_proto::common::PresenceOverview {
-        online_user_count: usize_to_i32(stats.online_user_count, "online user count")?,
+        online_member_count: usize_to_i32(stats.online_member_count, "online member count")?,
+        online_guest_count: usize_to_i32(stats.online_guest_count, "online guest count")?,
         connection_count: usize_to_i32(stats.connection_count, "connection count")?,
         active_room_count: usize_to_i32(stats.active_room_count, "active room count")?,
         nodes: stats

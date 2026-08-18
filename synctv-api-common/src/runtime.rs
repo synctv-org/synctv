@@ -150,14 +150,12 @@ mod tests {
         assert_eq!(connection_service.connection_count(), 1);
         assert_eq!(connection_service.room_connection_count(&room_id), 1);
         assert_eq!(connection_service.user_connection_count(&user_id), 1);
-        assert_eq!(
-            presence_service
-                .room_stats(room_id)
-                .await
-                .map_err(|error| test_error(error.to_string()))?
-                .online_user_count,
-            1
-        );
+        let presence = presence_service
+            .room_stats(room_id)
+            .await
+            .map_err(|error| test_error(error.to_string()))?;
+        assert_eq!(presence.online_member_count, 1);
+        assert_eq!(presence.online_guest_count, 0);
 
         connection_service.shutdown().await;
         Ok(())

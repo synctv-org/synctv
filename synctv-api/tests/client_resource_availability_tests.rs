@@ -991,8 +991,15 @@ async fn room_discovery_prioritizes_online_rooms_outside_newest_page() {
         top_room
             .presence
             .as_ref()
-            .map(|value| value.online_user_count),
+            .map(|value| value.online_member_count),
         Some(1)
+    );
+    assert_eq!(
+        top_room
+            .presence
+            .as_ref()
+            .map(|value| value.online_guest_count),
+        Some(0)
     );
 
     let first_popular_room = response

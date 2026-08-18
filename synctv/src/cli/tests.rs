@@ -1013,6 +1013,58 @@ fn cli_parses_room_create_minimal() {
 }
 
 #[test]
+fn cli_parses_room_visibility_public_and_private() {
+    for (flag, expected) in [("--public", true), ("--private", false)] {
+        let cli = Cli::parse_from([
+            "synctv",
+            "room",
+            "visibility",
+            "room-123",
+            flag,
+            "--username",
+            "alice",
+        ]);
+        match cli.command {
+            Commands::Room(RoomCommand {
+                command: RoomSubcommand::Visibility(args),
+                ..
+            }) => {
+                assert_eq!(args.room_id, "room-123");
+                assert_eq!(args.actor.username.as_deref(), Some("alice"));
+                assert_eq!(args.is_public(), expected);
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn cli_requires_exactly_one_room_visibility_flag() {
+    for args in [
+        vec![
+            "synctv",
+            "room",
+            "visibility",
+            "room-123",
+            "--username",
+            "alice",
+        ],
+        vec![
+            "synctv",
+            "room",
+            "visibility",
+            "room-123",
+            "--public",
+            "--private",
+            "--username",
+            "alice",
+        ],
+    ] {
+        assert!(Cli::try_parse_from(args).is_err());
+    }
+}
+
+#[test]
 fn room_create_settings_json_is_applied_as_patch_to_defaults() {
     let patch: synctv_proto::client::RoomSettingsPatch =
         serde_json::from_str(r#"{"chatEnabled":false}"#)

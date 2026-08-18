@@ -61,6 +61,21 @@ pub(super) async fn execute_room(room_command: RoomCommand) -> Result<()> {
             )?;
             args.remote.print_output(&response)
         }
+        RoomSubcommand::Visibility(args) => {
+            let is_public = args.is_public();
+            let session = connect_remote_access(&args.remote).await?;
+            let response = management_unary_call!(
+                session,
+                "update room visibility",
+                update_room_visibility,
+                management_proto::UpdateRoomVisibilityRequest {
+                    room_id: args.room_id,
+                    actor: Some(args.actor.to_management_proto()?),
+                    is_public,
+                }
+            )?;
+            args.remote.print_output(&response)
+        }
         RoomSubcommand::TransferOwner(args) => {
             let session = connect_remote_access(&args.remote).await?;
             let response = management_unary_call!(

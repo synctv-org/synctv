@@ -1456,6 +1456,12 @@ mod tests {
         ) -> std::result::Result<Response<admin_proto::Room>, Status> {
             unavailable_test_management_response()
         }
+        async fn update_room_visibility(
+            &self,
+            _: Request<synctv_management::proto::UpdateRoomVisibilityRequest>,
+        ) -> std::result::Result<Response<client_proto::Room>, Status> {
+            unavailable_test_management_response()
+        }
         async fn reset_room_settings(
             &self,
             _: Request<ResetRoomSettingsRequest>,

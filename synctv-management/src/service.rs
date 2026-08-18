@@ -83,8 +83,8 @@ use crate::proto::{
     StopPlaybackRequest, StopServerEvent, StopServerRequest, TransferRoomOwnershipRequest,
     UnbanRoomRequest, UnbanUserRequest, UnfavoriteRoomRequest, UpdateMemberDisplayTagRequest,
     UpdateMemberPermissionsRequest, UpdateMemberRemarkNameRequest, UpdatePlaybackStateRequest,
-    UpdatePlaylistRequest, UpdateRoomPasswordRequest, UpdateUserPreferencesRequest,
-    UpdateUserRoleRequest, UpdateUserUsernameRequest, UserRef,
+    UpdatePlaylistRequest, UpdateRoomPasswordRequest, UpdateRoomVisibilityRequest,
+    UpdateUserPreferencesRequest, UpdateUserRoleRequest, UpdateUserUsernameRequest, UserRef,
 };
 use crate::proto::{
     TikTokBindRequest, TikTokGetBindsRequest, TikTokGetUserRequest, TikTokListUserPostsRequest,
@@ -747,10 +747,7 @@ impl ManagementServiceImpl {
         )
     }
 
-    async fn client_room_for_favorite_response(
-        &self,
-        room: &Room,
-    ) -> Result<client_proto::Room, Status> {
+    async fn client_room_response(&self, room: &Room) -> Result<client_proto::Room, Status> {
         let (settings, member_count, creator) = tokio::join!(
             self.room_service.get_room_settings(&room.id),
             self.room_service.get_member_count(&room.id),
@@ -782,7 +779,7 @@ impl ManagementServiceImpl {
             .await
             .map_err(map_core_error)?;
         Ok(client_proto::FavoriteRoomResponse {
-            room: Some(self.client_room_for_favorite_response(&room).await?),
+            room: Some(self.client_room_response(&room).await?),
         })
     }
 
@@ -800,7 +797,7 @@ impl ManagementServiceImpl {
             .await
             .map_err(map_core_error)?;
         Ok(client_proto::UnfavoriteRoomResponse {
-            room: Some(self.client_room_for_favorite_response(&room).await?),
+            room: Some(self.client_room_response(&room).await?),
         })
     }
 
@@ -826,10 +823,7 @@ impl ManagementServiceImpl {
 
         let rooms_ref = &rooms;
         let response_rooms = stream::iter(0..rooms.len())
-            .map(|index| async move {
-                self.client_room_for_favorite_response(&rooms_ref[index])
-                    .await
-            })
+            .map(|index| async move { self.client_room_response(&rooms_ref[index]).await })
             .buffered(MANAGEMENT_ROOM_LOAD_CONCURRENCY)
             .try_collect()
             .await?;
@@ -2824,6 +2818,23 @@ impl ManagementService for ManagementServiceImpl {
             .await
             .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
+    }
+
+    async fn update_room_visibility(
+        &self,
+        request: Request<UpdateRoomVisibilityRequest>,
+    ) -> Result<Response<client_proto::Room>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let actor_user_id = self.resolve_client_actor_user_id(req.actor).await?;
+        let room_id = room_id_from_public(&req.room_id, &self.public_id_codec)?;
+        let room = self
+            .room_service
+            .update_room_visibility(&room_id, &actor_user_id, req.is_public)
+            .await
+            .map_err(Self::map_room_access_error)?;
+        self.room_cache_fanout.publish_invalidation(&room_id);
+        self.client_room_response(&room).await.map(Response::new)
     }
 
     async fn reset_room_settings(

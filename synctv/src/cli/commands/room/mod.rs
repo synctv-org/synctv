@@ -120,7 +120,7 @@ pub struct RoomVisibilityArgs {
     pub room_id: String,
 
     #[command(flatten)]
-    pub actor: ActorUserArgs,
+    pub actor: OptionalActorUserArgs,
 
     /// List the room in discovery and allow anonymous guest access
     #[arg(long = "public", group = "room_visibility")]

@@ -5422,6 +5422,12 @@ async fn test_update_room_visibility_revokes_guest_access_and_enforces_permissio
             .is_err(),
         "users without room settings permission must not change visibility"
     );
+
+    let system_updated = room_service
+        .admin_update_room_visibility(&room.id, true)
+        .await
+        .checked("authenticated management plane should change visibility");
+    assert!(system_updated.is_public);
 }
 
 #[tokio::test]

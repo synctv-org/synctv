@@ -1065,6 +1065,23 @@ fn cli_requires_exactly_one_room_visibility_flag() {
 }
 
 #[test]
+fn cli_allows_system_room_visibility_operation_without_actor() {
+    let cli = Cli::parse_from(["synctv", "room", "visibility", "room-123", "--private"]);
+    match cli.command {
+        Commands::Room(RoomCommand {
+            command: RoomSubcommand::Visibility(args),
+            ..
+        }) => {
+            assert!(args.actor.username.is_none());
+            assert!(args.actor.user_id.is_none());
+            assert!(args.actor.email.is_none());
+            assert!(!args.is_public());
+        }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+}
+
+#[test]
 fn room_create_settings_json_is_applied_as_patch_to_defaults() {
     let patch: synctv_proto::client::RoomSettingsPatch =
         serde_json::from_str(r#"{"chatEnabled":false}"#)

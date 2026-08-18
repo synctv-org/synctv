@@ -229,6 +229,11 @@ impl RoomService {
     }
 
     pub async fn ensure_guest_room_available(&self, room: &Room) -> Result<()> {
+        if !room.is_public {
+            return Err(Error::Authorization(
+                "This room is not available to guests".to_string(),
+            ));
+        }
         if room.is_banned {
             return Err(Error::Authorization(
                 "This room has been banned".to_string(),

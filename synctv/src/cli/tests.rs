@@ -991,6 +991,7 @@ fn cli_parses_room_create_minimal() {
         "created from CLI",
         "--settings-json",
         "{\"chatEnabled\":false}",
+        "--private",
     ]);
     match cli.command {
         Commands::Room(RoomCommand {
@@ -1005,6 +1006,7 @@ fn cli_parses_room_create_minimal() {
                 args.settings_json.as_deref(),
                 Some("{\"chatEnabled\":false}")
             );
+            assert!(args.private_room);
         }
         other => panic!("unexpected command parsed: {other:?}"),
     }
@@ -5683,6 +5685,7 @@ fn render_human_output_uses_room_and_member_enums_by_context() {
             creator: None,
             category: None,
             labels: Vec::new(),
+            is_public: Some(true),
         }),
         playback_state: None,
         membership_status: synctv_proto::common::MemberStatus::Active as i32,
@@ -5784,6 +5787,7 @@ fn render_human_output_converts_room_listing_without_context_inference() {
             cover: None,
             category: None,
             labels: Vec::new(),
+            is_public: Some(false),
         }],
         total: 1,
     })
@@ -5792,6 +5796,7 @@ fn render_human_output_converts_room_listing_without_context_inference() {
     assert_eq!(rendered["rooms"][0]["status"], "active");
     assert_eq!(rendered["rooms"][0]["creatorStatus"], "banned");
     assert_eq!(rendered["rooms"][0]["version"], 56);
+    assert_eq!(rendered["rooms"][0]["isPublic"], false);
     assert!(
         rendered["rooms"][0]["createdAt"]
             .as_str()

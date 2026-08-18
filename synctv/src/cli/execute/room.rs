@@ -17,6 +17,7 @@ pub(super) async fn execute_room(room_command: RoomCommand) -> Result<()> {
                     password: args.password.unwrap_or_default(),
                     category_id: args.category_id.unwrap_or_default(),
                     label_ids: args.label_ids,
+                    is_public: args.private_room.then_some(false),
                 }
             )?;
             args.remote.print_output(&response)

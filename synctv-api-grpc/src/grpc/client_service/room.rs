@@ -25,6 +25,13 @@ impl RoomService for ClientServiceImpl {
         settings::update_room_settings(self, request).await
     }
 
+    async fn update_room_visibility(
+        &self,
+        request: Request<UpdateRoomVisibilityRequest>,
+    ) -> Result<Response<Room>, Status> {
+        settings::update_room_visibility(self, request).await
+    }
+
     async fn get_room_members(
         &self,
         request: Request<GetRoomMembersRequest>,

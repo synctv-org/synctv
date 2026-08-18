@@ -1198,6 +1198,7 @@ mod tests {
             password: String::new(),
             category_id: String::new(),
             label_ids: Vec::new(),
+            is_public: None,
         };
 
         let error = validation_error_text(&crate::validate(&request).unwrap_err());

@@ -1212,6 +1212,7 @@ fn make_test_room_model(created_by: &UserId) -> synctv_core::models::Room {
         created_by: *created_by,
         status: RoomStatus::Active,
         is_banned: false,
+        is_public: true,
         closed_at: None,
         created_at: now,
         updated_at: now,
@@ -1552,6 +1553,7 @@ async fn test_update_room_taxonomy_handles_local_management_actor_labels() -> Te
                     settings: None,
                     category_id: Some(category.id),
                     label_ids: Vec::new(),
+                    is_public: true,
                 },
                 None,
             )

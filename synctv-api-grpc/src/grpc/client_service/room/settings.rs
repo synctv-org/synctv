@@ -27,6 +27,29 @@ pub(super) async fn update_room_settings(
     Ok(Response::new(response))
 }
 
+pub(super) async fn update_room_visibility(
+    service: &ClientServiceImpl,
+    request: Request<UpdateRoomVisibilityRequest>,
+) -> Result<Response<Room>, Status> {
+    let (metadata, room_id) = service.room_request_context(&request)?;
+    let req = request.into_inner();
+    let executor = service.client_api.clone();
+    let client_api = service.client_api.clone();
+    let response = executor
+        .execute_user_endpoint(
+            &metadata,
+            EndpointRateLimitCategory::Write,
+            move |authenticated| async move {
+                client_api
+                    .update_room_visibility(&authenticated.user_id(), room_id.as_str(), req)
+                    .await
+            },
+        )
+        .await
+        .map_err(map_api_error)?;
+    Ok(Response::new(response))
+}
+
 pub(super) async fn get_room_settings(
     service: &ClientServiceImpl,
     request: Request<GetRoomSettingsRequest>,

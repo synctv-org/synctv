@@ -187,6 +187,7 @@ impl RoomFixture {
             created_by: self.created_by,
             status: crate::models::RoomStatus::Active,
             is_banned: false,
+            is_public: true,
             closed_at: None,
             created_at: self.created_at.unwrap_or(now),
             updated_at: self.updated_at.unwrap_or(now),

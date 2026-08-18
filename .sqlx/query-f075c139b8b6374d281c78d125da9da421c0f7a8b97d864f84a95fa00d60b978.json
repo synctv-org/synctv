@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT r.id AS \"id: RoomId\",\n                   r.name,\n                   r.description,\n                   r.cover_file_reference_id,\n                   rc.id AS \"category_id?: RoomCategoryId\",\n                   rc.key AS \"category_key?\",\n                   rc.name AS \"category_name?\",\n                   rc.description AS \"category_description?\",\n                   rc.sort_order AS \"category_sort_order?\",\n                   rc.is_enabled AS \"category_is_enabled?\",\n                   rc.created_at AS \"category_created_at?\",\n                   rc.updated_at AS \"category_updated_at?\",\n                   r.created_by AS \"created_by: UserId\",\n                   r.closed_at,\n                   r.created_at,\n                   r.updated_at,\n                   r.deleted_at,\n                   r.version,\n                   r.last_activity_at,\n                   EXISTS (\n                       SELECT 1 FROM room_bans rb\n                       WHERE rb.room_id = r.id\n                         AND rb.revoked_at IS NULL\n                         AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)\n                   ) AS \"is_banned!\"\n            FROM rooms r\n            LEFT JOIN room_categories rc ON rc.id = r.category_id\n            WHERE r.id = $1 AND r.deleted_at IS NULL\n            ",
+  "query": "\n            SELECT r.id AS \"id: RoomId\",\n                   r.name,\n                   r.description,\n                   r.cover_file_reference_id,\n                   rc.id AS \"category_id?: RoomCategoryId\",\n                   rc.key AS \"category_key?\",\n                   rc.name AS \"category_name?\",\n                   rc.description AS \"category_description?\",\n                   rc.sort_order AS \"category_sort_order?\",\n                   rc.is_enabled AS \"category_is_enabled?\",\n                   rc.created_at AS \"category_created_at?\",\n                   rc.updated_at AS \"category_updated_at?\",\n                   r.created_by AS \"created_by: UserId\",\n                   r.closed_at,\n                   EXISTS (\n                       SELECT 1 FROM room_bans rb\n                       WHERE rb.room_id = r.id\n                         AND rb.revoked_at IS NULL\n                         AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)\n                   ) AS \"is_banned!\",\n                   r.created_at,\n                   r.updated_at,\n                   r.deleted_at,\n                   r.version,\n                   r.last_activity_at,\n                   r.is_public\n            FROM rooms r\n            LEFT JOIN room_categories rc ON rc.id = r.category_id\n            WHERE r.id = $1 AND r.deleted_at IS NULL\n            ",
   "describe": {
     "columns": [
       {
@@ -159,6 +159,12 @@
       },
       {
         "ordinal": 14,
+        "name": "is_banned!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 15,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -169,7 +175,7 @@
         }
       },
       {
-        "ordinal": 15,
+        "ordinal": 16,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -180,7 +186,7 @@
         }
       },
       {
-        "ordinal": 16,
+        "ordinal": 17,
         "name": "deleted_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -191,7 +197,7 @@
         }
       },
       {
-        "ordinal": 17,
+        "ordinal": 18,
         "name": "version",
         "type_info": "Int4",
         "origin": {
@@ -202,7 +208,7 @@
         }
       },
       {
-        "ordinal": 18,
+        "ordinal": 19,
         "name": "last_activity_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -213,10 +219,15 @@
         }
       },
       {
-        "ordinal": 19,
-        "name": "is_banned!",
+        "ordinal": 20,
+        "name": "is_public",
         "type_info": "Bool",
-        "origin": "Expression"
+        "origin": {
+          "Table": {
+            "table": "rooms",
+            "name": "is_public"
+          }
+        }
       }
     ],
     "parameters": {
@@ -239,13 +250,14 @@
       true,
       false,
       true,
+      null,
       false,
       false,
       true,
       false,
       false,
-      null
+      false
     ]
   },
-  "hash": "8855353003e9b4e97a80cb162fa81028c260fc7b8dc9e4f6a3025cb95bbef284"
+  "hash": "f075c139b8b6374d281c78d125da9da421c0f7a8b97d864f84a95fa00d60b978"
 }

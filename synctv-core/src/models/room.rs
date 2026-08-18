@@ -210,6 +210,9 @@ pub struct Room {
     pub status: RoomStatus,
     #[serde(skip)]
     pub is_banned: bool,
+    /// Whether the room is listed in discovery and available to anonymous guests.
+    #[serde(default = "default_enabled")]
+    pub is_public: bool,
     /// Timestamp when the room was closed. `None` means the room is active.
     pub closed_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
@@ -240,6 +243,7 @@ impl Room {
             created_by,
             status: RoomStatus::Active,
             is_banned: false,
+            is_public: true,
             closed_at: None,
             created_at: now,
             updated_at: now,
@@ -263,6 +267,7 @@ impl Room {
             created_by,
             status: RoomStatus::Active,
             is_banned: false,
+            is_public: true,
             closed_at: None,
             created_at: now,
             updated_at: now,
@@ -341,6 +346,8 @@ pub struct CreateRoomRequest {
     pub category_id: Option<RoomCategoryId>,
     #[serde(default)]
     pub label_ids: Vec<RoomLabelId>,
+    #[serde(default = "default_enabled")]
+    pub is_public: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -352,6 +359,7 @@ pub struct UpdateRoomRequest {
     pub settings: Option<RoomSettings>,
     pub category_id: Option<RoomCategoryId>,
     pub label_ids: Option<Vec<RoomLabelId>>,
+    pub is_public: Option<bool>,
 }
 
 sort_field_enum! {
@@ -378,6 +386,9 @@ pub struct RoomListQuery {
     /// Filter by derived ban state from `room_bans`.
     #[serde(default)]
     pub is_banned: Option<bool>,
+    /// Filter by public discovery visibility.
+    #[serde(default)]
+    pub is_public: Option<bool>,
     /// Filter by creator
     pub creator_id: Option<super::UserId>,
     pub category_id: Option<RoomCategoryId>,
@@ -396,6 +407,7 @@ impl Default for RoomListQuery {
             status: Some(RoomStatus::Active),
             search: None,
             is_banned: Some(false),
+            is_public: None,
             creator_id: None,
             category_id: None,
             label_ids: Vec::new(),

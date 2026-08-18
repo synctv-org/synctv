@@ -316,6 +316,25 @@ fn guest_principal_has_no_user_id() {
 }
 
 #[test]
+fn guest_access_revocation_only_matches_guest_principals() {
+    let room_id = RoomId::expect_positive(42);
+    let event = RealtimeEvent::GuestAccessRevoked {
+        event_id: "guest-access-revoked".to_string(),
+        room_id,
+        reason: "This room is no longer public".to_string(),
+        timestamp: now(),
+    };
+    let guest = test_guest_principal_with_permissions(RoomPermissionSet::default_guest());
+    let user = RealtimePrincipal::user(UserId::expect_positive(7), "member".to_string());
+
+    assert_eq!(
+        guest_access_revocation_reason(&guest, &event),
+        Some("This room is no longer public")
+    );
+    assert_eq!(guest_access_revocation_reason(&user, &event), None);
+}
+
+#[test]
 fn core_chat_attachment_to_proto_requires_storage_metadata_and_allows_optional_dimensions() {
     let attachment = chat_attachment();
 

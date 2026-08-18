@@ -503,6 +503,10 @@ fn register_write_routes() -> Router<AppState> {
             axum::routing::patch(room::update_room_settings),
         )
         .route(
+            "/api/rooms/{roomId}/visibility",
+            axum::routing::patch(room::update_room_visibility),
+        )
+        .route(
             "/api/rooms/{roomId}/owner",
             post(room::transfer_room_ownership),
         )

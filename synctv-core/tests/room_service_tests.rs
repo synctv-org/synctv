@@ -5300,6 +5300,132 @@ async fn test_update_room_description_enforces_permissions_and_length() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_update_room_visibility_revokes_guest_access_and_enforces_permissions() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("visibility_owner"))
+        .await
+        .checked("test operation should succeed");
+    let outsider = user_repo
+        .create(&make_user("visibility_outsider"))
+        .await
+        .checked("test operation should succeed");
+    let guest = user_repo
+        .create(&make_user("visibility_guest"))
+        .await
+        .checked("test operation should succeed");
+
+    let (room, _) = room_service
+        .create_room(
+            "Visibility Room".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            Some(RoomSettings {
+                allow_guest_join: synctv_core::models::room_settings::AllowGuestJoin(true),
+                ..Default::default()
+            }),
+        )
+        .await
+        .checked("test operation should succeed");
+    assert!(room.is_public);
+
+    room_service
+        .member_service()
+        .add_member(room.id, guest.id, RoomRole::Guest)
+        .await
+        .checked("test operation should succeed");
+    let guest_version_before = room_service
+        .get_room_guest_version(&room.id)
+        .await
+        .checked("test operation should succeed");
+    let mut event_rx = room_service.notification_service().subscribe();
+
+    let updated = room_service
+        .update_room_visibility(&room.id, &owner.id, false)
+        .await
+        .checked("owner should be able to make the room private");
+    assert!(!updated.is_public);
+    assert_eq!(updated.version, room.version + 1);
+
+    let persisted = room_service
+        .get_room(&room.id)
+        .await
+        .checked("updated room should load");
+    assert!(!persisted.is_public);
+    assert!(matches!(
+        room_service.ensure_guest_room_available(&persisted).await,
+        Err(Error::Authorization(_))
+    ));
+    assert!(
+        !member_repo
+            .is_member(&room.id, &guest.id)
+            .await
+            .checked("test operation should succeed"),
+        "guest-role members must be removed when the room becomes private"
+    );
+    assert_eq!(
+        room_service
+            .get_room_guest_version(&room.id)
+            .await
+            .checked("test operation should succeed"),
+        guest_version_before + 1
+    );
+
+    let (public_rooms, public_total) = room_service
+        .list_rooms(&RoomListQuery {
+            creator_id: Some(owner.id),
+            is_public: Some(true),
+            ..Default::default()
+        })
+        .await
+        .checked("public room query should succeed");
+    assert_eq!(public_total, 0);
+    assert!(public_rooms.is_empty());
+    let (private_rooms, private_total) = room_service
+        .list_rooms(&RoomListQuery {
+            creator_id: Some(owner.id),
+            is_public: Some(false),
+            ..Default::default()
+        })
+        .await
+        .checked("private room query should succeed");
+    assert_eq!(private_total, 1);
+    assert_eq!(private_rooms[0].id, room.id);
+
+    room_service
+        .join_room(room.id, outsider.id, None)
+        .await
+        .checked("authenticated users with the room ID should still be able to join");
+
+    let (event_room_id, event) = event_rx
+        .recv()
+        .await
+        .checked("guest kick event should be emitted");
+    assert_eq!(event_room_id, room.id);
+    assert!(matches!(
+        event,
+        RoomEvent::GuestKicked {
+            reason: GuestKickReason::RoomMadePrivate,
+            ..
+        }
+    ));
+
+    assert!(
+        room_service
+            .update_room_visibility(&room.id, &outsider.id, true)
+            .await
+            .is_err(),
+        "users without room settings permission must not change visibility"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_join_room_idempotent_same_user() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -6862,6 +6988,7 @@ async fn test_room_taxonomy_is_admin_curated_and_filterable() {
                 settings: None,
                 category_id: Some(movie.id),
                 label_ids: vec![anime.id],
+                is_public: true,
             },
             None,
         )
@@ -6877,6 +7004,7 @@ async fn test_room_taxonomy_is_admin_curated_and_filterable() {
                 settings: None,
                 category_id: Some(game.id),
                 label_ids: Vec::new(),
+                is_public: true,
             },
             None,
         )
@@ -7011,6 +7139,7 @@ async fn test_room_taxonomy_is_admin_curated_and_filterable() {
                 settings: None,
                 category_id: Some(movie.id),
                 label_ids: vec![coop.id],
+                is_public: true,
             },
             None,
         )
@@ -7030,6 +7159,7 @@ async fn test_room_taxonomy_is_admin_curated_and_filterable() {
                 settings: None,
                 category_id: Some(movie.id),
                 label_ids: vec![disabled.id],
+                is_public: true,
             },
             None,
         )
@@ -7059,6 +7189,7 @@ async fn test_room_taxonomy_is_admin_curated_and_filterable() {
                 settings: None,
                 category_id: Some(inactive.id),
                 label_ids: Vec::new(),
+                is_public: true,
             },
             None,
         )
@@ -7154,6 +7285,7 @@ async fn test_room_taxonomy_is_admin_curated_and_filterable() {
                 settings: None,
                 category_id: Some(movie.id),
                 label_ids: vec![anime.id],
+                is_public: false,
             },
             None,
         )
@@ -7171,6 +7303,7 @@ async fn test_room_taxonomy_is_admin_curated_and_filterable() {
             .collect::<Vec<_>>(),
         vec![anime.id]
     );
+    assert!(!pending_room.is_public);
     let approved_room = review_room_service
         .approve_pending_room(pending_room.id, None)
         .await
@@ -7187,6 +7320,7 @@ async fn test_room_taxonomy_is_admin_curated_and_filterable() {
             .collect::<Vec<_>>(),
         vec![anime.id]
     );
+    assert!(!approved_room.is_public);
 
     let (stale_pending_room, _) = review_room_service
         .create_room_with_taxonomy_outbox(
@@ -7198,6 +7332,7 @@ async fn test_room_taxonomy_is_admin_curated_and_filterable() {
                 settings: None,
                 category_id: Some(movie.id),
                 label_ids: vec![anime.id],
+                is_public: true,
             },
             None,
         )

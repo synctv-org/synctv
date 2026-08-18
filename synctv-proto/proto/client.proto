@@ -101,6 +101,7 @@ service RoomService {
   // Room Settings Management
   rpc GetRoomSettings(GetRoomSettingsRequest) returns (GetRoomSettingsResponse);
   rpc UpdateRoomSettings(UpdateRoomSettingsRequest) returns (Room);
+  rpc UpdateRoomVisibility(UpdateRoomVisibilityRequest) returns (Room);
   rpc ResetRoomSettings(ResetRoomSettingsRequest) returns (RoomSettings);
   rpc TransferRoomOwnership(TransferRoomOwnershipRequest) returns (Room);
   rpc LeaveRoom(LeaveRoomRequest) returns (LeaveRoomResponse);
@@ -567,6 +568,7 @@ message Room {
   UserPublicView creator = 15;
   RoomCategory category = 16;
   repeated RoomLabel labels = 17;
+  optional bool is_public = 18;
 }
 
 message RoomCategory {
@@ -1399,6 +1401,7 @@ message CreateRoomRequest {
       pattern: "^roomlbl_[A-Za-z0-9]+$"
     }
   ];
+  optional bool is_public = 7;
 }
 
 // Note: UserService room-scoped resource request; room_id is carried in payload.
@@ -1545,6 +1548,10 @@ message RoomSettingsPatch {
 message UpdateRoomSettingsRequest {
   RoomSettingsPatch settings = 1 [(buf.validate.field).required = true];
   google.protobuf.FieldMask update_mask = 2 [(buf.validate.field).required = true];
+}
+
+message UpdateRoomVisibilityRequest {
+  bool is_public = 1;
 }
 
 

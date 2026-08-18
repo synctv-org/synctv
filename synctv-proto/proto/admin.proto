@@ -172,6 +172,7 @@ message Room {
   synctv.client.ResourceCover cover = 16;
   synctv.client.RoomCategory category = 17;
   repeated synctv.client.RoomLabel labels = 18;
+  optional bool is_public = 19;
 }
 
 message RuntimeSettings {

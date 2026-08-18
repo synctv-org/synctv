@@ -880,6 +880,7 @@ message CreateRoomRequest {
     synctv.client.RoomSettings settings = 5;
     string category_id = 6;
     repeated string label_ids = 7;
+    optional bool is_public = 8;
 }
 
 message ListRoomsRequest {

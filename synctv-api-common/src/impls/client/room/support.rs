@@ -634,6 +634,7 @@ pub(super) fn build_room_discovery_query(
         search: (!req.search.is_empty()).then_some(req.search),
         status: Some(synctv_core::models::RoomStatus::Active),
         is_banned: Some(false),
+        is_public: Some(true),
         category_id: parse_optional_room_category_id(&req.category_id, public_id_codec)?,
         label_ids: parse_room_label_ids(&req.label_ids, public_id_codec)?,
         sort_by: synctv_core::models::RoomListSortBy::LastActivityAt,

@@ -86,6 +86,7 @@ impl AdminApiImpl {
             status: proto_room_status_filter(req.status)?,
             search: normalize_non_empty_filter(&req.search),
             is_banned: req.is_banned,
+            is_public: None,
             creator_id: normalize_non_empty_filter(&req.creator_id)
                 .map(|creator_id| {
                     crate::impls::proto_validated_user_id(creator_id, &self.public_id_codec)

@@ -497,6 +497,7 @@ pub(in crate::impls::admin) fn try_managed_room_to_proto(
             .iter()
             .map(|label| room_label_to_proto(label, public_id_codec))
             .collect::<Result<Vec<_>, _>>()?,
+        is_public: Some(room.is_public),
     })
 }
 

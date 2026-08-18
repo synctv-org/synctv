@@ -19,6 +19,8 @@ pub enum GuestKickReason {
     GlobalGuestModeDisabled,
     /// Room guest mode was disabled
     RoomGuestModeDisabled,
+    /// Room was removed from public access
+    RoomMadePrivate,
     /// Room password was added (guests cannot join password-protected rooms)
     RoomPasswordAdded,
     /// Admin manually kicked the guest
@@ -32,6 +34,7 @@ impl GuestKickReason {
         match self {
             Self::GlobalGuestModeDisabled => "Guest mode has been disabled globally",
             Self::RoomGuestModeDisabled => "Guest access has been disabled for this room",
+            Self::RoomMadePrivate => "This room is no longer public",
             Self::RoomPasswordAdded => "This room now requires authentication",
             Self::AdminKick => "You have been removed from the room",
         }

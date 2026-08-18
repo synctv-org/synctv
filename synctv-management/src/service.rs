@@ -2352,6 +2352,7 @@ impl ManagementService for ManagementServiceImpl {
             password: req.password,
             category_id: req.category_id,
             label_ids: req.label_ids,
+            is_public: req.is_public,
         };
 
         client_request.name =
@@ -2401,6 +2402,7 @@ impl ManagementService for ManagementServiceImpl {
                     settings,
                     category_id,
                     label_ids,
+                    is_public: client_request.is_public.unwrap_or(true),
                 },
                 Some(prepared_outbox_fanout.outbox_factory()),
             )

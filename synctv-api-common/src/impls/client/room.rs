@@ -495,6 +495,7 @@ impl ClientApiImpl {
         guest_enabled: bool,
         consistency: DiscoveryReadConsistency,
     ) -> Result<Vec<synctv_proto::client::RoomDiscoveryItem>, ApiError> {
+        let rooms = rooms.into_iter().filter(|room| room.is_public).collect();
         Ok(self
             .rooms_to_discovery_projections(rooms, consistency)
             .await?
@@ -585,6 +586,9 @@ impl ClientApiImpl {
             .into_iter()
             .next()
             .ok_or_else(|| ApiError::NotFound("Room not found".to_string()))?;
+        if !room.is_public {
+            return Err(ApiError::NotFound("Room not found".to_string()));
+        }
         self.rooms_to_public_discovery_items(
             vec![room],
             self.public_guest_access_enabled()?,
@@ -956,6 +960,7 @@ impl ClientApiImpl {
                     settings,
                     category_id,
                     label_ids,
+                    is_public: req.is_public.unwrap_or(true),
                 },
                 Some(prepared_outbox_fanout.outbox_factory()),
             )
@@ -1752,6 +1757,34 @@ impl ClientApiImpl {
         self.room_to_proto_basic_with_loaded_cover(
             &room,
             Some(&snapshot.settings),
+            self.load_room_member_count(&rid).await?,
+        )
+        .await
+    }
+
+    pub async fn update_room_visibility(
+        &self,
+        user_id: &UserId,
+        room_id: &str,
+        req: synctv_proto::client::UpdateRoomVisibilityRequest,
+    ) -> Result<synctv_proto::client::Room, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let rid = self.parse_room_id(room_id)?;
+        let room = self
+            .room_service
+            .update_room_visibility(&rid, user_id, req.is_public)
+            .await
+            .map_err(ApiError::from)?;
+        self.room_cache_fanout.publish_invalidation(&rid);
+
+        let settings = self
+            .room_service
+            .get_room_settings(&rid)
+            .await
+            .map_err(ApiError::from)?;
+        self.room_to_proto_basic_with_loaded_cover(
+            &room,
+            Some(&settings),
             self.load_room_member_count(&rid).await?,
         )
         .await

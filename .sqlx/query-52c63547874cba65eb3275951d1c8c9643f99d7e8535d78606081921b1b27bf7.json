@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT r.id AS \"id: RoomId\",\n                   r.name,\n                   r.description,\n                   r.cover_file_reference_id,\n                   rc.id AS \"category_id?: RoomCategoryId\",\n                   rc.key AS \"category_key?\",\n                   rc.name AS \"category_name?\",\n                   rc.description AS \"category_description?\",\n                   rc.sort_order AS \"category_sort_order?\",\n                   rc.is_enabled AS \"category_is_enabled?\",\n                   rc.created_at AS \"category_created_at?\",\n                   rc.updated_at AS \"category_updated_at?\",\n                   r.created_by AS \"created_by: UserId\",\n                   r.closed_at,\n                   r.created_at,\n                   r.updated_at,\n                   r.deleted_at,\n                   r.version,\n                   r.last_activity_at,\n                   EXISTS (\n                       SELECT 1 FROM room_bans rb\n                       WHERE rb.room_id = r.id\n                         AND rb.revoked_at IS NULL\n                         AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)\n                   ) AS \"is_banned!\",\n                   COALESCE(COUNT(rm.user_id), 0)::int AS \"member_count!\"\n            FROM rooms r\n            LEFT JOIN room_categories rc ON rc.id = r.category_id\n            LEFT JOIN room_members rm ON r.id = rm.room_id\n            WHERE r.created_by = $1 AND r.deleted_at IS NULL\n            GROUP BY r.id, r.name, r.description, r.cover_file_reference_id, r.category_id,\n                     rc.id, rc.key, rc.name, rc.description, rc.sort_order, rc.is_enabled,\n                     rc.created_at, rc.updated_at, r.created_by,\n                     r.closed_at, r.created_at, r.updated_at, r.deleted_at, r.version,\n                     r.last_activity_at\n            ORDER BY r.created_at DESC\n            LIMIT $2 OFFSET $3\n            ",
+  "query": "\n            SELECT r.id AS \"id: RoomId\",\n                r.name,\n                r.description,\n                r.cover_file_reference_id,\n                rc.id AS \"category_id?: RoomCategoryId\",\n                rc.key AS \"category_key?\",\n                rc.name AS \"category_name?\",\n                rc.description AS \"category_description?\",\n                rc.sort_order AS \"category_sort_order?\",\n                rc.is_enabled AS \"category_is_enabled?\",\n                rc.created_at AS \"category_created_at?\",\n                rc.updated_at AS \"category_updated_at?\",\n                r.created_by AS \"created_by: UserId\",\n                r.closed_at,\n                r.created_at,\n                r.updated_at,\n                r.deleted_at,\n                r.version,\n                r.last_activity_at,\n                r.is_public,\n                EXISTS (\n                    SELECT 1 FROM room_bans rb\n                    WHERE rb.room_id = r.id\n                      AND rb.revoked_at IS NULL\n                      AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)\n                ) AS \"is_banned!\",\n                EXISTS(\n                    SELECT 1 FROM room_member_kick_cooldowns rmkc\n                    WHERE rmkc.room_id = r.id\n                      AND rmkc.user_id = $2\n                      AND rmkc.ends_at > CURRENT_TIMESTAMP\n                ) AS \"is_in_kick_cooldown!\",\n                rs_settings.settings AS \"settings?: RoomSettings\",\n                rpc.opaque_record,\n                rpc.opaque_credential_identifier,\n                rpc.opaque_ciphersuite,\n                rpc.opaque_server_setup_version,\n                COALESCE(rpc.enabled, false) AS \"password_enabled!\",\n                rpc.version AS \"password_version?\"\n            FROM rooms r\n            LEFT JOIN room_categories rc ON rc.id = r.category_id\n            LEFT JOIN room_settings rs_settings\n                ON rs_settings.room_id = r.id\n            LEFT JOIN room_password_credentials rpc\n                ON rpc.room_id = r.id\n            WHERE r.id = $1 AND r.deleted_at IS NULL\n            ",
   "describe": {
     "columns": [
       {
@@ -214,20 +214,102 @@
       },
       {
         "ordinal": 19,
+        "name": "is_public",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "rooms",
+            "name": "is_public"
+          }
+        }
+      },
+      {
+        "ordinal": 20,
         "name": "is_banned!",
         "type_info": "Bool",
         "origin": "Expression"
       },
       {
-        "ordinal": 20,
-        "name": "member_count!",
-        "type_info": "Int4",
+        "ordinal": 21,
+        "name": "is_in_kick_cooldown!",
+        "type_info": "Bool",
         "origin": "Expression"
+      },
+      {
+        "ordinal": 22,
+        "name": "settings?: RoomSettings",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "room_settings",
+            "name": "settings"
+          }
+        }
+      },
+      {
+        "ordinal": 23,
+        "name": "opaque_record",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "room_password_credentials",
+            "name": "opaque_record"
+          }
+        }
+      },
+      {
+        "ordinal": 24,
+        "name": "opaque_credential_identifier",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "room_password_credentials",
+            "name": "opaque_credential_identifier"
+          }
+        }
+      },
+      {
+        "ordinal": 25,
+        "name": "opaque_ciphersuite",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "room_password_credentials",
+            "name": "opaque_ciphersuite"
+          }
+        }
+      },
+      {
+        "ordinal": 26,
+        "name": "opaque_server_setup_version",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "room_password_credentials",
+            "name": "opaque_server_setup_version"
+          }
+        }
+      },
+      {
+        "ordinal": 27,
+        "name": "password_enabled!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 28,
+        "name": "password_version?",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "room_password_credentials",
+            "name": "version"
+          }
+        }
       }
     ],
     "parameters": {
       "Left": [
-        "Int8",
         "Int8",
         "Int8"
       ]
@@ -237,24 +319,32 @@
       false,
       false,
       true,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
       false,
       true,
       false,
       false,
       true,
+      false,
       false,
       false,
       null,
-      null
+      null,
+      true,
+      true,
+      true,
+      true,
+      true,
+      null,
+      true
     ]
   },
-  "hash": "ccfcfef574ad031236067c6342ca356bc6c2f76afe9d9429de0226bcc8c70446"
+  "hash": "52c63547874cba65eb3275951d1c8c9643f99d7e8535d78606081921b1b27bf7"
 }

@@ -96,6 +96,10 @@ pub struct RoomCreateArgs {
     /// Room label public ID. Repeat or pass comma-separated values.
     #[arg(long = "label-id", value_delimiter = ',', allow_hyphen_values = true)]
     pub label_ids: Vec<String>,
+
+    /// Hide the room from discovery and deny anonymous guest access
+    #[arg(long = "private")]
+    pub private_room: bool,
 }
 
 #[derive(Debug, Args)]

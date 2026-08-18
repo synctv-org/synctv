@@ -150,6 +150,7 @@ pub(in crate::cli) struct HumanRoom {
     is_banned: bool,
     availability: String,
     version: i64,
+    is_public: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -168,6 +169,7 @@ pub(in crate::cli) struct HumanManagedRoom {
     description: String,
     is_banned: bool,
     version: i64,
+    is_public: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1085,6 +1087,7 @@ impl ToHuman for synctv_proto::client::Room {
             availability: humanize_resource_availability(i64::from(self.availability))
                 .unwrap_or_else(|| self.availability.to_string()),
             version: self.version,
+            is_public: self.is_public.unwrap_or(true),
         }
     }
 }
@@ -1109,6 +1112,7 @@ impl ToHuman for synctv_proto::admin::Room {
             description: self.description.clone(),
             is_banned: self.is_banned,
             version: self.version,
+            is_public: self.is_public.unwrap_or(true),
         }
     }
 }

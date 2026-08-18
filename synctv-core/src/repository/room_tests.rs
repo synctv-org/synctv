@@ -7,6 +7,7 @@ fn test_room_list_order_clause_supports_name_ascending() {
     let query = RoomListQuery {
         status: None,
         is_banned: None,
+        is_public: None,
         search: None,
         sort_by: crate::models::RoomListSortBy::Name,
         sort_direction: crate::models::SortDirection::Asc,
@@ -24,6 +25,7 @@ fn test_room_list_order_clause_supports_last_activity_nulls_last() {
     let query = RoomListQuery {
         status: None,
         is_banned: None,
+        is_public: None,
         search: None,
         sort_by: crate::models::RoomListSortBy::LastActivityAt,
         sort_direction: crate::models::SortDirection::Desc,

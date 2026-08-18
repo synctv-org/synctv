@@ -1855,6 +1855,7 @@ fn create_test_room(created_by: UserId, updated_at: Option<chrono::DateTime<Utc>
         created_by,
         status: RoomStatus::Active,
         is_banned: false,
+        is_public: true,
         closed_at: None,
         created_at: now,
         updated_at: updated_at.unwrap_or(now),

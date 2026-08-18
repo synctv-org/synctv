@@ -75,6 +75,7 @@ pub(super) fn realtime_event_to_server_messages(
         RealtimeEvent::KickPublisher { .. }
         | RealtimeEvent::KickUser { .. }
         | RealtimeEvent::KickUserFromRoom { .. }
+        | RealtimeEvent::GuestAccessRevoked { .. }
         | RealtimeEvent::RoomCreated { .. }
         | RealtimeEvent::CacheInvalidate { .. }
         | RealtimeEvent::ProviderCredentialChanged { .. }

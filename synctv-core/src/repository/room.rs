@@ -33,6 +33,7 @@ struct RoomRow {
     created_by: UserId,
     closed_at: Option<chrono::DateTime<chrono::Utc>>,
     is_banned: bool,
+    is_public: bool,
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
     deleted_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -67,6 +68,7 @@ impl From<RoomRow> for Room {
             created_by: row.created_by,
             status,
             is_banned: row.is_banned,
+            is_public: row.is_public,
             closed_at: row.closed_at,
             created_at: row.created_at,
             updated_at: row.updated_at,
@@ -94,6 +96,7 @@ struct RoomWithCountRow {
     created_by: UserId,
     closed_at: Option<chrono::DateTime<chrono::Utc>>,
     is_banned: bool,
+    is_public: bool,
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
     deleted_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -121,6 +124,7 @@ impl From<RoomWithCountRow> for crate::models::RoomWithCount {
             created_by: row.created_by,
             closed_at: row.closed_at,
             is_banned: row.is_banned,
+            is_public: row.is_public,
             created_at: row.created_at,
             updated_at: row.updated_at,
             deleted_at: row.deleted_at,
@@ -246,8 +250,9 @@ impl RoomRepository {
             r#"
              WITH inserted AS (
                  INSERT INTO rooms (name, description, cover_file_reference_id, category_id,
-                                created_by, closed_at, created_at, updated_at, version, last_activity_at)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                                created_by, closed_at, created_at, updated_at, version,
+                                last_activity_at, is_public)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                  RETURNING id,
                            name,
                            description,
@@ -259,7 +264,8 @@ impl RoomRepository {
                            updated_at,
                            deleted_at,
                            version,
-                           last_activity_at
+                           last_activity_at,
+                           is_public
              )
              SELECT i.id AS "id!: RoomId",
                     i.name,
@@ -280,7 +286,8 @@ impl RoomRepository {
                     i.updated_at,
                     i.deleted_at,
                     i.version,
-                    i.last_activity_at
+                    i.last_activity_at,
+                    i.is_public
              FROM inserted i
              LEFT JOIN room_categories rc ON rc.id = i.category_id
             "#,
@@ -293,7 +300,8 @@ impl RoomRepository {
             room.created_at,
             room.updated_at,
             room.version,
-            room.last_activity_at
+            room.last_activity_at,
+            room.is_public
         )
         .fetch_one(executor)
         .await?;
@@ -366,7 +374,8 @@ impl RoomRepository {
                    r.updated_at,
                    r.deleted_at,
                    r.version,
-                   r.last_activity_at
+                   r.last_activity_at,
+                   r.is_public
             FROM rooms r
             LEFT JOIN room_categories rc ON rc.id = r.category_id
             WHERE r.id = $1 AND r.deleted_at IS NULL
@@ -414,7 +423,8 @@ impl RoomRepository {
                    r.updated_at,
                    r.deleted_at,
                    r.version,
-                   r.last_activity_at
+                   r.last_activity_at,
+                   r.is_public
             FROM rooms r
             LEFT JOIN room_categories rc ON rc.id = r.category_id
             WHERE r.id = $1 AND r.deleted_at IS NULL
@@ -474,6 +484,7 @@ impl RoomRepository {
                    r.deleted_at,
                    r.version,
                    r.last_activity_at,
+                   r.is_public,
                    EXISTS (
                        SELECT 1 FROM room_bans rb
                        WHERE rb.room_id = r.id
@@ -555,8 +566,9 @@ impl RoomRepository {
                      cover_file_reference_id = $4,
                      category_id = $5,
                      closed_at = $6,
+                     is_public = $7,
                      version = version + 1
-                 WHERE id = $1 AND deleted_at IS NULL AND version = $7
+                 WHERE id = $1 AND deleted_at IS NULL AND version = $8
                  RETURNING id,
                            name,
                            description,
@@ -568,7 +580,8 @@ impl RoomRepository {
                            updated_at,
                            deleted_at,
                            version,
-                           last_activity_at
+                           last_activity_at,
+                           is_public
              )
              SELECT u.id AS "id!: RoomId",
                     u.name,
@@ -594,7 +607,8 @@ impl RoomRepository {
                     u.updated_at,
                     u.deleted_at,
                     u.version,
-                    u.last_activity_at
+                    u.last_activity_at,
+                    u.is_public
              FROM updated u
              LEFT JOIN room_categories rc ON rc.id = u.category_id
             "#,
@@ -604,6 +618,7 @@ impl RoomRepository {
             room.cover_file_reference_id,
             category_id.map(|id| id.as_i64()),
             room.closed_at,
+            room.is_public,
             old_version
         )
         .fetch_optional(executor)
@@ -672,6 +687,7 @@ impl RoomRepository {
             r.deleted_at,
             r.version,
             r.last_activity_at,
+            r.is_public,
             EXISTS (
                 SELECT 1 FROM room_bans rb
                 WHERE rb.room_id = r.id
@@ -731,6 +747,11 @@ impl RoomRepository {
                 builder.push(ACTIVE_ROOM_BAN_NOT_EXISTS_SQL);
             }
             None => {}
+        }
+
+        if let Some(is_public) = query.is_public {
+            Self::push_where_prefix(builder, has_condition);
+            builder.push("r.is_public = ").push_bind(is_public);
         }
 
         if let Some(pattern) = search_pattern {
@@ -1450,7 +1471,7 @@ impl RoomRepository {
               rc.id, rc.key, rc.name, rc.description, rc.sort_order, rc.is_enabled,
               rc.created_at, rc.updated_at, r.created_by,
               r.closed_at, r.created_at, r.updated_at, r.deleted_at, r.version,
-              r.last_activity_at",
+              r.last_activity_at, r.is_public",
         );
         list_builder
             .push(" ORDER BY ")
@@ -1581,6 +1602,7 @@ impl RoomRepository {
                    r.deleted_at,
                    r.version,
                    r.last_activity_at,
+                   r.is_public,
                    EXISTS (
                        SELECT 1 FROM room_bans rb
                        WHERE rb.room_id = r.id
@@ -1648,6 +1670,7 @@ impl RoomRepository {
                    r.deleted_at,
                    r.version,
                    r.last_activity_at,
+                   r.is_public,
                    EXISTS (
                        SELECT 1 FROM room_bans rb
                        WHERE rb.room_id = r.id
@@ -1663,7 +1686,7 @@ impl RoomRepository {
                      rc.id, rc.key, rc.name, rc.description, rc.sort_order, rc.is_enabled,
                      rc.created_at, rc.updated_at, r.created_by,
                      r.closed_at, r.created_at, r.updated_at, r.deleted_at, r.version,
-                     r.last_activity_at
+                     r.last_activity_at, r.is_public
             ORDER BY r.created_at DESC
             LIMIT $2 OFFSET $3
             "#,
@@ -1693,6 +1716,7 @@ impl RoomRepository {
                     created_by: row.created_by,
                     closed_at: row.closed_at,
                     is_banned: row.is_banned,
+                    is_public: row.is_public,
                     created_at: row.created_at,
                     updated_at: row.updated_at,
                     deleted_at: row.deleted_at,
@@ -1736,7 +1760,8 @@ impl RoomRepository {
                           updated_at,
                           deleted_at,
                           version,
-                          last_activity_at
+                          last_activity_at,
+                          is_public
             )
             SELECT u.id AS "id!: RoomId",
                    u.name,
@@ -1762,7 +1787,8 @@ impl RoomRepository {
                    u.updated_at,
                    u.deleted_at,
                    u.version,
-                   u.last_activity_at
+                   u.last_activity_at,
+                   u.is_public
             FROM updated u
             LEFT JOIN room_categories rc ON rc.id = u.category_id
             "#,
@@ -1851,6 +1877,7 @@ impl RoomRepository {
                    r.deleted_at,
                    r.version,
                    r.last_activity_at,
+                   r.is_public,
                    EXISTS (
                        SELECT 1 FROM room_bans rb
                        WHERE rb.room_id = r.id
@@ -1890,7 +1917,8 @@ impl RoomRepository {
                           updated_at,
                           deleted_at,
                           version,
-                          last_activity_at
+                          last_activity_at,
+                          is_public
             )
             SELECT u.id AS "id!: RoomId",
                    u.name,
@@ -1916,7 +1944,8 @@ impl RoomRepository {
                    u.updated_at,
                    u.deleted_at,
                    u.version,
-                   u.last_activity_at
+                   u.last_activity_at,
+                   u.is_public
             FROM updated u
             LEFT JOIN room_categories rc ON rc.id = u.category_id
             "#,
@@ -1955,7 +1984,8 @@ impl RoomRepository {
                           updated_at,
                           deleted_at,
                           version,
-                          last_activity_at
+                          last_activity_at,
+                          is_public
             )
             SELECT u.id AS "id!: RoomId",
                    u.name,
@@ -1981,7 +2011,8 @@ impl RoomRepository {
                    u.updated_at,
                    u.deleted_at,
                    u.version,
-                   u.last_activity_at
+                   u.last_activity_at,
+                   u.is_public
             FROM updated u
             LEFT JOIN room_categories rc ON rc.id = u.category_id
             "#,
@@ -2043,6 +2074,7 @@ impl RoomRepository {
                 r.deleted_at,
                 r.version,
                 r.last_activity_at,
+                r.is_public,
                 EXISTS (
                     SELECT 1 FROM room_bans rb
                     WHERE rb.room_id = r.id
@@ -2094,6 +2126,7 @@ impl RoomRepository {
             created_by: row.created_by,
             closed_at: row.closed_at,
             is_banned: row.is_banned,
+            is_public: row.is_public,
             created_at: row.created_at,
             updated_at: row.updated_at,
             deleted_at: row.deleted_at,

@@ -353,6 +353,7 @@ fn aac_fixture() -> Result<AudioFixture> {
     }
     let mut encoder = AacEncoder::new(AacEncoderConfig {
         bitrate_bps: 96_000,
+        ..AacEncoderConfig::default()
     });
     encoder.push_pcm(&pcm, CHANNELS, SAMPLE_RATE)?;
     encoder.finish();

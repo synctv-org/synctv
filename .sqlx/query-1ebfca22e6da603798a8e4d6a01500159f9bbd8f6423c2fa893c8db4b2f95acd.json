@@ -1,0 +1,122 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            WITH RECURSIVE ancestors AS (\n                SELECT id, room_id, creator_id, name, description,\n                       cover_file_reference_id,\n                       parent_id, position, browse_access_mode,\n                       source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,\n                       created_at, updated_at, version, 0 AS depth\n                FROM playlists p0\n                WHERE p0.room_id = $1\n                  AND p0.id = $2\n                  AND p0.deleted_at IS NULL\n                  AND EXISTS (SELECT 1 FROM rooms r WHERE r.id = p0.room_id AND r.deleted_at IS NULL)\n                  AND (p0.creator_id IS NULL OR EXISTS (\n                      SELECT 1 FROM users u WHERE u.id = p0.creator_id AND u.deleted_at IS NULL\n                  ))\n              UNION ALL\n                SELECT p.id, p.room_id, p.creator_id, p.name, p.description,\n                       p.cover_file_reference_id,\n                       p.parent_id, p.position, p.browse_access_mode,\n                       p.source_provider, p.source_config, NULLIF(p.provider_instance_name, '') AS provider_instance_name,\n                       p.created_at, p.updated_at, p.version, a.depth + 1\n                FROM playlists p\n                JOIN ancestors a ON p.id = a.parent_id AND p.room_id = a.room_id\n                WHERE p.deleted_at IS NULL\n                  AND EXISTS (SELECT 1 FROM rooms r WHERE r.id = p.room_id AND r.deleted_at IS NULL)\n                  AND (p.creator_id IS NULL OR EXISTS (\n                      SELECT 1 FROM users u WHERE u.id = p.creator_id AND u.deleted_at IS NULL\n                  ))\n                  AND a.depth < 50\n            )\n            SELECT id as \"id!: PlaylistId\",\n                   room_id as \"room_id!: RoomId\",\n                   creator_id as \"creator_id: crate::models::UserId\",\n                   name as \"name!\",\n                   description as \"description!\",\n                   cover_file_reference_id,\n                   parent_id as \"parent_id: PlaylistId\",\n                   position as \"position!\",\n                   browse_access_mode as \"browse_access_mode!\",\n                   source_provider,\n                   source_config as \"source_config: crate::models::PlaylistSourceConfig\",\n                   NULLIF(provider_instance_name, '') AS \"provider_instance_name?\",\n                   created_at as \"created_at!\",\n                   updated_at as \"updated_at!\",\n                   version as \"version!\"\n            FROM ancestors\n            ORDER BY depth DESC\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!: PlaylistId",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "room_id!: RoomId",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "creator_id: crate::models::UserId",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "name!",
+        "type_info": "Varchar",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "description!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "cover_file_reference_id",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "parent_id: PlaylistId",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "position!",
+        "type_info": "Float8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 8,
+        "name": "browse_access_mode!",
+        "type_info": "Int2",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 9,
+        "name": "source_provider",
+        "type_info": "Int2",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 10,
+        "name": "source_config: crate::models::PlaylistSourceConfig",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 11,
+        "name": "provider_instance_name?",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 12,
+        "name": "created_at!",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 13,
+        "name": "updated_at!",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 14,
+        "name": "version!",
+        "type_info": "Int4",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "1ebfca22e6da603798a8e4d6a01500159f9bbd8f6423c2fa893c8db4b2f95acd"
+}

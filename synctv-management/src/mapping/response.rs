@@ -1263,6 +1263,17 @@ pub(crate) fn created_playlist_to_client_proto(
             .map(|id| encode_user_id(id, public_id_codec))
             .transpose()?
             .unwrap_or_default(),
+        browse_access_mode: match playlist.browse_access_mode {
+            synctv_core::models::PlaylistBrowseAccessMode::Default => {
+                client_proto::PlaylistBrowseAccessMode::Default as i32
+            }
+            synctv_core::models::PlaylistBrowseAccessMode::RoomMembers => {
+                client_proto::PlaylistBrowseAccessMode::RoomMembers as i32
+            }
+            synctv_core::models::PlaylistBrowseAccessMode::CreatorOnly => {
+                client_proto::PlaylistBrowseAccessMode::CreatorOnly as i32
+            }
+        },
     })
 }
 

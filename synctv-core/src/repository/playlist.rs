@@ -5,8 +5,8 @@
 use super::{query_builder::ilike_contains_pattern, required_count, sqlx_types::ProviderTypeName};
 use crate::{
     models::{
-        normalize_provider_instance_name, Playlist, PlaylistId, PlaylistListQuery,
-        PlaylistSourceConfig, RoomId, SourceProvider,
+        normalize_provider_instance_name, Playlist, PlaylistBrowseAccessMode, PlaylistId,
+        PlaylistListQuery, PlaylistSourceConfig, RoomId, SourceProvider,
     },
     Result,
 };
@@ -17,6 +17,7 @@ struct PlaylistRow {
     id: PlaylistId,
     room_id: RoomId,
     creator_id: Option<crate::models::UserId>,
+    browse_access_mode: i16,
     name: String,
     description: String,
     cover_file_reference_id: Option<i64>,
@@ -60,6 +61,8 @@ impl TryFrom<PlaylistRow> for Playlist {
             id: row.id,
             room_id: row.room_id,
             creator_id: row.creator_id,
+            browse_access_mode: PlaylistBrowseAccessMode::try_from(row.browse_access_mode)
+                .map_err(crate::Error::InvalidInput)?,
             name: row.name,
             description: row.description,
             cover_file_reference_id: row.cover_file_reference_id,
@@ -80,6 +83,7 @@ struct PlaylistListRow {
     id: PlaylistId,
     room_id: RoomId,
     creator_id: Option<crate::models::UserId>,
+    browse_access_mode: i16,
     name: String,
     description: String,
     cover_file_reference_id: Option<i64>,
@@ -121,6 +125,8 @@ impl TryFrom<PlaylistListRow> for PlaylistListItem {
                 id: row.id,
                 room_id: row.room_id,
                 creator_id: row.creator_id,
+                browse_access_mode: PlaylistBrowseAccessMode::try_from(row.browse_access_mode)
+                    .map_err(crate::Error::InvalidInput)?,
                 name: row.name,
                 description: row.description,
                 cover_file_reference_id: row.cover_file_reference_id,
@@ -299,7 +305,7 @@ impl PlaylistRepository {
         let mut builder = sqlx::QueryBuilder::<sqlx::Postgres>::new(
             "SELECT p.id, p.room_id, p.creator_id, p.name, p.description,
                     p.cover_file_reference_id,
-                    p.parent_id, p.position,
+                    p.parent_id, p.position, p.browse_access_mode,
                     p.source_provider, p.source_config, NULLIF(p.provider_instance_name, '') AS provider_instance_name,
                     p.created_at, p.updated_at, p.version,
                     CASE
@@ -340,6 +346,7 @@ impl PlaylistRepository {
                    cover_file_reference_id,
                    parent_id as "parent_id: PlaylistId",
                    position as "position!",
+                   browse_access_mode as "browse_access_mode!",
                    source_provider,
                    source_config as "source_config: crate::models::PlaylistSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
@@ -388,6 +395,7 @@ impl PlaylistRepository {
                    cover_file_reference_id,
                    parent_id as "parent_id: PlaylistId",
                    position as "position!",
+                   browse_access_mode as "browse_access_mode!",
                    source_provider,
                    source_config as "source_config: crate::models::PlaylistSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
@@ -441,6 +449,7 @@ impl PlaylistRepository {
                    cover_file_reference_id,
                    parent_id as "parent_id: PlaylistId",
                    position as "position!",
+                   browse_access_mode as "browse_access_mode!",
                    source_provider,
                    source_config as "source_config: crate::models::PlaylistSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
@@ -500,6 +509,7 @@ impl PlaylistRepository {
                    cover_file_reference_id,
                    parent_id as "parent_id: PlaylistId",
                    position as "position!",
+                   browse_access_mode as "browse_access_mode!",
                    source_provider,
                    source_config as "source_config: crate::models::PlaylistSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
@@ -557,6 +567,7 @@ impl PlaylistRepository {
                    cover_file_reference_id,
                    parent_id as "parent_id: PlaylistId",
                    position,
+                   browse_access_mode,
                    source_provider,
                    source_config as "source_config: crate::models::PlaylistSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
@@ -603,6 +614,7 @@ impl PlaylistRepository {
                    cover_file_reference_id,
                    parent_id as "parent_id: PlaylistId",
                    position,
+                   browse_access_mode,
                    source_provider,
                    source_config as "source_config: crate::models::PlaylistSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
@@ -676,6 +688,7 @@ impl PlaylistRepository {
                    cover_file_reference_id,
                    parent_id as "parent_id: PlaylistId",
                    position,
+                   browse_access_mode,
                    source_provider,
                    source_config as "source_config: crate::models::PlaylistSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
@@ -716,6 +729,7 @@ impl PlaylistRepository {
                    cover_file_reference_id,
                    parent_id as "parent_id: PlaylistId",
                    position,
+                   browse_access_mode,
                    source_provider,
                    source_config as "source_config: crate::models::PlaylistSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
@@ -829,6 +843,7 @@ impl PlaylistRepository {
                    cover_file_reference_id,
                    parent_id as "parent_id: PlaylistId",
                    position,
+                   browse_access_mode,
                    source_provider,
                    source_config as "source_config: crate::models::PlaylistSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
@@ -876,6 +891,7 @@ impl PlaylistRepository {
                    cover_file_reference_id,
                    parent_id as "parent_id: PlaylistId",
                    position,
+                   browse_access_mode,
                    source_provider,
                    source_config as "source_config: crate::models::PlaylistSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
@@ -956,6 +972,7 @@ impl PlaylistRepository {
                    cover_file_reference_id,
                    parent_id as "parent_id: PlaylistId",
                    position,
+                   browse_access_mode,
                    source_provider,
                    source_config as "source_config: crate::models::PlaylistSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
@@ -1178,8 +1195,8 @@ impl PlaylistRepository {
             r#"
             INSERT INTO playlists (room_id, creator_id, name, description,
                                    cover_file_reference_id,
-                                   parent_id, position, source_provider, source_config, provider_instance_name)
-            SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+                                   parent_id, position, browse_access_mode, source_provider, source_config, provider_instance_name)
+            SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
             WHERE $2::BIGINT IS NULL OR EXISTS (
                 SELECT 1
                 FROM users
@@ -1194,6 +1211,7 @@ impl PlaylistRepository {
                       cover_file_reference_id,
                       parent_id as "parent_id: PlaylistId",
                       position,
+                      browse_access_mode,
                       source_provider,
                       source_config as "source_config: crate::models::PlaylistSourceConfig",
                       NULLIF(provider_instance_name, '') AS "provider_instance_name?",
@@ -1211,6 +1229,7 @@ impl PlaylistRepository {
             playlist.cover_file_reference_id,
             parent_id.as_ref().map(PlaylistId::as_i64),
             playlist.position,
+            i16::from(playlist.browse_access_mode),
             source_provider_code,
             source_config as _,
             normalize_provider_instance_name(playlist.provider_instance_name.as_deref()),
@@ -1308,10 +1327,11 @@ impl PlaylistRepository {
                 source_provider = $6,
                 source_config = $7,
                 provider_instance_name = $8,
+                browse_access_mode = $9,
                 version = version + 1
             WHERE id = $1
               AND deleted_at IS NULL
-              AND version = $9
+              AND version = $10
               AND (creator_id IS NULL OR EXISTS (
                   SELECT 1 FROM users u WHERE u.id = playlists.creator_id AND u.deleted_at IS NULL
               ))
@@ -1331,6 +1351,7 @@ impl PlaylistRepository {
                       cover_file_reference_id,
                       parent_id as "parent_id: PlaylistId",
                       position,
+                      browse_access_mode,
                       source_provider,
                       source_config as "source_config: crate::models::PlaylistSourceConfig",
                       NULLIF(provider_instance_name, '') AS "provider_instance_name?",
@@ -1346,6 +1367,7 @@ impl PlaylistRepository {
             source_provider_code,
             source_config as _,
             normalize_provider_instance_name(playlist.provider_instance_name.as_deref()),
+            i16::from(playlist.browse_access_mode),
             expected_version,
         )
         .fetch_optional(executor)
@@ -1390,6 +1412,7 @@ impl PlaylistRepository {
                    cover_file_reference_id,
                    parent_id as "parent_id: PlaylistId",
                    position,
+                   browse_access_mode,
                    source_provider,
                    source_config as "source_config: crate::models::PlaylistSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
@@ -1434,6 +1457,7 @@ impl PlaylistRepository {
                    cover_file_reference_id,
                    parent_id as "parent_id: PlaylistId",
                    position,
+                   browse_access_mode,
                    source_provider,
                    source_config as "source_config: crate::models::PlaylistSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
@@ -1532,6 +1556,7 @@ impl PlaylistRepository {
                               cover_file_reference_id,
                               parent_id as "parent_id: PlaylistId",
                               position,
+                              browse_access_mode,
                               source_provider,
                               source_config as "source_config: crate::models::PlaylistSourceConfig",
                               NULLIF(provider_instance_name, '') AS "provider_instance_name?",
@@ -1565,7 +1590,7 @@ impl PlaylistRepository {
             WITH RECURSIVE ancestors AS (
                 SELECT id, room_id, creator_id, name, description,
                        cover_file_reference_id,
-                       parent_id, position,
+                       parent_id, position, browse_access_mode,
                        source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                        created_at, updated_at, version, 0 AS depth
                 FROM playlists p0
@@ -1578,7 +1603,7 @@ impl PlaylistRepository {
               UNION ALL
                 SELECT p.id, p.room_id, p.creator_id, p.name, p.description,
                        p.cover_file_reference_id,
-                       p.parent_id, p.position,
+                       p.parent_id, p.position, p.browse_access_mode,
                        p.source_provider, p.source_config, NULLIF(p.provider_instance_name, '') AS provider_instance_name,
                        p.created_at, p.updated_at, p.version, a.depth + 1
                 FROM playlists p
@@ -1598,6 +1623,7 @@ impl PlaylistRepository {
                    cover_file_reference_id,
                    parent_id as "parent_id: PlaylistId",
                    position as "position!",
+                   browse_access_mode as "browse_access_mode!",
                    source_provider,
                    source_config as "source_config: crate::models::PlaylistSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
@@ -1627,7 +1653,7 @@ impl PlaylistRepository {
             WITH RECURSIVE ancestors AS (
                 SELECT id, room_id, creator_id, name, description,
                        cover_file_reference_id,
-                       parent_id, position,
+                       parent_id, position, browse_access_mode,
                        source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                        created_at, updated_at, version, 0 AS depth
                 FROM playlists p0
@@ -1641,7 +1667,7 @@ impl PlaylistRepository {
               UNION ALL
                 SELECT p.id, p.room_id, p.creator_id, p.name, p.description,
                        p.cover_file_reference_id,
-                       p.parent_id, p.position,
+                       p.parent_id, p.position, p.browse_access_mode,
                        p.source_provider, p.source_config, NULLIF(p.provider_instance_name, '') AS provider_instance_name,
                        p.created_at, p.updated_at, p.version, a.depth + 1
                 FROM playlists p
@@ -1661,6 +1687,7 @@ impl PlaylistRepository {
                    cover_file_reference_id,
                    parent_id as "parent_id: PlaylistId",
                    position as "position!",
+                   browse_access_mode as "browse_access_mode!",
                    source_provider,
                    source_config as "source_config: crate::models::PlaylistSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",

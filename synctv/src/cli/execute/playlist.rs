@@ -65,6 +65,9 @@ pub(super) async fn execute_playlist(playlist_command: PlaylistCommand) -> Resul
                     provider_instance_name: provider_instance_name_string(
                         args.provider_instance_name.as_deref(),
                     ),
+                    browse_access_mode: args
+                        .browse_access_mode
+                        .map_or(0, CliPlaylistBrowseAccessMode::to_proto),
                 }
             )?;
             args.room.remote.print_output(&response)
@@ -79,6 +82,9 @@ pub(super) async fn execute_playlist(playlist_command: PlaylistCommand) -> Resul
                     room_id: args.room.room_id,
                     playlist_id: args.playlist_id,
                     name: args.name,
+                    browse_access_mode: args
+                        .browse_access_mode
+                        .map(CliPlaylistBrowseAccessMode::to_proto),
                 }
             )?;
             args.room.remote.print_output(&response)

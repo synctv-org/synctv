@@ -379,6 +379,62 @@ async fn test_list_filtered_by_parent_matches_default_provider_instance_name() {
     assert!(rows[0].playlist.provider_instance_name.is_none());
 }
 
+/// Browse access controls entering a playlist, so restricted entries must
+/// remain visible in the parent listing.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_list_filtered_by_parent_includes_creator_only_entries() {
+    use crate::repository::room::RoomRepository;
+    use crate::repository::user::UserRepository;
+    use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
+
+    let (_postgres, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+    let playlist_repo = PlaylistRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(
+            &UserFixture::new()
+                .with_username("browse_access_owner")
+                .build(),
+        )
+        .await
+        .checked("operation should succeed");
+    let room = room_repo
+        .create(
+            &RoomFixture::new()
+                .with_name("Browse Access Room")
+                .with_owner(owner.id)
+                .build(),
+        )
+        .await
+        .checked("operation should succeed");
+
+    let mut restricted = PlaylistFixture::new()
+        .with_room_id(room.id)
+        .with_creator(owner.id)
+        .with_name("Restricted entry")
+        .build();
+    restricted.browse_access_mode = crate::models::PlaylistBrowseAccessMode::CreatorOnly;
+    let restricted = playlist_repo
+        .create(&restricted)
+        .await
+        .checked("operation should succeed");
+
+    let rows = playlist_repo
+        .list_filtered_by_parent(&room.id, None, &PlaylistListQuery::default(), 50, 0)
+        .await
+        .checked("operation should succeed");
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].playlist.id, restricted.id);
+    assert_eq!(
+        rows[0].playlist.browse_access_mode,
+        crate::models::PlaylistBrowseAccessMode::CreatorOnly
+    );
+}
+
 /// Integration test: Get playlists by room
 #[tokio::test]
 #[ignore = "Requires Docker"]

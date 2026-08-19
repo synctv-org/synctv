@@ -557,6 +557,7 @@ fn test_create_playlist_request_serializes_dynamic_fields_without_is_folder() {
         source_config: alist_playlist_source_config("/tv"),
         provider_instance_name: "alist-main".to_string(),
         description: String::new(),
+        browse_access_mode: synctv_proto::client::PlaylistBrowseAccessMode::Default as i32,
     };
 
     let json = serde_json::to_value(&request).expect("serialize create playlist request");

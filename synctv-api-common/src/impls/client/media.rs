@@ -1399,15 +1399,15 @@ async fn media_models_to_proto(
         .await
 }
 
-pub fn require_dynamic_playlist_creator(
+pub fn require_dynamic_playlist_access(
     playlist: &Playlist,
     viewer_id: UserId,
 ) -> Result<(), ApiError> {
-    if playlist.creator_id == Some(viewer_id) {
+    if playlist.is_accessible_to(Some(viewer_id)) {
         Ok(())
     } else {
         Err(ApiError::Authorization(
-            "Only the playlist creator can browse dynamic provider playlists".to_string(),
+            "You do not have permission to browse this playlist".to_string(),
         ))
     }
 }
@@ -2573,6 +2573,7 @@ impl ClientApiImpl {
             .get_room_playlist_path(&rid, &playlist_id)
             .await
             .map_err(ApiError::from)?;
+        Self::require_playlist_path_access(actor, &static_path)?;
         let mut current_path: Vec<synctv_proto::client::PlaylistBrowsePathNode> = static_path
             .iter()
             .map(|playlist| try_playlist_path_node_to_proto(playlist, &self.public_id_codec))
@@ -2584,7 +2585,7 @@ impl ClientApiImpl {
                     "Guests cannot browse dynamic provider playlists".to_string(),
                 ));
             };
-            require_dynamic_playlist_creator(&playlist, uid)?;
+            require_dynamic_playlist_access(&playlist, uid)?;
             self.room_service
                 .ensure_client_usable_playlist(&playlist)
                 .await
@@ -2918,7 +2919,7 @@ mod tests {
         build_delete_media_request, build_edit_media_request, build_move_media_request,
         compute_playlist_items_response_version, dynamic_pagination_from_request,
         file_upload_session_to_room_cover_proto, map_availability_filter, map_media_sort,
-        map_playlist_sort_from_media_sort, map_sort_direction, require_dynamic_playlist_creator,
+        map_playlist_sort_from_media_sort, map_sort_direction, require_dynamic_playlist_access,
         stored_file_to_file_cover_proto, upload_session_fields,
         validate_dynamic_playlist_query_support,
     };
@@ -3004,6 +3005,7 @@ mod tests {
             id: PlaylistId::new(),
             room_id: RoomId::new(),
             creator_id: Some(UserId::new()),
+            browse_access_mode: synctv_core::models::PlaylistBrowseAccessMode::Default,
             name: name.to_string(),
             description: String::new(),
             cover_file_reference_id: None,
@@ -3704,7 +3706,7 @@ mod tests {
     }
 
     #[test]
-    fn test_require_dynamic_playlist_creator_allows_creator() -> TestResult {
+    fn test_require_dynamic_playlist_access_allows_creator() -> TestResult {
         let playlist = make_playlist(
             "Dynamic Playlist",
             Some(synctv_core::models::SourceProvider::Alist),
@@ -3714,42 +3716,42 @@ mod tests {
             .creator_id
             .ok_or_else(|| test_error("playlist should include creator id"))?;
 
-        api_ok(require_dynamic_playlist_creator(&playlist, creator_id))?;
+        api_ok(require_dynamic_playlist_access(&playlist, creator_id))?;
         Ok(())
     }
 
     #[test]
-    fn test_require_dynamic_playlist_creator_rejects_other_user() {
+    fn test_require_dynamic_playlist_access_rejects_other_user() {
         let playlist = make_playlist(
             "Dynamic Playlist",
             Some(synctv_core::models::SourceProvider::Alist),
             Some("alist-main"),
         );
-        let err = require_error(require_dynamic_playlist_creator(
+        let err = require_error(require_dynamic_playlist_access(
             &playlist,
             UserId::expect_positive(999),
         ));
 
         assert!(
-            matches!(err, crate::impls::ApiError::Authorization(message) if message.contains("Only the playlist creator"))
+            matches!(err, crate::impls::ApiError::Authorization(message) if message.contains("permission to browse"))
         );
     }
 
     #[test]
-    fn test_require_dynamic_playlist_creator_rejects_unowned_playlist() {
+    fn test_require_dynamic_playlist_access_rejects_unowned_playlist() {
         let mut playlist = make_playlist(
             "Dynamic Playlist",
             Some(synctv_core::models::SourceProvider::Alist),
             Some("alist-main"),
         );
         playlist.creator_id = None;
-        let err = require_error(require_dynamic_playlist_creator(
+        let err = require_error(require_dynamic_playlist_access(
             &playlist,
             UserId::expect_positive(999),
         ));
 
         assert!(
-            matches!(err, crate::impls::ApiError::Authorization(message) if message.contains("Only the playlist creator"))
+            matches!(err, crate::impls::ApiError::Authorization(message) if message.contains("permission to browse"))
         );
     }
 

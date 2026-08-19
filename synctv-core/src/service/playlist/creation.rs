@@ -1,5 +1,8 @@
 use crate::{
-    models::{Playlist, PlaylistId, PlaylistSourceConfig, RoomId, SourceProvider, UserId},
+    models::{
+        Playlist, PlaylistBrowseAccessMode, PlaylistId, PlaylistSourceConfig, RoomId,
+        SourceProvider, UserId,
+    },
     Error, Result,
 };
 
@@ -12,6 +15,7 @@ pub struct CreatePlaylistRequest {
     pub name: String,
     pub description: String,
     pub parent_id: Option<PlaylistId>,
+    pub browse_access_mode: PlaylistBrowseAccessMode,
 
     // Provider-backed playlist fields.
     pub source_provider: Option<SourceProvider>,
@@ -138,6 +142,7 @@ impl PlaylistService {
             id: crate::models::PlaylistId::new(),
             room_id,
             creator_id: Some(user_id),
+            browse_access_mode: request.browse_access_mode,
             name: request.name,
             description: request.description,
             cover_file_reference_id: None,

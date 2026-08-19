@@ -1248,10 +1248,11 @@ impl AdminRuntime for ManagementAdminRuntime {
     ) -> Result<client_proto::Playlist, RuntimeError> {
         let req = client_proto::UpdatePlaylistRequest {
             playlist_id: command.playlist_id,
-            name: command.name,
+            name: command.name.unwrap_or_default(),
             description: command.description,
             source_config: None,
             provider_instance_name: None,
+            browse_access_mode: command.browse_access_mode.map(|mode| mode as i32),
         };
         self.inner
             .update_playlist(&command.room_id, req, admin_user_id)

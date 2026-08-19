@@ -541,6 +541,23 @@ pub enum CliPlaylistSortField {
     UpdatedAt,
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
+pub enum CliPlaylistBrowseAccessMode {
+    Default,
+    RoomMembers,
+    CreatorOnly,
+}
+
+impl CliPlaylistBrowseAccessMode {
+    pub(super) const fn to_proto(self) -> i32 {
+        match self {
+            Self::Default => synctv_proto::client::PlaylistBrowseAccessMode::Default as i32,
+            Self::RoomMembers => synctv_proto::client::PlaylistBrowseAccessMode::RoomMembers as i32,
+            Self::CreatorOnly => synctv_proto::client::PlaylistBrowseAccessMode::CreatorOnly as i32,
+        }
+    }
+}
+
 impl CliPlaylistSortField {
     pub(super) const fn to_proto(self) -> i32 {
         match self {

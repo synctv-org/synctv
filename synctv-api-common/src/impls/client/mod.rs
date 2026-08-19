@@ -1095,6 +1095,29 @@ impl ClientApiImpl {
         }
     }
 
+    pub fn require_playlist_access(
+        actor: &RoomActor,
+        playlist: &synctv_core::models::Playlist,
+    ) -> Result<(), ApiError> {
+        if playlist.is_accessible_to(actor.user_id()) {
+            Ok(())
+        } else {
+            Err(ApiError::Authorization(
+                "You do not have permission to browse this playlist".to_string(),
+            ))
+        }
+    }
+
+    pub fn require_playlist_path_access(
+        actor: &RoomActor,
+        path: &[synctv_core::models::Playlist],
+    ) -> Result<(), ApiError> {
+        for playlist in path {
+            Self::require_playlist_access(actor, playlist)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn map_media_lookup_error(
         err: synctv_core::Error,
         not_found_message: &'static str,

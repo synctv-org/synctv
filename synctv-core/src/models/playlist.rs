@@ -24,6 +24,28 @@ sort_field_enum! {
     error = "Unknown playlist list sort field";
 }
 
+/// Controls who can browse a playlist from a room client.
+///
+/// `Default` is resolved from the playlist kind: static playlists are browsable
+/// to room actors with `BROWSE_LIBRARY`, while dynamic playlists are restricted
+/// to their creator. The value is intentionally stored as an integer without a
+/// database constraint; unknown values are rejected when loaded by the domain.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(i16)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaylistBrowseAccessMode {
+    #[default]
+    Default = 0,
+    RoomMembers = 1,
+    CreatorOnly = 2,
+}
+
+i16_enum!(
+    PlaylistBrowseAccessMode,
+    "Unknown playlist browse access mode",
+    { Default = 0, RoomMembers = 1, CreatorOnly = 2 }
+);
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlaylistListQuery {
     pub pagination: super::pagination::PageParams,
@@ -59,6 +81,8 @@ pub struct Playlist {
     pub id: PlaylistId,
     pub room_id: RoomId,
     pub creator_id: Option<UserId>,
+    #[serde(default)]
+    pub browse_access_mode: PlaylistBrowseAccessMode,
     pub name: String,
     #[serde(default)]
     pub description: String,
@@ -96,6 +120,28 @@ impl Playlist {
     pub const fn is_static(&self) -> bool {
         self.source_provider.is_none()
     }
+
+    #[must_use]
+    pub const fn effective_browse_access_mode(&self) -> PlaylistBrowseAccessMode {
+        match self.browse_access_mode {
+            PlaylistBrowseAccessMode::Default if self.is_dynamic() => {
+                PlaylistBrowseAccessMode::CreatorOnly
+            }
+            PlaylistBrowseAccessMode::Default => PlaylistBrowseAccessMode::RoomMembers,
+            mode => mode,
+        }
+    }
+
+    #[must_use]
+    pub fn is_accessible_to(&self, viewer_id: Option<UserId>) -> bool {
+        match self.effective_browse_access_mode() {
+            PlaylistBrowseAccessMode::RoomMembers => viewer_id.is_some(),
+            PlaylistBrowseAccessMode::CreatorOnly => {
+                viewer_id.is_some() && self.creator_id == viewer_id
+            }
+            PlaylistBrowseAccessMode::Default => false,
+        }
+    }
 }
 
 /// Create playlist request
@@ -106,6 +152,8 @@ pub struct CreatePlaylistRequest {
     #[serde(default)]
     pub description: String,
     pub parent_id: Option<PlaylistId>,
+    #[serde(default)]
+    pub browse_access_mode: PlaylistBrowseAccessMode,
 
     // Dynamic playlist fields
     pub source_provider: Option<SourceProvider>,
@@ -142,6 +190,7 @@ mod tests {
             id: PlaylistId::expect_positive(1),
             room_id: RoomId::expect_positive(1),
             creator_id: Some(UserId::expect_positive(1)),
+            browse_access_mode: PlaylistBrowseAccessMode::Default,
             name: name.to_string(),
             description: String::new(),
             cover_file_reference_id: None,
@@ -187,5 +236,51 @@ mod tests {
         assert_eq!(json["media_count"], 42);
         assert_eq!(json["children_count"], 3);
         assert_eq!(json["name"], "Counted");
+    }
+
+    #[test]
+    fn browse_access_mode_defaults_follow_playlist_kind() {
+        let static_playlist = make_playlist("Static", None, None);
+        assert_eq!(
+            static_playlist.effective_browse_access_mode(),
+            PlaylistBrowseAccessMode::RoomMembers
+        );
+        assert!(!static_playlist.is_accessible_to(None));
+
+        let dynamic_playlist = make_playlist("Dynamic", None, Some(SourceProvider::Alist));
+        assert_eq!(
+            dynamic_playlist.effective_browse_access_mode(),
+            PlaylistBrowseAccessMode::CreatorOnly
+        );
+        assert!(dynamic_playlist.is_accessible_to(dynamic_playlist.creator_id));
+        assert!(!dynamic_playlist.is_accessible_to(Some(UserId::expect_positive(99))));
+        assert!(!dynamic_playlist.is_accessible_to(None));
+    }
+
+    #[test]
+    fn room_members_mode_allows_authenticated_dynamic_viewers() {
+        let mut playlist = make_playlist("Dynamic", None, Some(SourceProvider::Alist));
+        playlist.browse_access_mode = PlaylistBrowseAccessMode::RoomMembers;
+
+        assert!(playlist.is_accessible_to(Some(UserId::expect_positive(99))));
+        assert!(!playlist.is_accessible_to(None));
+    }
+
+    #[test]
+    fn creator_only_does_not_grant_access_to_unowned_playlists() {
+        let mut playlist = make_playlist("Static", None, None);
+        playlist.browse_access_mode = PlaylistBrowseAccessMode::CreatorOnly;
+
+        assert!(!playlist.is_accessible_to(None));
+    }
+
+    #[test]
+    fn creator_only_mode_applies_to_static_playlists() {
+        let mut playlist = make_playlist("Static", None, None);
+        playlist.browse_access_mode = PlaylistBrowseAccessMode::CreatorOnly;
+
+        assert!(playlist.is_accessible_to(playlist.creator_id));
+        assert!(!playlist.is_accessible_to(Some(UserId::expect_positive(99))));
+        assert!(!playlist.is_accessible_to(None));
     }
 }

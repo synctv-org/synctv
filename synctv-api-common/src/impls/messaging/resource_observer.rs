@@ -2162,7 +2162,7 @@ impl MediaResourceHub {
                             if let Err(send_error) = entry.observer.send_server_message(
                                 ResourceObserver::resource_observe_error_message(
                                     entry.key.observe_id.clone(),
-                                    crate::impls::ApiError::Internal(error.clone()),
+                                    crate::impls::ApiError::from(error.clone()),
                                 ),
                             ) {
                                 tracing::warn!(
@@ -2509,7 +2509,7 @@ impl ResourceObserver {
                 self.release_pending_observation_slot(&observe_id).await;
                 self.send_server_message(Self::resource_observe_error_message(
                     observe_id,
-                    crate::impls::ApiError::Internal(error),
+                    crate::impls::ApiError::from(error),
                 ))?;
                 Ok(())
             }

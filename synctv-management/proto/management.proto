@@ -1111,6 +1111,7 @@ message CreatePlaylistRequest {
     synctv.source_config.SourceProvider source_provider = 5;
     synctv.source_config.PlaylistSourceConfig source_config = 6;
     string provider_instance_name = 7;
+    synctv.client.PlaylistBrowseAccessMode browse_access_mode = 8;
 }
 
 message CreateAlistPlaylistRequest {
@@ -1138,6 +1139,7 @@ message UpdatePlaylistRequest {
     string room_id = 1;
     string playlist_id = 2;
     optional string name = 3;
+    optional synctv.client.PlaylistBrowseAccessMode browse_access_mode = 4;
 }
 
 message MovePlaylistRequest {

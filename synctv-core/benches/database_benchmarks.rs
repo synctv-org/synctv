@@ -148,6 +148,7 @@ fn make_playlist(room_id: &RoomId, parent_id: Option<&PlaylistId>, name: &str) -
         id: PlaylistId::new(),
         room_id: *room_id,
         creator_id: None,
+        browse_access_mode: synctv_core::models::PlaylistBrowseAccessMode::Default,
         name: name.to_string(),
         description: String::new(),
         cover_file_reference_id: None,

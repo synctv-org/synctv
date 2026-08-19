@@ -570,6 +570,20 @@ impl ManagementServiceImpl {
             let trimmed = req.provider_instance_name.trim();
             (!trimmed.is_empty()).then(|| trimmed.to_string())
         };
+        let browse_access_mode =
+            match client_proto::PlaylistBrowseAccessMode::try_from(req.browse_access_mode)
+                .map_err(|_| Status::invalid_argument("unsupported playlist browse access mode"))?
+            {
+                client_proto::PlaylistBrowseAccessMode::Default => {
+                    synctv_core::models::PlaylistBrowseAccessMode::Default
+                }
+                client_proto::PlaylistBrowseAccessMode::RoomMembers => {
+                    synctv_core::models::PlaylistBrowseAccessMode::RoomMembers
+                }
+                client_proto::PlaylistBrowseAccessMode::CreatorOnly => {
+                    synctv_core::models::PlaylistBrowseAccessMode::CreatorOnly
+                }
+            };
         let actor = self
             .user_service
             .get_user(&actor_user_id)
@@ -602,6 +616,7 @@ impl ManagementServiceImpl {
                     source_provider,
                     source_config,
                     provider_instance_name,
+                    browse_access_mode,
                 },
                 Some(prepared_outbox_fanout.outbox_factory()),
             )
@@ -3306,6 +3321,7 @@ impl ManagementService for ManagementServiceImpl {
                     source_provider: req.source_provider,
                     source_config: req.source_config,
                     provider_instance_name: req.provider_instance_name,
+                    browse_access_mode: req.browse_access_mode,
                 },
             )
             .await?;
@@ -3334,6 +3350,7 @@ impl ManagementService for ManagementServiceImpl {
                         &req.password,
                     )?),
                     provider_instance_name: req.provider_instance_name,
+                    browse_access_mode: client_proto::PlaylistBrowseAccessMode::Default as i32,
                 },
             )
             .await?;
@@ -3358,6 +3375,7 @@ impl ManagementService for ManagementServiceImpl {
                     source_provider: synctv_proto::source_config::SourceProvider::Emby as i32,
                     source_config: Some(emby_playlist_source_config(&req.server_id, &req.item_id)?),
                     provider_instance_name: req.provider_instance_name,
+                    browse_access_mode: client_proto::PlaylistBrowseAccessMode::Default as i32,
                 },
             )
             .await?;
@@ -3370,17 +3388,23 @@ impl ManagementService for ManagementServiceImpl {
     ) -> Result<Response<client_proto::Playlist>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
-        let name = req
-            .name
-            .ok_or_else(|| Status::invalid_argument("name is required"))?;
+        let browse_access_mode = req
+            .browse_access_mode
+            .map(|value| {
+                client_proto::PlaylistBrowseAccessMode::try_from(value).map_err(|_| {
+                    Status::invalid_argument("unsupported playlist browse access mode")
+                })
+            })
+            .transpose()?;
         let response = self
             .admin_api
             .update_playlist(
                 UpdatePlaylistCommand {
                     room_id: req.room_id,
                     playlist_id: req.playlist_id,
-                    name,
+                    name: req.name,
                     description: String::new(),
+                    browse_access_mode,
                 },
                 &validated.user_id,
             )

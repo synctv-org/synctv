@@ -1,7 +1,7 @@
 //! Playlist operations: create, update, delete, list playlists
 use synctv_core::models::{
-    PlaylistListSortBy as CorePlaylistListSortBy, SortDirection as CoreSortDirection,
-    StoreFileUploadResult, UserId,
+    PlaylistBrowseAccessMode, PlaylistListSortBy as CorePlaylistListSortBy,
+    SortDirection as CoreSortDirection, StoreFileUploadResult, UserId,
 };
 use synctv_core::service::{
     CreatePlaylistRequest as CoreCreatePlaylistRequest,
@@ -43,6 +43,22 @@ fn usize_to_i64_api(value: usize, field: &str) -> Result<i64, ApiError> {
 fn normalize_non_empty_filter(value: &str) -> Option<String> {
     let trimmed = value.trim();
     (!trimmed.is_empty()).then_some(trimmed.to_string())
+}
+
+fn proto_playlist_browse_access_mode(value: i32) -> Result<PlaylistBrowseAccessMode, ApiError> {
+    match synctv_proto::client::PlaylistBrowseAccessMode::try_from(value).map_err(|_| {
+        ApiError::InvalidInput("Unsupported playlist browse access mode".to_string())
+    })? {
+        synctv_proto::client::PlaylistBrowseAccessMode::Default => {
+            Ok(PlaylistBrowseAccessMode::Default)
+        }
+        synctv_proto::client::PlaylistBrowseAccessMode::RoomMembers => {
+            Ok(PlaylistBrowseAccessMode::RoomMembers)
+        }
+        synctv_proto::client::PlaylistBrowseAccessMode::CreatorOnly => {
+            Ok(PlaylistBrowseAccessMode::CreatorOnly)
+        }
+    }
 }
 
 fn proto_playlist_list_sort_by(value: i32) -> Result<CorePlaylistListSortBy, ApiError> {
@@ -101,6 +117,7 @@ pub fn build_create_playlist_request(
         source_config,
         provider_instance_name,
         description,
+        browse_access_mode,
     } = req;
 
     let parent_id = crate::impls::proto_validated_optional_playlist_id(parent_id, public_id_codec)?;
@@ -133,6 +150,7 @@ pub fn build_create_playlist_request(
         source_provider,
         source_config,
         provider_instance_name,
+        browse_access_mode: proto_playlist_browse_access_mode(browse_access_mode)?,
     })
 }
 
@@ -145,6 +163,7 @@ pub fn build_update_playlist_request(
         && req.description.trim().is_empty()
         && req.source_config.is_none()
         && req.provider_instance_name.is_none()
+        && req.browse_access_mode.is_none()
     {
         return Err(ApiError::InvalidInput(
             "playlist update requires at least one changed field".to_string(),
@@ -164,6 +183,10 @@ pub fn build_update_playlist_request(
         name: (!req.name.trim().is_empty()).then_some(req.name),
         description: (!req.description.trim().is_empty()).then_some(req.description),
         source_config,
+        browse_access_mode: req
+            .browse_access_mode
+            .map(proto_playlist_browse_access_mode)
+            .transpose()?,
         provider_instance_name: req.provider_instance_name,
     })
 }
@@ -623,6 +646,9 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::NotFound(format!("Playlist {playlist_id} not found")))?;
+        // The detail endpoint describes a visible entry. Browsing its contents
+        // is authorized separately by `list_playlist_items_for_actor`.
+        let viewer_id = actor.user_id();
         let (playlist_availability, child_playlist_count, media_count) = tokio::join!(
             self.room_service.playlist_availability(&playlist),
             self.room_service
@@ -641,7 +667,7 @@ impl ClientApiImpl {
                     &playlist,
                     media_count,
                     playlist_availability.is_available(),
-                    actor.user_id(),
+                    viewer_id,
                 )
                 .await?,
             ),
@@ -710,8 +736,17 @@ impl ClientApiImpl {
                 .map_err(ApiError::from)?
                 .ok_or_else(|| ApiError::NotFound("Parent playlist not found".to_string()))?;
             debug_assert_eq!(parent.room_id, rid);
+            let parent_path = self
+                .room_service
+                .playlist_service()
+                .get_room_playlist_path(&rid, &parent_id)
+                .await
+                .map_err(ApiError::from)?;
+            Self::require_playlist_path_access(actor, &parent_path)?;
             Some(parent_id)
         };
+        // Browse access controls entry into a playlist. Entries remain visible in
+        // their parent listing so callers can see that a restricted resource exists.
         let query = synctv_core::models::PlaylistListQuery {
             pagination: synctv_core::models::PageParams::new(
                 Some(usize_to_u32_api(page, "page")?),
@@ -856,6 +891,7 @@ mod tests {
                 source_config: None,
                 provider_instance_name: String::new(),
                 description: String::new(),
+                browse_access_mode: synctv_proto::client::PlaylistBrowseAccessMode::Default as i32,
             },
             &codec,
         ))?;
@@ -882,6 +918,8 @@ mod tests {
                 source_config: alist_playlist_source_config("/tv"),
                 provider_instance_name: "alist-main".into(),
                 description: String::new(),
+                browse_access_mode: synctv_proto::client::PlaylistBrowseAccessMode::RoomMembers
+                    as i32,
             },
             &codec,
         ))?;
@@ -903,6 +941,10 @@ mod tests {
                 "/tv"
             ))
         );
+        assert_eq!(
+            request.browse_access_mode,
+            synctv_core::models::PlaylistBrowseAccessMode::RoomMembers
+        );
         Ok(())
     }
 
@@ -921,6 +963,7 @@ mod tests {
                 source_config: None,
                 provider_instance_name: String::new(),
                 description: String::new(),
+                browse_access_mode: synctv_proto::client::PlaylistBrowseAccessMode::Default as i32,
             },
             &codec,
         ))?;
@@ -939,6 +982,7 @@ mod tests {
                 description: String::new(),
                 source_config: None,
                 provider_instance_name: None,
+                browse_access_mode: None,
             },
             &codec,
         ))?;
@@ -959,6 +1003,9 @@ mod tests {
                 description: String::new(),
                 source_config: alist_playlist_source_config("/updated-library"),
                 provider_instance_name: Some("alist-secondary".to_string()),
+                browse_access_mode: Some(
+                    synctv_proto::client::PlaylistBrowseAccessMode::CreatorOnly as i32,
+                ),
             },
             &codec,
         ))?;
@@ -974,6 +1021,35 @@ mod tests {
             request.provider_instance_name.as_deref(),
             Some("alist-secondary")
         );
+        assert_eq!(
+            request.browse_access_mode,
+            Some(synctv_core::models::PlaylistBrowseAccessMode::CreatorOnly)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn build_update_playlist_request_allows_browse_access_mode_only() -> TestResult {
+        let codec = synctv_adapter::PublicIdCodec::plain();
+        let request = api_ok(build_update_playlist_request(
+            synctv_proto::client::UpdatePlaylistRequest {
+                playlist_id: codec_ok(codec.encode_playlist_id(PlaylistId::expect_positive(1)))?,
+                name: String::new(),
+                description: String::new(),
+                source_config: None,
+                provider_instance_name: None,
+                browse_access_mode: Some(
+                    synctv_proto::client::PlaylistBrowseAccessMode::RoomMembers as i32,
+                ),
+            },
+            &codec,
+        ))?;
+
+        assert_eq!(request.name, None);
+        assert_eq!(
+            request.browse_access_mode,
+            Some(synctv_core::models::PlaylistBrowseAccessMode::RoomMembers)
+        );
         Ok(())
     }
 
@@ -988,6 +1064,7 @@ mod tests {
                 description: String::new(),
                 source_config: None,
                 provider_instance_name: Some("alist-secondary".to_string()),
+                browse_access_mode: None,
             },
             &codec,
         ))?;

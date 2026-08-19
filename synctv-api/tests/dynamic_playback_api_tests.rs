@@ -467,6 +467,7 @@ async fn create_dynamic_playlist(
         id: PlaylistId::new(),
         room_id: *room_id,
         creator_id: Some(*owner_id),
+        browse_access_mode: synctv_core::models::PlaylistBrowseAccessMode::Default,
         name: "Dynamic Playlist".to_string(),
         description: String::new(),
         cover_file_reference_id: None,

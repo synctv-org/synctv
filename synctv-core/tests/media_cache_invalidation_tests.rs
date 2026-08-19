@@ -119,6 +119,7 @@ async fn setup_media_edit_fixture(
                     id: PlaylistId::new(),
                     room_id: room.id,
                     creator_id: Some(owner.id),
+                    browse_access_mode: synctv_core::models::PlaylistBrowseAccessMode::Default,
                     name: String::new(),
                     description: String::new(),
                     cover_file_reference_id: None,

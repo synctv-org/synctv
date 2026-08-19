@@ -9,10 +9,11 @@ use crate::models::{
     FileObjectAccess, FileReferenceMetadata, FileUploadSessionKind, FileUploadSessionMetadata,
     FileVariantMetadata, MediaId, MediaSourceConfig, Notification, NotificationData,
     NotificationType, OAuth2Provider, PlaybackDurationSource, PlaybackDurationStatus, PlaybackKind,
-    PlaybackSourceMetadata, Playlist, PlaylistId, PlaylistSourceConfig, ProviderPlaybackSession,
-    ProviderPlaybackSessionState, ProviderPlaybackStopReason, ProviderTarget, ReviewRequestId,
-    ReviewStatus, RoomCategoryId, RoomId, RoomLabelId, RoomPlaybackProgress, RoomPlaybackState,
-    RoomSettings, RuntimeSetting, SignupMethod, SourceProvider, UserId, UserRole, UserStatus,
+    PlaybackSourceMetadata, Playlist, PlaylistBrowseAccessMode, PlaylistId, PlaylistSourceConfig,
+    ProviderPlaybackSession, ProviderPlaybackSessionState, ProviderPlaybackStopReason,
+    ProviderTarget, ReviewRequestId, ReviewStatus, RoomCategoryId, RoomId, RoomLabelId,
+    RoomPlaybackProgress, RoomPlaybackState, RoomSettings, RuntimeSetting, SignupMethod,
+    SourceProvider, UserId, UserRole, UserStatus,
 };
 
 macro_rules! sqlx_numeric_id {
@@ -312,22 +313,36 @@ sqlx_from_row!(RuntimeSetting, {
     updated_at,
 });
 
-sqlx_from_row!(Playlist, {
-    id,
-    room_id,
-    creator_id,
-    name,
-    description,
-    cover_file_reference_id,
-    parent_id,
-    position,
-    source_provider,
-    source_config,
-    provider_instance_name,
-    created_at,
-    updated_at,
-    version,
-});
+impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for Playlist {
+    fn from_row(row: &'r sqlx::postgres::PgRow) -> Result<Self, sqlx::Error> {
+        let browse_access_mode: PlaylistBrowseAccessMode =
+            sqlx::Row::try_get::<i16, _>(row, "browse_access_mode")?
+                .try_into()
+                .map_err(|error: String| {
+                    sqlx::Error::Decode(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        error,
+                    )))
+                })?;
+        Ok(Self {
+            id: sqlx::Row::try_get(row, "id")?,
+            room_id: sqlx::Row::try_get(row, "room_id")?,
+            creator_id: sqlx::Row::try_get(row, "creator_id")?,
+            browse_access_mode,
+            name: sqlx::Row::try_get(row, "name")?,
+            description: sqlx::Row::try_get(row, "description")?,
+            cover_file_reference_id: sqlx::Row::try_get(row, "cover_file_reference_id")?,
+            parent_id: sqlx::Row::try_get(row, "parent_id")?,
+            position: sqlx::Row::try_get(row, "position")?,
+            source_provider: sqlx::Row::try_get(row, "source_provider")?,
+            source_config: sqlx::Row::try_get(row, "source_config")?,
+            provider_instance_name: sqlx::Row::try_get(row, "provider_instance_name")?,
+            created_at: sqlx::Row::try_get(row, "created_at")?,
+            updated_at: sqlx::Row::try_get(row, "updated_at")?,
+            version: sqlx::Row::try_get(row, "version")?,
+        })
+    }
+}
 
 sqlx_from_row!(RoomPlaybackState, {
     room_id,

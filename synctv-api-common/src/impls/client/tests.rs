@@ -5,8 +5,9 @@ use crate::impls::ApiError;
 use async_trait::async_trait;
 use std::sync::Arc;
 use synctv_core::models::{
-    MediaId, MemberStatus, PlaylistId, RoomGuestPermissionBits, RoomId, RoomMemberPermissionBits,
-    RoomPermission, RoomPermissionSet, RoomRole, RoomStatus, UserId, UserRole, UserStatus,
+    MediaId, MemberStatus, Playlist, PlaylistBrowseAccessMode, PlaylistId, RoomGuestPermissionBits,
+    RoomId, RoomMemberPermissionBits, RoomPermission, RoomPermissionSet, RoomRole, RoomStatus,
+    UserId, UserRole, UserStatus,
 };
 use synctv_core::provider::{ProviderStore, ProviderStoreResolver, StoreError, StoreLockGuard};
 
@@ -178,6 +179,55 @@ fn test_guest_actor_can_authorize_chat_history_snapshots_without_user_id() -> Te
         RoomPermission::VIEW_CHAT_HISTORY,
     ))?;
     Ok(())
+}
+
+#[test]
+fn test_playlist_path_access_checks_every_ancestor() {
+    let room_id = RoomId::expect_positive(1);
+    let viewer_id = UserId::expect_positive(2);
+    let other_user_id = UserId::expect_positive(3);
+    let now = synctv_core::SystemClock.now();
+    let root = Playlist {
+        id: PlaylistId::expect_positive(10),
+        room_id,
+        creator_id: Some(other_user_id),
+        browse_access_mode: PlaylistBrowseAccessMode::RoomMembers,
+        name: "Root".to_string(),
+        description: String::new(),
+        cover_file_reference_id: None,
+        parent_id: None,
+        position: 0.0,
+        source_provider: None,
+        source_config: None,
+        provider_instance_name: None,
+        created_at: now,
+        updated_at: now,
+        version: 0,
+    };
+    let child = Playlist {
+        id: PlaylistId::expect_positive(11),
+        room_id,
+        creator_id: Some(other_user_id),
+        browse_access_mode: PlaylistBrowseAccessMode::CreatorOnly,
+        name: "Child".to_string(),
+        description: String::new(),
+        cover_file_reference_id: None,
+        parent_id: Some(root.id),
+        position: 0.0,
+        source_provider: None,
+        source_config: None,
+        provider_instance_name: None,
+        created_at: now,
+        updated_at: now,
+        version: 0,
+    };
+    let actor = super::RoomActor::User {
+        room_id,
+        user_id: viewer_id,
+    };
+
+    assert!(super::ClientApiImpl::require_playlist_path_access(&actor, &[root]).is_ok());
+    assert!(super::ClientApiImpl::require_playlist_path_access(&actor, &[child]).is_err());
 }
 
 #[test]
@@ -1284,6 +1334,7 @@ fn test_playlist_to_proto() -> TestResult {
         id: PlaylistId::expect_positive(303),
         room_id: RoomId::expect_positive(301),
         creator_id: Some(UserId::expect_positive(304)),
+        browse_access_mode: synctv_core::models::PlaylistBrowseAccessMode::Default,
         name: "My Playlist".to_string(),
         description: String::new(),
         cover_file_reference_id: None,
@@ -1332,6 +1383,7 @@ fn test_playlist_to_proto_with_cover_includes_cover_payload() -> TestResult {
         id: PlaylistId::expect_positive(303),
         room_id: RoomId::expect_positive(301),
         creator_id: Some(UserId::expect_positive(304)),
+        browse_access_mode: synctv_core::models::PlaylistBrowseAccessMode::Default,
         name: "My Playlist".to_string(),
         description: String::new(),
         cover_file_reference_id: Some(901),
@@ -1386,6 +1438,7 @@ fn test_playlist_to_proto_dynamic() -> TestResult {
         id: PlaylistId::expect_positive(306),
         room_id: RoomId::expect_positive(301),
         creator_id: Some(UserId::expect_positive(304)),
+        browse_access_mode: synctv_core::models::PlaylistBrowseAccessMode::Default,
         name: "Alist Folder".to_string(),
         description: String::new(),
         cover_file_reference_id: None,
@@ -1435,6 +1488,7 @@ fn test_playlist_to_proto_for_owner_includes_source_config() -> TestResult {
         id: PlaylistId::expect_positive(308),
         room_id: RoomId::expect_positive(301),
         creator_id: Some(owner_id),
+        browse_access_mode: synctv_core::models::PlaylistBrowseAccessMode::Default,
         name: "Alist Folder".to_string(),
         description: String::new(),
         cover_file_reference_id: None,
@@ -1471,6 +1525,7 @@ fn test_playlist_to_proto_for_non_owner_hides_source_config() -> TestResult {
         id: PlaylistId::expect_positive(309),
         room_id: RoomId::expect_positive(301),
         creator_id: Some(UserId::expect_positive(304)),
+        browse_access_mode: synctv_core::models::PlaylistBrowseAccessMode::Default,
         name: "Alist Folder".to_string(),
         description: String::new(),
         cover_file_reference_id: None,
@@ -1507,6 +1562,7 @@ fn test_playlist_to_proto_dynamic_requires_source_config() -> TestResult {
         id: PlaylistId::expect_positive(307),
         room_id: RoomId::expect_positive(301),
         creator_id: Some(UserId::expect_positive(304)),
+        browse_access_mode: synctv_core::models::PlaylistBrowseAccessMode::Default,
         name: "Broken Dynamic Playlist".to_string(),
         description: String::new(),
         cover_file_reference_id: None,

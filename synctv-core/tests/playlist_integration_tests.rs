@@ -68,6 +68,7 @@ fn make_playlist(
         id: PlaylistId::new(),
         room_id: *room_id,
         creator_id: None,
+        browse_access_mode: synctv_core::models::PlaylistBrowseAccessMode::Default,
         name: name.to_string(),
         description: String::new(),
         cover_file_reference_id: None,
@@ -113,6 +114,7 @@ async fn test_update_playlist_replaces_complete_dynamic_source_config() {
         .checked("test operation should succeed");
 
     let mut update = created.clone();
+    update.browse_access_mode = synctv_core::models::PlaylistBrowseAccessMode::CreatorOnly;
     update.source_config = Some(PlaylistSourceConfig::Alist(AlistPlaylistSourceConfig {
         server_id: "alist-reconfigured".to_string(),
         path: "/library/updated".to_string(),
@@ -125,6 +127,7 @@ async fn test_update_playlist_replaces_complete_dynamic_source_config() {
         .checked("test operation should succeed");
 
     assert_eq!(updated.source_provider, Some(SourceProvider::Alist));
+    assert_eq!(updated.browse_access_mode, update.browse_access_mode);
     assert_eq!(updated.source_config, update.source_config);
     let persisted = playlist_repo
         .get_by_room_and_id(&room.id, &created.id)
@@ -132,6 +135,7 @@ async fn test_update_playlist_replaces_complete_dynamic_source_config() {
         .checked("test operation should succeed")
         .checked("updated playlist should persist");
     assert_eq!(persisted.source_config, update.source_config);
+    assert_eq!(persisted.browse_access_mode, update.browse_access_mode);
 }
 
 #[tokio::test]
@@ -408,6 +412,7 @@ async fn test_next_append_position_uses_sparse_floating_positions() {
                 id: PlaylistId::new(),
                 room_id: room.id,
                 creator_id: None,
+                browse_access_mode: synctv_core::models::PlaylistBrowseAccessMode::Default,
                 name: "Auto1".to_string(),
                 description: String::new(),
                 cover_file_reference_id: None,
@@ -508,6 +513,7 @@ async fn test_cross_room_parent_id_rejected() {
         id: PlaylistId::new(),
         room_id: room_b.id, // Child belongs to Room B
         creator_id: None,
+        browse_access_mode: synctv_core::models::PlaylistBrowseAccessMode::Default,
         name: "Cross Room Child".to_string(),
         description: String::new(),
         cover_file_reference_id: None,

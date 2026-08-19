@@ -222,7 +222,8 @@ pub use playback_session::{
     SynologyPlaybackSession,
 };
 pub use playlist::{
-    CreatePlaylistRequest, Playlist, PlaylistListQuery, PlaylistListSortBy, PlaylistWithCount,
+    CreatePlaylistRequest, Playlist, PlaylistBrowseAccessMode, PlaylistListQuery,
+    PlaylistListSortBy, PlaylistWithCount,
 };
 pub use provider_instance::{
     is_valid_provider_instance_name, normalize_provider_instance_name,

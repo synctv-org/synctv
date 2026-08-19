@@ -1642,6 +1642,7 @@ mod tests {
                 source_config: None,
                 provider_instance_name: String::new(),
                 description: String::new(),
+                browse_access_mode: crate::client::PlaylistBrowseAccessMode::Default as i32,
             })
             .unwrap_err(),
         );
@@ -1661,6 +1662,7 @@ mod tests {
             source_config: Some(alist_playlist_source_config("/tv")),
             provider_instance_name: String::new(),
             description: String::new(),
+            browse_access_mode: crate::client::PlaylistBrowseAccessMode::Default as i32,
         })
         .expect("dynamic playlist should allow default provider instance");
     }
@@ -1674,6 +1676,7 @@ mod tests {
                 description: String::new(),
                 source_config: None,
                 provider_instance_name: None,
+                browse_access_mode: None,
             })
             .unwrap_err(),
         );

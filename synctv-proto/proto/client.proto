@@ -612,6 +612,12 @@ message Media {
   MediaThumbnail thumbnail = 16;
 }
 
+enum PlaylistBrowseAccessMode {
+  PLAYLIST_BROWSE_ACCESS_MODE_DEFAULT = 0;
+  PLAYLIST_BROWSE_ACCESS_MODE_ROOM_MEMBERS = 1;
+  PLAYLIST_BROWSE_ACCESS_MODE_CREATOR_ONLY = 2;
+}
+
 message Playlist {
   string id = 1;
   string room_id = 2;
@@ -631,6 +637,7 @@ message Playlist {
   ResourceCover cover = 16;
   string creator_id = 17;
   ResourceMetadata metadata = 18;
+  PlaylistBrowseAccessMode browse_access_mode = 19;
 }
 
 message ResourceCover {
@@ -1970,6 +1977,7 @@ message CreatePlaylistRequest {
     }
   ]; // Optional provider instance name. Empty means use the default provider instance for source_provider
   string description = 6 [(buf.validate.field).string = {max_len: 5000}];
+  PlaylistBrowseAccessMode browse_access_mode = 7 [(buf.validate.field).enum.defined_only = true];
 }
 
 message UpdatePlaylistRequest {
@@ -1994,6 +2002,7 @@ message UpdatePlaylistRequest {
     max_len: 64
     pattern: "^[A-Za-z0-9_-]+$"
   }];
+  optional PlaylistBrowseAccessMode browse_access_mode = 6 [(buf.validate.field).enum.defined_only = true];
 }
 
 message MovePlaylistRequest {

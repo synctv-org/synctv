@@ -242,6 +242,7 @@ mod tests {
             id: PlaylistId::expect_positive(105_003),
             room_id: room_id(),
             creator_id: Some(user_id()),
+            browse_access_mode: synctv_core::models::PlaylistBrowseAccessMode::Default,
             name: "fanout playlist".to_string(),
             description: String::new(),
             cover_file_reference_id: None,

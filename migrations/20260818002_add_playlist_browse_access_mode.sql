@@ -1,0 +1,2 @@
+ALTER TABLE playlists
+    ADD COLUMN IF NOT EXISTS browse_access_mode SMALLINT NOT NULL DEFAULT 0;

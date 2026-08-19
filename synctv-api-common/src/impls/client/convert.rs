@@ -2872,6 +2872,17 @@ pub fn try_playlist_to_proto_for_viewer_without_cover(
             .transpose()
             .map_err(|error| crate::impls::ApiError::Internal(error.clone()))?
             .unwrap_or_default(),
+        browse_access_mode: match playlist.browse_access_mode {
+            synctv_core::models::PlaylistBrowseAccessMode::Default => {
+                synctv_proto::client::PlaylistBrowseAccessMode::Default as i32
+            }
+            synctv_core::models::PlaylistBrowseAccessMode::RoomMembers => {
+                synctv_proto::client::PlaylistBrowseAccessMode::RoomMembers as i32
+            }
+            synctv_core::models::PlaylistBrowseAccessMode::CreatorOnly => {
+                synctv_proto::client::PlaylistBrowseAccessMode::CreatorOnly as i32
+            }
+        },
     })
 }
 

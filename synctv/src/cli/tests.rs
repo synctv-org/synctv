@@ -2366,6 +2366,34 @@ fn cli_parses_playlist_list_dynamic_only_as_bare_true_flag() {
 }
 
 #[test]
+fn cli_parses_playlist_update_browse_access_mode_without_name() {
+    let cli = Cli::parse_from([
+        "synctv",
+        "playlist",
+        "update",
+        "room-123",
+        "playlist-1",
+        "--browse-access-mode",
+        "creator-only",
+    ]);
+    match cli.command {
+        Commands::Playlist(PlaylistCommand {
+            command: PlaylistSubcommand::Update(args),
+            ..
+        }) => {
+            assert_eq!(args.room.room_id, "room-123");
+            assert_eq!(args.playlist_id, "playlist-1");
+            assert_eq!(args.name, None);
+            assert_eq!(
+                args.browse_access_mode,
+                Some(CliPlaylistBrowseAccessMode::CreatorOnly)
+            );
+        }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+}
+
+#[test]
 fn cli_rejects_playlist_create_without_actor_user() {
     let result = Cli::try_parse_from(["synctv", "playlist", "create", "Favorites", "room-123"]);
     assert!(
@@ -5916,6 +5944,7 @@ fn render_human_output_includes_media_and_playlist_availability() {
         description: String::new(),
         cover: None,
         metadata: None,
+        browse_access_mode: synctv_proto::client::PlaylistBrowseAccessMode::Default as i32,
     })
     .expect("playlist human output should render");
 
@@ -5952,6 +5981,7 @@ fn render_human_output_includes_playlist_items_snapshot_version() {
             description: String::new(),
             cover: None,
             metadata: None,
+            browse_access_mode: synctv_proto::client::PlaylistBrowseAccessMode::Default as i32,
         }],
         media: vec![synctv_proto::client::Media {
             id: "media-1".into(),

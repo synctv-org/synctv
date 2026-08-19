@@ -1,5 +1,7 @@
 use crate::{
-    models::{Playlist, PlaylistId, PlaylistSourceConfig, RoomId, UserId},
+    models::{
+        Playlist, PlaylistBrowseAccessMode, PlaylistId, PlaylistSourceConfig, RoomId, UserId,
+    },
     service::{optimistic_retry, provider_binding::provider_instance_name_for_source_update},
     Error, Result,
 };
@@ -14,6 +16,7 @@ pub struct SetPlaylistRequest {
     pub playlist_id: PlaylistId,
     pub name: Option<String>,
     pub description: Option<String>,
+    pub browse_access_mode: Option<PlaylistBrowseAccessMode>,
     /// Complete replacement config for an existing dynamic playlist.
     pub source_config: Option<PlaylistSourceConfig>,
     /// Replacement provider instance, optionally updated without changing the config.
@@ -121,6 +124,9 @@ impl PlaylistService {
                         )));
                     }
                     playlist.description = description.clone();
+                }
+                if let Some(browse_access_mode) = request.browse_access_mode {
+                    playlist.browse_access_mode = browse_access_mode;
                 }
                 if request.source_config.is_some() || request.provider_instance_name.is_some() {
                     if !playlist.is_dynamic() {

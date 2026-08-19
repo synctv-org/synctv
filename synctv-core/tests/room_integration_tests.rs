@@ -340,6 +340,7 @@ async fn test_cascade_delete_room_deletes_members_and_playlists() {
         id: PlaylistId::new(),
         room_id: room.id,
         creator_id: Some(owner.id),
+        browse_access_mode: synctv_core::models::PlaylistBrowseAccessMode::Default,
         name: String::new(),
         description: String::new(),
         cover_file_reference_id: None,

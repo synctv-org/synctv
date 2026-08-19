@@ -319,8 +319,9 @@ pub struct ListPlaylistsQuery {
 pub struct UpdatePlaylistCommand {
     pub room_id: String,
     pub playlist_id: String,
-    pub name: String,
+    pub name: Option<String>,
     pub description: String,
+    pub browse_access_mode: Option<client_proto::PlaylistBrowseAccessMode>,
 }
 
 #[derive(Debug, Clone)]

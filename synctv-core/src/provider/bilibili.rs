@@ -3807,6 +3807,7 @@ impl BilibiliProvider {
             id: PlaylistId::new(),
             room_id: RoomId::new(),
             creator_id: ctx.credential_owner_id().copied(),
+            browse_access_mode: crate::models::PlaylistBrowseAccessMode::Default,
             name: "Bilibili discovery".to_string(),
             description: String::new(),
             cover_file_reference_id: None,

@@ -293,6 +293,7 @@ fn playlist_edit_requires_matching_creator() {
         id: PlaylistId::expect_positive(21),
         room_id: RoomId::expect_positive(22),
         creator_id: Some(creator_id),
+        browse_access_mode: crate::models::PlaylistBrowseAccessMode::Default,
         name: "Owned".to_string(),
         description: String::new(),
         cover_file_reference_id: None,

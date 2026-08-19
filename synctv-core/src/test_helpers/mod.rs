@@ -272,6 +272,7 @@ impl PlaylistFixture {
             id: self.id,
             room_id: self.room_id,
             creator_id: self.creator_id,
+            browse_access_mode: crate::models::PlaylistBrowseAccessMode::Default,
             name: self.name,
             description: String::new(),
             cover_file_reference_id: None,

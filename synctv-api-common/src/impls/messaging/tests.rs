@@ -725,6 +725,7 @@ fn playlist() -> Playlist {
         id: PlaylistId::expect_positive(1),
         room_id: room_id(),
         creator_id: Some(user_id()),
+        browse_access_mode: synctv_core::models::PlaylistBrowseAccessMode::Default,
         name: "Test Playlist".to_string(),
         description: String::new(),
         cover_file_reference_id: None,
@@ -1815,6 +1816,49 @@ impl crate::impls::playlist_items_snapshot::PlaylistItemsSnapshotService
         _req: &synctv_proto::client::ListPlaylistItemsRequest,
     ) -> Result<synctv_proto::client::ListPlaylistItemsResponse, crate::impls::ApiError> {
         Ok(self.snapshot.clone())
+    }
+}
+
+#[derive(Clone)]
+struct SequencedPlaylistItemsSnapshotService {
+    responses: Arc<
+        parking_lot::Mutex<
+            VecDeque<
+                Result<synctv_proto::client::ListPlaylistItemsResponse, crate::impls::ApiError>,
+            >,
+        >,
+    >,
+    probe: SnapshotCallProbe,
+}
+
+impl SequencedPlaylistItemsSnapshotService {
+    fn new(
+        responses: impl IntoIterator<
+            Item = Result<synctv_proto::client::ListPlaylistItemsResponse, crate::impls::ApiError>,
+        >,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            responses: Arc::new(parking_lot::Mutex::new(responses.into_iter().collect())),
+            probe: SnapshotCallProbe::default(),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::impls::playlist_items_snapshot::PlaylistItemsSnapshotService
+    for SequencedPlaylistItemsSnapshotService
+{
+    async fn get_playlist_items_snapshot(
+        &self,
+        _actor: &crate::impls::client::RoomActor,
+        _req: &synctv_proto::client::ListPlaylistItemsRequest,
+    ) -> Result<synctv_proto::client::ListPlaylistItemsResponse, crate::impls::ApiError> {
+        self.probe.mark_called();
+        self.responses.lock().pop_front().unwrap_or_else(|| {
+            Err(crate::impls::ApiError::Internal(
+                "no playlist items response queued".to_string(),
+            ))
+        })
     }
 }
 
@@ -4621,6 +4665,7 @@ async fn test_observed_playback_refreshes_when_current_playlist_is_updated() {
             id: PlaylistId::new(),
             room_id: handler.room_id,
             creator_id: Some(handler.test_user_id()),
+            browse_access_mode: synctv_core::models::PlaylistBrowseAccessMode::Default,
             name: "observe-playback-playlist-update".to_string(),
             description: String::new(),
             cover_file_reference_id: None,
@@ -4710,6 +4755,7 @@ async fn test_observed_playback_refreshes_when_current_playlist_is_updated() {
                 description: None,
                 source_config: None,
                 provider_instance_name: None,
+                browse_access_mode: None,
             },
         )
         .await
@@ -5596,6 +5642,133 @@ async fn test_observe_playlist_items_requires_inner_request() {
             .error
             .as_ref()
             .is_some_and(|error| error.message.contains("playlist_items request"))));
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
+async fn test_playlist_items_observation_preserves_authorization_error() {
+    let message_sender = RecordingMessageSender::new();
+    let handler = test_message_handler(
+        message_sender.clone(),
+        test_realtime_manager("playlist_items_authorization_error").await,
+        test_connection_manager(),
+    );
+    let snapshot_service =
+        SequencedPlaylistItemsSnapshotService::new([Err(crate::impls::ApiError::Authorization(
+            "You do not have permission to browse this playlist".to_string(),
+        ))]);
+    let handler = test_handler_with_playlist_items_snapshot_service(handler, snapshot_service);
+    let request = synctv_proto::client::ListPlaylistItemsRequest {
+        playlist_id: String::new(),
+        target: None,
+        pagination: Some(
+            synctv_proto::client::list_playlist_items_request::Pagination::Page(
+                synctv_proto::client::PagePagination { page: 1 },
+            ),
+        ),
+        page_size: 50,
+        search: "authorization-error".to_string(),
+        source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
+        provider_instance_name: String::new(),
+        sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
+        sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+        availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
+        refresh: false,
+        preview_source_config: None,
+    };
+
+    handler
+        .handle_client_message(&ClientMessage {
+            message: Some(observe_playlist_items_message("playlist-items", request)),
+        })
+        .await
+        .checked("authorization failure should be sent as a resource error");
+
+    assert!(
+        message_sender.sent_messages().iter().any(|message| {
+            resource_observe_error(message).is_some_and(|observe_error| {
+                observe_error.error.as_ref().is_some_and(|error| {
+                    error.code == 4000
+                        && error.message == "You do not have permission to browse this playlist"
+                })
+            })
+        }),
+        "playlist browse authorization should retain its permission error code and message"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
+async fn test_playlist_items_refresh_preserves_authorization_error() {
+    let message_sender = RecordingMessageSender::new();
+    let handler = test_message_handler(
+        message_sender.clone(),
+        test_realtime_manager("playlist_items_refresh_authorization_error").await,
+        test_connection_manager(),
+    );
+    let snapshot_service = SequencedPlaylistItemsSnapshotService::new([
+        Ok(empty_playlist_items_response("items-v1")),
+        Err(crate::impls::ApiError::Authorization(
+            "You do not have permission to browse this playlist".to_string(),
+        )),
+    ]);
+    let handler = test_handler_with_playlist_items_snapshot_service(handler, snapshot_service);
+    let request = synctv_proto::client::ListPlaylistItemsRequest {
+        playlist_id: String::new(),
+        target: None,
+        pagination: Some(
+            synctv_proto::client::list_playlist_items_request::Pagination::Page(
+                synctv_proto::client::PagePagination { page: 1 },
+            ),
+        ),
+        page_size: 50,
+        search: "refresh-authorization-error".to_string(),
+        source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
+        provider_instance_name: String::new(),
+        sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
+        sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+        availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
+        refresh: false,
+        preview_source_config: None,
+    };
+
+    handler
+        .handle_client_message(&ClientMessage {
+            message: Some(observe_playlist_items_message("playlist-items", request)),
+        })
+        .await
+        .checked("initial playlist snapshot should be observed");
+    assert!(
+        handler
+            .resource_observer
+            .has_observation("playlist-items")
+            .await
+    );
+
+    handler
+        .resource_observer
+        .refresh_observations_for_invalidations(&[ResourceInvalidation::PlaylistItems])
+        .await
+        .checked("authorization failure should be sent during refresh");
+
+    assert!(
+        message_sender.sent_messages().iter().any(|message| {
+            resource_observe_error(message).is_some_and(|observe_error| {
+                observe_error.error.as_ref().is_some_and(|error| {
+                    error.code == 4000
+                        && error.message == "You do not have permission to browse this playlist"
+                })
+            })
+        }),
+        "playlist browse authorization should retain its permission error code and message"
+    );
+    assert!(
+        !handler
+            .resource_observer
+            .has_observation("playlist-items")
+            .await,
+        "failed refresh should remove the observation"
+    );
 }
 
 #[tokio::test]

@@ -74,6 +74,7 @@ async fn create_top_level_playlist(
         id: synctv_core::models::PlaylistId::new(),
         room_id: *room_id,
         creator_id: None,
+        browse_access_mode: synctv_core::models::PlaylistBrowseAccessMode::Default,
         name: "Top Level".to_string(),
         description: String::new(),
         cover_file_reference_id: None,

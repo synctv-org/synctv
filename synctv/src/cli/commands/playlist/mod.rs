@@ -18,7 +18,7 @@ pub enum PlaylistSubcommand {
     Get(PlaylistGetArgs),
     /// Create a playlist as a specific real user
     Create(PlaylistCreateArgs),
-    /// Update playlist name
+    /// Update playlist properties
     Update(PlaylistUpdateArgs),
     /// Move a playlist before or after a sibling
     Move(PlaylistMoveArgs),
@@ -94,6 +94,9 @@ pub struct PlaylistCreateArgs {
 
     #[arg(long)]
     pub provider_instance_name: Option<String>,
+
+    #[arg(long, value_enum)]
+    pub browse_access_mode: Option<CliPlaylistBrowseAccessMode>,
 }
 
 #[derive(Debug, Args)]
@@ -106,6 +109,9 @@ pub struct PlaylistUpdateArgs {
 
     #[arg(long)]
     pub name: Option<String>,
+
+    #[arg(long, value_enum)]
+    pub browse_access_mode: Option<CliPlaylistBrowseAccessMode>,
 }
 
 #[derive(Debug, Args)]

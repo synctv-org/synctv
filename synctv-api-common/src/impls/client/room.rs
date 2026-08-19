@@ -287,10 +287,21 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
         match media {
-            Some(media) => Ok(Some(
-                self.media_to_proto_for_viewer_with_loaded_cover(&media, true, Some(uid))
+            Some(media) => {
+                let availability = self
+                    .room_service
+                    .media_availability(&media)
+                    .await
+                    .map_err(ApiError::from)?;
+                Ok(Some(
+                    self.media_to_proto_for_viewer_with_loaded_cover(
+                        &media,
+                        availability.is_available(),
+                        Some(uid),
+                    )
                     .await?,
-            )),
+                ))
+            }
             None => Ok(None),
         }
     }

@@ -638,9 +638,21 @@ async fn make_admin_api_for_delete_user_test(
     AdminApiImpl,
     tokio::sync::mpsc::Receiver<synctv_realtime::sync::PublishRequest>,
 ) {
-    let realtime_outbox = Arc::new(
-        synctv_core::repository::realtime_outbox::RealtimeOutboxRepository::new(pool.clone()),
-    );
+    make_admin_api_for_delete_user_test_with_runtime(pool, true).await
+}
+
+async fn make_admin_api_for_delete_user_test_with_runtime(
+    pool: sqlx::PgPool,
+    distributed_realtime: bool,
+) -> (
+    AdminApiImpl,
+    tokio::sync::mpsc::Receiver<synctv_realtime::sync::PublishRequest>,
+) {
+    let realtime_outbox = distributed_realtime.then(|| {
+        Arc::new(
+            synctv_core::repository::realtime_outbox::RealtimeOutboxRepository::new(pool.clone()),
+        )
+    });
     let user_service = Arc::new(synctv_core::service::UserService::new_with_runtime(
         &pool,
         fixture_value(
@@ -652,7 +664,7 @@ async fn make_admin_api_for_delete_user_test(
         KeyBuilder::new("test"),
         BruteForceProtection::in_memory("test".to_string()),
         synctv_core::service::UserServiceRuntimeOptions {
-            realtime_outbox: Some(realtime_outbox.clone()),
+            realtime_outbox: realtime_outbox.clone(),
             ..synctv_core::service::UserServiceRuntimeOptions::test_defaults()
         },
     ));
@@ -682,7 +694,7 @@ async fn make_admin_api_for_delete_user_test(
         Arc::new(providers_manager),
         synctv_core::service::RoomServiceOptions {
             runtime_settings_store: Some(runtime_settings_store.clone()),
-            realtime_outbox: Some(realtime_outbox),
+            realtime_outbox,
             ..synctv_core::service::RoomServiceOptions::test_defaults_with_settings(pool.clone())
         },
     );
@@ -717,6 +729,12 @@ async fn make_admin_api_for_delete_user_test(
         "publish key service should build",
     ));
     let (redis_publish_tx, redis_publish_rx) = tokio::sync::mpsc::channel(8);
+    let realtime_event_service = Arc::new(LocalNoopRealtimeEventService::new());
+    let realtime_fanout = if distributed_realtime {
+        crate::test_support::channel_realtime_fanout_service(redis_publish_tx)
+    } else {
+        crate::realtime_fanout::local_realtime_fanout_service(realtime_event_service.clone())
+    };
     let provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver> = Arc::new(
         synctv_core::provider::ProviderStoreRegistry::local_only("test:provider:".to_string()),
     );
@@ -740,10 +758,8 @@ async fn make_admin_api_for_delete_user_test(
             },
             AdminApiRuntime {
                 clock: Arc::new(synctv_core::SystemClock),
-                realtime_fanout: crate::test_support::channel_realtime_fanout_service(
-                    redis_publish_tx,
-                ),
-                realtime_event_service: Arc::new(LocalNoopRealtimeEventService::new()),
+                realtime_fanout,
+                realtime_event_service,
                 provider_stores,
                 provider_access_service: crate::impls::disabled_provider_access_service(),
                 signing_key: Arc::new(
@@ -3839,6 +3855,56 @@ async fn test_delete_user_deletes_owned_rooms_and_publishes_room_deleted() -> Te
         "delete_user must publish RoomDeleted for owned rooms"
     );
     assert!(saw_kick_user, "delete_user must still publish KickUser");
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_standalone_admin_delete_user_deletes_owned_room_without_outbox() -> TestResult {
+    let (_postgres, pool) = create_test_pool().await;
+    let (admin_api, _redis_publish_rx) =
+        make_admin_api_for_delete_user_test_with_runtime(pool.clone(), false).await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool);
+
+    let admin_user =
+        create_db_user(&user_repo, "standalone_root_delete_owner", UserRole::Root).await;
+    let target_user =
+        create_db_user(&user_repo, "standalone_owned_room_victim", UserRole::User).await;
+    let room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                "standalone victim owned room".to_string(),
+                "deleted with owner without a realtime outbox".to_string(),
+                target_user.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
+
+    api_ok(
+        admin_api
+            .delete_user(
+                synctv_proto::admin::DeleteUserRequest {
+                    user_id: public_user_id(&admin_api, target_user.id),
+                },
+                &admin_user.id,
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
+
+    assert!(
+        core_ok(user_repo.get_by_id(&target_user.id).await)?.is_none(),
+        "deleted user must no longer be active"
+    );
+    assert!(
+        core_ok(room_repo.get_by_id(&room.id).await)?.is_none(),
+        "owned room must be deleted without a realtime outbox"
+    );
     Ok(())
 }
 

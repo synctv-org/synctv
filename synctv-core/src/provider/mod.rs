@@ -940,6 +940,7 @@ async fn cache_versioned_playback(
                 room_id,
                 playback_generation,
                 is_playing: ctx.playback_is_playing().unwrap_or(false),
+                resource_owner_id: ctx.credential_owner_id().copied(),
             }),
             _ => None,
         },

@@ -4051,6 +4051,60 @@ async fn test_ban_user_resets_playback_for_media_created_by_target() -> TestResu
             .await,
     )?;
 
+    let dynamic_detail = api_ok(
+        admin_api
+            .get_playlist(
+                &public_room_id(&admin_api, room.id),
+                &public_playlist_id(&admin_api, dynamic_playlist.id),
+                &admin_user.id,
+            )
+            .await,
+    )?;
+    let dynamic_detail = some_value(dynamic_detail.playlist, "playlist detail should be present")?;
+    assert_eq!(
+        dynamic_detail.availability,
+        synctv_proto::client::ResourceAvailability::CreatorInactive as i32,
+        "management detail must preserve the unavailable lifecycle state"
+    );
+
+    let list_request = |playlist_id: String| synctv_proto::client::ListPlaylistItemsRequest {
+        playlist_id,
+        target: None,
+        pagination: Some(
+            synctv_proto::client::list_playlist_items_request::Pagination::Page(
+                synctv_proto::client::PagePagination { page: 1 },
+            ),
+        ),
+        page_size: 20,
+        search: String::new(),
+        source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
+        provider_instance_name: String::new(),
+        sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
+        sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+        availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
+        refresh: false,
+        preview_source_config: None,
+    };
+    let dynamic_browse_error = api_err(
+        admin_api
+            .list_media(
+                &public_room_id(&admin_api, room.id),
+                list_request(public_playlist_id(&admin_api, dynamic_playlist.id)),
+                &admin_user.id,
+            )
+            .await,
+    )?;
+    assert!(matches!(dynamic_browse_error, ApiError::Authorization(_)));
+    api_ok(
+        admin_api
+            .list_media(
+                &public_room_id(&admin_api, room.id),
+                list_request(public_playlist_id(&admin_api, ordinary_playlist.id)),
+                &admin_user.id,
+            )
+            .await,
+    )?;
+
     api_ok(
         admin_api
             .unban_user(
@@ -5145,6 +5199,92 @@ async fn test_get_playback_bypasses_room_membership_requirement_for_global_admin
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_get_playback_reloads_state_after_creator_ban_on_another_instance() -> TestResult {
+    let (_postgres, pool) = create_test_pool().await;
+    let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
+    let user_repo = UserRepository::new(pool.clone());
+
+    let global_admin = create_db_user(
+        &user_repo,
+        "global_admin_stale_ban_playback",
+        UserRole::Root,
+    )
+    .await;
+    let room_owner = create_db_user(&user_repo, "stale_ban_playback_owner", UserRole::User).await;
+    let media_creator = create_db_user(&user_repo, "stale_ban_media_creator", UserRole::User).await;
+    let room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "stale playback lifecycle test".to_string(),
+                room_owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
+    core_ok(
+        admin_api
+            .room_service
+            .join_room(room.id, media_creator.id, None)
+            .await,
+    )?;
+    let media = create_room_media(
+        &pool,
+        room.id,
+        media_creator.id,
+        "stale-banned-playback-media",
+    )
+    .await;
+
+    core_ok(
+        admin_api
+            .room_service
+            .playback_service()
+            .switch(room.id, room_owner.id, Some(media.id), None, None)
+            .await,
+    )?;
+    let cached = core_ok(admin_api.room_service.get_playback_state(&room.id).await)?;
+    assert_eq!(cached.playing_media_id, Some(media.id));
+
+    let independent_room_service =
+        synctv_core::service::RoomService::new_for_tests(pool, (*admin_api.user_service).clone())
+            .map_err(|error| test_error(error.to_string()))?;
+    core_ok(
+        independent_room_service
+            .ban_user_and_reset_owned_playback_with_outbox(
+                &media_creator.id,
+                Some(&global_admin.id),
+                Some("cross-instance lifecycle test".to_string()),
+                None,
+                &[],
+            )
+            .await,
+    )?;
+
+    let response = api_ok(
+        admin_api
+            .get_playback(&public_room_id(&admin_api, room.id), &global_admin.id, None)
+            .await,
+    )?;
+    let state = some_value(response.playback_state, "playback state should be present")?;
+    assert!(state.playing_media_id.is_empty());
+    assert!(state.playing_playlist_id.is_empty());
+    assert!(!state.is_playing);
+    let playback = some_value(
+        response.playback,
+        "empty playback snapshot should be present",
+    )?;
+    assert!(playback.media_id.is_empty());
+    assert!(playback.playlist_id.is_empty());
+    assert!(playback.playback_infos.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_start_playback_returns_error_for_invalid_provider_config_for_global_admin(
 ) -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
@@ -5232,6 +5372,12 @@ async fn test_get_playback_for_provider_media_signs_proxy_urls_for_global_admin(
     )
     .await;
     let owner = create_db_user(&user_repo, "room_owner_playback_get_signed", UserRole::User).await;
+    let media_creator = create_db_user(
+        &user_repo,
+        "media_creator_playback_get_signed",
+        UserRole::User,
+    )
+    .await;
 
     let room = core_ok(
         admin_api
@@ -5246,11 +5392,23 @@ async fn test_get_playback_for_provider_media_signs_proxy_urls_for_global_admin(
             .await,
     )?
     .0;
+    core_ok(
+        admin_api
+            .room_service
+            .join_room(room.id, global_admin.id, None)
+            .await,
+    )?;
+    core_ok(
+        admin_api
+            .room_service
+            .join_room(room.id, media_creator.id, None)
+            .await,
+    )?;
 
     let media = synctv_core::models::Media::from_provider_with_params(FromProviderParams {
         playlist_id: None,
         room_id: room.id,
-        creator_id: Some(owner.id),
+        creator_id: Some(media_creator.id),
         name: "provider-playback-media".to_string(),
         description: String::new(),
         source_config: synctv_core_testing::direct_url_media_source_config_with_headers(
@@ -5302,6 +5460,93 @@ async fn test_get_playback_for_provider_media_signs_proxy_urls_for_global_admin(
     assert!(
         direct.medias[0].headers.is_empty(),
         "proxy-backed playback keeps client headers empty"
+    );
+
+    let signed_url = url::Url::parse(&format!("http://localhost{}", direct.medias[0].url))?;
+    let path = signed_url
+        .path_segments()
+        .ok_or_else(|| test_error("signed playback URL should have path segments"))?
+        .collect::<Vec<_>>();
+    let version = path
+        .get(4)
+        .ok_or_else(|| test_error("signed playback URL should contain a provider version"))?;
+    let query = signed_url.query_pairs().collect::<HashMap<_, _>>();
+    let signature = query
+        .get("sig")
+        .ok_or_else(|| test_error("signed playback URL should contain sig"))?;
+    let user_id = query
+        .get("uid")
+        .ok_or_else(|| test_error("signed playback URL should contain uid"))?;
+    let expires_at = query
+        .get("exp")
+        .ok_or_else(|| test_error("signed playback URL should contain exp"))?
+        .parse::<i64>()?;
+    assert_eq!(
+        user_id.as_ref(),
+        public_user_id(&admin_api, global_admin.id),
+        "a global admin who is a room member should authorize its own proxy URL"
+    );
+
+    let credential_repo =
+        Arc::new(synctv_core::repository::UserProviderCredentialRepository::new(pool.clone()));
+    let playback_transport_services = synctv_core::provider::PlaybackTransportServices {
+        room_service: admin_api.room_service.clone(),
+        permission_service: admin_api.room_service.permission_service().clone(),
+        credential_encryption: None,
+        credential_repo: credential_repo.clone(),
+        playback_session_repo: synctv_core::repository::ProviderPlaybackSessionRepository::new(
+            pool,
+        ),
+        provider_access_service: admin_api.provider_access_service.clone(),
+    };
+    let access_deps = crate::playback_provider::common::PlaybackProviderAccessDeps {
+        proxy_signing_key: &admin_api.signing_key,
+        public_id_codec: &admin_api.public_id_codec,
+        provider_stores: admin_api.provider_stores.as_ref(),
+        user_service: &admin_api.user_service,
+        playback_transport_services: &playback_transport_services,
+    };
+    let access_request = || crate::playback_provider::common::PlaybackProviderAccessRequest {
+        version,
+        resource: "streams/direct/0".to_string(),
+        signature,
+        user_id,
+        room_id: &room_public_id,
+        expires_at,
+        target_url: None,
+    };
+    api_ok(
+        crate::playback_provider::common::verify_playback_provider_http_access(
+            &access_deps,
+            synctv_core::provider::DirectUrlProvider::NAME,
+            access_request(),
+        )
+        .await,
+    )?;
+
+    core_ok(
+        admin_api
+            .room_service
+            .ban_user_and_reset_owned_playback_with_outbox(
+                &media_creator.id,
+                Some(&global_admin.id),
+                Some("invalidate issued playback URL".to_string()),
+                None,
+                &[],
+            )
+            .await,
+    )?;
+    let stale_error = api_err(
+        crate::playback_provider::common::verify_playback_provider_http_access(
+            &access_deps,
+            synctv_core::provider::DirectUrlProvider::NAME,
+            access_request(),
+        )
+        .await,
+    )?;
+    assert!(
+        matches!(stale_error, ApiError::Authorization(_)),
+        "an already issued URL must stop authorizing after its resource creator is banned"
     );
     Ok(())
 }

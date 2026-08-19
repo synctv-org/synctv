@@ -35,6 +35,10 @@ pub(super) fn build_flv_action(
         room_id,
         media_id,
         user_id: access.user_id,
+        resource_owner_id: versioned
+            .playback_context
+            .as_ref()
+            .and_then(|context| context.resource_owner_id),
         expires_at: access.expires_at,
     })
 }

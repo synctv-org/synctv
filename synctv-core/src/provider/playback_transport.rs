@@ -95,6 +95,7 @@ pub enum PlaybackTransportAction {
         room_id: RoomId,
         media_id: MediaId,
         user_id: UserId,
+        resource_owner_id: Option<UserId>,
         expires_at: i64,
     },
     /// Generate an HLS master playlist that resolves the active stream generation.

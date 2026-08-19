@@ -1,14 +1,16 @@
 use synctv_core::{
-    models::{PlaybackKind, PlaylistId, ProviderTarget, RoomId, UserId, UserStatus},
+    models::{
+        PlaybackKind, PlaylistId, ProviderTarget, RoomId, RoomPlaybackState, UserId, UserStatus,
+    },
     service::{PlaybackStatePatch, PlaybackStateUpdateRequest},
 };
 
 use super::{
     playback_client_profile_from_proto, playback_expires_at,
-    playback_generation_error_allows_state_only, provider_playback_info_to_model,
-    public_id_encode_error, try_playback_state_to_proto, try_playback_to_proto, AdminApiImpl,
-    ApiError, PlaybackFanoutActor, ProviderPlaybackLifecycleApi, RequestContext,
-    LOCAL_MANAGEMENT_ACTOR_USER_ID,
+    playback_generation_error_allows_state_only, playback_snapshot_error_indicates_stale_state,
+    provider_playback_info_to_model, public_id_encode_error, try_playback_state_to_proto,
+    try_playback_to_proto, AdminApiImpl, ApiError, PlaybackFanoutActor,
+    ProviderPlaybackLifecycleApi, RequestContext, LOCAL_MANAGEMENT_ACTOR_USER_ID,
 };
 use crate::impls::client::convert::{dynamic_playlist_source_fields, PlaybackHttpSigningContext};
 use crate::impls::playback::normalized_provider_duration;
@@ -18,6 +20,7 @@ struct DynamicPlaylistPlaybackRequest<'a> {
     user_id_model: &'a UserId,
     playlist_id: &'a PlaylistId,
     target: &'a ProviderTarget,
+    state: &'a RoomPlaybackState,
     playback_client_profile: Option<&'a synctv_core::provider::PlaybackClientProfile>,
 }
 
@@ -52,8 +55,13 @@ impl AdminApiImpl {
         user_id: &UserId,
         room_id: &RoomId,
         media: synctv_core::models::Media,
+        state: &RoomPlaybackState,
         playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
     ) -> Result<synctv_proto::client::Playback, ApiError> {
+        self.room_service
+            .ensure_client_usable_media(&media)
+            .await
+            .map_err(ApiError::from)?;
         let providers_manager = self.room_service.media_service().providers_manager();
         let provider = providers_manager
             .resolve_provider(
@@ -68,6 +76,8 @@ impl AdminApiImpl {
             synctv_core::provider::ProviderActor::User(*user_id),
         )
         .with_room_id(*room_id)
+        .with_playback_generation(state.playback_generation)
+        .with_playback_is_playing(state.is_playing)
         .with_media_id(media.id)
         .with_playback_client_profile(playback_client_profile.cloned());
         if let Some(creator_id) = media.creator_id.as_ref() {
@@ -128,6 +138,14 @@ impl AdminApiImpl {
             .public_id_codec
             .encode_user_id(*user_id)
             .map_err(|error| public_id_encode_error("user", &error))?;
+        let resource_owner_id = ctx
+            .credential_owner_id()
+            .map(|resource_owner_id| {
+                self.public_id_codec
+                    .encode_user_id(*resource_owner_id)
+                    .map_err(|error| public_id_encode_error("resource owner", &error))
+            })
+            .transpose()?;
 
         let signing = PlaybackHttpSigningContext {
             signing_key: &self.signing_key,
@@ -135,6 +153,8 @@ impl AdminApiImpl {
             room_id: &public_room_id,
             proxy_authorizer_id: &public_user_id,
             actor_id: &public_user_id,
+            playback_generation: state.playback_generation,
+            resource_owner_id: resource_owner_id.as_deref(),
         };
         let mut playback =
             try_playback_to_proto(&full_result, &self.public_id_codec, Some(&signing))?;
@@ -151,6 +171,7 @@ impl AdminApiImpl {
             user_id_model,
             playlist_id,
             target,
+            state,
             playback_client_profile,
         } = request;
 
@@ -188,6 +209,8 @@ impl AdminApiImpl {
         )
         .with_room_id(*room_id_model)
         .with_playlist_id(*playlist_id)
+        .with_playback_generation(state.playback_generation)
+        .with_playback_is_playing(state.is_playing)
         .with_playback_client_profile(playback_client_profile.cloned());
         if let Some(creator_id) = playlist.creator_id.as_ref() {
             ctx = ctx.with_credential_owner_id(*creator_id);
@@ -241,12 +264,22 @@ impl AdminApiImpl {
             .public_id_codec
             .encode_user_id(*user_id_model)
             .map_err(|error| public_id_encode_error("user", &error))?;
+        let resource_owner_id = ctx
+            .credential_owner_id()
+            .map(|resource_owner_id| {
+                self.public_id_codec
+                    .encode_user_id(*resource_owner_id)
+                    .map_err(|error| public_id_encode_error("resource owner", &error))
+            })
+            .transpose()?;
         let signing = PlaybackHttpSigningContext {
             signing_key: &self.signing_key,
             media_swarm_signing_key: &self.media_swarm_signing_key,
             room_id: &public_room_id,
             proxy_authorizer_id: &public_user_id,
             actor_id: &public_user_id,
+            playback_generation: state.playback_generation,
+            resource_owner_id: resource_owner_id.as_deref(),
         };
         let mut playback =
             try_playback_to_proto(&full_result, &self.public_id_codec, Some(&signing))?;
@@ -274,6 +307,7 @@ impl AdminApiImpl {
                     user_id,
                     room_id,
                     media,
+                    state,
                     playback_client_profile,
                 )
                 .await;
@@ -291,6 +325,7 @@ impl AdminApiImpl {
                     user_id_model: user_id,
                     playlist_id,
                     target,
+                    state,
                     playback_client_profile,
                 })
                 .await;
@@ -398,13 +433,16 @@ impl AdminApiImpl {
         room_id: &RoomId,
         state: &synctv_core::models::RoomPlaybackState,
     ) -> Result<UserId, ApiError> {
-        if *admin_user_id == LOCAL_MANAGEMENT_ACTOR_USER_ID {
-            return self
-                .resolve_management_playback_user_id(room_id, state)
-                .await;
+        if *admin_user_id != LOCAL_MANAGEMENT_ACTOR_USER_ID
+            && self
+                .management_playback_candidate_is_usable(room_id, admin_user_id)
+                .await?
+        {
+            return Ok(*admin_user_id);
         }
 
-        Ok(*admin_user_id)
+        self.resolve_management_playback_user_id(room_id, state)
+            .await
     }
 
     async fn handle_provider_lifecycle_transition_after_commit(
@@ -533,39 +571,51 @@ impl AdminApiImpl {
 
         self.require_admin_actor(admin_user_id).await?;
 
-        let state = self
+        let mut state = self
             .room_service
             .get_playback_state(&rid)
             .await
             .map_err(ApiError::from)?;
-        let playback = match self
+        let mut playback_result = match self
             .resolve_playback_user_id(admin_user_id, &rid, &state)
             .await
         {
-            Ok(snapshot_user_id) => match self
-                .build_playback_from_state(
+            Ok(snapshot_user_id) => {
+                self.build_playback_from_state(
                     &snapshot_user_id,
                     &rid,
                     &state,
                     playback_client_profile.as_ref(),
                 )
                 .await
+            }
+            Err(error) => Err(error),
+        };
+        if playback_snapshot_error_indicates_stale_state(&state, &playback_result) {
+            state = self
+                .room_service
+                .playback_service()
+                .reload_state_from_store(&rid)
+                .await
+                .map_err(ApiError::from)?;
+            playback_result = match self
+                .resolve_playback_user_id(admin_user_id, &rid, &state)
+                .await
             {
-                Ok(snapshot) => Some(snapshot),
-                Err(error) => {
-                    if !playback_generation_error_allows_state_only(&error) {
-                        return Err(error);
-                    }
-                    tracing::warn!(
-                        room_id = %rid,
-                        admin_user_id = %admin_user_id,
-                        signing_user_id = %snapshot_user_id,
-                        error = %error,
-                        "Transient admin playback generation failed; returning playback state only"
-                    );
-                    None
+                Ok(snapshot_user_id) => {
+                    self.build_playback_from_state(
+                        &snapshot_user_id,
+                        &rid,
+                        &state,
+                        playback_client_profile.as_ref(),
+                    )
+                    .await
                 }
-            },
+                Err(error) => Err(error),
+            };
+        }
+        let playback = match playback_result {
+            Ok(snapshot) => Some(snapshot),
             Err(error) => {
                 if !playback_generation_error_allows_state_only(&error) {
                     return Err(error);

@@ -3,13 +3,118 @@
 use super::convert::*;
 use crate::impls::ApiError;
 use async_trait::async_trait;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 use synctv_core::models::{
     MediaId, MemberStatus, Playlist, PlaylistBrowseAccessMode, PlaylistId, RoomGuestPermissionBits,
     RoomId, RoomMemberPermissionBits, RoomPermission, RoomPermissionSet, RoomRole, RoomStatus,
     UserId, UserRole, UserStatus,
 };
 use synctv_core::provider::{ProviderStore, ProviderStoreResolver, StoreError, StoreLockGuard};
+
+#[derive(Debug)]
+struct ProviderEnrichmentProbe {
+    media_calls: Arc<AtomicUsize>,
+    playlist_calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl synctv_core::provider::MediaProvider for ProviderEnrichmentProbe {
+    fn name(&self) -> &'static str {
+        synctv_core::provider::BilibiliProvider::NAME
+    }
+
+    async fn generate_playback(
+        &self,
+        _ctx: &synctv_core::provider::ProviderContext<'_>,
+        _source_config: &synctv_core::models::MediaSourceConfig,
+    ) -> Result<synctv_core::provider::PlaybackResult, synctv_core::provider::ProviderError> {
+        Err(synctv_core::provider::ProviderError::UnsupportedFormat(
+            "provider enrichment probe does not generate playback".to_string(),
+        ))
+    }
+
+    async fn media_metadata(
+        &self,
+        _ctx: &synctv_core::provider::ProviderContext<'_>,
+        _source_config: &synctv_core::models::MediaSourceConfig,
+    ) -> Result<
+        Option<synctv_core::provider::ProviderResourceMetadata>,
+        synctv_core::provider::ProviderError,
+    > {
+        self.media_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(None)
+    }
+
+    async fn source_cover(
+        &self,
+        _ctx: &synctv_core::provider::ProviderContext<'_>,
+        source_config: synctv_core::provider::SourceConfig<'_>,
+    ) -> Result<Option<synctv_core::provider::SourceCover>, synctv_core::provider::ProviderError>
+    {
+        if source_config.is_media() {
+            self.media_calls.fetch_add(1, Ordering::SeqCst);
+        } else {
+            self.playlist_calls.fetch_add(1, Ordering::SeqCst);
+        }
+        Ok(None)
+    }
+
+    fn as_dynamic_playlist_provider(
+        &self,
+    ) -> Option<&dyn synctv_core::provider::DynamicPlaylistProvider> {
+        Some(self)
+    }
+}
+
+#[async_trait]
+impl synctv_core::provider::DynamicPlaylistProvider for ProviderEnrichmentProbe {
+    async fn playlist_metadata(
+        &self,
+        _ctx: &synctv_core::provider::ProviderContext<'_>,
+        _source_config: &synctv_core::models::PlaylistSourceConfig,
+    ) -> Result<
+        Option<synctv_core::provider::ProviderResourceMetadata>,
+        synctv_core::provider::ProviderError,
+    > {
+        self.playlist_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(None)
+    }
+
+    async fn list_playlist(
+        &self,
+        _ctx: &synctv_core::provider::ProviderContext<'_>,
+        _playlist: &Playlist,
+        _target: Option<&synctv_core::models::ProviderTarget>,
+        _query: synctv_core::provider::DynamicListQuery,
+    ) -> Result<synctv_core::provider::DynamicListResult, synctv_core::provider::ProviderError>
+    {
+        Ok(synctv_core::provider::DynamicListResult::default())
+    }
+
+    async fn resolve_item(
+        &self,
+        _ctx: &synctv_core::provider::ProviderContext<'_>,
+        _playlist: &Playlist,
+        _target: &synctv_core::models::ProviderTarget,
+    ) -> Result<Option<synctv_core::provider::NextPlayItem>, synctv_core::provider::ProviderError>
+    {
+        Ok(None)
+    }
+
+    async fn next(
+        &self,
+        _ctx: &synctv_core::provider::ProviderContext<'_>,
+        _playlist: &Playlist,
+        _target: &synctv_core::models::ProviderTarget,
+        _play_mode: synctv_core::models::PlayMode,
+    ) -> Result<Option<synctv_core::provider::NextPlayItem>, synctv_core::provider::ProviderError>
+    {
+        Ok(None)
+    }
+}
 
 fn test_public_id_codec() -> synctv_adapter::PublicIdCodec {
     synctv_adapter::PublicIdCodec::plain()
@@ -78,6 +183,119 @@ fn source_url_cover_conversions_return_display_only_payloads() {
     assert!(media_cover.metadata.is_none());
     assert!(media_cover.variants.is_empty());
     assert!(media_cover.object_access.is_none());
+}
+
+#[tokio::test]
+async fn unavailable_resources_skip_provider_enrichment() -> TestResult {
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .connect_lazy("postgres://synctv:synctv@127.0.0.1:5432/synctv_test")?;
+    let instance_manager = Arc::new(synctv_core::service::RemoteProviderManager::new(Arc::new(
+        synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
+    )));
+    let media_calls = Arc::new(AtomicUsize::new(0));
+    let playlist_calls = Arc::new(AtomicUsize::new(0));
+    let factory_media_calls = Arc::clone(&media_calls);
+    let factory_playlist_calls = Arc::clone(&playlist_calls);
+    let mut providers = synctv_core::service::ProvidersManager::new(instance_manager)
+        .map_err(|error| test_error(error.to_string()))?;
+    providers.register_factory(
+        synctv_core::provider::BilibiliProvider::NAME,
+        Box::new(move |_instance_id, _config, _instance_manager| {
+            Ok(Arc::new(ProviderEnrichmentProbe {
+                media_calls: Arc::clone(&factory_media_calls),
+                playlist_calls: Arc::clone(&factory_playlist_calls),
+            }))
+        }),
+    );
+    let providers = Arc::new(providers);
+    providers
+        .create_provider_with_default_config(
+            synctv_core::provider::BilibiliProvider::NAME,
+            synctv_core::provider::BilibiliProvider::NAME,
+        )
+        .await
+        .map_err(|error| test_error(error.to_string()))?;
+
+    let user_service = Arc::new(synctv_core_testing::create_test_user_service(pool.clone()));
+    let room_service = Arc::new(
+        synctv_core::service::RoomService::new_with_providers_for_tests(
+            pool,
+            (*user_service).clone(),
+            providers,
+        )
+        .map_err(|error| test_error(error.to_string()))?,
+    );
+    let api = super::ClientApiImpl::new_with_runtime(
+        crate::impls::ClientApiOptions {
+            read_pool: None,
+            user_service,
+            room_service,
+            chat_service: None,
+            connection_service: Arc::new(synctv_realtime::sync::ConnectionManager::default()),
+            runtime_settings: Arc::new(crate::ApiRuntimeSettings::default()),
+            publish_key_service: None,
+            jwt_service: synctv_core_testing::create_test_jwt_service(),
+            live_streaming_infrastructure: None,
+            runtime_settings_store: None,
+            provider_stores: Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(
+                "test:provider-enrichment:",
+            )),
+            public_id_codec: Arc::new(test_public_id_codec()),
+            email_api: None,
+            passkey_service: None,
+        },
+        crate::test_support::client_api_runtime(),
+    );
+
+    let mut media = make_test_media();
+    media.provider_instance_name = None;
+    let now = synctv_core::SystemClock.now();
+    let playlist = Playlist {
+        id: PlaylistId::expect_positive(305),
+        room_id: media.room_id,
+        creator_id: media.creator_id,
+        browse_access_mode: PlaylistBrowseAccessMode::Default,
+        name: "Unavailable provider playlist".to_string(),
+        description: String::new(),
+        cover_file_reference_id: None,
+        parent_id: None,
+        position: 0.0,
+        source_provider: Some(synctv_core::models::SourceProvider::Bilibili),
+        source_config: Some(synctv_core::models::PlaylistSourceConfig::Bilibili(
+            synctv_core::models::BilibiliPlaylistSourceConfig {
+                source: synctv_core::models::BilibiliPlaylistSource::Popular,
+                shared: false,
+                proxy_mode: synctv_core::models::PlaybackProxyMode::Auto,
+            },
+        )),
+        provider_instance_name: None,
+        created_at: now,
+        updated_at: now,
+        version: 0,
+    };
+
+    api_ok(
+        api.media_to_proto_for_viewer_with_loaded_cover(&media, false, None)
+            .await,
+    )?;
+    api_ok(
+        api.playlist_to_proto_for_viewer_with_loaded_cover(&playlist, 0, false, None)
+            .await,
+    )?;
+    assert_eq!(media_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(playlist_calls.load(Ordering::SeqCst), 0);
+
+    api_ok(
+        api.media_to_proto_for_viewer_with_loaded_cover(&media, true, None)
+            .await,
+    )?;
+    api_ok(
+        api.playlist_to_proto_for_viewer_with_loaded_cover(&playlist, 0, true, None)
+            .await,
+    )?;
+    assert_eq!(media_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(playlist_calls.load(Ordering::SeqCst), 2);
+    Ok(())
 }
 
 fn unused_store_error() -> StoreError {

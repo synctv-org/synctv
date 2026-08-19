@@ -18,6 +18,7 @@ use super::playback_lifecycle::ProviderPlaybackLifecycleApi;
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
 use crate::impls::playback::{
     normalized_provider_duration, playback_expires_at, playback_generation_error_allows_state_only,
+    playback_snapshot_error_indicates_stale_state,
 };
 use crate::impls::ApiError;
 use crate::playback_fanout::{PlaybackFanoutActor, PreparedPlaybackStateFanout};
@@ -42,24 +43,6 @@ fn apply_live_stream_generation(
         metadata.availability = synctv_proto::client::LiveStreamAvailability::Offline as i32;
         metadata.stream_generation_id.clear();
     }
-}
-
-fn stale_cached_playback_reference<T>(
-    state: &RoomPlaybackState,
-    playback_result: &Result<T, ApiError>,
-) -> bool {
-    if state.playing_media_id.is_none() && state.playing_playlist_id.is_none() {
-        return false;
-    }
-
-    matches!(
-        playback_result,
-        Err(ApiError::NotFound(message))
-            if matches!(
-                message.as_str(),
-                "Media not found" | "Playlist not found" | "Dynamic playlist item not found"
-            )
-    )
 }
 
 #[derive(Debug)]
@@ -526,6 +509,23 @@ impl ClientApiImpl {
                 ApiError::Internal(format!("Failed to encode user public id: {error}"))
             })?;
         let actor_id = actor.public_actor_id(&self.public_id_codec)?;
+        let playback_generation = ctx.playback_generation().ok_or_else(|| {
+            ApiError::Internal(
+                "Missing playback_generation in provider context for playback signing".to_string(),
+            )
+        })?;
+        let resource_owner_id = ctx
+            .credential_owner_id()
+            .map(|resource_owner_id| {
+                self.public_id_codec
+                    .encode_user_id(*resource_owner_id)
+                    .map_err(|error| {
+                        ApiError::Internal(format!(
+                            "Failed to encode resource owner public id: {error}"
+                        ))
+                    })
+            })
+            .transpose()?;
 
         let signing = PlaybackHttpSigningContext {
             signing_key: &self.signing_key,
@@ -533,6 +533,8 @@ impl ClientApiImpl {
             room_id: &public_room_id,
             proxy_authorizer_id: &proxy_authorizer_id,
             actor_id: &actor_id,
+            playback_generation,
+            resource_owner_id: resource_owner_id.as_deref(),
         };
         let mut playback =
             try_playback_to_proto(full_result, &self.public_id_codec, Some(&signing))?;
@@ -1092,7 +1094,7 @@ impl ClientApiImpl {
                 request_control,
             )
             .await;
-        if stale_cached_playback_reference(&state, &playback_result) {
+        if playback_snapshot_error_indicates_stale_state(&state, &playback_result) {
             state = self
                 .room_service
                 .playback_service()
@@ -1207,7 +1209,7 @@ impl ClientApiImpl {
                 request_control,
             )
             .await;
-        if stale_cached_playback_reference(&state, &playback_result) {
+        if playback_snapshot_error_indicates_stale_state(&state, &playback_result) {
             tracing::info!(
                 room_id = %rid,
                 user_id = %uid,

@@ -778,47 +778,51 @@ impl ClientApiImpl {
             })
             .transpose()?
             .flatten();
-        let (source_cover_url, provider_metadata) = tokio::join!(
-            async {
-                if cover.is_some() {
-                    return Ok(None);
-                }
-                match self
-                    .room_service
-                    .media_service()
-                    .media_source_cover(provider_actor_for_viewer(viewer_id), media)
-                    .await
-                {
-                    Ok(Some(source_cover)) => {
-                        self.source_cover_url(media.room_id, viewer_id, source_cover)
+        let (source_cover_url, provider_metadata) = if is_available {
+            let (source_cover_url, provider_metadata) = tokio::join!(
+                async {
+                    if cover.is_some() {
+                        return Ok(None);
                     }
-                    Ok(None) => Ok(None),
-                    Err(error) => {
-                        tracing::debug!(
-                            media_id = %media.id,
-                            error = %error,
-                            "failed to resolve media source cover"
-                        );
-                        Ok(None)
+                    match self
+                        .room_service
+                        .media_service()
+                        .media_source_cover(provider_actor_for_viewer(viewer_id), media)
+                        .await
+                    {
+                        Ok(Some(source_cover)) => {
+                            self.source_cover_url(media.room_id, viewer_id, source_cover)
+                        }
+                        Ok(None) => Ok(None),
+                        Err(error) => {
+                            tracing::debug!(
+                                media_id = %media.id,
+                                error = %error,
+                                "failed to resolve media source cover"
+                            );
+                            Ok(None)
+                        }
                     }
+                },
+                async {
+                    self.room_service
+                        .media_service()
+                        .media_provider_metadata(provider_actor_for_viewer(viewer_id), media)
+                        .await
+                        .unwrap_or_else(|error| {
+                            tracing::debug!(
+                                media_id = %media.id,
+                                error = %error,
+                                "failed to resolve media provider metadata"
+                            );
+                            None
+                        })
                 }
-            },
-            async {
-                self.room_service
-                    .media_service()
-                    .media_provider_metadata(provider_actor_for_viewer(viewer_id), media)
-                    .await
-                    .unwrap_or_else(|error| {
-                        tracing::debug!(
-                            media_id = %media.id,
-                            error = %error,
-                            "failed to resolve media provider metadata"
-                        );
-                        None
-                    })
-            }
-        );
-        let source_cover_url = source_cover_url?;
+            );
+            (source_cover_url?, provider_metadata)
+        } else {
+            (None, None)
+        };
         let mut proto = convert::try_media_to_proto_for_viewer_with_cover(
             media,
             convert::MediaProtoView {
@@ -858,51 +862,58 @@ impl ClientApiImpl {
             })
             .transpose()?
             .flatten();
-        let (source_cover_url, provider_metadata) = tokio::join!(
-            async {
-                if cover.is_some() {
-                    return Ok(None);
-                }
-                match self
-                    .room_service
-                    .media_service()
-                    .playlist_source_cover(provider_actor_for_viewer(viewer_id), playlist)
-                    .await
-                {
-                    Ok(Some(source_cover)) => {
-                        self.source_cover_url(playlist.room_id, viewer_id, source_cover)
+        let (source_cover_url, provider_metadata) = if is_available {
+            let (source_cover_url, provider_metadata) = tokio::join!(
+                async {
+                    if cover.is_some() {
+                        return Ok(None);
                     }
-                    Ok(None) => Ok(None),
-                    Err(error) => {
-                        tracing::debug!(
-                            playlist_id = %playlist.id,
-                            error = %error,
-                            "failed to resolve playlist source cover"
-                        );
-                        Ok(None)
-                    }
-                }
-            },
-            async {
-                if playlist.is_dynamic() {
-                    self.room_service
+                    match self
+                        .room_service
                         .media_service()
-                        .playlist_provider_metadata(provider_actor_for_viewer(viewer_id), playlist)
+                        .playlist_source_cover(provider_actor_for_viewer(viewer_id), playlist)
                         .await
-                        .unwrap_or_else(|error| {
+                    {
+                        Ok(Some(source_cover)) => {
+                            self.source_cover_url(playlist.room_id, viewer_id, source_cover)
+                        }
+                        Ok(None) => Ok(None),
+                        Err(error) => {
                             tracing::debug!(
                                 playlist_id = %playlist.id,
                                 error = %error,
-                                "failed to resolve playlist provider metadata"
+                                "failed to resolve playlist source cover"
                             );
-                            None
-                        })
-                } else {
-                    None
+                            Ok(None)
+                        }
+                    }
+                },
+                async {
+                    if playlist.is_dynamic() {
+                        self.room_service
+                            .media_service()
+                            .playlist_provider_metadata(
+                                provider_actor_for_viewer(viewer_id),
+                                playlist,
+                            )
+                            .await
+                            .unwrap_or_else(|error| {
+                                tracing::debug!(
+                                    playlist_id = %playlist.id,
+                                    error = %error,
+                                    "failed to resolve playlist provider metadata"
+                                );
+                                None
+                            })
+                    } else {
+                        None
+                    }
                 }
-            }
-        );
-        let source_cover_url = source_cover_url?;
+            );
+            (source_cover_url?, provider_metadata)
+        } else {
+            (None, None)
+        };
         let mut proto = convert::try_playlist_to_proto_for_viewer_with_cover(
             playlist,
             item_count,

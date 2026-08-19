@@ -26,7 +26,10 @@ use crate::impls::client::media::{
 };
 
 use crate::impls::client::playback_lifecycle::ProviderPlaybackLifecycleApi;
-use crate::impls::playback::{playback_expires_at, playback_generation_error_allows_state_only};
+use crate::impls::playback::{
+    playback_expires_at, playback_generation_error_allows_state_only,
+    playback_snapshot_error_indicates_stale_state,
+};
 use crate::impls::RequestExecutor;
 use crate::media_fanout::{default_media_fanout_service, MediaFanoutService};
 use crate::membership_event_fanout::{

@@ -54,6 +54,7 @@ pub async fn get_live_proxy_flv_stream(
             room_id,
             media_id,
             user_id,
+            resource_owner_id,
             expires_at,
         } => {
             if provider_name != PROVIDER {
@@ -69,6 +70,7 @@ pub async fn get_live_proxy_flv_stream(
                     room_id,
                     media_id,
                     user_id,
+                    resource_owner_id,
                     expires_at,
                     external_source,
                     head,

@@ -52,12 +52,19 @@ impl RoomService {
             .await?;
 
         let owned_media_kick_events = if let Some(factory) = owned_media_kick_outbox_event_factory {
-            let owned_media = sqlx::query_as::<_, (RoomId, MediaId)>(
-                "SELECT room_id, id FROM media WHERE creator_id = $1 AND deleted_at IS NULL",
+            let owned_media = sqlx::query!(
+                r#"
+                SELECT room_id AS "room_id!: RoomId", id AS "id!: MediaId"
+                FROM media
+                WHERE creator_id = $1 AND deleted_at IS NULL
+                "#,
+                user_id.as_i64(),
             )
-            .bind(user_id.as_i64())
             .fetch_all(&mut *tx)
-            .await?;
+            .await?
+            .into_iter()
+            .map(|row| (row.room_id, row.id))
+            .collect::<Vec<_>>();
             factory(&owned_media)?
         } else {
             Vec::new()

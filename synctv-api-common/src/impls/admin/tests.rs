@@ -5730,6 +5730,12 @@ async fn test_get_playback_for_provider_media_signs_proxy_urls_for_global_admin(
             )
             .await,
     )?;
+    let owner_error = api_err(
+        access_deps
+            .validate_resource_owner_access(&room.id, &media_creator.id)
+            .await,
+    )?;
+    assert!(matches!(owner_error, ApiError::Authorization(_)));
     let stale_error = api_err(
         crate::playback_provider::common::verify_playback_provider_http_access(
             &access_deps,

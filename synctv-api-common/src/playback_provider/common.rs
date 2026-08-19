@@ -128,6 +128,26 @@ impl PlaybackProviderAccessDeps<'_> {
         .validate_fresh_access(room_id, user_id)
         .await
     }
+
+    pub async fn validate_resource_owner_access(
+        &self,
+        room_id: &RoomId,
+        resource_owner_id: &UserId,
+    ) -> Result<(), ApiError> {
+        let available = self
+            .playback_transport_services
+            .permission_service
+            .available_resource_creator_pairs(&[(*room_id, *resource_owner_id)])
+            .await
+            .map_err(ApiError::from)?;
+        if available.contains(&(*room_id, *resource_owner_id)) {
+            Ok(())
+        } else {
+            Err(ApiError::Authorization(
+                synctv_common::messages::STALE_PROXY_ACCESS.to_string(),
+            ))
+        }
+    }
 }
 
 #[derive(Clone, Copy)]

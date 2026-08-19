@@ -389,6 +389,12 @@ impl PlaybackService {
             .await
     }
 
+    async fn ensure_media_is_available(&self, media: &crate::models::Media) -> Result<()> {
+        self.media_service
+            .ensure_media_lifecycle_path_available(media)
+            .await
+    }
+
     async fn ensure_history_entry_available(&self, entry: &PlaybackHistoryEntry) -> Result<()> {
         if let Some(media_id) = entry.media_id {
             let media = self
@@ -396,8 +402,7 @@ impl PlaybackService {
                 .get_room_media(&entry.room_id, &media_id)
                 .await?
                 .ok_or_else(|| Error::NotFound("Playback history media not found".to_string()))?;
-            self.ensure_creator_is_available(&entry.room_id, media.creator_id.as_ref(), "Media")
-                .await?;
+            self.ensure_media_is_available(&media).await?;
 
             if let Some(playlist_id) = entry.playlist_id {
                 let playlist = self
@@ -1568,14 +1573,7 @@ impl PlaybackService {
                             .await?
                             .ok_or_else(|| Error::NotFound("Current media not found".to_string()))?;
 
-                        match self
-                            .ensure_creator_is_available(
-                                room_id,
-                                current_media.creator_id.as_ref(),
-                                "Media",
-                            )
-                            .await
-                        {
+                        match self.ensure_media_is_available(&current_media).await {
                             Ok(()) => {}
                             Err(Error::Authorization(_)) => {
                                 return self
@@ -1725,14 +1723,7 @@ impl PlaybackService {
                 };
                 let preflight_metadata = match &next_target {
                     NextTarget::Static(next) => {
-                        match self
-                            .ensure_creator_is_available(
-                                room_id,
-                                next.creator_id.as_ref(),
-                                "Media",
-                            )
-                            .await
-                        {
+                        match self.ensure_media_is_available(next).await {
                             Ok(()) => {}
                             Err(Error::Authorization(_)) => {
                                 return self
@@ -2441,8 +2432,7 @@ impl PlaybackService {
                 .await?
                 .ok_or_else(|| Error::NotFound("Media not found".to_string()))?;
 
-            self.ensure_creator_is_available(&room_id, media.creator_id.as_ref(), "Media")
-                .await?;
+            self.ensure_media_is_available(&media).await?;
             Some(media)
         } else {
             None

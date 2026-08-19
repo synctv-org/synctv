@@ -918,6 +918,43 @@ async fn test_switch_media_serializes_with_concurrent_dynamic_ancestor_ban() {
         .await
         .checked("playback should switch after the dynamic creator is unbanned");
 
+    user_repo
+        .ban(
+            &dynamic_creator.id,
+            Some(&owner.id),
+            Some("static child playback path test".to_string()),
+        )
+        .await
+        .checked("dynamic creator should be banned for the path check");
+    let error = room_service
+        .playback_service()
+        .switch(
+            room.id,
+            owner.id,
+            Some(media_id),
+            Some(static_child_id),
+            None,
+        )
+        .await
+        .failed("media below an inactive dynamic ancestor must not be playable");
+    assert!(matches!(error, Error::Authorization(_)));
+
+    make_user_service(&pool)
+        .unban_user(&dynamic_creator.id)
+        .await
+        .checked("dynamic creator should be unbanned after the path check");
+    room_service
+        .playback_service()
+        .switch(
+            room.id,
+            owner.id,
+            Some(media_id),
+            Some(static_child_id),
+            None,
+        )
+        .await
+        .checked("playback should switch after the dynamic ancestor is restored");
+
     room_service
         .ban_user_and_reset_owned_playback_with_outbox(
             &dynamic_creator.id,

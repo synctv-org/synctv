@@ -578,12 +578,54 @@ impl RoomPlaybackStateRepository {
         let states = sqlx::query_as!(
             RoomPlaybackState,
             r#"
-            WITH impacted_rooms AS (
+            WITH RECURSIVE playback_playlist_ancestors AS (
+                SELECT DISTINCT
+                       rps.room_id AS playback_room_id,
+                       p.id,
+                       p.parent_id,
+                       p.creator_id,
+                       p.source_provider,
+                       0 AS depth
+                FROM room_playback_state rps
+                LEFT JOIN media m
+                  ON m.id = rps.playing_media_id
+                 AND m.room_id = rps.room_id
+                 AND m.deleted_at IS NULL
+                CROSS JOIN LATERAL (
+                    VALUES (rps.playing_playlist_id), (m.playlist_id)
+                ) source(playlist_id)
+                JOIN playlists p
+                  ON p.id = source.playlist_id
+                 AND p.room_id = rps.room_id
+                 AND p.deleted_at IS NULL
+              UNION ALL
+                SELECT ancestors.playback_room_id,
+                       parent.id,
+                       parent.parent_id,
+                       parent.creator_id,
+                       parent.source_provider,
+                       ancestors.depth + 1
+                FROM playback_playlist_ancestors ancestors
+                JOIN playlists parent
+                  ON parent.id = ancestors.parent_id
+                 AND parent.room_id = ancestors.playback_room_id
+                WHERE parent.deleted_at IS NULL
+                  AND ancestors.depth < 50
+            ),
+            impacted_rooms AS (
                 SELECT DISTINCT rps.room_id
                 FROM room_playback_state rps
-                LEFT JOIN media m ON m.id = rps.playing_media_id
-                LEFT JOIN playlists p ON p.id = rps.playing_playlist_id
-                WHERE m.creator_id = $1 OR p.creator_id = $1
+                LEFT JOIN media m
+                  ON m.id = rps.playing_media_id
+                 AND m.room_id = rps.room_id
+                WHERE m.creator_id = $1
+                   OR EXISTS (
+                       SELECT 1
+                       FROM playback_playlist_ancestors ancestor
+                       WHERE ancestor.playback_room_id = rps.room_id
+                         AND ancestor.creator_id = $1
+                         AND ancestor.source_provider IS NOT NULL
+                   )
             )
             SELECT rps.room_id AS "room_id!: RoomId",
                    rps.playing_media_id AS "playing_media_id?: MediaId",

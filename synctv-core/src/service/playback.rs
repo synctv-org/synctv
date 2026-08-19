@@ -3,8 +3,8 @@
 //! Handles playback coordination including play/pause, seeking, speed changes,
 //! and media switching with optimistic locking for concurrent updates.
 
-use std::sync::Arc;
 use std::time::Duration;
+use std::{collections::HashSet, sync::Arc};
 
 use crate::{
     cache::{
@@ -61,7 +61,6 @@ pub struct PlaybackService {
     notification_service: Option<NotificationService>,
     permission_service: PermissionService,
     media_service: MediaService,
-    user_service: UserService,
     /// L1 in-memory cache for playback state, keyed by `room_id`
     playback_cache: Arc<moka::future::Cache<String, RoomPlaybackState>>,
     /// Optional L2 cache (Redis) for cross-replica consistency.
@@ -110,6 +109,18 @@ struct PlaybackSwitchCommand {
     target: SwitchPlaybackTarget,
     bypass_room_permissions: bool,
     outbox_event_factory: Option<RealtimeOutboxPlaybackStateEventFactory>,
+}
+
+pub(crate) struct PendingCreatorPlaybackReset {
+    states: Vec<RoomPlaybackState>,
+    reservations: Vec<(RoomId, Option<VersionFenceReservation>)>,
+}
+
+struct PlaybackSourcePlaylistPathNode {
+    id: PlaylistId,
+    parent_id: Option<PlaylistId>,
+    creator_id: Option<UserId>,
+    is_dynamic: bool,
 }
 
 enum PlaybackHistoryTransition {
@@ -338,7 +349,7 @@ impl PlaybackService {
         playback_repo: RoomPlaybackStateRepository,
         permission_service: PermissionService,
         media_service: MediaService,
-        user_service: UserService,
+        _user_service: UserService,
         runtime: PlaybackServiceRuntime,
     ) -> Self {
         let source_metadata_repo = runtime
@@ -354,7 +365,6 @@ impl PlaybackService {
             notification_service: runtime.notification_service,
             permission_service,
             media_service,
-            user_service,
             playback_cache: Arc::new(
                 moka::future::CacheBuilder::new(Self::DEFAULT_CACHE_SIZE)
                     .time_to_live(Duration::from_secs(Self::DEFAULT_CACHE_TTL_SECS))
@@ -368,22 +378,15 @@ impl PlaybackService {
         }
     }
 
-    async fn ensure_creator_is_active(
+    async fn ensure_creator_is_available(
         &self,
+        room_id: &RoomId,
         creator_id: Option<&UserId>,
         resource_kind: &'static str,
     ) -> Result<()> {
-        let Some(creator_id) = creator_id else {
-            return Ok(());
-        };
-
-        match self.user_service.get_user(creator_id).await {
-            Ok(user) if user.status.is_active() => Ok(()),
-            Ok(_) | Err(Error::NotFound(_)) => Err(Error::Authorization(format!(
-                "{resource_kind} is unavailable because its creator is not active"
-            ))),
-            Err(error) => Err(error),
-        }
+        self.permission_service
+            .ensure_resource_creator_is_available(room_id, creator_id, resource_kind)
+            .await
     }
 
     async fn ensure_history_entry_available(&self, entry: &PlaybackHistoryEntry) -> Result<()> {
@@ -393,7 +396,7 @@ impl PlaybackService {
                 .get_room_media(&entry.room_id, &media_id)
                 .await?
                 .ok_or_else(|| Error::NotFound("Playback history media not found".to_string()))?;
-            self.ensure_creator_is_active(media.creator_id.as_ref(), "Media")
+            self.ensure_creator_is_available(&entry.room_id, media.creator_id.as_ref(), "Media")
                 .await?;
 
             if let Some(playlist_id) = entry.playlist_id {
@@ -409,8 +412,6 @@ impl PlaybackService {
                         "Playback history media does not belong to its static playlist".to_string(),
                     ));
                 }
-                self.ensure_creator_is_active(playlist.creator_id.as_ref(), "Playlist")
-                    .await?;
             }
 
             return Ok(());
@@ -424,7 +425,11 @@ impl PlaybackService {
                     Error::NotFound("Playback history playlist not found".to_string())
                 })?;
             return self
-                .ensure_creator_is_active(playlist.creator_id.as_ref(), "Playlist")
+                .ensure_creator_is_available(
+                    &entry.room_id,
+                    playlist.creator_id.as_ref(),
+                    "Dynamic playlist",
+                )
                 .await;
         }
         Err(Error::Internal(
@@ -930,6 +935,8 @@ impl PlaybackService {
             }
         };
         let result = async {
+            self.lock_and_recheck_source_creator_in_tx(state, &mut tx)
+                .await?;
             self.history_repo
                 .save_cursor_position_on_conn(&state.room_id, previous.computed_position(), &mut tx)
                 .await?;
@@ -1021,6 +1028,145 @@ impl PlaybackService {
             let _ = notification_service.notify_committed_realtime_event(chat_event);
         }
         Ok(updated)
+    }
+
+    async fn lock_and_recheck_source_creator_in_tx(
+        &self,
+        state: &RoomPlaybackState,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<()> {
+        let mut creator_ids = HashSet::new();
+        let (source_playlist_id, require_dynamic_source) = if let Some(media_id) =
+            state.playing_media_id
+        {
+            let media = sqlx::query!(
+                r#"
+                SELECT creator_id AS "creator_id?: UserId",
+                       playlist_id AS "playlist_id?: PlaylistId"
+                FROM media
+                WHERE id = $1
+                  AND room_id = $2
+                  AND deleted_at IS NULL
+                "#,
+                media_id.as_i64(),
+                state.room_id.as_i64(),
+            )
+            .fetch_optional(&mut **tx)
+            .await?
+            .ok_or_else(|| Error::NotFound("Media not found".to_string()))?;
+            if state.playing_playlist_id.is_some() && state.playing_playlist_id != media.playlist_id
+            {
+                return Err(Error::InvalidInput(
+                    "media no longer belongs to the specified playlist".to_string(),
+                ));
+            }
+            if let Some(creator_id) = media.creator_id {
+                creator_ids.insert(creator_id);
+            }
+            (media.playlist_id, false)
+        } else if let Some(playlist_id) = state.playing_playlist_id {
+            (Some(playlist_id), true)
+        } else {
+            return Ok(());
+        };
+
+        if let Some(playlist_id) = source_playlist_id {
+            let path = sqlx::query_as!(
+                PlaybackSourcePlaylistPathNode,
+                r#"
+                WITH RECURSIVE ancestors AS (
+                    SELECT id, parent_id, creator_id,
+                           source_provider IS NOT NULL AS is_dynamic,
+                           0 AS depth
+                    FROM playlists
+                    WHERE id = $1
+                      AND room_id = $2
+                      AND deleted_at IS NULL
+                  UNION ALL
+                    SELECT parent.id, parent.parent_id, parent.creator_id,
+                           parent.source_provider IS NOT NULL AS is_dynamic,
+                           ancestors.depth + 1
+                    FROM playlists parent
+                    JOIN ancestors ON parent.id = ancestors.parent_id
+                                  AND parent.room_id = $2
+                    WHERE parent.deleted_at IS NULL
+                      AND ancestors.depth < 50
+                )
+                SELECT id AS "id!: PlaylistId",
+                       parent_id AS "parent_id?: PlaylistId",
+                       creator_id AS "creator_id?: UserId",
+                       is_dynamic AS "is_dynamic!"
+                FROM ancestors
+                ORDER BY depth DESC
+                "#,
+                playlist_id.as_i64(),
+                state.room_id.as_i64(),
+            )
+            .fetch_all(&mut **tx)
+            .await?;
+            if path.last().map(|node| node.id) != Some(playlist_id)
+                || path.first().is_none_or(|node| node.parent_id.is_some())
+            {
+                return Err(Error::Authorization(
+                    "Playback source is unavailable because its playlist path is inactive"
+                        .to_string(),
+                ));
+            }
+            if require_dynamic_source && path.last().is_none_or(|node| !node.is_dynamic) {
+                return Err(Error::InvalidInput(
+                    "dynamic playback target must reference a dynamic playlist".to_string(),
+                ));
+            }
+            creator_ids.extend(
+                path.into_iter()
+                    .filter(|node| node.is_dynamic)
+                    .filter_map(|node| node.creator_id),
+            );
+        }
+
+        if creator_ids.is_empty() {
+            return Ok(());
+        }
+        let creator_id_values = creator_ids.iter().map(UserId::as_i64).collect::<Vec<_>>();
+
+        let locked_creators = sqlx::query_scalar!(
+            r#"
+            SELECT users.id AS "id!: UserId"
+            FROM users
+            JOIN room_members
+              ON room_members.room_id = $1
+             AND room_members.user_id = users.id
+            WHERE users.id = ANY($2)
+            FOR KEY SHARE OF users, room_members
+            "#,
+            state.room_id.as_i64(),
+            &creator_id_values,
+        )
+        .fetch_all(&mut **tx)
+        .await?;
+        if locked_creators.into_iter().collect::<HashSet<_>>() != creator_ids {
+            return Err(Error::Authorization(
+                "Playback source is unavailable because its creator cannot provide room resources"
+                    .to_string(),
+            ));
+        }
+
+        let creator_pairs = creator_ids
+            .iter()
+            .map(|creator_id| (state.room_id, *creator_id))
+            .collect::<Vec<_>>();
+        let available = self
+            .permission_service
+            .available_resource_creator_pairs_with_executor(&creator_pairs, &mut **tx)
+            .await?;
+        if available.len() != creator_ids.len() {
+            return Err(Error::Authorization(
+                "Playback source is unavailable because its creator cannot provide room resources"
+                    .to_string(),
+            ));
+        }
+
+        Ok(())
     }
 
     pub async fn list_playback_history(
@@ -1382,7 +1528,11 @@ impl PlaybackService {
                         .await?
                         .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
                     match self
-                        .ensure_creator_is_active(playlist.creator_id.as_ref(), "Playlist")
+                        .ensure_creator_is_available(
+                            room_id,
+                            playlist.creator_id.as_ref(),
+                            "Dynamic playlist",
+                        )
                         .await
                     {
                         Ok(()) => {}
@@ -1419,7 +1569,11 @@ impl PlaybackService {
                             .ok_or_else(|| Error::NotFound("Current media not found".to_string()))?;
 
                         match self
-                            .ensure_creator_is_active(current_media.creator_id.as_ref(), "Media")
+                            .ensure_creator_is_available(
+                                room_id,
+                                current_media.creator_id.as_ref(),
+                                "Media",
+                            )
                             .await
                         {
                             Ok(()) => {}
@@ -1572,7 +1726,11 @@ impl PlaybackService {
                 let preflight_metadata = match &next_target {
                     NextTarget::Static(next) => {
                         match self
-                            .ensure_creator_is_active(next.creator_id.as_ref(), "Media")
+                            .ensure_creator_is_available(
+                                room_id,
+                                next.creator_id.as_ref(),
+                                "Media",
+                            )
                             .await
                         {
                             Ok(()) => {}
@@ -1606,7 +1764,11 @@ impl PlaybackService {
                             .await?
                             .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
                         match self
-                            .ensure_creator_is_active(playlist.creator_id.as_ref(), "Playlist")
+                            .ensure_creator_is_available(
+                                room_id,
+                                playlist.creator_id.as_ref(),
+                                "Dynamic playlist",
+                            )
                             .await
                         {
                             Ok(()) => {}
@@ -2105,92 +2267,112 @@ impl PlaybackService {
         creator_id: &UserId,
         outbox_event_factory: Option<RealtimeOutboxPlaybackStateEventFactory>,
     ) -> Result<Vec<RoomPlaybackState>> {
-        let states = {
-            let mut tx = self.playback_repo.pool().begin().await?;
-            let impacted_states = self
-                .playback_repo
-                .find_playback_for_creator_with_executor(creator_id, &mut *tx)
-                .await?;
-            let mut reset_states = Vec::with_capacity(impacted_states.len());
-            let mut reservations = Vec::with_capacity(impacted_states.len());
+        let mut tx = self.playback_repo.pool().begin().await?;
+        let pending = self
+            .prepare_creator_playback_reset_in_tx(
+                creator_id,
+                outbox_event_factory.as_ref(),
+                &mut tx,
+            )
+            .await?;
+        if let Err(error) = tx.commit().await {
+            self.abort_creator_playback_reset(&pending).await;
+            return Err(error.into());
+        }
 
-            let reset_result: Result<()> = async {
-                for mut state in impacted_states {
-                    let reservation = self
-                        .begin_playback_write_from_db_version(&state.room_id, state.version)
-                        .await?;
-                    let reserved_version = reservation
-                        .as_ref()
-                        .map_or(state.version + 1, |reservation| reservation.version);
-                    let room_id = state.room_id;
-                    reservations.push((room_id, reservation));
+        Ok(self
+            .finalize_creator_playback_reset_after_commit(pending)
+            .await)
+    }
 
-                    let previous_state = state.clone();
-                    state.playing_media_id = None;
-                    state.playing_playlist_id = None;
-                    state.target = None;
-                    state.position = 0.0;
-                    state.speed = 1.0;
-                    state.is_playing = false;
-                    state.updated_at = self.clock.now();
-                    let previous_progress_position =
-                        previous_progress_position_for_source_transition(&previous_state, &state);
-
-                    let updated = self
-                        .playback_repo
-                        .update_with_exact_version_executor_and_previous_progress(
-                            &state,
-                            reserved_version,
-                            previous_progress_position,
-                            &mut tx,
-                        )
-                        .await?;
-                    self.insert_playback_outbox_tx(
-                        &mut tx,
-                        &updated,
-                        outbox_event_factory.as_ref(),
-                    )
-                    .await?;
-                    reset_states.push(updated);
-                }
-                Ok(())
-            }
-            .await;
-
-            if let Err(error) = reset_result {
-                for (room_id, reservation) in &reservations {
-                    self.abort_playback_write(room_id, reservation.as_ref())
-                        .await;
-                }
-                return Err(error);
-            }
-
-            if let Err(error) = tx.commit().await {
-                for (room_id, reservation) in &reservations {
-                    self.abort_playback_write(room_id, reservation.as_ref())
-                        .await;
-                }
-                return Err(error.into());
-            }
-            for (state, (_, reservation)) in reset_states.iter().zip(reservations.iter()) {
-                self.finalize_committed_playback_write_best_effort(
-                    &state.room_id,
-                    reservation.as_ref(),
-                    state.version,
-                    "reset_playback_for_creator",
-                )
-                .await;
-            }
-            reset_states
+    pub(crate) async fn prepare_creator_playback_reset_in_tx(
+        &self,
+        creator_id: &UserId,
+        outbox_event_factory: Option<&RealtimeOutboxPlaybackStateEventFactory>,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<PendingCreatorPlaybackReset> {
+        let impacted_states = self
+            .playback_repo
+            .find_playback_for_creator_with_executor(creator_id, &mut **tx)
+            .await?;
+        let mut pending = PendingCreatorPlaybackReset {
+            states: Vec::with_capacity(impacted_states.len()),
+            reservations: Vec::with_capacity(impacted_states.len()),
         };
 
-        for state in &states {
+        let reset_result: Result<()> = async {
+            for mut state in impacted_states {
+                let reservation = self
+                    .begin_playback_write_from_db_version(&state.room_id, state.version)
+                    .await?;
+                let reserved_version = reservation
+                    .as_ref()
+                    .map_or(state.version + 1, |reservation| reservation.version);
+                let room_id = state.room_id;
+                pending.reservations.push((room_id, reservation));
+
+                let previous_state = state.clone();
+                state.playing_media_id = None;
+                state.playing_playlist_id = None;
+                state.target = None;
+                state.position = 0.0;
+                state.speed = 1.0;
+                state.is_playing = false;
+                state.updated_at = self.clock.now();
+                let previous_progress_position =
+                    previous_progress_position_for_source_transition(&previous_state, &state);
+
+                let updated = self
+                    .playback_repo
+                    .update_with_exact_version_executor_and_previous_progress(
+                        &state,
+                        reserved_version,
+                        previous_progress_position,
+                        tx,
+                    )
+                    .await?;
+                self.insert_playback_outbox_tx(tx, &updated, outbox_event_factory)
+                    .await?;
+                pending.states.push(updated);
+            }
+            Ok(())
+        }
+        .await;
+
+        if let Err(error) = reset_result {
+            self.abort_creator_playback_reset(&pending).await;
+            return Err(error);
+        }
+
+        Ok(pending)
+    }
+
+    pub(crate) async fn abort_creator_playback_reset(&self, pending: &PendingCreatorPlaybackReset) {
+        for (room_id, reservation) in &pending.reservations {
+            self.abort_playback_write(room_id, reservation.as_ref())
+                .await;
+        }
+    }
+
+    pub(crate) async fn finalize_creator_playback_reset_after_commit(
+        &self,
+        pending: PendingCreatorPlaybackReset,
+    ) -> Vec<RoomPlaybackState> {
+        for (state, (_, reservation)) in pending.states.iter().zip(pending.reservations.iter()) {
+            self.finalize_committed_playback_write_best_effort(
+                &state.room_id,
+                reservation.as_ref(),
+                state.version,
+                "reset_playback_for_creator",
+            )
+            .await;
+        }
+        for state in &pending.states {
             self.write_playback_cache(state).await;
             self.broadcast_invalidation(&state.room_id, state, "reset_playback_for_creator")
                 .await;
         }
-
-        Ok(states)
+        pending.states
     }
 
     /// Check if playback is currently active
@@ -2259,7 +2441,7 @@ impl PlaybackService {
                 .await?
                 .ok_or_else(|| Error::NotFound("Media not found".to_string()))?;
 
-            self.ensure_creator_is_active(media.creator_id.as_ref(), "Media")
+            self.ensure_creator_is_available(&room_id, media.creator_id.as_ref(), "Media")
                 .await?;
             Some(media)
         } else {
@@ -2276,8 +2458,14 @@ impl PlaybackService {
                 .await?
                 .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
 
-            self.ensure_creator_is_active(playlist.creator_id.as_ref(), "Playlist")
+            if playlist.is_dynamic() {
+                self.ensure_creator_is_available(
+                    &room_id,
+                    playlist.creator_id.as_ref(),
+                    "Dynamic playlist",
+                )
                 .await?;
+            }
 
             if let Some(media) = media.as_ref() {
                 if playlist.is_dynamic() {

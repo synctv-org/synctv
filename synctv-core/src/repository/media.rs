@@ -203,7 +203,7 @@ impl MediaRepository {
         builder.push(
             " AND EXISTS (SELECT 1 FROM rooms r WHERE r.id = m.room_id AND r.deleted_at IS NULL)",
         );
-        builder.push(" AND (m.playlist_id IS NULL OR EXISTS (SELECT 1 FROM playlists p WHERE p.id = m.playlist_id AND p.deleted_at IS NULL AND (p.creator_id IS NULL OR EXISTS (SELECT 1 FROM users pu WHERE pu.id = p.creator_id AND pu.deleted_at IS NULL))))");
+        builder.push(" AND (m.playlist_id IS NULL OR EXISTS (SELECT 1 FROM playlists p WHERE p.id = m.playlist_id AND p.deleted_at IS NULL))");
         match playlist_id {
             Some(playlist_id) => {
                 builder.push(" AND m.playlist_id = ");
@@ -241,6 +241,14 @@ impl MediaRepository {
                     WHERE ub.user_id = u.id
                       AND ub.revoked_at IS NULL
                       AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
+                ) AND EXISTS (
+                    SELECT 1 FROM room_members rm
+                    WHERE rm.room_id = m.room_id AND rm.user_id = m.creator_id
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM room_member_kick_cooldowns cooldown
+                    WHERE cooldown.room_id = m.room_id
+                      AND cooldown.user_id = m.creator_id
+                      AND cooldown.ends_at > CURRENT_TIMESTAMP
                 )))",
                 );
             }
@@ -251,6 +259,14 @@ impl MediaRepository {
                     WHERE ub.user_id = u.id
                       AND ub.revoked_at IS NULL
                       AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
+                ) OR NOT EXISTS (
+                    SELECT 1 FROM room_members rm
+                    WHERE rm.room_id = m.room_id AND rm.user_id = m.creator_id
+                ) OR EXISTS (
+                    SELECT 1 FROM room_member_kick_cooldowns cooldown
+                    WHERE cooldown.room_id = m.room_id
+                      AND cooldown.user_id = m.creator_id
+                      AND cooldown.ends_at > CURRENT_TIMESTAMP
                 ))",
                 );
             }
@@ -295,6 +311,15 @@ impl MediaRepository {
                           WHERE ub.user_id = u.id
                             AND ub.revoked_at IS NULL
                             AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
+                      ) AND EXISTS (
+                          SELECT 1 FROM room_members rm
+                          WHERE rm.room_id = m.room_id
+                            AND rm.user_id = m.creator_id
+                      ) AND NOT EXISTS (
+                          SELECT 1 FROM room_member_kick_cooldowns cooldown
+                          WHERE cooldown.room_id = m.room_id
+                            AND cooldown.user_id = m.creator_id
+                            AND cooldown.ends_at > CURRENT_TIMESTAMP
                       ) THEN TRUE
                       ELSE FALSE
                     END AS is_available",
@@ -2345,6 +2370,16 @@ impl MediaRepository {
                         AND ub.revoked_at IS NULL
                         AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
                   )
+                  AND EXISTS (
+                      SELECT 1 FROM room_members rm
+                      WHERE rm.room_id = m.room_id AND rm.user_id = m.creator_id
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM room_member_kick_cooldowns cooldown
+                      WHERE cooldown.room_id = m.room_id
+                        AND cooldown.user_id = m.creator_id
+                        AND cooldown.ends_at > CURRENT_TIMESTAMP
+                  )
               ))
             "#,
             playlist_id.as_i64(),
@@ -2441,6 +2476,16 @@ impl MediaRepository {
                       WHERE ub.user_id = u.id
                         AND ub.revoked_at IS NULL
                         AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
+                  )
+                  AND EXISTS (
+                      SELECT 1 FROM room_members rm
+                      WHERE rm.room_id = m.room_id AND rm.user_id = m.creator_id
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM room_member_kick_cooldowns cooldown
+                      WHERE cooldown.room_id = m.room_id
+                        AND cooldown.user_id = m.creator_id
+                        AND cooldown.ends_at > CURRENT_TIMESTAMP
                   )
               ))
             GROUP BY m.playlist_id

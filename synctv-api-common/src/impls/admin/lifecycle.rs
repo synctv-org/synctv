@@ -84,27 +84,29 @@ impl AdminApiImpl {
             );
         }
 
-        let updated = self
-            .user_service
-            .ban_user(
-                target_user_id,
-                (*admin_user_id != LOCAL_MANAGEMENT_ACTOR_USER_ID).then_some(admin_user_id),
-                reason,
+        let owner_inactive_outbox_events = owner_inactive_fanout
+            .iter()
+            .map(
+                crate::room_lifecycle_fanout::PreparedRoomLifecycleOutboxFanout::cloned_outbox_event,
             )
-            .await
-            .map_err(ApiError::from)?;
+            .collect::<Vec<_>>();
 
         let prepared_playback_reset = self
             .playback_fanout
             .prepare_system_state_changed_batch_outbox_fanout();
-        self.room_service
-            .playback_service()
-            .reset_playback_for_creator_with_outbox(
+
+        let updated = self
+            .room_service
+            .ban_user_and_reset_owned_playback_with_outbox(
                 target_user_id,
+                (*admin_user_id != LOCAL_MANAGEMENT_ACTOR_USER_ID).then_some(admin_user_id),
+                reason,
                 Some(prepared_playback_reset.outbox_factory()),
+                &owner_inactive_outbox_events,
             )
             .await
             .map_err(ApiError::from)?;
+
         prepared_playback_reset.publish_after_outbox_commit();
 
         for prepared_fanout in owner_inactive_fanout {

@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::{
     models::{RoomId, RoomPermission, RoomPermissionSet, RoomRole, UserId},
     Error, Result,
@@ -6,6 +8,94 @@ use crate::{
 use super::PermissionService;
 
 impl PermissionService {
+    pub async fn ensure_resource_creator_is_available(
+        &self,
+        room_id: &RoomId,
+        creator_id: Option<&UserId>,
+        resource_kind: &'static str,
+    ) -> Result<()> {
+        let Some(creator_id) = creator_id else {
+            return Ok(());
+        };
+
+        if self
+            .available_resource_creator_pairs(&[(*room_id, *creator_id)])
+            .await?
+            .contains(&(*room_id, *creator_id))
+        {
+            return Ok(());
+        }
+
+        Err(Error::Authorization(format!(
+            "{resource_kind} is unavailable because its creator cannot provide room resources"
+        )))
+    }
+
+    pub async fn available_resource_creator_pairs(
+        &self,
+        pairs: &[(RoomId, UserId)],
+    ) -> Result<HashSet<(RoomId, UserId)>> {
+        self.available_resource_creator_pairs_with_executor(pairs, self.member_repo()?.pool())
+            .await
+    }
+
+    pub(crate) async fn available_resource_creator_pairs_with_executor<'e, E>(
+        &self,
+        pairs: &[(RoomId, UserId)],
+        executor: E,
+    ) -> Result<HashSet<(RoomId, UserId)>>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        if pairs.is_empty() {
+            return Ok(HashSet::new());
+        }
+
+        let requested = pairs.iter().copied().collect::<HashSet<_>>();
+        let room_ids = requested
+            .iter()
+            .map(|(room_id, _)| room_id.as_i64())
+            .collect::<Vec<_>>();
+        let user_ids = requested
+            .iter()
+            .map(|(_, user_id)| user_id.as_i64())
+            .collect::<Vec<_>>();
+        let rows = sqlx::query!(
+            r#"
+            SELECT rm.room_id AS "room_id!: RoomId", rm.user_id AS "user_id!: UserId"
+            FROM room_members rm
+            JOIN users u ON u.id = rm.user_id
+            WHERE rm.room_id = ANY($1)
+              AND rm.user_id = ANY($2)
+              AND u.deleted_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM user_bans ub
+                  WHERE ub.user_id = u.id
+                    AND ub.revoked_at IS NULL
+                    AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM room_member_kick_cooldowns cooldown
+                  WHERE cooldown.room_id = rm.room_id
+                    AND cooldown.user_id = rm.user_id
+                    AND cooldown.ends_at > CURRENT_TIMESTAMP
+              )
+            "#,
+            &room_ids,
+            &user_ids,
+        )
+        .fetch_all(executor)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| (row.room_id, row.user_id))
+            .filter(|pair| requested.contains(pair))
+            .collect())
+    }
+
     async fn ensure_room_accepts_member_actions(&self, room_id: &RoomId) -> Result<()> {
         let room = self
             .room_repo()?

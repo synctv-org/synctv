@@ -171,6 +171,9 @@ impl MediaService {
             return Err(Error::InvalidInput("Playlist is not dynamic".to_string()));
         }
 
+        self.ensure_playlist_lifecycle_path_available(room_id, playlist_id)
+            .await?;
+
         let (provider_name, provider) = self.get_dynamic_playlist_provider(&playlist).await?;
         self.ensure_provider_credential_repo(&provider_name)?;
 

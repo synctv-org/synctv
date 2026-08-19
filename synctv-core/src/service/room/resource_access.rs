@@ -21,30 +21,6 @@ impl ClientResourceAvailability {
 }
 
 impl RoomService {
-    fn playlist_client_availability(
-        playlist: &Playlist,
-        active_creators: &HashSet<UserId>,
-    ) -> ClientResourceAvailability {
-        match playlist.creator_id.as_ref() {
-            Some(creator_id) if !active_creators.contains(creator_id) => {
-                ClientResourceAvailability::CreatorInactive
-            }
-            _ => ClientResourceAvailability::Available,
-        }
-    }
-
-    fn media_client_availability(
-        media: &Media,
-        active_creators: &HashSet<UserId>,
-    ) -> ClientResourceAvailability {
-        match media.creator_id.as_ref() {
-            Some(creator_id) if !active_creators.contains(creator_id) => {
-                ClientResourceAvailability::CreatorInactive
-            }
-            _ => ClientResourceAvailability::Available,
-        }
-    }
-
     fn room_client_availability(
         room: &Room,
         active_creators: &HashSet<UserId>,
@@ -122,52 +98,6 @@ impl RoomService {
             .collect())
     }
 
-    async fn ensure_resource_creator_is_active_for_client_access(
-        &self,
-        creator_id: Option<&UserId>,
-        resource_kind: &'static str,
-    ) -> Result<()> {
-        let Some(creator_id) = creator_id else {
-            return Ok(());
-        };
-
-        match self.user_service.get_user(creator_id).await {
-            Ok(user) if user.status.is_active() && !user.is_banned => Ok(()),
-            Ok(_) | Err(Error::NotFound(_)) => Err(Error::Authorization(format!(
-                "{resource_kind} is unavailable because its creator is not active"
-            ))),
-            Err(error) => Err(error),
-        }
-    }
-
-    async fn ensure_playlist_path_is_usable_for_client_access(
-        &self,
-        room_id: &RoomId,
-        playlist_id: &PlaylistId,
-    ) -> Result<()> {
-        let path = self
-            .playlist_repo
-            .get_path_in_room(room_id, playlist_id)
-            .await?;
-        if path.last().map(|playlist| playlist.id) != Some(*playlist_id)
-            || path
-                .first()
-                .is_none_or(|playlist| playlist.parent_id.is_some())
-        {
-            return Err(Error::Authorization(
-                "Playlist is unavailable because its lifecycle path is inactive".to_string(),
-            ));
-        }
-        for playlist in path {
-            self.ensure_resource_creator_is_active_for_client_access(
-                playlist.creator_id.as_ref(),
-                "Playlist",
-            )
-            .await?;
-        }
-        Ok(())
-    }
-
     pub(super) async fn ensure_room_creator_is_active_for_access(
         &self,
         room: &Room,
@@ -189,36 +119,28 @@ impl RoomService {
     }
 
     pub async fn ensure_client_usable_playlist(&self, playlist: &Playlist) -> Result<()> {
-        self.ensure_playlist_path_is_usable_for_client_access(&playlist.room_id, &playlist.id)
+        self.media_service
+            .ensure_playlist_lifecycle_path_available(&playlist.room_id, &playlist.id)
             .await
     }
 
     /// Enforce the same creator lifecycle gate for static media playback and
     /// other client operations that start from a direct media identifier.
     pub async fn ensure_client_usable_media(&self, media: &Media) -> Result<()> {
-        self.ensure_resource_creator_is_active_for_client_access(
-            media.creator_id.as_ref(),
-            "Media",
-        )
-        .await?;
-        if let Some(playlist_id) = media.playlist_id.as_ref() {
-            self.ensure_playlist_path_is_usable_for_client_access(&media.room_id, playlist_id)
-                .await?;
-        }
-        Ok(())
+        self.media_service
+            .ensure_media_lifecycle_path_available(media)
+            .await
     }
 
     pub async fn playlist_availability(
         &self,
         playlist: &Playlist,
     ) -> Result<ClientResourceAvailability> {
-        let active_creators = self
-            .load_active_creators(playlist.creator_id.iter())
-            .await?;
-        Ok(Self::playlist_client_availability(
-            playlist,
-            &active_creators,
-        ))
+        match self.ensure_client_usable_playlist(playlist).await {
+            Ok(()) => Ok(ClientResourceAvailability::Available),
+            Err(Error::Authorization(_)) => Ok(ClientResourceAvailability::CreatorInactive),
+            Err(error) => Err(error),
+        }
     }
 
     pub async fn room_availability(&self, room: &Room) -> Result<ClientResourceAvailability> {
@@ -292,23 +214,11 @@ impl RoomService {
         &self,
         playlists: &[Playlist],
     ) -> Result<HashMap<PlaylistId, ClientResourceAvailability>> {
-        let active_creators = self
-            .load_active_creators(
-                playlists
-                    .iter()
-                    .filter_map(|playlist| playlist.creator_id.as_ref()),
-            )
-            .await?;
-
-        Ok(playlists
-            .iter()
-            .map(|playlist| {
-                (
-                    playlist.id,
-                    Self::playlist_client_availability(playlist, &active_creators),
-                )
-            })
-            .collect())
+        let mut availability = HashMap::with_capacity(playlists.len());
+        for playlist in playlists {
+            availability.insert(playlist.id, self.playlist_availability(playlist).await?);
+        }
+        Ok(availability)
     }
 
     pub async fn count_client_playlists(
@@ -336,27 +246,22 @@ impl RoomService {
     }
 
     pub async fn media_availability(&self, media: &Media) -> Result<ClientResourceAvailability> {
-        let active_creators = self.load_active_creators(media.creator_id.iter()).await?;
-        Ok(Self::media_client_availability(media, &active_creators))
+        match self.ensure_client_usable_media(media).await {
+            Ok(()) => Ok(ClientResourceAvailability::Available),
+            Err(Error::Authorization(_)) => Ok(ClientResourceAvailability::CreatorInactive),
+            Err(error) => Err(error),
+        }
     }
 
     pub async fn media_availability_map(
         &self,
         media: &[Media],
     ) -> Result<HashMap<MediaId, ClientResourceAvailability>> {
-        let active_creators = self
-            .load_active_creators(media.iter().filter_map(|item| item.creator_id.as_ref()))
-            .await?;
-
-        Ok(media
-            .iter()
-            .map(|item| {
-                (
-                    item.id,
-                    Self::media_client_availability(item, &active_creators),
-                )
-            })
-            .collect())
+        let mut availability = HashMap::with_capacity(media.len());
+        for item in media {
+            availability.insert(item.id, self.media_availability(item).await?);
+        }
+        Ok(availability)
     }
 
     pub async fn count_client_media(

@@ -657,6 +657,11 @@ impl MediaService {
                 .await?
                 .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
             debug_assert_eq!(playlist.room_id, room_id);
+            if playlist.is_dynamic() {
+                return Err(Error::InvalidInput(
+                    "Media cannot be added to a dynamic playlist".to_string(),
+                ));
+            }
         }
 
         let prepared_source = self
@@ -785,6 +790,11 @@ impl MediaService {
                 .await?
                 .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
             debug_assert_eq!(playlist.room_id, room_id);
+            if playlist.is_dynamic() {
+                return Err(Error::InvalidInput(
+                    "Media cannot be added to a dynamic playlist".to_string(),
+                ));
+            }
         }
 
         if items.is_empty() {
@@ -1188,6 +1198,53 @@ impl MediaService {
         self.media_repo.get_by_ids(media_ids).await
     }
 
+    pub async fn ensure_playlist_lifecycle_path_available(
+        &self,
+        room_id: &RoomId,
+        playlist_id: &PlaylistId,
+    ) -> Result<()> {
+        let path = self
+            .playlist_repo
+            .get_path_in_room(room_id, playlist_id)
+            .await?;
+        if path.last().map(|playlist| playlist.id) != Some(*playlist_id)
+            || path
+                .first()
+                .is_none_or(|playlist| playlist.parent_id.is_some())
+        {
+            return Err(Error::Authorization(
+                "Playlist is unavailable because its lifecycle path is inactive".to_string(),
+            ));
+        }
+        for playlist in path {
+            if playlist.is_dynamic() {
+                self.permission_service
+                    .ensure_resource_creator_is_available(
+                        &playlist.room_id,
+                        playlist.creator_id.as_ref(),
+                        "Dynamic playlist",
+                    )
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn ensure_media_lifecycle_path_available(&self, media: &Media) -> Result<()> {
+        self.permission_service
+            .ensure_resource_creator_is_available(
+                &media.room_id,
+                media.creator_id.as_ref(),
+                "Media",
+            )
+            .await?;
+        if let Some(playlist_id) = media.playlist_id.as_ref() {
+            self.ensure_playlist_lifecycle_path_available(&media.room_id, playlist_id)
+                .await?;
+        }
+        Ok(())
+    }
+
     pub async fn generate_backend_playback_for_source(
         &self,
         request: BackendPlaybackRequest<'_>,
@@ -1201,6 +1258,7 @@ impl MediaService {
                 let Some(media) = self.get_room_media(&request.room_id, &media_id).await? else {
                     return Ok(None);
                 };
+                self.ensure_media_lifecycle_path_available(&media).await?;
                 let provider = self
                     .resolve_media_provider(
                         media.source_provider,

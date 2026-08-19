@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE playlists\n            SET creator_id = NULL,\n                version = version + 1\n            WHERE creator_id = $1\n              AND source_provider IS NULL\n              AND deleted_at IS NULL\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a2f12f79b05f5c569e9137d031b89b1e7a0e7397f5af439808cbc982d26cfcda"
+}

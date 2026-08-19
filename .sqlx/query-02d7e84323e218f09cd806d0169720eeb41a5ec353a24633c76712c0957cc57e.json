@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT p.id AS \"id: PlaylistId\", p.room_id AS \"room_id: RoomId\"\n             FROM playlists p\n             JOIN rooms r ON r.id = p.room_id\n             WHERE p.creator_id = $1\n               AND p.deleted_at IS NULL\n               AND r.deleted_at IS NULL\n             ORDER BY p.room_id, p.id",
+  "query": "SELECT p.id AS \"id: PlaylistId\", p.room_id AS \"room_id: RoomId\"\n             FROM playlists p\n             JOIN rooms r ON r.id = p.room_id\n             WHERE p.creator_id = $1\n               AND p.deleted_at IS NULL\n               AND p.source_provider IS NOT NULL\n               AND r.deleted_at IS NULL\n             ORDER BY p.room_id, p.id",
   "describe": {
     "columns": [
       {
@@ -36,5 +36,5 @@
       false
     ]
   },
-  "hash": "943ddaef34bd5a0fc60bbc962f11a3436adb9c5b5dc93f644b0ebf5600fa9418"
+  "hash": "02d7e84323e218f09cd806d0169720eeb41a5ec353a24633c76712c0957cc57e"
 }

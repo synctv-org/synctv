@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                SELECT creator_id AS \"creator_id?: UserId\",\n                       playlist_id AS \"playlist_id?: PlaylistId\"\n                FROM media\n                WHERE id = $1\n                  AND room_id = $2\n                  AND deleted_at IS NULL\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "creator_id?: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "media",
+            "name": "creator_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "playlist_id?: PlaylistId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "media",
+            "name": "playlist_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      true,
+      true
+    ]
+  },
+  "hash": "97578ad28f4e23e3819c7cc55b245ad15e9787f81a06cbf31602fa3b3e35dcac"
+}

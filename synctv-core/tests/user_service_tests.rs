@@ -613,6 +613,21 @@ fn make_playlist(room_id: &RoomId, creator_id: &UserId, name: &str, position: i3
     }
 }
 
+fn make_dynamic_playlist(
+    room_id: &RoomId,
+    creator_id: &UserId,
+    name: &str,
+    position: i32,
+) -> Playlist {
+    let mut playlist = make_playlist(room_id, creator_id, name, position);
+    playlist.source_provider = Some(SourceProvider::Alist);
+    playlist.source_config = Some(synctv_core_testing::alist_directory_playlist_source_config(
+        "alist-test",
+        "/library",
+    ));
+    playlist
+}
+
 fn make_media(
     room_id: &RoomId,
     playlist_id: Option<&PlaylistId>,
@@ -905,6 +920,26 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
         ))
         .await
         .checked("create playlist in foreign room");
+    let foreign_dynamic_playlist = playlist_repo
+        .create(&make_dynamic_playlist(
+            &foreign_room.id,
+            &doomed_user.id,
+            "foreign doomed dynamic playlist",
+            1,
+        ))
+        .await
+        .checked("create dynamic playlist in foreign room");
+    let mut nested_dynamic_template = make_dynamic_playlist(
+        &foreign_room.id,
+        &doomed_user.id,
+        "foreign nested doomed dynamic playlist",
+        2,
+    );
+    nested_dynamic_template.parent_id = Some(foreign_dynamic_playlist.id);
+    let nested_dynamic_playlist = playlist_repo
+        .create(&nested_dynamic_template)
+        .await
+        .checked("create nested dynamic playlist in foreign room");
     let foreign_media = media_repo
         .create(&make_media(
             &foreign_room.id,
@@ -916,13 +951,15 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
         .await
         .checked("create media in foreign room");
 
+    let mut survivor_playlist_template = make_playlist(
+        &foreign_room.id,
+        &other_creator.id,
+        "foreign survivor playlist",
+        1,
+    );
+    survivor_playlist_template.parent_id = Some(nested_dynamic_playlist.id);
     let survivor_playlist = playlist_repo
-        .create(&make_playlist(
-            &foreign_room.id,
-            &other_creator.id,
-            "foreign survivor playlist",
-            1,
-        ))
+        .create(&survivor_playlist_template)
         .await
         .checked("create surviving playlist");
     let survivor_media = media_repo
@@ -935,6 +972,16 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
         ))
         .await
         .checked("create surviving media");
+    let nested_survivor_media = media_repo
+        .create(&make_media(
+            &foreign_room.id,
+            Some(&nested_dynamic_playlist.id),
+            &other_creator.id,
+            "foreign direct nested survivor media",
+            1,
+        ))
+        .await
+        .checked("create direct media under nested dynamic playlist");
     let explicitly_deleted_media = media_repo
         .create(&make_media(
             &foreign_room.id,
@@ -1111,13 +1158,30 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
             .is_none(),
         "owned room media should be deleted"
     );
+    let preserved_foreign_playlist = playlist_repo
+        .get_by_id(&foreign_playlist.id)
+        .await
+        .checked("get foreign playlist")
+        .checked("ordinary playlist in foreign room should survive");
+    assert_eq!(
+        preserved_foreign_playlist.creator_id, None,
+        "surviving ordinary playlists become room-owned shared directories"
+    );
     assert!(
         playlist_repo
-            .get_by_id(&foreign_playlist.id)
+            .get_by_id(&foreign_dynamic_playlist.id)
             .await
-            .checked("get foreign playlist")
+            .checked("get foreign dynamic playlist")
             .is_none(),
-        "user-created playlist in foreign room should be deleted"
+        "user-created dynamic playlist in foreign room should be deleted"
+    );
+    assert!(
+        playlist_repo
+            .get_by_id(&nested_dynamic_playlist.id)
+            .await
+            .checked("get nested foreign dynamic playlist")
+            .is_none(),
+        "nested user-created dynamic playlist should be deleted"
     );
     assert!(
         media_repo
@@ -1127,13 +1191,14 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
             .is_none(),
         "user-created media in foreign room should be deleted"
     );
+    let survivor_playlist = playlist_repo
+        .get_by_id(&survivor_playlist.id)
+        .await
+        .checked("get survivor playlist")
+        .checked("other users' playlists must survive");
     assert!(
-        playlist_repo
-            .get_by_id(&survivor_playlist.id)
-            .await
-            .checked("get survivor playlist")
-            .is_some(),
-        "other users' playlists must survive"
+        survivor_playlist.parent_id.is_none(),
+        "ordinary playlists below deleted dynamic subtrees move to the room root"
     );
     assert!(
         media_repo
@@ -1142,6 +1207,15 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
             .checked("get survivor media")
             .is_some(),
         "other users' media must survive"
+    );
+    let nested_survivor_media = media_repo
+        .get_by_id(&nested_survivor_media.id)
+        .await
+        .checked("get nested survivor media")
+        .checked("other users' direct nested media must survive");
+    assert!(
+        nested_survivor_media.playlist_id.is_none(),
+        "media below deleted dynamic subtrees move to the room root"
     );
 
     let member_after = room_member_repo
@@ -1293,7 +1367,10 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
            SELECT deletion_source, deleted_owner_id
            FROM media
            WHERE id = ANY($2)"#,
-        &[owned_playlist.id.as_i64(), foreign_playlist.id.as_i64()],
+        &[
+            owned_playlist.id.as_i64(),
+            foreign_dynamic_playlist.id.as_i64(),
+        ],
         &[owned_media.id.as_i64(), foreign_media.id.as_i64()],
     )
     .fetch_all(&pool)
@@ -1348,7 +1425,12 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
     assert!(playlist_repo
         .get_by_id(&foreign_playlist.id)
         .await
-        .checked("load restored foreign-room playlist")
+        .checked("load preserved foreign-room playlist")
+        .is_some());
+    assert!(playlist_repo
+        .get_by_id(&foreign_dynamic_playlist.id)
+        .await
+        .checked("load restored foreign-room dynamic playlist")
         .is_some());
     assert!(media_repo
         .get_by_id(&foreign_media.id)

@@ -1,0 +1,45 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                WITH RECURSIVE ancestors AS (\n                    SELECT id, parent_id, creator_id,\n                           source_provider IS NOT NULL AS is_dynamic,\n                           0 AS depth\n                    FROM playlists\n                    WHERE id = $1\n                      AND room_id = $2\n                      AND deleted_at IS NULL\n                  UNION ALL\n                    SELECT parent.id, parent.parent_id, parent.creator_id,\n                           parent.source_provider IS NOT NULL AS is_dynamic,\n                           ancestors.depth + 1\n                    FROM playlists parent\n                    JOIN ancestors ON parent.id = ancestors.parent_id\n                                  AND parent.room_id = $2\n                    WHERE parent.deleted_at IS NULL\n                      AND ancestors.depth < 50\n                )\n                SELECT id AS \"id!: PlaylistId\",\n                       parent_id AS \"parent_id?: PlaylistId\",\n                       creator_id AS \"creator_id?: UserId\",\n                       is_dynamic AS \"is_dynamic!\"\n                FROM ancestors\n                ORDER BY depth DESC\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!: PlaylistId",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "parent_id?: PlaylistId",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "creator_id?: UserId",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "is_dynamic!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "4664bf0b4384460df3ebee1b91e82bd6405b8d936e2c2633fbb64a1ba702dcb2"
+}

@@ -735,6 +735,10 @@ impl ClientApiImpl {
                 .await
                 .map_err(ApiError::from)?
                 .ok_or_else(|| ApiError::NotFound("Parent playlist not found".to_string()))?;
+            self.room_service
+                .ensure_client_usable_playlist(&parent)
+                .await
+                .map_err(ApiError::from)?;
             debug_assert_eq!(parent.room_id, rid);
             let parent_path = self
                 .room_service

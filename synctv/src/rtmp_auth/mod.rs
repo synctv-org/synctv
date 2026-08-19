@@ -951,6 +951,10 @@ impl SyncTvRtmpAuth {
             )
             .into());
         }
+        self.room_service
+            .ensure_client_usable_media(&media)
+            .await
+            .map_err(|error| format!("Media is unavailable: {error}"))?;
 
         let is_media_creator = if !is_global_admin && !is_room_admin_or_creator {
             if room_member.is_none() {

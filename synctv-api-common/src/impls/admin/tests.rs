@@ -14,8 +14,8 @@ use synctv_core::service::ProvidersManager;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     repository::{
-        MediaRepository, ProviderInstanceRepository, RoomRepository, SettingsRepository,
-        UserRepository,
+        MediaRepository, PlaylistRepository, ProviderInstanceRepository, RoomRepository,
+        SettingsRepository, UserRepository,
     },
     service::{
         AuditService, BruteForceProtection, EmailService, InMemoryTokenBlacklistStore, JwtService,
@@ -1198,6 +1198,42 @@ async fn create_room_media(
     );
     fixture_value(tx.commit().await, "commit media test transaction");
     created
+}
+
+async fn create_room_playlist(
+    pool: &sqlx::PgPool,
+    room_id: RoomId,
+    creator_id: UserId,
+    name: &str,
+    dynamic: bool,
+) -> synctv_core::models::Playlist {
+    let now = synctv_core::SystemClock.now();
+    let playlist = synctv_core::models::Playlist {
+        id: PlaylistId::new(),
+        room_id,
+        creator_id: Some(creator_id),
+        browse_access_mode: synctv_core::models::PlaylistBrowseAccessMode::Default,
+        name: name.to_string(),
+        description: String::new(),
+        cover_file_reference_id: None,
+        parent_id: None,
+        position: 0.0,
+        source_provider: dynamic.then_some(synctv_core::models::SourceProvider::Alist),
+        source_config: dynamic.then(|| {
+            synctv_core_testing::alist_directory_playlist_source_config("alist-test", "/library")
+        }),
+        provider_instance_name: None,
+        created_at: now,
+        updated_at: now,
+        version: 0,
+    };
+
+    fixture_value(
+        PlaylistRepository::new(pool.clone())
+            .create(&playlist)
+            .await,
+        "create playlist",
+    )
 }
 
 fn make_test_room_model(created_by: &UserId) -> synctv_core::models::Room {
@@ -3906,7 +3942,24 @@ async fn test_ban_user_resets_playback_for_media_created_by_target() -> TestResu
     )?
     .0;
 
+    core_ok(
+        admin_api
+            .room_service
+            .join_room(room.id, target_user.id, None)
+            .await,
+    )?;
+
     let media = create_room_media(&pool, room.id, target_user.id, "banned-media").await;
+    let ordinary_playlist =
+        create_room_playlist(&pool, room.id, target_user.id, "shared folder", false).await;
+    let dynamic_playlist = create_room_playlist(
+        &pool,
+        room.id,
+        target_user.id,
+        "private provider library",
+        true,
+    )
+    .await;
 
     core_ok(
         admin_api
@@ -3949,6 +4002,79 @@ async fn test_ban_user_resets_playback_for_media_created_by_target() -> TestResu
     assert!(
         !state.is_playing,
         "playback must be stopped after banning the media creator"
+    );
+
+    assert!(
+        !core_ok(admin_api.room_service.media_availability(&media).await)?.is_available(),
+        "banned creators' media must remain stored but unavailable"
+    );
+    assert!(
+        !core_ok(
+            admin_api
+                .room_service
+                .playlist_availability(&dynamic_playlist)
+                .await,
+        )?
+        .is_available(),
+        "banned creators' dynamic playlists must remain stored but unavailable"
+    );
+    assert!(
+        core_ok(
+            admin_api
+                .room_service
+                .playlist_availability(&ordinary_playlist)
+                .await,
+        )?
+        .is_available(),
+        "ordinary playlists must not depend on creator ban state"
+    );
+    assert!(
+        admin_api
+            .room_service
+            .ensure_client_usable_media(&media)
+            .await
+            .is_err(),
+        "direct media IDs must not bypass creator availability"
+    );
+    assert!(
+        admin_api
+            .room_service
+            .ensure_client_usable_playlist(&dynamic_playlist)
+            .await
+            .is_err(),
+        "direct dynamic playlist IDs must not bypass creator availability"
+    );
+    core_ok(
+        admin_api
+            .room_service
+            .ensure_client_usable_playlist(&ordinary_playlist)
+            .await,
+    )?;
+
+    api_ok(
+        admin_api
+            .unban_user(
+                synctv_proto::admin::UnbanUserRequest {
+                    user_id: public_user_id(&admin_api, target_user.id),
+                },
+                &admin_user.id,
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
+    assert!(
+        core_ok(admin_api.room_service.media_availability(&media).await)?.is_available(),
+        "unbanning must restore media availability"
+    );
+    assert!(
+        core_ok(
+            admin_api
+                .room_service
+                .playlist_availability(&dynamic_playlist)
+                .await,
+        )?
+        .is_available(),
+        "unbanning must restore dynamic playlist availability"
     );
     Ok(())
 }
@@ -4115,6 +4241,13 @@ async fn test_batch_ban_users_resets_playback_for_media_created_by_target() -> T
             .await,
     )?
     .0;
+
+    core_ok(
+        admin_api
+            .room_service
+            .join_room(room.id, target_user.id, None)
+            .await,
+    )?;
 
     let media = create_room_media(&pool, room.id, target_user.id, "batch-banned-media").await;
 

@@ -499,6 +499,70 @@ async fn test_backend_playback_for_static_live_proxy_binds_media_id() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_backend_playback_rejects_static_media_from_banned_creator() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let user_service = make_user_service(&pool);
+    let room_service = make_room_service(pool.clone());
+
+    let creator = user_repo
+        .create(&make_user("backend_banned_media_creator"))
+        .await
+        .checked("test operation should succeed");
+    let (room, _) = room_service
+        .create_room(
+            "Backend Banned Media".to_string(),
+            String::new(),
+            creator.id,
+            None,
+            None,
+        )
+        .await
+        .checked("test operation should succeed");
+    register_direct_url_provider(&room_service).await;
+    let playlist = create_top_level_playlist(&pool, &room.id).await;
+    let media = room_service
+        .media_service()
+        .add_media(
+            room.id,
+            creator.id,
+            AddMediaRequest {
+                playlist_id: Some(playlist.id),
+                name: "Banned creator source".to_string(),
+                description: String::new(),
+                source_provider: SourceProvider::DirectUrl,
+                provider_instance_name: None,
+                source_config: synctv_core_testing::direct_url_media_source_config(
+                    "https://example.com/banned.mp4",
+                ),
+            },
+        )
+        .await
+        .checked("test operation should succeed");
+    user_service
+        .ban_user(
+            &creator.id,
+            None,
+            Some("backend lifecycle test".to_string()),
+        )
+        .await
+        .checked("test operation should succeed");
+
+    let error = room_service
+        .media_service()
+        .generate_backend_playback_for_source(BackendPlaybackRequest {
+            room_id: room.id,
+            media_id: Some(media.id),
+            playlist_id: None,
+            target: None,
+        })
+        .await
+        .failed("system playback generation must enforce creator availability");
+    assert!(matches!(error, Error::Authorization(_)));
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_create_dynamic_playlist_with_credential_backed_provider_without_repo_fails_closed() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());

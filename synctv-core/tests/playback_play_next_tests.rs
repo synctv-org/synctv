@@ -650,7 +650,6 @@ async fn test_sequential_advance_to_next() {
         .create_room("Seq Next".to_string(), String::new(), owner.id, None, None)
         .await
         .checked("test operation should succeed");
-
     let playlist = create_top_level_playlist(&pool, &room.id).await;
     let media1 = insert_media(&pool, &playlist.id, &room.id, "video1", 0).await;
     let media2 = insert_media(&pool, &playlist.id, &room.id, "video2", 1).await;
@@ -1294,7 +1293,6 @@ async fn test_sequential_advance_restarts_next_media_with_saved_progress() {
         )
         .await
         .checked("test operation should succeed");
-
     let playlist = create_top_level_playlist(&pool, &room.id).await;
     let media1 = insert_media(&pool, &playlist.id, &room.id, "video1_saved_next", 0).await;
     let media2 = insert_media(&pool, &playlist.id, &room.id, "video2_saved_next", 1).await;
@@ -1870,6 +1868,10 @@ async fn test_play_next_stops_when_next_media_creator_becomes_inactive() {
         )
         .await
         .checked("test operation should succeed");
+    room_service
+        .join_room(room.id, next_creator.id, None)
+        .await
+        .checked("test operation should succeed");
 
     let playlist = create_top_level_playlist(&pool, &room.id).await;
     let media_repo = MediaRepository::new(pool.clone());
@@ -1977,7 +1979,6 @@ async fn test_dynamic_playlist_sequential_advances_by_target() {
         )
         .await
         .checked("test operation should succeed");
-
     register_alist_provider(&room_service).await;
     let playlist = create_dynamic_playlist(&pool, &room.id, &owner.id, "alist_default").await;
 
@@ -2045,6 +2046,10 @@ async fn test_switch_dynamic_playlist_rejects_inactive_creator() {
         )
         .await
         .checked("test operation should succeed");
+    room_service
+        .join_room(room.id, playlist_creator.id, None)
+        .await
+        .checked("test operation should succeed");
 
     register_alist_provider(&room_service).await;
     let playlist =
@@ -2073,8 +2078,8 @@ async fn test_switch_dynamic_playlist_rejects_inactive_creator() {
     match result.failed("dynamic playlist created by banned user must not be playable") {
         synctv_core::Error::Authorization(message) => {
             assert!(
-                message.contains("creator") && message.contains("active"),
-                "error should explain creator status: {message}"
+                message.contains("creator") && message.contains("unavailable"),
+                "error should explain creator availability: {message}"
             );
         }
         other => std::panic::panic_any(format!("expected authorization error, got: {other:?}")),
@@ -2117,6 +2122,10 @@ async fn test_play_next_stops_when_dynamic_playlist_creator_becomes_inactive() {
             None,
             None,
         )
+        .await
+        .checked("test operation should succeed");
+    room_service
+        .join_room(room.id, playlist_creator.id, None)
         .await
         .checked("test operation should succeed");
 

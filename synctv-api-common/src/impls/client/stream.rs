@@ -233,6 +233,10 @@ impl ClientApiImpl {
         let media = media
             .map_err(|error| Self::map_media_lookup_error(error, "Media not found"))?
             .ok_or_else(|| ApiError::NotFound(format!("Media {media_id} not found")))?;
+        self.room_service
+            .ensure_client_usable_media(&media)
+            .await
+            .map_err(ApiError::from)?;
         let room = room.map_err(ApiError::from)?;
         ensure_room_accepts_live_publish(&room)?;
 

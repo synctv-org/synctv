@@ -173,6 +173,7 @@ impl AdminApiImpl {
 
         self.invalidate_user_room_permission_caches(target_user_id, &affected_room_ids)
             .await;
+        self.publish_room_cache_invalidations(&affected_room_ids);
 
         self.realtime_lifecycle
             .disconnect_user(target_user_id, "user_banned")
@@ -201,7 +202,7 @@ impl AdminApiImpl {
         .await
     }
 
-    async fn list_active_user_room_ids(
+    pub(in crate::impls::admin) async fn list_active_user_room_ids(
         &self,
         user_id: &UserId,
     ) -> synctv_core::Result<Vec<RoomId>> {
@@ -222,12 +223,22 @@ impl AdminApiImpl {
         .await
     }
 
-    async fn invalidate_user_room_permission_caches(&self, user_id: &UserId, room_ids: &[RoomId]) {
+    pub(in crate::impls::admin) async fn invalidate_user_room_permission_caches(
+        &self,
+        user_id: &UserId,
+        room_ids: &[RoomId],
+    ) {
         for room_id in room_ids {
             self.room_service
                 .permission_service()
                 .invalidate_cache(room_id, user_id)
                 .await;
+        }
+    }
+
+    pub(in crate::impls::admin) fn publish_room_cache_invalidations(&self, room_ids: &[RoomId]) {
+        for room_id in room_ids {
+            self.publish_room_cache_invalidation(room_id);
         }
     }
 }

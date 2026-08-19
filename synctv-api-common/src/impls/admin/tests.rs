@@ -27,7 +27,9 @@ use synctv_core_testing::create_test_pool;
 use synctv_livestream::{
     LiveStreamingInfrastructure, StreamError, StreamRegistryTrait, StreamTracker,
 };
-use synctv_realtime::sync::{ConnectionLimits, ConnectionManager, PublishRequest, RealtimeEvent};
+use synctv_realtime::sync::{
+    CacheTarget, ConnectionLimits, ConnectionManager, PublishRequest, RealtimeEvent,
+};
 
 fn direct_url_playback_info(url: &str, name: &str) -> synctv_core::models::PlaybackInfo {
     synctv_core::models::PlaybackInfo {
@@ -4090,6 +4092,26 @@ async fn test_ban_user_resets_playback_for_media_created_by_target() -> TestResu
     .await;
     assert!(matches!(kick_event, RealtimeEvent::KickPublisher { .. }));
 
+    let ban_cache_invalidation = recv_matching_realtime_event(
+        &mut redis_publish_rx,
+        "room cache invalidation after creator ban",
+        |event| {
+            matches!(
+                event,
+                RealtimeEvent::CacheInvalidate { targets, .. }
+                    if targets.iter().any(|target| matches!(
+                        target,
+                        CacheTarget::Room { room_id } if *room_id == room.id
+                    ))
+            )
+        },
+    )
+    .await;
+    assert!(matches!(
+        ban_cache_invalidation,
+        RealtimeEvent::CacheInvalidate { .. }
+    ));
+
     assert!(
         !core_ok(admin_api.room_service.media_availability(&media).await)?.is_available(),
         "banned creators' media must remain stored but unavailable"
@@ -4202,6 +4224,25 @@ async fn test_ban_user_resets_playback_for_media_created_by_target() -> TestResu
             )
             .await,
     )?;
+    let unban_cache_invalidation = recv_matching_realtime_event(
+        &mut redis_publish_rx,
+        "room cache invalidation after creator unban",
+        |event| {
+            matches!(
+                event,
+                RealtimeEvent::CacheInvalidate { targets, .. }
+                    if targets.iter().any(|target| matches!(
+                        target,
+                        CacheTarget::Room { room_id } if *room_id == room.id
+                    ))
+            )
+        },
+    )
+    .await;
+    assert!(matches!(
+        unban_cache_invalidation,
+        RealtimeEvent::CacheInvalidate { .. }
+    ));
     assert!(
         core_ok(admin_api.room_service.media_availability(&media).await)?.is_available(),
         "unbanning must restore media availability"

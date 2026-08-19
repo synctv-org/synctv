@@ -306,11 +306,20 @@ impl AdminApiImpl {
             return Err(ApiError::InvalidInput("User is not banned".to_string()));
         }
 
+        let affected_room_ids = self
+            .list_active_user_room_ids(&uid)
+            .await
+            .map_err(ApiError::from)?;
+
         let updated = self
             .user_service
             .unban_user(&uid)
             .await
             .map_err(ApiError::from)?;
+
+        self.invalidate_user_room_permission_caches(&uid, &affected_room_ids)
+            .await;
+        self.publish_room_cache_invalidations(&affected_room_ids);
 
         // Audit log: unban is a security-relevant operation (best-effort)
         self.log_admin_action(

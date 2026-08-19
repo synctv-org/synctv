@@ -211,14 +211,15 @@ pub use room::{
     KickMemberOutboxOptions, MemberPermissionPatch, MemberResourceCleanupResult,
     PermissionChangedOutboxSnapshot, RealtimeMembershipAccess,
     RealtimeOutboxDeleteEntriesEventFactory, RealtimeOutboxMemberResourceCleanupEventFactory,
-    RealtimeOutboxPermissionChangedEventFactory, RealtimeOutboxRoomEventFactory,
-    RealtimeOutboxSettingsEventFactory, RealtimeOutboxUserLeftEventFactory, RoomCategoryUpdate,
-    RoomOpaqueLoginStartChallenge, RoomOpaquePasswordLoginSession,
-    RoomOpaquePasswordLoginSessionStore, RoomOpaquePasswordRegistrationSession,
-    RoomOpaquePasswordRegistrationSessionStore, RoomOpaqueRegistrationStartChallenge, RoomService,
-    RoomServiceOptions, UpdateMemberDisplayTagWithOutboxRequest,
-    UpdateMemberRemarkNameWithOutboxRequest, UpdateMemberWithOutboxRequest, UserLeftOutboxSnapshot,
-    ROOM_OPAQUE_LOGIN_SESSION_TTL_SECS, ROOM_OPAQUE_REGISTRATION_SESSION_TTL_SECS,
+    RealtimeOutboxOwnedMediaKickEventFactory, RealtimeOutboxPermissionChangedEventFactory,
+    RealtimeOutboxRoomEventFactory, RealtimeOutboxSettingsEventFactory,
+    RealtimeOutboxUserLeftEventFactory, RoomCategoryUpdate, RoomOpaqueLoginStartChallenge,
+    RoomOpaquePasswordLoginSession, RoomOpaquePasswordLoginSessionStore,
+    RoomOpaquePasswordRegistrationSession, RoomOpaquePasswordRegistrationSessionStore,
+    RoomOpaqueRegistrationStartChallenge, RoomService, RoomServiceOptions,
+    UpdateMemberDisplayTagWithOutboxRequest, UpdateMemberRemarkNameWithOutboxRequest,
+    UpdateMemberWithOutboxRequest, UserLeftOutboxSnapshot, ROOM_OPAQUE_LOGIN_SESSION_TTL_SECS,
+    ROOM_OPAQUE_REGISTRATION_SESSION_TTL_SECS,
 };
 pub use room_settings::{CacheStats, RoomSettingsRuntime, RoomSettingsService};
 pub use server_state::{

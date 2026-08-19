@@ -1,7 +1,10 @@
 use crate::{
-    models::{User, UserId},
+    models::{MediaId, RoomId, User, UserId},
     repository::realtime_outbox::NewRealtimeOutboxEvent,
-    service::{RealtimeOutboxPlaybackStateEventFactory, RoomService},
+    service::{
+        RealtimeOutboxOwnedMediaKickEventFactory, RealtimeOutboxPlaybackStateEventFactory,
+        RoomService,
+    },
     Error, Result,
 };
 
@@ -16,6 +19,26 @@ impl RoomService {
         playback_outbox_event_factory: Option<RealtimeOutboxPlaybackStateEventFactory>,
         lifecycle_outbox_events: &[NewRealtimeOutboxEvent],
     ) -> Result<User> {
+        self.ban_user_and_reset_owned_playback_with_outbox_and_media_kicks(
+            user_id,
+            banned_by,
+            reason,
+            playback_outbox_event_factory,
+            lifecycle_outbox_events,
+            None,
+        )
+        .await
+    }
+
+    pub async fn ban_user_and_reset_owned_playback_with_outbox_and_media_kicks(
+        &self,
+        user_id: &UserId,
+        banned_by: Option<&UserId>,
+        reason: Option<String>,
+        playback_outbox_event_factory: Option<RealtimeOutboxPlaybackStateEventFactory>,
+        lifecycle_outbox_events: &[NewRealtimeOutboxEvent],
+        owned_media_kick_outbox_event_factory: Option<RealtimeOutboxOwnedMediaKickEventFactory>,
+    ) -> Result<User> {
         let mut tx = self.pool.begin().await?;
 
         self.user_service
@@ -27,6 +50,18 @@ impl RoomService {
             .repository
             .insert_ban_with_executor(user_id, banned_by, reason, &mut *tx)
             .await?;
+
+        let owned_media_kick_events = if let Some(factory) = owned_media_kick_outbox_event_factory {
+            let owned_media = sqlx::query_as::<_, (RoomId, MediaId)>(
+                "SELECT room_id, id FROM media WHERE creator_id = $1 AND deleted_at IS NULL",
+            )
+            .bind(user_id.as_i64())
+            .fetch_all(&mut *tx)
+            .await?;
+            factory(&owned_media)?
+        } else {
+            Vec::new()
+        };
 
         let pending_playback_reset = self
             .playback_service
@@ -58,8 +93,12 @@ impl RoomService {
             }
         };
 
+        let mut outbox_events =
+            Vec::with_capacity(lifecycle_outbox_events.len() + owned_media_kick_events.len());
+        outbox_events.extend_from_slice(lifecycle_outbox_events);
+        outbox_events.extend(owned_media_kick_events);
         if let Err(error) = self
-            .insert_realtime_outbox_events_tx(&mut tx, lifecycle_outbox_events)
+            .insert_realtime_outbox_events_tx(&mut tx, &outbox_events)
             .await
         {
             self.playback_service

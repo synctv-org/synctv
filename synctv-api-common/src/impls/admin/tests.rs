@@ -3921,7 +3921,7 @@ async fn test_ban_user_preserves_memberships_and_kicks_user() -> TestResult {
 #[ignore = "Requires Docker"]
 async fn test_ban_user_resets_playback_for_media_created_by_target() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
-    let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
+    let (admin_api, mut redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
 
     let admin_user = create_db_user(&user_repo, "root_ban_playback", UserRole::Root).await;
@@ -4003,6 +4003,26 @@ async fn test_ban_user_resets_playback_for_media_created_by_target() -> TestResu
         !state.is_playing,
         "playback must be stopped after banning the media creator"
     );
+
+    let kick_event = recv_matching_realtime_event(
+        &mut redis_publish_rx,
+        "owned media publisher kick after creator ban",
+        |event| {
+            matches!(
+                event,
+                RealtimeEvent::KickPublisher {
+                    room_id,
+                    media_id,
+                    reason,
+                    ..
+                } if *room_id == room.id
+                    && *media_id == media.id
+                    && reason == "creator_banned"
+            )
+        },
+    )
+    .await;
+    assert!(matches!(kick_event, RealtimeEvent::KickPublisher { .. }));
 
     assert!(
         !core_ok(admin_api.room_service.media_availability(&media).await)?.is_available(),
@@ -5006,6 +5026,73 @@ async fn test_create_publish_key_bypasses_room_membership_requirement_for_global
     assert!(!response.publish_key.is_empty());
     assert!(response.rtmp_url.contains(&public_room_id));
     assert!(response.stream_key.contains(&public_media_id));
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_create_publish_key_rejects_media_from_banned_creator() -> TestResult {
+    let (_postgres, pool) = create_test_pool().await;
+    let (admin_api, _infra, _registry, _redis_publish_rx) =
+        make_admin_api_with_livestream_for_test(pool.clone()).await;
+    let user_repo = UserRepository::new(pool.clone());
+
+    let global_admin = create_db_user(
+        &user_repo,
+        "global_admin_banned_publish_key",
+        UserRole::Root,
+    )
+    .await;
+    let owner = create_db_user(&user_repo, "room_owner_banned_publish_key", UserRole::User).await;
+    let creator = create_db_user(&user_repo, "banned_creator_publish_key", UserRole::User).await;
+
+    let room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "banned creator publish key test".to_string(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
+    core_ok(
+        admin_api
+            .room_service
+            .join_room(room.id, creator.id, None)
+            .await,
+    )?;
+    let media = create_room_media(&pool, room.id, creator.id, "banned-stream-media").await;
+    core_ok(
+        user_repo
+            .ban(
+                &creator.id,
+                Some(&global_admin.id),
+                Some("publish key lifecycle test".to_string()),
+            )
+            .await,
+    )?;
+
+    let error = api_err(
+        admin_api
+            .create_publish_key_for_actor(
+                &public_room_id(&admin_api, room.id),
+                synctv_proto::client::CreateRoomPublishKeyRequest {
+                    media_id: public_media_id(&admin_api, media.id),
+                    r#type: synctv_proto::client::PublishKeyType::SingleUse as i32,
+                    expires_at: Some(chrono::Utc::now().timestamp() + 3600),
+                },
+                &owner.id,
+                &global_admin.id,
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
+
+    assert!(matches!(error, ApiError::Authorization(_)));
     Ok(())
 }
 

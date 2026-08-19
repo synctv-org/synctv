@@ -1,4 +1,7 @@
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use synctv_core::models::{RoomId, UserId, UserRole};
 use synctv_core::service::NewRealtimeOutboxEvent;
@@ -95,19 +98,57 @@ impl AdminApiImpl {
             .playback_fanout
             .prepare_system_state_changed_batch_outbox_fanout();
 
+        let owned_media_kick_events = Arc::new(Mutex::new(Vec::new()));
+        let owned_media_kick_events_factory = {
+            let realtime_fanout = self.realtime_fanout.clone();
+            let owned_media_kick_events = owned_media_kick_events.clone();
+            Arc::new(move |media: &[(RoomId, synctv_core::models::MediaId)]| {
+                let mut outbox_events = Vec::with_capacity(media.len());
+                let mut realtime_events = Vec::with_capacity(media.len());
+                for (room_id, media_id) in media {
+                    let event = synctv_realtime::sync::RealtimeEvent::KickPublisher {
+                        event_id: synctv_common::snanoid!(16),
+                        room_id: *room_id,
+                        media_id: *media_id,
+                        reason: "creator_banned".to_string(),
+                        timestamp: synctv_core::SystemClock.now(),
+                    };
+                    outbox_events.push(
+                        realtime_fanout
+                            .outbox_event(&event)
+                            .map_err(synctv_core::Error::Internal)?,
+                    );
+                    realtime_events.push(event);
+                }
+                *owned_media_kick_events
+                    .lock()
+                    .expect("kick event mutex poisoned") = realtime_events;
+                Ok(outbox_events)
+            }) as synctv_core::service::RealtimeOutboxOwnedMediaKickEventFactory
+        };
+
         let updated = self
             .room_service
-            .ban_user_and_reset_owned_playback_with_outbox(
+            .ban_user_and_reset_owned_playback_with_outbox_and_media_kicks(
                 target_user_id,
                 (*admin_user_id != LOCAL_MANAGEMENT_ACTOR_USER_ID).then_some(admin_user_id),
                 reason,
                 Some(prepared_playback_reset.outbox_factory()),
                 &owner_inactive_outbox_events,
+                Some(owned_media_kick_events_factory),
             )
             .await
             .map_err(ApiError::from)?;
 
         prepared_playback_reset.publish_after_outbox_commit();
+
+        for event in std::mem::take(
+            &mut *owned_media_kick_events
+                .lock()
+                .expect("kick event mutex poisoned"),
+        ) {
+            self.realtime_fanout.publish_after_outbox_commit(event);
+        }
 
         for prepared_fanout in owner_inactive_fanout {
             let room_id = *prepared_fanout.event().room_id().ok_or_else(|| {

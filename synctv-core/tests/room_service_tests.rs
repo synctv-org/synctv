@@ -1623,6 +1623,75 @@ async fn test_inactive_dynamic_playlist_blocks_direct_access_to_historical_stati
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_get_playing_media_rejects_stale_media_from_banned_creator() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let writer = make_room_service(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("stale_playing_media_owner"))
+        .await
+        .checked("test operation should succeed");
+    let creator = user_repo
+        .create(&make_user("stale_playing_media_creator"))
+        .await
+        .checked("test operation should succeed");
+    let (room, _) = writer
+        .create_room(
+            "Stale Playing Media Lifecycle".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .checked("test operation should succeed");
+    writer
+        .join_room(room.id, creator.id, None)
+        .await
+        .checked("test operation should succeed");
+
+    let media = MediaRepository::new(pool.clone())
+        .create(&make_media(
+            room.id,
+            creator.id,
+            None,
+            "stale playing media",
+        ))
+        .await
+        .checked("test operation should succeed");
+    writer
+        .playback_service()
+        .switch(room.id, owner.id, Some(media.id), None, None)
+        .await
+        .checked("test operation should succeed");
+
+    user_repo
+        .ban(
+            &creator.id,
+            Some(&owner.id),
+            Some("stale playback lifecycle test".to_string()),
+        )
+        .await
+        .checked("test operation should succeed");
+
+    let persisted_state = RoomPlaybackStateRepository::new(pool.clone())
+        .get(&room.id)
+        .await
+        .checked("test operation should succeed")
+        .checked("playback state should exist");
+    assert_eq!(persisted_state.playing_media_id, Some(media.id));
+
+    let reader = make_room_service(pool);
+    let error = reader
+        .get_playing_media(&room.id)
+        .await
+        .failed("stale playback must not expose unavailable media");
+    assert!(matches!(error, Error::Authorization(_)));
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_leave_room_non_member_is_rejected() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());

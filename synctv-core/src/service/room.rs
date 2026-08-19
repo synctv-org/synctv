@@ -163,8 +163,9 @@ pub use opaque_sessions::{
 mod outbox;
 pub use outbox::{
     PermissionChangedOutboxSnapshot, RealtimeOutboxMemberResourceCleanupEventFactory,
-    RealtimeOutboxPermissionChangedEventFactory, RealtimeOutboxRoomEventFactory,
-    RealtimeOutboxSettingsEventFactory, RealtimeOutboxUserLeftEventFactory, UserLeftOutboxSnapshot,
+    RealtimeOutboxOwnedMediaKickEventFactory, RealtimeOutboxPermissionChangedEventFactory,
+    RealtimeOutboxRoomEventFactory, RealtimeOutboxSettingsEventFactory,
+    RealtimeOutboxUserLeftEventFactory, UserLeftOutboxSnapshot,
 };
 mod password;
 mod permission_checks;

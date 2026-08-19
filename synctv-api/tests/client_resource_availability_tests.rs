@@ -83,6 +83,21 @@ fn make_playlist(room_id: &RoomId, creator_id: &UserId, name: &str, position: i3
     }
 }
 
+fn make_dynamic_playlist(
+    room_id: &RoomId,
+    creator_id: &UserId,
+    name: &str,
+    position: i32,
+) -> Playlist {
+    let mut playlist = make_playlist(room_id, creator_id, name, position);
+    playlist.source_provider = Some(synctv_core::models::SourceProvider::Alist);
+    playlist.source_config = Some(synctv_core_testing::alist_directory_playlist_source_config(
+        "alist-test",
+        "/library",
+    ));
+    playlist
+}
+
 fn make_media(room_id: &RoomId, creator_id: &UserId, name: &str, position: i32) -> Media {
     let now = Utc::now();
     Media {
@@ -490,7 +505,7 @@ async fn list_playlist_items_root_includes_unavailable_resources_and_marks_avail
         .await
         .unwrap();
     let unavailable_playlist = playlist_repo
-        .create(&make_playlist(
+        .create(&make_dynamic_playlist(
             &room.id,
             &creator.id,
             "unavailable-folder",
@@ -609,7 +624,7 @@ async fn list_playlist_items_root_availability_filter_updates_counts_and_paginat
         .await
         .unwrap();
     let unavailable_playlist = playlist_repo
-        .create(&make_playlist(
+        .create(&make_dynamic_playlist(
             &room.id,
             &creator.id,
             "unavailable-folder",
@@ -783,7 +798,7 @@ async fn list_playlists_availability_filter_updates_total_and_response_items() {
         .await
         .unwrap();
     let unavailable_playlist = playlist_repo
-        .create(&make_playlist(
+        .create(&make_dynamic_playlist(
             &room.id,
             &creator.id,
             "unavailable-folder",

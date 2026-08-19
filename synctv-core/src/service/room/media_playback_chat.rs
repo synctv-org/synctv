@@ -27,10 +27,14 @@ impl RoomService {
     pub async fn get_playing_media(&self, room_id: &RoomId) -> Result<Option<Media>> {
         let state = self.playback_service.get_state(room_id).await?;
         if let Some(media_id) = state.playing_media_id {
-            Ok(self
+            let media = self
                 .media_service
                 .get_room_media(room_id, &media_id)
-                .await?)
+                .await?;
+            if let Some(media) = &media {
+                self.ensure_client_usable_media(media).await?;
+            }
+            Ok(media)
         } else {
             Ok(None)
         }

@@ -228,9 +228,13 @@ impl AdminApiImpl {
                 .get_room_media(&room_id_value, &media_id_value),
             self.room_service.get_room(&room_id_value),
         );
-        media
+        let media = media
             .map_err(|error| ApiError::Internal(format!("Failed to load media: {error}")))?
             .ok_or_else(|| ApiError::NotFound(format!("Media {media_id_value} not found")))?;
+        self.room_service
+            .ensure_client_usable_media(&media)
+            .await
+            .map_err(ApiError::from)?;
         let room = room.map_err(ApiError::from)?;
         crate::impls::client::stream::ensure_room_accepts_live_publish(&room)?;
 

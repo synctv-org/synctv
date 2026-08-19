@@ -114,6 +114,27 @@ fn build_publish_rtmp_url(runtime_settings: &crate::ApiRuntimeSettings, room_id:
     format!("rtmp://{rtmp_host}:{rtmp_port}/{room_id}")
 }
 
+async fn filter_usable_stream_media_ids(
+    room_service: &synctv_core::service::RoomService,
+    room_id: &RoomId,
+    media_ids: Vec<MediaId>,
+) -> Result<Vec<MediaId>, ApiError> {
+    let media = room_service
+        .media_service()
+        .get_room_media_batch(room_id, &media_ids)
+        .await
+        .map_err(ApiError::from)?;
+    let mut usable = Vec::with_capacity(media.len());
+    for media in media {
+        match room_service.ensure_client_usable_media(&media).await {
+            Ok(()) => usable.push(media.id),
+            Err(synctv_core::Error::Authorization(_)) => {}
+            Err(error) => return Err(ApiError::from(error)),
+        }
+    }
+    Ok(usable)
+}
+
 pub(crate) fn publish_key_options(
     req: &CreateRoomPublishKeyRequest,
 ) -> Result<Option<PublishKeyOptions>, ApiError> {
@@ -300,6 +321,7 @@ impl ClientApiImpl {
             .map(|id| id.parse::<MediaId>())
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| ApiError::Internal(format!("Invalid stream media id: {error}")))?;
+        let media_ids = filter_usable_stream_media_ids(&self.room_service, &rid, media_ids).await?;
 
         build_room_streams_response(media_ids, &req, &self.public_id_codec)
     }
@@ -322,6 +344,17 @@ impl ClientApiImpl {
             .check_membership(&rid, &uid)
             .await
             .map_err(Self::map_room_access_error)?;
+        let media = self
+            .room_service
+            .media_service()
+            .get_room_media(&rid, &media_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::NotFound(format!("Media {media_id} not found")))?;
+        self.room_service
+            .ensure_client_usable_media(&media)
+            .await
+            .map_err(ApiError::from)?;
 
         let infrastructure = self
             .live_streaming_infrastructure
@@ -382,7 +415,7 @@ impl ClientApiImpl {
 mod tests {
     use super::{
         build_room_streams_request, build_room_streams_response, ensure_room_accepts_live_publish,
-        publish_key_options,
+        filter_usable_stream_media_ids, publish_key_options,
     };
     use crate::impls::ApiError;
 
@@ -405,6 +438,87 @@ mod tests {
 
     fn codec_ok<T>(result: Result<T, String>) -> TestResult<T> {
         result.map_err(test_error)
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn stream_list_filters_media_from_banned_creators() -> TestResult {
+        use synctv_core::{
+            models::{FromProviderParams, Media, SignupMethod, SourceProvider, User},
+            repository::{MediaRepository, UserRepository},
+        };
+        use synctv_core_testing::{
+            create_test_pool, create_test_room_service, direct_url_media_source_config,
+        };
+
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repository = UserRepository::new(pool.clone());
+        let owner = user_repository
+            .create(&User::new(
+                "stream_filter_owner".to_string(),
+                SignupMethod::AdminCreated,
+            ))
+            .await?;
+        let banned_creator = user_repository
+            .create(&User::new(
+                "stream_filter_banned_creator".to_string(),
+                SignupMethod::AdminCreated,
+            ))
+            .await?;
+        let room_service = create_test_room_service(pool.clone());
+        let room = room_service
+            .create_room(
+                "stream lifecycle filter".to_string(),
+                String::new(),
+                owner.id,
+                None,
+                None,
+            )
+            .await?
+            .0;
+        room_service
+            .join_room(room.id, banned_creator.id, None)
+            .await?;
+        let media_repository = MediaRepository::new(pool);
+        let media = |creator_id, name: &str| {
+            Media::from_provider_with_params(FromProviderParams {
+                playlist_id: None,
+                room_id: room.id,
+                creator_id: Some(creator_id),
+                name: name.to_string(),
+                description: String::new(),
+                source_provider: SourceProvider::DirectUrl,
+                source_config: direct_url_media_source_config("https://example.com/live.m3u8"),
+                provider_instance_name: None,
+                position: 0.0,
+            })
+        };
+        let available = media_repository
+            .create(&media(owner.id, "available"))
+            .await?;
+        let unavailable = media_repository
+            .create(&media(banned_creator.id, "unavailable"))
+            .await?;
+        room_service
+            .ban_user_and_reset_owned_playback_with_outbox(
+                &banned_creator.id,
+                None,
+                Some("stream filter test".to_string()),
+                None,
+                &[],
+            )
+            .await?;
+
+        let filtered = filter_usable_stream_media_ids(
+            &room_service,
+            &room.id,
+            vec![available.id, unavailable.id],
+        )
+        .await
+        .map_err(|error| test_error(format!("{error:?}")))?;
+
+        assert_eq!(filtered, vec![available.id]);
+        Ok(())
     }
 
     #[test]

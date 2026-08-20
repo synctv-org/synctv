@@ -143,6 +143,11 @@ impl PlaylistService {
         };
 
         let mut tx = self.playlist_repo.pool().begin().await?;
+        if !bypass_room_permissions {
+            self.permission_service
+                .lock_active_resource_creator_with_executor(&room_id, &user_id, &mut tx)
+                .await?;
+        }
         let position = self
             .playlist_repo
             .get_next_append_position_with_tx(&room_id, request.parent_id.as_ref(), &mut tx)

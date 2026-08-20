@@ -881,7 +881,7 @@ async fn persist_versioned_mapping(
 }
 
 pub(crate) async fn build_cached_versioned_playback_response(
-    versioned: VersionedPlayback,
+    cached: VersionedPlayback,
     provider_name: &str,
     ctx: &ProviderContext<'_>,
     mark_provider_resources: impl FnOnce(&mut PlaybackResult, &str, i64),
@@ -891,6 +891,12 @@ pub(crate) async fn build_cached_versioned_playback_response(
             "Provider '{provider_name}' cannot generate playback transport without a provider store"
         ))
     })?;
+    let versioned = VersionedPlayback {
+        version: synctv_common::snanoid!(16),
+        result: cached.result,
+        expires_at: cached.expires_at,
+        playback_context: versioned_playback_context(ctx),
+    };
     persist_versioned_mapping(
         store.as_ref(),
         &versioned,
@@ -935,15 +941,7 @@ async fn cache_versioned_playback(
         version: synctv_common::snanoid!(16),
         result: result.clone(),
         expires_at,
-        playback_context: match (ctx.room_id().copied(), ctx.playback_generation()) {
-            (Some(room_id), Some(playback_generation)) => Some(VersionedPlaybackContext {
-                room_id,
-                playback_generation,
-                is_playing: ctx.playback_is_playing().unwrap_or(false),
-                resource_owner_id: ctx.credential_owner_id().copied(),
-            }),
-            _ => None,
-        },
+        playback_context: None,
     };
 
     if let Some(store) = ctx.store.as_ref() {
@@ -959,6 +957,18 @@ async fn cache_versioned_playback(
     }
 
     Ok(versioned)
+}
+
+fn versioned_playback_context(ctx: &ProviderContext<'_>) -> Option<VersionedPlaybackContext> {
+    match (ctx.room_id().copied(), ctx.playback_generation()) {
+        (Some(room_id), Some(playback_generation)) => Some(VersionedPlaybackContext {
+            room_id,
+            playback_generation,
+            is_playing: ctx.playback_is_playing().unwrap_or(false),
+            resource_owner_id: ctx.credential_owner_id().copied(),
+        }),
+        _ => None,
+    }
 }
 
 fn playback_transport_expires_at(
@@ -1455,6 +1465,120 @@ mod playback_transport_expiry_tests {
 
     fn live_playback() -> PlaybackResult {
         build_live_playback(MediaId::new(), RoomId::new())
+    }
+
+    #[tokio::test]
+    async fn cached_playback_gets_a_fresh_request_lifecycle_mapping() {
+        let store: Arc<dyn ProviderStore> = Arc::new(InMemoryProviderStore::new(16));
+        let old_room_id = RoomId::expect_positive(1);
+        let old_owner_id = crate::models::UserId::expect_positive(2);
+        let preflight_ctx = ProviderContext::new("test", ProviderActor::System)
+            .with_store(store.clone())
+            .with_room_id(old_room_id);
+        let mut cached = cache_versioned_playback(
+            live_playback(),
+            "test-provider",
+            "playback-cache-key",
+            Duration::from_secs(60),
+            &preflight_ctx,
+        )
+        .await
+        .expect("preflight cache should be written");
+        assert!(cached.playback_context.is_none());
+        cached.version = "cached-version".to_string();
+        cached.playback_context = Some(VersionedPlaybackContext {
+            room_id: old_room_id,
+            playback_generation: 10,
+            is_playing: false,
+            resource_owner_id: Some(old_owner_id),
+        });
+
+        let first_room_id = RoomId::expect_positive(3);
+        let first_owner_id = crate::models::UserId::expect_positive(4);
+        let first_ctx = ProviderContext::new("test", ProviderActor::User(first_owner_id))
+            .with_store(store.clone())
+            .with_room_id(first_room_id)
+            .with_credential_owner_id(first_owner_id)
+            .with_playback_generation(11)
+            .with_playback_is_playing(true);
+        let first_version = Arc::new(std::sync::Mutex::new(None));
+        let captured_first_version = first_version.clone();
+        build_cached_versioned_playback_response(
+            cached.clone(),
+            "test-provider",
+            &first_ctx,
+            move |_, version, _| {
+                *captured_first_version.lock().expect("version lock") = Some(version.to_string());
+            },
+        )
+        .await
+        .expect("first response should be built");
+
+        let second_room_id = RoomId::expect_positive(5);
+        let second_owner_id = crate::models::UserId::expect_positive(6);
+        let second_ctx = ProviderContext::new("test", ProviderActor::User(second_owner_id))
+            .with_store(store.clone())
+            .with_room_id(second_room_id)
+            .with_credential_owner_id(second_owner_id)
+            .with_playback_generation(12);
+        let second_version = Arc::new(std::sync::Mutex::new(None));
+        let captured_second_version = second_version.clone();
+        build_cached_versioned_playback_response(
+            cached,
+            "test-provider",
+            &second_ctx,
+            move |_, version, _| {
+                *captured_second_version.lock().expect("version lock") = Some(version.to_string());
+            },
+        )
+        .await
+        .expect("second response should be built");
+
+        let first_version = first_version
+            .lock()
+            .expect("version lock")
+            .clone()
+            .expect("first version should be captured");
+        let second_version = second_version
+            .lock()
+            .expect("version lock")
+            .clone()
+            .expect("second version should be captured");
+        assert_ne!(first_version, "cached-version");
+        assert_ne!(second_version, "cached-version");
+        assert_ne!(first_version, second_version);
+
+        let first_mapping = store
+            .get::<VersionedPlayback>(&format!("v:{first_version}"))
+            .await
+            .expect("first mapping should be readable")
+            .expect("first mapping should exist");
+        let second_mapping = store
+            .get::<VersionedPlayback>(&format!("v:{second_version}"))
+            .await
+            .expect("second mapping should be readable")
+            .expect("second mapping should exist");
+
+        let first_context = first_mapping
+            .playback_context
+            .expect("first mapping should have lifecycle context");
+        assert_eq!(first_context.room_id, first_room_id);
+        assert_eq!(first_context.playback_generation, 11);
+        assert!(first_context.is_playing);
+        assert_eq!(first_context.resource_owner_id, Some(first_owner_id));
+
+        let second_context = second_mapping
+            .playback_context
+            .expect("second mapping should have lifecycle context");
+        assert_eq!(second_context.room_id, second_room_id);
+        assert_eq!(second_context.playback_generation, 12);
+        assert!(!second_context.is_playing);
+        assert_eq!(second_context.resource_owner_id, Some(second_owner_id));
+        assert!(store
+            .get::<VersionedPlayback>("v:cached-version")
+            .await
+            .expect("old mapping lookup should succeed")
+            .is_none());
     }
 
     #[test]

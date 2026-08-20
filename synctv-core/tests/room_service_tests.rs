@@ -946,6 +946,166 @@ async fn test_leave_room_member_succeeds() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_member_removal_serializes_with_resource_creation() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = Arc::new(make_room_service(pool.clone()));
+    let member_repo = RoomMemberRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("resource_race_owner"))
+        .await
+        .checked("test operation should succeed");
+    let member = user_repo
+        .create(&make_user("resource_race_member"))
+        .await
+        .checked("test operation should succeed");
+    let (room, _) = room_service
+        .create_room(
+            "Resource Race Room".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .checked("test operation should succeed");
+    register_direct_url_provider(&room_service).await;
+    room_service
+        .join_room(room.id, member.id, None)
+        .await
+        .checked("test operation should succeed");
+
+    let mut removal_tx = pool
+        .begin()
+        .await
+        .checked("removal transaction should begin");
+    member_repo
+        .remove_with_version_executor(&room.id, &member.id, &mut removal_tx)
+        .await
+        .checked("membership should be removed in transaction")
+        .checked("membership should exist");
+
+    let single_service = room_service.clone();
+    let single_room_id = room.id;
+    let member_id = member.id;
+    let single_create = tokio::spawn(async move {
+        single_service
+            .media_service()
+            .add_media(
+                single_room_id,
+                member_id,
+                synctv_core::service::AddMediaRequest {
+                    playlist_id: None,
+                    name: "concurrent single media".to_string(),
+                    description: String::new(),
+                    source_provider: SourceProvider::DirectUrl,
+                    provider_instance_name: None,
+                    source_config: synctv_core_testing::direct_url_media_source_config(
+                        "https://example.com/single.mp4",
+                    ),
+                },
+            )
+            .await
+    });
+
+    let batch_service = room_service.clone();
+    let batch_room_id = room.id;
+    let batch_create = tokio::spawn(async move {
+        batch_service
+            .media_service()
+            .add_media_batch(
+                batch_room_id,
+                member_id,
+                None,
+                vec![synctv_core::service::AddMediaRequest {
+                    playlist_id: None,
+                    name: "concurrent batch media".to_string(),
+                    description: String::new(),
+                    source_provider: SourceProvider::DirectUrl,
+                    provider_instance_name: None,
+                    source_config: synctv_core_testing::direct_url_media_source_config(
+                        "https://example.com/batch.mp4",
+                    ),
+                }],
+            )
+            .await
+    });
+
+    let playlist_service = room_service.clone();
+    let playlist_room_id = room.id;
+    let playlist_create = tokio::spawn(async move {
+        playlist_service
+            .playlist_service()
+            .create_playlist(
+                playlist_room_id,
+                member_id,
+                synctv_core::service::CreatePlaylistRequest {
+                    room_id: playlist_room_id,
+                    name: "concurrent playlist".to_string(),
+                    description: String::new(),
+                    parent_id: None,
+                    browse_access_mode: synctv_core::models::PlaylistBrowseAccessMode::Default,
+                    source_provider: None,
+                    source_config: None,
+                    provider_instance_name: None,
+                },
+            )
+            .await
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(!single_create.is_finished());
+    assert!(!batch_create.is_finished());
+    assert!(!playlist_create.is_finished());
+
+    removal_tx
+        .commit()
+        .await
+        .checked("membership removal should commit");
+
+    for result in [
+        single_create
+            .await
+            .checked("single create should not panic")
+            .map(|_| ()),
+        batch_create
+            .await
+            .checked("batch create should not panic")
+            .map(|_| ()),
+        playlist_create
+            .await
+            .checked("playlist create should not panic")
+            .map(|_| ()),
+    ] {
+        assert!(
+            matches!(result, Err(Error::Authorization(_))),
+            "resource creation after membership removal should be rejected, got {result:?}"
+        );
+    }
+
+    let media_count = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!" FROM media WHERE room_id = $1 AND creator_id = $2"#,
+        room.id.as_i64(),
+        member.id.as_i64(),
+    )
+    .fetch_one(&pool)
+    .await
+    .checked("media count should be readable");
+    let playlist_count = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!" FROM playlists WHERE room_id = $1 AND creator_id = $2"#,
+        room.id.as_i64(),
+        member.id.as_i64(),
+    )
+    .fetch_one(&pool)
+    .await
+    .checked("playlist count should be readable");
+    assert_eq!(media_count, 0);
+    assert_eq!(playlist_count, 0);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_leave_room_cleans_member_created_media_resources() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());

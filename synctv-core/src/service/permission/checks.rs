@@ -96,6 +96,61 @@ impl PermissionService {
             .collect())
     }
 
+    pub(crate) async fn lock_active_resource_creator_with_executor(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        executor: &mut sqlx::PgConnection,
+    ) -> Result<()> {
+        let locked_user_id = sqlx::query_scalar!(
+            r#"
+            SELECT id AS "id!: UserId"
+            FROM users
+            WHERE id = $1
+            FOR KEY SHARE
+            "#,
+            user_id.as_i64(),
+        )
+        .fetch_optional(&mut *executor)
+        .await?;
+        if locked_user_id.is_none() {
+            return Err(Error::Authorization(
+                "Resource creator is no longer available".to_string(),
+            ));
+        }
+
+        let locked_member_user_id = sqlx::query_scalar!(
+            r#"
+            SELECT rm.user_id AS "user_id!: UserId"
+            FROM room_members rm
+            WHERE rm.room_id = $1
+              AND rm.user_id = $2
+            FOR KEY SHARE
+            "#,
+            room_id.as_i64(),
+            user_id.as_i64(),
+        )
+        .fetch_optional(&mut *executor)
+        .await?;
+
+        if locked_member_user_id.is_none() {
+            return Err(Error::Authorization(
+                synctv_common::messages::NOT_A_MEMBER_OF_THIS_ROOM.to_string(),
+            ));
+        }
+
+        let active_creators = self
+            .available_resource_creator_pairs_with_executor(&[(*room_id, *user_id)], &mut *executor)
+            .await?;
+        if active_creators.contains(&(*room_id, *user_id)) {
+            return Ok(());
+        }
+
+        Err(Error::Authorization(
+            "Resource creator is no longer active in this room".to_string(),
+        ))
+    }
+
     async fn ensure_room_accepts_member_actions(&self, room_id: &RoomId) -> Result<()> {
         let room = self
             .room_repo()?

@@ -679,6 +679,9 @@ impl MediaService {
         // Use a transaction to atomically get the next position and insert,
         // preventing concurrent adds from getting the same position
         let mut tx = self.media_repo.pool().begin().await?;
+        self.permission_service
+            .lock_active_resource_creator_with_executor(&room_id, &user_id, &mut tx)
+            .await?;
 
         // Get next position in playlist (locked with FOR UPDATE)
         let position = self
@@ -818,6 +821,9 @@ impl MediaService {
         // Use a transaction to atomically get the next position and batch insert,
         // preventing concurrent adds from getting the same position
         let mut tx = self.media_repo.pool().begin().await?;
+        self.permission_service
+            .lock_active_resource_creator_with_executor(&room_id, &user_id, &mut tx)
+            .await?;
 
         // Get starting position (locked with FOR UPDATE)
         let start_position = self

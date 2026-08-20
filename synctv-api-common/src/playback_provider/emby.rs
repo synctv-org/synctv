@@ -257,7 +257,7 @@ pub async fn get_emby_thumbnail_resource(
         max_width: req.max_width,
     };
     let version = crate::emby_thumbnail_urls::thumbnail_signature_version(scope);
-    verify_playback_resource_access_with_deps(
+    let claims = verify_playback_resource_access_with_deps(
         &deps.access_deps(),
         PROVIDER,
         PlaybackProviderAccessRequest {
@@ -273,6 +273,14 @@ pub async fn get_emby_thumbnail_resource(
     .await?;
     let credential_owner_id =
         decode_playback_resource_owner(deps.runtime.public_id_codec, &req.credential_owner_id)?;
+    let room_id = deps
+        .runtime
+        .public_id_codec
+        .decode_room_id(&claims.room_id)
+        .map_err(|error| ApiError::InvalidInput(format!("Invalid room_id: {error}")))?;
+    deps.access_deps()
+        .validate_resource_owner_access(&room_id, &credential_owner_id)
+        .await?;
     let action = deps
         .playback_provider_service
         .thumbnail_resource_action(

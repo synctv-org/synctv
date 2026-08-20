@@ -14,8 +14,8 @@ use synctv_core::service::ProvidersManager;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     repository::{
-        MediaRepository, ProviderInstanceRepository, RoomRepository, SettingsRepository,
-        UserRepository,
+        MediaRepository, PlaylistRepository, ProviderInstanceRepository, RoomRepository,
+        SettingsRepository, UserRepository,
     },
     service::{
         AuditService, BruteForceProtection, EmailService, InMemoryTokenBlacklistStore, JwtService,
@@ -27,7 +27,9 @@ use synctv_core_testing::create_test_pool;
 use synctv_livestream::{
     LiveStreamingInfrastructure, StreamError, StreamRegistryTrait, StreamTracker,
 };
-use synctv_realtime::sync::{ConnectionLimits, ConnectionManager, PublishRequest, RealtimeEvent};
+use synctv_realtime::sync::{
+    CacheTarget, ConnectionLimits, ConnectionManager, PublishRequest, RealtimeEvent,
+};
 
 fn direct_url_playback_info(url: &str, name: &str) -> synctv_core::models::PlaybackInfo {
     synctv_core::models::PlaybackInfo {
@@ -638,9 +640,21 @@ async fn make_admin_api_for_delete_user_test(
     AdminApiImpl,
     tokio::sync::mpsc::Receiver<synctv_realtime::sync::PublishRequest>,
 ) {
-    let realtime_outbox = Arc::new(
-        synctv_core::repository::realtime_outbox::RealtimeOutboxRepository::new(pool.clone()),
-    );
+    make_admin_api_for_delete_user_test_with_runtime(pool, true).await
+}
+
+async fn make_admin_api_for_delete_user_test_with_runtime(
+    pool: sqlx::PgPool,
+    distributed_realtime: bool,
+) -> (
+    AdminApiImpl,
+    tokio::sync::mpsc::Receiver<synctv_realtime::sync::PublishRequest>,
+) {
+    let realtime_outbox = distributed_realtime.then(|| {
+        Arc::new(
+            synctv_core::repository::realtime_outbox::RealtimeOutboxRepository::new(pool.clone()),
+        )
+    });
     let user_service = Arc::new(synctv_core::service::UserService::new_with_runtime(
         &pool,
         fixture_value(
@@ -652,7 +666,7 @@ async fn make_admin_api_for_delete_user_test(
         KeyBuilder::new("test"),
         BruteForceProtection::in_memory("test".to_string()),
         synctv_core::service::UserServiceRuntimeOptions {
-            realtime_outbox: Some(realtime_outbox.clone()),
+            realtime_outbox: realtime_outbox.clone(),
             ..synctv_core::service::UserServiceRuntimeOptions::test_defaults()
         },
     ));
@@ -682,7 +696,7 @@ async fn make_admin_api_for_delete_user_test(
         Arc::new(providers_manager),
         synctv_core::service::RoomServiceOptions {
             runtime_settings_store: Some(runtime_settings_store.clone()),
-            realtime_outbox: Some(realtime_outbox),
+            realtime_outbox,
             ..synctv_core::service::RoomServiceOptions::test_defaults_with_settings(pool.clone())
         },
     );
@@ -717,6 +731,12 @@ async fn make_admin_api_for_delete_user_test(
         "publish key service should build",
     ));
     let (redis_publish_tx, redis_publish_rx) = tokio::sync::mpsc::channel(8);
+    let realtime_event_service = Arc::new(LocalNoopRealtimeEventService::new());
+    let realtime_fanout = if distributed_realtime {
+        crate::test_support::channel_realtime_fanout_service(redis_publish_tx)
+    } else {
+        crate::realtime_fanout::local_realtime_fanout_service(realtime_event_service.clone())
+    };
     let provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver> = Arc::new(
         synctv_core::provider::ProviderStoreRegistry::local_only("test:provider:".to_string()),
     );
@@ -740,10 +760,8 @@ async fn make_admin_api_for_delete_user_test(
             },
             AdminApiRuntime {
                 clock: Arc::new(synctv_core::SystemClock),
-                realtime_fanout: crate::test_support::channel_realtime_fanout_service(
-                    redis_publish_tx,
-                ),
-                realtime_event_service: Arc::new(LocalNoopRealtimeEventService::new()),
+                realtime_fanout,
+                realtime_event_service,
                 provider_stores,
                 provider_access_service: crate::impls::disabled_provider_access_service(),
                 signing_key: Arc::new(
@@ -1198,6 +1216,42 @@ async fn create_room_media(
     );
     fixture_value(tx.commit().await, "commit media test transaction");
     created
+}
+
+async fn create_room_playlist(
+    pool: &sqlx::PgPool,
+    room_id: RoomId,
+    creator_id: UserId,
+    name: &str,
+    dynamic: bool,
+) -> synctv_core::models::Playlist {
+    let now = synctv_core::SystemClock.now();
+    let playlist = synctv_core::models::Playlist {
+        id: PlaylistId::new(),
+        room_id,
+        creator_id: Some(creator_id),
+        browse_access_mode: synctv_core::models::PlaylistBrowseAccessMode::Default,
+        name: name.to_string(),
+        description: String::new(),
+        cover_file_reference_id: None,
+        parent_id: None,
+        position: 0.0,
+        source_provider: dynamic.then_some(synctv_core::models::SourceProvider::Alist),
+        source_config: dynamic.then(|| {
+            synctv_core_testing::alist_directory_playlist_source_config("alist-test", "/library")
+        }),
+        provider_instance_name: None,
+        created_at: now,
+        updated_at: now,
+        version: 0,
+    };
+
+    fixture_value(
+        PlaylistRepository::new(pool.clone())
+            .create(&playlist)
+            .await,
+        "create playlist",
+    )
 }
 
 fn make_test_room_model(created_by: &UserId) -> synctv_core::models::Room {
@@ -3808,6 +3862,56 @@ async fn test_delete_user_deletes_owned_rooms_and_publishes_room_deleted() -> Te
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_standalone_admin_delete_user_deletes_owned_room_without_outbox() -> TestResult {
+    let (_postgres, pool) = create_test_pool().await;
+    let (admin_api, _redis_publish_rx) =
+        make_admin_api_for_delete_user_test_with_runtime(pool.clone(), false).await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool);
+
+    let admin_user =
+        create_db_user(&user_repo, "standalone_root_delete_owner", UserRole::Root).await;
+    let target_user =
+        create_db_user(&user_repo, "standalone_owned_room_victim", UserRole::User).await;
+    let room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                "standalone victim owned room".to_string(),
+                "deleted with owner without a realtime outbox".to_string(),
+                target_user.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
+
+    api_ok(
+        admin_api
+            .delete_user(
+                synctv_proto::admin::DeleteUserRequest {
+                    user_id: public_user_id(&admin_api, target_user.id),
+                },
+                &admin_user.id,
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
+
+    assert!(
+        core_ok(user_repo.get_by_id(&target_user.id).await)?.is_none(),
+        "deleted user must no longer be active"
+    );
+    assert!(
+        core_ok(room_repo.get_by_id(&room.id).await)?.is_none(),
+        "owned room must be deleted without a realtime outbox"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_ban_user_preserves_memberships_and_kicks_user() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, mut redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
@@ -3885,7 +3989,7 @@ async fn test_ban_user_preserves_memberships_and_kicks_user() -> TestResult {
 #[ignore = "Requires Docker"]
 async fn test_ban_user_resets_playback_for_media_created_by_target() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
-    let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
+    let (admin_api, mut redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
 
     let admin_user = create_db_user(&user_repo, "root_ban_playback", UserRole::Root).await;
@@ -3906,7 +4010,24 @@ async fn test_ban_user_resets_playback_for_media_created_by_target() -> TestResu
     )?
     .0;
 
+    core_ok(
+        admin_api
+            .room_service
+            .join_room(room.id, target_user.id, None)
+            .await,
+    )?;
+
     let media = create_room_media(&pool, room.id, target_user.id, "banned-media").await;
+    let ordinary_playlist =
+        create_room_playlist(&pool, room.id, target_user.id, "shared folder", false).await;
+    let dynamic_playlist = create_room_playlist(
+        &pool,
+        room.id,
+        target_user.id,
+        "private provider library",
+        true,
+    )
+    .await;
 
     core_ok(
         admin_api
@@ -3949,6 +4070,192 @@ async fn test_ban_user_resets_playback_for_media_created_by_target() -> TestResu
     assert!(
         !state.is_playing,
         "playback must be stopped after banning the media creator"
+    );
+
+    let kick_event = recv_matching_realtime_event(
+        &mut redis_publish_rx,
+        "owned media publisher kick after creator ban",
+        |event| {
+            matches!(
+                event,
+                RealtimeEvent::KickPublisher {
+                    room_id,
+                    media_id,
+                    reason,
+                    ..
+                } if *room_id == room.id
+                    && *media_id == media.id
+                    && reason == "creator_banned"
+            )
+        },
+    )
+    .await;
+    assert!(matches!(kick_event, RealtimeEvent::KickPublisher { .. }));
+
+    let ban_cache_invalidation = recv_matching_realtime_event(
+        &mut redis_publish_rx,
+        "room cache invalidation after creator ban",
+        |event| {
+            matches!(
+                event,
+                RealtimeEvent::CacheInvalidate { targets, .. }
+                    if targets.iter().any(|target| matches!(
+                        target,
+                        CacheTarget::Room { room_id } if *room_id == room.id
+                    ))
+            )
+        },
+    )
+    .await;
+    assert!(matches!(
+        ban_cache_invalidation,
+        RealtimeEvent::CacheInvalidate { .. }
+    ));
+
+    assert!(
+        !core_ok(admin_api.room_service.media_availability(&media).await)?.is_available(),
+        "banned creators' media must remain stored but unavailable"
+    );
+    assert!(
+        !core_ok(
+            admin_api
+                .room_service
+                .playlist_availability(&dynamic_playlist)
+                .await,
+        )?
+        .is_available(),
+        "banned creators' dynamic playlists must remain stored but unavailable"
+    );
+    assert!(
+        core_ok(
+            admin_api
+                .room_service
+                .playlist_availability(&ordinary_playlist)
+                .await,
+        )?
+        .is_available(),
+        "ordinary playlists must not depend on creator ban state"
+    );
+    assert!(
+        admin_api
+            .room_service
+            .ensure_client_usable_media(&media)
+            .await
+            .is_err(),
+        "direct media IDs must not bypass creator availability"
+    );
+    assert!(
+        admin_api
+            .room_service
+            .ensure_client_usable_playlist(&dynamic_playlist)
+            .await
+            .is_err(),
+        "direct dynamic playlist IDs must not bypass creator availability"
+    );
+    core_ok(
+        admin_api
+            .room_service
+            .ensure_client_usable_playlist(&ordinary_playlist)
+            .await,
+    )?;
+
+    let dynamic_detail = api_ok(
+        admin_api
+            .get_playlist(
+                &public_room_id(&admin_api, room.id),
+                &public_playlist_id(&admin_api, dynamic_playlist.id),
+                &admin_user.id,
+            )
+            .await,
+    )?;
+    let dynamic_detail = some_value(dynamic_detail.playlist, "playlist detail should be present")?;
+    assert_eq!(
+        dynamic_detail.availability,
+        synctv_proto::client::ResourceAvailability::CreatorInactive as i32,
+        "management detail must preserve the unavailable lifecycle state"
+    );
+
+    let list_request = |playlist_id: String| synctv_proto::client::ListPlaylistItemsRequest {
+        playlist_id,
+        target: None,
+        pagination: Some(
+            synctv_proto::client::list_playlist_items_request::Pagination::Page(
+                synctv_proto::client::PagePagination { page: 1 },
+            ),
+        ),
+        page_size: 20,
+        search: String::new(),
+        source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
+        provider_instance_name: String::new(),
+        sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
+        sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+        availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
+        refresh: false,
+        preview_source_config: None,
+    };
+    let dynamic_browse_error = api_err(
+        admin_api
+            .list_media(
+                &public_room_id(&admin_api, room.id),
+                list_request(public_playlist_id(&admin_api, dynamic_playlist.id)),
+                &admin_user.id,
+            )
+            .await,
+    )?;
+    assert!(matches!(dynamic_browse_error, ApiError::Authorization(_)));
+    api_ok(
+        admin_api
+            .list_media(
+                &public_room_id(&admin_api, room.id),
+                list_request(public_playlist_id(&admin_api, ordinary_playlist.id)),
+                &admin_user.id,
+            )
+            .await,
+    )?;
+
+    api_ok(
+        admin_api
+            .unban_user(
+                synctv_proto::admin::UnbanUserRequest {
+                    user_id: public_user_id(&admin_api, target_user.id),
+                },
+                &admin_user.id,
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
+    let unban_cache_invalidation = recv_matching_realtime_event(
+        &mut redis_publish_rx,
+        "room cache invalidation after creator unban",
+        |event| {
+            matches!(
+                event,
+                RealtimeEvent::CacheInvalidate { targets, .. }
+                    if targets.iter().any(|target| matches!(
+                        target,
+                        CacheTarget::Room { room_id } if *room_id == room.id
+                    ))
+            )
+        },
+    )
+    .await;
+    assert!(matches!(
+        unban_cache_invalidation,
+        RealtimeEvent::CacheInvalidate { .. }
+    ));
+    assert!(
+        core_ok(admin_api.room_service.media_availability(&media).await)?.is_available(),
+        "unbanning must restore media availability"
+    );
+    assert!(
+        core_ok(
+            admin_api
+                .room_service
+                .playlist_availability(&dynamic_playlist)
+                .await,
+        )?
+        .is_available(),
+        "unbanning must restore dynamic playlist availability"
     );
     Ok(())
 }
@@ -4115,6 +4422,13 @@ async fn test_batch_ban_users_resets_playback_for_media_created_by_target() -> T
             .await,
     )?
     .0;
+
+    core_ok(
+        admin_api
+            .room_service
+            .join_room(room.id, target_user.id, None)
+            .await,
+    )?;
 
     let media = create_room_media(&pool, room.id, target_user.id, "batch-banned-media").await;
 
@@ -4824,6 +5138,73 @@ async fn test_create_publish_key_bypasses_room_membership_requirement_for_global
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_create_publish_key_rejects_media_from_banned_creator() -> TestResult {
+    let (_postgres, pool) = create_test_pool().await;
+    let (admin_api, _infra, _registry, _redis_publish_rx) =
+        make_admin_api_with_livestream_for_test(pool.clone()).await;
+    let user_repo = UserRepository::new(pool.clone());
+
+    let global_admin = create_db_user(
+        &user_repo,
+        "global_admin_banned_publish_key",
+        UserRole::Root,
+    )
+    .await;
+    let owner = create_db_user(&user_repo, "room_owner_banned_publish_key", UserRole::User).await;
+    let creator = create_db_user(&user_repo, "banned_creator_publish_key", UserRole::User).await;
+
+    let room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "banned creator publish key test".to_string(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
+    core_ok(
+        admin_api
+            .room_service
+            .join_room(room.id, creator.id, None)
+            .await,
+    )?;
+    let media = create_room_media(&pool, room.id, creator.id, "banned-stream-media").await;
+    core_ok(
+        user_repo
+            .ban(
+                &creator.id,
+                Some(&global_admin.id),
+                Some("publish key lifecycle test".to_string()),
+            )
+            .await,
+    )?;
+
+    let error = api_err(
+        admin_api
+            .create_publish_key_for_actor(
+                &public_room_id(&admin_api, room.id),
+                synctv_proto::client::CreateRoomPublishKeyRequest {
+                    media_id: public_media_id(&admin_api, media.id),
+                    r#type: synctv_proto::client::PublishKeyType::SingleUse as i32,
+                    expires_at: Some(chrono::Utc::now().timestamp() + 3600),
+                },
+                &owner.id,
+                &global_admin.id,
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
+
+    assert!(matches!(error, ApiError::Authorization(_)));
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_start_playback_bypasses_room_membership_requirement_for_global_admin() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
@@ -5012,6 +5393,92 @@ async fn test_get_playback_bypasses_room_membership_requirement_for_global_admin
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_get_playback_reloads_state_after_creator_ban_on_another_instance() -> TestResult {
+    let (_postgres, pool) = create_test_pool().await;
+    let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
+    let user_repo = UserRepository::new(pool.clone());
+
+    let global_admin = create_db_user(
+        &user_repo,
+        "global_admin_stale_ban_playback",
+        UserRole::Root,
+    )
+    .await;
+    let room_owner = create_db_user(&user_repo, "stale_ban_playback_owner", UserRole::User).await;
+    let media_creator = create_db_user(&user_repo, "stale_ban_media_creator", UserRole::User).await;
+    let room = core_ok(
+        admin_api
+            .room_service
+            .create_room(
+                format!("room-{}", synctv_common::snanoid!(6)),
+                "stale playback lifecycle test".to_string(),
+                room_owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?
+    .0;
+    core_ok(
+        admin_api
+            .room_service
+            .join_room(room.id, media_creator.id, None)
+            .await,
+    )?;
+    let media = create_room_media(
+        &pool,
+        room.id,
+        media_creator.id,
+        "stale-banned-playback-media",
+    )
+    .await;
+
+    core_ok(
+        admin_api
+            .room_service
+            .playback_service()
+            .switch(room.id, room_owner.id, Some(media.id), None, None)
+            .await,
+    )?;
+    let cached = core_ok(admin_api.room_service.get_playback_state(&room.id).await)?;
+    assert_eq!(cached.playing_media_id, Some(media.id));
+
+    let independent_room_service =
+        synctv_core::service::RoomService::new_for_tests(pool, (*admin_api.user_service).clone())
+            .map_err(|error| test_error(error.to_string()))?;
+    core_ok(
+        independent_room_service
+            .ban_user_and_reset_owned_playback_with_outbox(
+                &media_creator.id,
+                Some(&global_admin.id),
+                Some("cross-instance lifecycle test".to_string()),
+                None,
+                &[],
+            )
+            .await,
+    )?;
+
+    let response = api_ok(
+        admin_api
+            .get_playback(&public_room_id(&admin_api, room.id), &global_admin.id, None)
+            .await,
+    )?;
+    let state = some_value(response.playback_state, "playback state should be present")?;
+    assert!(state.playing_media_id.is_empty());
+    assert!(state.playing_playlist_id.is_empty());
+    assert!(!state.is_playing);
+    let playback = some_value(
+        response.playback,
+        "empty playback snapshot should be present",
+    )?;
+    assert!(playback.media_id.is_empty());
+    assert!(playback.playlist_id.is_empty());
+    assert!(playback.playback_infos.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_start_playback_returns_error_for_invalid_provider_config_for_global_admin(
 ) -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
@@ -5099,6 +5566,12 @@ async fn test_get_playback_for_provider_media_signs_proxy_urls_for_global_admin(
     )
     .await;
     let owner = create_db_user(&user_repo, "room_owner_playback_get_signed", UserRole::User).await;
+    let media_creator = create_db_user(
+        &user_repo,
+        "media_creator_playback_get_signed",
+        UserRole::User,
+    )
+    .await;
 
     let room = core_ok(
         admin_api
@@ -5113,11 +5586,23 @@ async fn test_get_playback_for_provider_media_signs_proxy_urls_for_global_admin(
             .await,
     )?
     .0;
+    core_ok(
+        admin_api
+            .room_service
+            .join_room(room.id, global_admin.id, None)
+            .await,
+    )?;
+    core_ok(
+        admin_api
+            .room_service
+            .join_room(room.id, media_creator.id, None)
+            .await,
+    )?;
 
     let media = synctv_core::models::Media::from_provider_with_params(FromProviderParams {
         playlist_id: None,
         room_id: room.id,
-        creator_id: Some(owner.id),
+        creator_id: Some(media_creator.id),
         name: "provider-playback-media".to_string(),
         description: String::new(),
         source_config: synctv_core_testing::direct_url_media_source_config_with_headers(
@@ -5169,6 +5654,99 @@ async fn test_get_playback_for_provider_media_signs_proxy_urls_for_global_admin(
     assert!(
         direct.medias[0].headers.is_empty(),
         "proxy-backed playback keeps client headers empty"
+    );
+
+    let signed_url = url::Url::parse(&format!("http://localhost{}", direct.medias[0].url))?;
+    let path = signed_url
+        .path_segments()
+        .ok_or_else(|| test_error("signed playback URL should have path segments"))?
+        .collect::<Vec<_>>();
+    let version = path
+        .get(4)
+        .ok_or_else(|| test_error("signed playback URL should contain a provider version"))?;
+    let query = signed_url.query_pairs().collect::<HashMap<_, _>>();
+    let signature = query
+        .get("sig")
+        .ok_or_else(|| test_error("signed playback URL should contain sig"))?;
+    let user_id = query
+        .get("uid")
+        .ok_or_else(|| test_error("signed playback URL should contain uid"))?;
+    let expires_at = query
+        .get("exp")
+        .ok_or_else(|| test_error("signed playback URL should contain exp"))?
+        .parse::<i64>()?;
+    assert_eq!(
+        user_id.as_ref(),
+        public_user_id(&admin_api, global_admin.id),
+        "a global admin who is a room member should authorize its own proxy URL"
+    );
+
+    let credential_repo =
+        Arc::new(synctv_core::repository::UserProviderCredentialRepository::new(pool.clone()));
+    let playback_transport_services = synctv_core::provider::PlaybackTransportServices {
+        room_service: admin_api.room_service.clone(),
+        permission_service: admin_api.room_service.permission_service().clone(),
+        credential_encryption: None,
+        credential_repo: credential_repo.clone(),
+        playback_session_repo: synctv_core::repository::ProviderPlaybackSessionRepository::new(
+            pool,
+        ),
+        provider_access_service: admin_api.provider_access_service.clone(),
+    };
+    let access_deps = crate::playback_provider::common::PlaybackProviderAccessDeps {
+        proxy_signing_key: &admin_api.signing_key,
+        public_id_codec: &admin_api.public_id_codec,
+        provider_stores: admin_api.provider_stores.as_ref(),
+        user_service: &admin_api.user_service,
+        playback_transport_services: &playback_transport_services,
+    };
+    let access_request = || crate::playback_provider::common::PlaybackProviderAccessRequest {
+        version,
+        resource: "streams/direct/0".to_string(),
+        signature,
+        user_id,
+        room_id: &room_public_id,
+        expires_at,
+        target_url: None,
+    };
+    api_ok(
+        crate::playback_provider::common::verify_playback_provider_http_access(
+            &access_deps,
+            synctv_core::provider::DirectUrlProvider::NAME,
+            access_request(),
+        )
+        .await,
+    )?;
+
+    core_ok(
+        admin_api
+            .room_service
+            .ban_user_and_reset_owned_playback_with_outbox(
+                &media_creator.id,
+                Some(&global_admin.id),
+                Some("invalidate issued playback URL".to_string()),
+                None,
+                &[],
+            )
+            .await,
+    )?;
+    let owner_error = api_err(
+        access_deps
+            .validate_resource_owner_access(&room.id, &media_creator.id)
+            .await,
+    )?;
+    assert!(matches!(owner_error, ApiError::Authorization(_)));
+    let stale_error = api_err(
+        crate::playback_provider::common::verify_playback_provider_http_access(
+            &access_deps,
+            synctv_core::provider::DirectUrlProvider::NAME,
+            access_request(),
+        )
+        .await,
+    )?;
+    assert!(
+        matches!(stale_error, ApiError::Authorization(_)),
+        "an already issued URL must stop authorizing after its resource creator is banned"
     );
     Ok(())
 }

@@ -277,7 +277,7 @@ pub async fn get_nextcloud_preview_resource(
         crop: req.crop,
     };
     let version = crate::nextcloud_preview_urls::signature_version(scope);
-    verify_playback_resource_access_with_deps(
+    let claims = verify_playback_resource_access_with_deps(
         &deps.access_deps(),
         PROVIDER,
         PlaybackProviderAccessRequest {
@@ -293,6 +293,14 @@ pub async fn get_nextcloud_preview_resource(
     .await?;
     let credential_owner_id =
         decode_playback_resource_owner(deps.runtime.public_id_codec, &req.credential_owner_id)?;
+    let room_id = deps
+        .runtime
+        .public_id_codec
+        .decode_room_id(&claims.room_id)
+        .map_err(|error| ApiError::InvalidInput(format!("Invalid room_id: {error}")))?;
+    deps.access_deps()
+        .validate_resource_owner_access(&room_id, &credential_owner_id)
+        .await?;
     let action = deps
         .playback_provider_service
         .preview_resource_action(

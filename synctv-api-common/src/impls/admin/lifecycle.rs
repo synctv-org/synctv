@@ -1,4 +1,7 @@
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use synctv_core::models::{RoomId, UserId, UserRole};
 use synctv_core::service::NewRealtimeOutboxEvent;
@@ -32,7 +35,10 @@ impl AdminApiImpl {
             let prepared = self
                 .room_lifecycle_fanout
                 .prepare_room_deleted_outbox_fanout(room_id, deleted_by)?;
-            outbox_events.insert(*room_id, prepared.cloned_outbox_event());
+            let outbox_event = prepared.cloned_outbox_event();
+            if outbox_event.enqueue_outbox {
+                outbox_events.insert(*room_id, outbox_event);
+            }
             fanout.push(DeletedRoomAfterCommitFanout {
                 room_id: *room_id,
                 event: prepared.into_event(),
@@ -84,28 +90,68 @@ impl AdminApiImpl {
             );
         }
 
-        let updated = self
-            .user_service
-            .ban_user(
-                target_user_id,
-                (*admin_user_id != LOCAL_MANAGEMENT_ACTOR_USER_ID).then_some(admin_user_id),
-                reason,
+        let owner_inactive_outbox_events = owner_inactive_fanout
+            .iter()
+            .map(
+                crate::room_lifecycle_fanout::PreparedRoomLifecycleOutboxFanout::cloned_outbox_event,
             )
-            .await
-            .map_err(ApiError::from)?;
+            .collect::<Vec<_>>();
 
         let prepared_playback_reset = self
             .playback_fanout
             .prepare_system_state_changed_batch_outbox_fanout();
-        self.room_service
-            .playback_service()
-            .reset_playback_for_creator_with_outbox(
+
+        let owned_media_kick_events = Arc::new(Mutex::new(Vec::new()));
+        let owned_media_kick_events_factory = {
+            let realtime_fanout = self.realtime_fanout.clone();
+            let owned_media_kick_events = owned_media_kick_events.clone();
+            Arc::new(move |media: &[(RoomId, synctv_core::models::MediaId)]| {
+                let mut outbox_events = Vec::with_capacity(media.len());
+                let mut realtime_events = Vec::with_capacity(media.len());
+                for (room_id, media_id) in media {
+                    let event = synctv_realtime::sync::RealtimeEvent::KickPublisher {
+                        event_id: synctv_common::snanoid!(16),
+                        room_id: *room_id,
+                        media_id: *media_id,
+                        reason: "creator_banned".to_string(),
+                        timestamp: synctv_core::SystemClock.now(),
+                    };
+                    outbox_events.push(
+                        realtime_fanout
+                            .outbox_event(&event)
+                            .map_err(synctv_core::Error::Internal)?,
+                    );
+                    realtime_events.push(event);
+                }
+                *owned_media_kick_events
+                    .lock()
+                    .expect("kick event mutex poisoned") = realtime_events;
+                Ok(outbox_events)
+            }) as synctv_core::service::RealtimeOutboxOwnedMediaKickEventFactory
+        };
+
+        let updated = self
+            .room_service
+            .ban_user_and_reset_owned_playback_with_outbox_and_media_kicks(
                 target_user_id,
+                (*admin_user_id != LOCAL_MANAGEMENT_ACTOR_USER_ID).then_some(admin_user_id),
+                reason,
                 Some(prepared_playback_reset.outbox_factory()),
+                &owner_inactive_outbox_events,
+                Some(owned_media_kick_events_factory),
             )
             .await
             .map_err(ApiError::from)?;
+
         prepared_playback_reset.publish_after_outbox_commit();
+
+        for event in std::mem::take(
+            &mut *owned_media_kick_events
+                .lock()
+                .expect("kick event mutex poisoned"),
+        ) {
+            self.realtime_fanout.publish_after_outbox_commit(event);
+        }
 
         for prepared_fanout in owner_inactive_fanout {
             let room_id = *prepared_fanout.event().room_id().ok_or_else(|| {
@@ -127,6 +173,7 @@ impl AdminApiImpl {
 
         self.invalidate_user_room_permission_caches(target_user_id, &affected_room_ids)
             .await;
+        self.publish_room_cache_invalidations(&affected_room_ids);
 
         self.realtime_lifecycle
             .disconnect_user(target_user_id, "user_banned")
@@ -155,7 +202,7 @@ impl AdminApiImpl {
         .await
     }
 
-    async fn list_active_user_room_ids(
+    pub(in crate::impls::admin) async fn list_active_user_room_ids(
         &self,
         user_id: &UserId,
     ) -> synctv_core::Result<Vec<RoomId>> {
@@ -176,12 +223,22 @@ impl AdminApiImpl {
         .await
     }
 
-    async fn invalidate_user_room_permission_caches(&self, user_id: &UserId, room_ids: &[RoomId]) {
+    pub(in crate::impls::admin) async fn invalidate_user_room_permission_caches(
+        &self,
+        user_id: &UserId,
+        room_ids: &[RoomId],
+    ) {
         for room_id in room_ids {
             self.room_service
                 .permission_service()
                 .invalidate_cache(room_id, user_id)
                 .await;
+        }
+    }
+
+    pub(in crate::impls::admin) fn publish_room_cache_invalidations(&self, room_ids: &[RoomId]) {
+        for room_id in room_ids {
+            self.publish_room_cache_invalidation(room_id);
         }
     }
 }

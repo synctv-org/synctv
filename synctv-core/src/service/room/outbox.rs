@@ -4,8 +4,8 @@ use sqlx::{Postgres, Transaction};
 
 use crate::{
     models::{
-        AuditAction, AuditDetails, AuditTargetType, Room, RoomId, RoomMember, RoomPermissionSet,
-        RoomRole, RoomSettings, UserId, LOCAL_MANAGEMENT_ACTOR_USER_ID,
+        AuditAction, AuditDetails, AuditTargetType, MediaId, Room, RoomId, RoomMember,
+        RoomPermissionSet, RoomRole, RoomSettings, UserId, LOCAL_MANAGEMENT_ACTOR_USER_ID,
     },
     repository::realtime_outbox::NewRealtimeOutboxEvent,
     service::{
@@ -25,6 +25,8 @@ pub type RealtimeOutboxUserLeftEventFactory =
     Arc<dyn Fn(&UserLeftOutboxSnapshot) -> Result<NewRealtimeOutboxEvent> + Send + Sync>;
 pub type RealtimeOutboxMemberResourceCleanupEventFactory =
     Arc<dyn Fn(&MemberResourceCleanupResult) -> Result<Vec<NewRealtimeOutboxEvent>> + Send + Sync>;
+pub type RealtimeOutboxOwnedMediaKickEventFactory =
+    Arc<dyn Fn(&[(RoomId, MediaId)]) -> Result<Vec<NewRealtimeOutboxEvent>> + Send + Sync>;
 
 #[derive(Debug, Clone)]
 pub struct PermissionChangedOutboxSnapshot {

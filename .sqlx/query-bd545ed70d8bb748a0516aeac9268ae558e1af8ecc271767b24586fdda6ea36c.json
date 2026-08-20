@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id AS \"id: MediaId\"\n           FROM media\n           WHERE room_id = $1\n             AND creator_id = $2\n             AND deleted_at IS NULL\n             AND (\n                 playlist_id IS NULL\n                 OR playlist_id NOT IN (\n                     SELECT id\n                     FROM playlists\n                     WHERE room_id = $1\n                       AND creator_id = $2\n                       AND deleted_at IS NULL\n                       AND source_provider IS NOT NULL\n                 )\n             )\n           ORDER BY id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: MediaId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "media",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "bd545ed70d8bb748a0516aeac9268ae558e1af8ecc271767b24586fdda6ea36c"
+}

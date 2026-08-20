@@ -52,6 +52,7 @@ pub async fn get_rtmp_flv_stream(
             room_id,
             media_id,
             user_id,
+            resource_owner_id,
             expires_at,
         } => {
             if provider_name != PROVIDER {
@@ -66,6 +67,7 @@ pub async fn get_rtmp_flv_stream(
                     room_id,
                     media_id,
                     user_id,
+                    resource_owner_id,
                     expires_at,
                     external_source: None,
                     head,

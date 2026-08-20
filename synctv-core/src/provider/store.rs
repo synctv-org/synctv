@@ -516,6 +516,10 @@ pub struct VersionedPlaybackContext {
     pub room_id: crate::models::RoomId,
     pub playback_generation: i64,
     pub is_playing: bool,
+    /// Creator whose room membership and account lifecycle authorize this
+    /// provider resource. `None` is used for system-owned resources.
+    #[serde(default)]
+    pub resource_owner_id: Option<crate::models::UserId>,
 }
 
 /// Provider-owned playback result with a stable proxy lookup version.

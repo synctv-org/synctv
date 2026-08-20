@@ -133,6 +133,7 @@ mod member_queries;
 pub use member_queries::RealtimeMembershipAccess;
 mod member_resource_cleanup;
 use member_resource_cleanup::cleanup_member_resources_in_tx;
+pub(crate) use member_resource_cleanup::preserve_non_owned_dynamic_playlist_children_in_tx;
 pub use member_resource_cleanup::MemberResourceCleanupResult;
 mod member_review;
 mod member_review_approval;
@@ -162,8 +163,9 @@ pub use opaque_sessions::{
 mod outbox;
 pub use outbox::{
     PermissionChangedOutboxSnapshot, RealtimeOutboxMemberResourceCleanupEventFactory,
-    RealtimeOutboxPermissionChangedEventFactory, RealtimeOutboxRoomEventFactory,
-    RealtimeOutboxSettingsEventFactory, RealtimeOutboxUserLeftEventFactory, UserLeftOutboxSnapshot,
+    RealtimeOutboxOwnedMediaKickEventFactory, RealtimeOutboxPermissionChangedEventFactory,
+    RealtimeOutboxRoomEventFactory, RealtimeOutboxSettingsEventFactory,
+    RealtimeOutboxUserLeftEventFactory, UserLeftOutboxSnapshot,
 };
 mod password;
 mod permission_checks;
@@ -178,6 +180,7 @@ mod settings_effects;
 mod settings_validation;
 mod settings_writes;
 mod taxonomy;
+mod user_lifecycle;
 mod visibility;
 pub use creation::CreateRoomWithTaxonomyRequest;
 pub(super) use permission_checks::has_active_room_membership_in_tx;

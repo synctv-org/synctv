@@ -184,8 +184,23 @@ impl StreamMessageHandler {
     ) -> Result<Option<String>, String> {
         let swarm_id = normalize_media_swarm_id(swarm_id)?;
         Self::parse_webrtc_recipient(recipient)?;
-        if !self.active_media_swarms.lock().contains(&swarm_id) {
-            return Err("Source connection has not joined this media swarm".to_string());
+        let claims = self
+            .active_media_swarms
+            .lock()
+            .get(&swarm_id)
+            .cloned()
+            .ok_or_else(|| "Source connection has not joined this media swarm".to_string())?;
+        if let Err(error) = self.validate_media_swarm_playback(&claims).await {
+            if let Err(leave_error) = self.leave_media_swarm(&swarm_id).await {
+                tracing::warn!(
+                    room_id = %self.room_id,
+                    connection_id = %self.connection_id,
+                    swarm_id,
+                    error = %leave_error,
+                    "Failed to remove stale media swarm membership"
+                );
+            }
+            return Err(error);
         }
         let Some((target_actor_id, target_conn_id, _)) =
             self.validate_webrtc_recipient(recipient).await?
@@ -202,7 +217,11 @@ impl StreamMessageHandler {
         Ok(Some(swarm_id))
     }
 
-    fn verify_media_swarm_ticket(&self, swarm_id: &str, ticket: &str) -> Result<(), String> {
+    fn verify_media_swarm_ticket(
+        &self,
+        swarm_id: &str,
+        ticket: &str,
+    ) -> Result<crate::proxy_signature::MediaSwarmTicketClaims, String> {
         self.swarm_signing_key
             .verify_media_swarm_ticket(
                 &self.public_room_id()?,
@@ -211,6 +230,37 @@ impl StreamMessageHandler {
                 ticket,
             )
             .map_err(|error| format!("Invalid media swarm ticket: {error}"))
+    }
+
+    async fn validate_media_swarm_playback(
+        &self,
+        claims: &crate::proxy_signature::MediaSwarmTicketClaims,
+    ) -> Result<(), String> {
+        let state = self
+            .room_service
+            .get_playback_state(&self.room_id)
+            .await
+            .map_err(|error| format!("Playback state unavailable: {error}"))?;
+        if state.playback_generation != claims.playback_generation {
+            return Err("P2P media access is no longer allowed for this playback".to_string());
+        }
+        let Some(resource_owner_id) = claims.resource_owner_id.as_deref() else {
+            return Ok(());
+        };
+        let resource_owner_id = self
+            .public_id_codec
+            .decode_user_id(resource_owner_id)
+            .map_err(|error| format!("Invalid media swarm resource owner: {error}"))?;
+        let available = self
+            .room_service
+            .permission_service()
+            .available_resource_creator_pairs(&[(self.room_id, resource_owner_id)])
+            .await
+            .map_err(|error| format!("Resource owner state unavailable: {error}"))?;
+        if !available.contains(&(self.room_id, resource_owner_id)) {
+            return Err("P2P media access is no longer allowed for this resource".to_string());
+        }
+        Ok(())
     }
 
     pub fn ice_candidate_contains_private_ip(candidate: &str) -> bool {
@@ -484,13 +534,14 @@ impl StreamMessageHandler {
         &self,
         join: &synctv_proto::client::WebRtcMediaSwarmJoin,
     ) -> Result<(), String> {
-        let swarm_id = self
+        let (swarm_id, claims) = self
             .validate_media_swarm_membership(&join.swarm_id, &join.swarm_ticket)
             .await?;
         self.require_p2p_media_enabled().await?;
         {
             let active = self.active_media_swarms.lock();
-            if !active.contains(&swarm_id) && active.len() >= MAX_ACTIVE_MEDIA_SWARMS_PER_CONNECTION
+            if !active.contains_key(&swarm_id)
+                && active.len() >= MAX_ACTIVE_MEDIA_SWARMS_PER_CONNECTION
             {
                 return Err(format!(
                     "A connection may join at most {MAX_ACTIVE_MEDIA_SWARMS_PER_CONNECTION} media swarms"
@@ -506,8 +557,10 @@ impl StreamMessageHandler {
                 &swarm_id,
             )
             .await?;
-        self.active_media_swarms.lock().insert(swarm_id.clone());
-        self.send_media_swarm_peers(&swarm_id, peers)?;
+        self.active_media_swarms
+            .lock()
+            .insert(swarm_id.clone(), claims);
+        self.send_media_swarm_peers(&swarm_id, &join.swarm_ticket, peers)?;
         Ok(())
     }
 
@@ -523,17 +576,19 @@ impl StreamMessageHandler {
         &self,
         swarm_id: &str,
         ticket: &str,
-    ) -> Result<String, String> {
+    ) -> Result<(String, crate::proxy_signature::MediaSwarmTicketClaims), String> {
         self.require_rtc_business_permission(RoomPermission::USE_P2P_MEDIA, "P2P media")
             .await?;
         let swarm_id = normalize_media_swarm_id(swarm_id)?;
-        self.verify_media_swarm_ticket(&swarm_id, ticket)?;
-        Ok(swarm_id)
+        let claims = self.verify_media_swarm_ticket(&swarm_id, ticket)?;
+        self.validate_media_swarm_playback(&claims).await?;
+        Ok((swarm_id, claims))
     }
 
     fn send_media_swarm_peers(
         &self,
         swarm_id: &str,
+        swarm_ticket: &str,
         peers: Vec<super::MediaSwarmPeer>,
     ) -> Result<(), String> {
         use synctv_proto::client::{
@@ -546,11 +601,7 @@ impl StreamMessageHandler {
                 payload: Some(Payload::WebrtcEvent(WebRtcEvent {
                     event: Some(Event::MediaSwarmPeers(WebRtcMediaSwarmPeers {
                         swarm_id: swarm_id.to_string(),
-                        swarm_ticket: self.swarm_signing_key.sign_media_swarm_ticket(
-                            &self.public_room_id()?,
-                            &self.public_actor_id()?,
-                            swarm_id,
-                        ),
+                        swarm_ticket: swarm_ticket.to_string(),
                         peers: peers
                             .into_iter()
                             .map(|peer| WebRtcMediaSwarmPeer {
@@ -566,7 +617,12 @@ impl StreamMessageHandler {
     }
 
     pub(super) async fn leave_all_media_swarms(&self) {
-        let swarm_ids = self.active_media_swarms.lock().clone();
+        let swarm_ids = self
+            .active_media_swarms
+            .lock()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
         for swarm_id in swarm_ids {
             if let Err(error) = self.leave_media_swarm(&swarm_id).await {
                 tracing::warn!(
@@ -581,7 +637,7 @@ impl StreamMessageHandler {
 
     async fn leave_media_swarm(&self, swarm_id: &str) -> Result<(), String> {
         let actor_id = self.public_actor_id()?;
-        if !self.active_media_swarms.lock().remove(swarm_id) {
+        if self.active_media_swarms.lock().remove(swarm_id).is_none() {
             return Ok(());
         }
 
@@ -661,6 +717,26 @@ impl StreamMessageHandler {
 
     pub(super) async fn apply_rtc_access_change(&self, event: &RealtimeEvent) {
         let _transition_guard = self.room_capability_transition_lock.lock().await;
+        if let RealtimeEvent::PlaybackStateChanged { state, .. } = event {
+            let stale_swarm_ids = self
+                .active_media_swarms
+                .lock()
+                .iter()
+                .filter(|(_, claims)| claims.playback_generation != state.playback_generation)
+                .map(|(swarm_id, _)| swarm_id.clone())
+                .collect::<Vec<_>>();
+            for swarm_id in stale_swarm_ids {
+                if let Err(error) = self.leave_media_swarm(&swarm_id).await {
+                    tracing::warn!(
+                        room_id = %self.room_id,
+                        connection_id = %self.connection_id,
+                        swarm_id,
+                        error = %error,
+                        "Failed to leave stale media swarm after playback changed"
+                    );
+                }
+            }
+        }
         let voice_chat_active = self.current_connection_voice_joined();
         let p2p_media_active = !self.active_media_swarms.lock().is_empty();
         if !voice_chat_active && !p2p_media_active {

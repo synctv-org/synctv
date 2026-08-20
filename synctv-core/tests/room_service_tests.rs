@@ -17,13 +17,14 @@ use synctv_core::{
     },
     repository::{
         MediaRepository, PlaylistRepository, ReviewRepository, RoomMemberRepository,
-        RoomPasswordRepository, RoomRepository, RoomSettingsRepository, SettingsRepository,
-        UserRepository,
+        RoomPasswordRepository, RoomPlaybackStateRepository, RoomRepository,
+        RoomSettingsRepository, SettingsRepository, UserRepository,
     },
     service::{
-        BruteForceProtection, CreateRoomWithTaxonomyRequest, GuestKickReason,
-        InMemoryTokenBlacklistStore, JwtService, RoomCategoryUpdate, RoomEvent, RoomPasswordPolicy,
-        RoomService, RoomServiceOptions, RuntimeSettingsStore, SettingsService, UserService,
+        BackendPlaybackRequest, BruteForceProtection, CreateRoomWithTaxonomyRequest,
+        GuestKickReason, InMemoryTokenBlacklistStore, JwtService, RoomCategoryUpdate, RoomEvent,
+        RoomPasswordPolicy, RoomService, RoomServiceOptions, RuntimeSettingsStore, SettingsService,
+        UserService,
     },
     Error,
 };
@@ -178,6 +179,21 @@ fn make_playlist(
         updated_at: now,
         version: 0,
     }
+}
+
+fn make_dynamic_playlist(
+    room_id: RoomId,
+    creator_id: UserId,
+    parent_id: Option<PlaylistId>,
+    name: &str,
+) -> Playlist {
+    let mut playlist = make_playlist(room_id, creator_id, parent_id, name);
+    playlist.source_provider = Some(SourceProvider::Alist);
+    playlist.source_config = Some(synctv_core_testing::alist_directory_playlist_source_config(
+        "alist-test",
+        "/library",
+    ));
+    playlist
 }
 
 #[tokio::test]
@@ -930,6 +946,166 @@ async fn test_leave_room_member_succeeds() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_member_removal_serializes_with_resource_creation() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = Arc::new(make_room_service(pool.clone()));
+    let member_repo = RoomMemberRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("resource_race_owner"))
+        .await
+        .checked("test operation should succeed");
+    let member = user_repo
+        .create(&make_user("resource_race_member"))
+        .await
+        .checked("test operation should succeed");
+    let (room, _) = room_service
+        .create_room(
+            "Resource Race Room".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .checked("test operation should succeed");
+    register_direct_url_provider(&room_service).await;
+    room_service
+        .join_room(room.id, member.id, None)
+        .await
+        .checked("test operation should succeed");
+
+    let mut removal_tx = pool
+        .begin()
+        .await
+        .checked("removal transaction should begin");
+    member_repo
+        .remove_with_version_executor(&room.id, &member.id, &mut removal_tx)
+        .await
+        .checked("membership should be removed in transaction")
+        .checked("membership should exist");
+
+    let single_service = room_service.clone();
+    let single_room_id = room.id;
+    let member_id = member.id;
+    let single_create = tokio::spawn(async move {
+        single_service
+            .media_service()
+            .add_media(
+                single_room_id,
+                member_id,
+                synctv_core::service::AddMediaRequest {
+                    playlist_id: None,
+                    name: "concurrent single media".to_string(),
+                    description: String::new(),
+                    source_provider: SourceProvider::DirectUrl,
+                    provider_instance_name: None,
+                    source_config: synctv_core_testing::direct_url_media_source_config(
+                        "https://example.com/single.mp4",
+                    ),
+                },
+            )
+            .await
+    });
+
+    let batch_service = room_service.clone();
+    let batch_room_id = room.id;
+    let batch_create = tokio::spawn(async move {
+        batch_service
+            .media_service()
+            .add_media_batch(
+                batch_room_id,
+                member_id,
+                None,
+                vec![synctv_core::service::AddMediaRequest {
+                    playlist_id: None,
+                    name: "concurrent batch media".to_string(),
+                    description: String::new(),
+                    source_provider: SourceProvider::DirectUrl,
+                    provider_instance_name: None,
+                    source_config: synctv_core_testing::direct_url_media_source_config(
+                        "https://example.com/batch.mp4",
+                    ),
+                }],
+            )
+            .await
+    });
+
+    let playlist_service = room_service.clone();
+    let playlist_room_id = room.id;
+    let playlist_create = tokio::spawn(async move {
+        playlist_service
+            .playlist_service()
+            .create_playlist(
+                playlist_room_id,
+                member_id,
+                synctv_core::service::CreatePlaylistRequest {
+                    room_id: playlist_room_id,
+                    name: "concurrent playlist".to_string(),
+                    description: String::new(),
+                    parent_id: None,
+                    browse_access_mode: synctv_core::models::PlaylistBrowseAccessMode::Default,
+                    source_provider: None,
+                    source_config: None,
+                    provider_instance_name: None,
+                },
+            )
+            .await
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(!single_create.is_finished());
+    assert!(!batch_create.is_finished());
+    assert!(!playlist_create.is_finished());
+
+    removal_tx
+        .commit()
+        .await
+        .checked("membership removal should commit");
+
+    for result in [
+        single_create
+            .await
+            .checked("single create should not panic")
+            .map(|_| ()),
+        batch_create
+            .await
+            .checked("batch create should not panic")
+            .map(|_| ()),
+        playlist_create
+            .await
+            .checked("playlist create should not panic")
+            .map(|_| ()),
+    ] {
+        assert!(
+            matches!(result, Err(Error::Authorization(_))),
+            "resource creation after membership removal should be rejected, got {result:?}"
+        );
+    }
+
+    let media_count = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!" FROM media WHERE room_id = $1 AND creator_id = $2"#,
+        room.id.as_i64(),
+        member.id.as_i64(),
+    )
+    .fetch_one(&pool)
+    .await
+    .checked("media count should be readable");
+    let playlist_count = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!" FROM playlists WHERE room_id = $1 AND creator_id = $2"#,
+        room.id.as_i64(),
+        member.id.as_i64(),
+    )
+    .fetch_one(&pool)
+    .await
+    .checked("playlist count should be readable");
+    assert_eq!(media_count, 0);
+    assert_eq!(playlist_count, 0);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_leave_room_cleans_member_created_media_resources() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -1000,6 +1176,42 @@ async fn test_leave_room_cleans_member_created_media_resources() {
         )
         .await
         .checked("test operation should succeed");
+    let dynamic_playlist = playlist_repo
+        .create(&make_dynamic_playlist(
+            room.id,
+            member.id,
+            None,
+            "member dynamic library",
+        ))
+        .await
+        .checked("test operation should succeed");
+    let nested_dynamic_playlist = playlist_repo
+        .create(&make_dynamic_playlist(
+            room.id,
+            member.id,
+            Some(dynamic_playlist.id),
+            "historical nested dynamic library",
+        ))
+        .await
+        .checked("test operation should succeed");
+    let preserved_static_child = playlist_repo
+        .create(&make_playlist(
+            room.id,
+            member.id,
+            Some(nested_dynamic_playlist.id),
+            "historical shared folder",
+        ))
+        .await
+        .checked("test operation should succeed");
+    let preserved_owner_media = media_repo
+        .create(&make_media(
+            room.id,
+            owner.id,
+            Some(nested_dynamic_playlist.id),
+            "historical owner media",
+        ))
+        .await
+        .checked("test operation should succeed");
 
     room_service
         .playback_service()
@@ -1021,16 +1233,101 @@ async fn test_leave_room_cleans_member_created_media_resources() {
         .is_member(&room.id, &member.id)
         .await
         .checked("test operation should succeed"));
-    assert!(playlist_repo
+    let preserved_playlist = playlist_repo
         .get_by_id(&playlist.id)
         .await
         .checked("test operation should succeed")
+        .checked("ordinary playlist should remain after its creator leaves");
+    assert_eq!(preserved_playlist.creator_id, Some(member.id));
+    assert!(playlist_repo
+        .get_by_id(&dynamic_playlist.id)
+        .await
+        .checked("test operation should succeed")
         .is_none());
+    assert!(playlist_repo
+        .get_by_id(&nested_dynamic_playlist.id)
+        .await
+        .checked("test operation should succeed")
+        .is_none());
+    let preserved_static_child = playlist_repo
+        .get_by_id(&preserved_static_child.id)
+        .await
+        .checked("test operation should succeed")
+        .checked("ordinary child playlist should survive malformed dynamic nesting");
+    assert!(preserved_static_child.parent_id.is_none());
+    let preserved_owner_media = media_repo
+        .get_by_id(&preserved_owner_media.id)
+        .await
+        .checked("test operation should succeed")
+        .checked("another member's media should survive malformed dynamic nesting");
+    assert!(preserved_owner_media.playlist_id.is_none());
     assert!(media_repo
         .get_by_id(&media.id)
         .await
         .checked("test operation should succeed")
         .is_none());
+
+    let listed_playlists = room_service
+        .list_client_playlists(
+            &room.id,
+            None,
+            &synctv_core::models::PlaylistListQuery::default(),
+            50,
+            0,
+        )
+        .await
+        .checked("test operation should succeed");
+    let listed_static_playlist = listed_playlists
+        .iter()
+        .find(|item| item.playlist.id == playlist.id)
+        .checked("ordinary playlist should remain listed");
+    assert!(listed_static_playlist.is_available);
+    room_service
+        .ensure_client_usable_playlist(&listed_static_playlist.playlist)
+        .await
+        .checked("ordinary playlist should remain browsable");
+
+    let stale_media = media_repo
+        .create(&make_media(
+            room.id,
+            member.id,
+            None,
+            "historical media from former member",
+        ))
+        .await
+        .checked("test operation should succeed");
+    let stale_dynamic_playlist = playlist_repo
+        .create(&make_dynamic_playlist(
+            room.id,
+            member.id,
+            None,
+            "historical dynamic library from former member",
+        ))
+        .await
+        .checked("test operation should succeed");
+    assert!(!room_service
+        .media_availability(&stale_media)
+        .await
+        .checked("test operation should succeed")
+        .is_available());
+    assert!(!room_service
+        .playlist_availability(&stale_dynamic_playlist)
+        .await
+        .checked("test operation should succeed")
+        .is_available());
+    assert!(room_service
+        .ensure_client_usable_media(&stale_media)
+        .await
+        .is_err());
+    assert!(room_service
+        .ensure_client_usable_playlist(&stale_dynamic_playlist)
+        .await
+        .is_err());
+    assert!(room_service
+        .media_service()
+        .get_dynamic_playlist_browse_path(room.id, owner.id, &stale_dynamic_playlist.id, None,)
+        .await
+        .is_err());
 
     let refreshed_state = room_service
         .playback_service()
@@ -1117,6 +1414,15 @@ async fn test_kick_member_cleans_resources_and_blocks_until_cooldown_expires() {
         )
         .await
         .checked("test operation should succeed");
+    let dynamic_playlist = playlist_repo
+        .create(&make_dynamic_playlist(
+            room.id,
+            target.id,
+            None,
+            "target dynamic library",
+        ))
+        .await
+        .checked("test operation should succeed");
 
     room_service
         .playback_service()
@@ -1142,8 +1448,14 @@ async fn test_kick_member_cleans_resources_and_blocks_until_cooldown_expires() {
         .is_in_kick_cooldown(&room.id, &target.id)
         .await
         .checked("test operation should succeed"));
-    assert!(playlist_repo
+    let preserved_playlist = playlist_repo
         .get_by_id(&playlist.id)
+        .await
+        .checked("test operation should succeed")
+        .checked("ordinary playlist should remain after its creator is kicked");
+    assert_eq!(preserved_playlist.creator_id, Some(target.id));
+    assert!(playlist_repo
+        .get_by_id(&dynamic_playlist.id)
         .await
         .checked("test operation should succeed")
         .is_none());
@@ -1176,6 +1488,366 @@ async fn test_kick_member_cleans_resources_and_blocks_until_cooldown_expires() {
         .join_room(room.id, target.id, None)
         .await
         .is_ok());
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_ban_user_rolls_back_when_owned_playback_reset_fails() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let media_repo = MediaRepository::new(pool.clone());
+    let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("ban_atomic_owner"))
+        .await
+        .checked("test operation should succeed");
+    let target = user_repo
+        .create(&make_user("ban_atomic_target"))
+        .await
+        .checked("test operation should succeed");
+    let (room, _) = room_service
+        .create_room(
+            "Ban Atomic Playback".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .checked("test operation should succeed");
+    room_service
+        .join_room(room.id, target.id, None)
+        .await
+        .checked("test operation should succeed");
+
+    let media = media_repo
+        .create(&make_media(room.id, target.id, None, "ban-atomic-media"))
+        .await
+        .checked("test operation should succeed");
+    let original_state = room_service
+        .playback_service()
+        .switch(room.id, owner.id, Some(media.id), None, None)
+        .await
+        .checked("test operation should succeed");
+
+    let failing_outbox_factory: synctv_core::service::RealtimeOutboxPlaybackStateEventFactory =
+        Arc::new(|_| {
+            Err(Error::Internal(
+                "injected playback outbox failure".to_string(),
+            ))
+        });
+    let error = room_service
+        .ban_user_and_reset_owned_playback_with_outbox(
+            &target.id,
+            Some(&owner.id),
+            Some("atomicity test".to_string()),
+            Some(failing_outbox_factory),
+            &[],
+        )
+        .await
+        .failed("outbox failure must abort the whole ban transaction");
+    assert!(matches!(
+        error,
+        Error::Internal(ref message) if message == "injected playback outbox failure"
+    ));
+
+    let target_after_failure = user_repo
+        .get_by_id(&target.id)
+        .await
+        .checked("test operation should succeed")
+        .checked("target user should still exist");
+    assert!(
+        !target_after_failure.is_banned,
+        "failed playback reset must roll back the global ban"
+    );
+
+    let playback_after_failure = playback_repo
+        .get(&room.id)
+        .await
+        .checked("test operation should succeed")
+        .checked("playback state should still exist");
+    assert_eq!(playback_after_failure.playing_media_id, Some(media.id));
+    assert_eq!(playback_after_failure.version, original_state.version);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_dynamic_playlists_reject_room_library_children() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let playlist_repo = PlaylistRepository::new(pool.clone());
+    let room_service = make_room_service(pool);
+
+    let owner = user_repo
+        .create(&make_user("dynamic_structure_owner"))
+        .await
+        .checked("test operation should succeed");
+    let (room, _) = room_service
+        .create_room(
+            "Dynamic Structure Room".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .checked("test operation should succeed");
+    register_direct_url_provider(&room_service).await;
+
+    let static_parent = room_service
+        .playlist_service()
+        .create_playlist(
+            room.id,
+            owner.id,
+            synctv_core::service::CreatePlaylistRequest {
+                room_id: room.id,
+                name: "shared folder".to_string(),
+                description: String::new(),
+                parent_id: None,
+                browse_access_mode: synctv_core::models::PlaylistBrowseAccessMode::Default,
+                source_provider: None,
+                source_config: None,
+                provider_instance_name: None,
+            },
+        )
+        .await
+        .checked("test operation should succeed");
+    let dynamic_playlist = playlist_repo
+        .create(&make_dynamic_playlist(
+            room.id,
+            owner.id,
+            None,
+            "provider library",
+        ))
+        .await
+        .checked("test operation should succeed");
+
+    let child_result = room_service
+        .playlist_service()
+        .create_playlist(
+            room.id,
+            owner.id,
+            synctv_core::service::CreatePlaylistRequest {
+                room_id: room.id,
+                name: "invalid child".to_string(),
+                description: String::new(),
+                parent_id: Some(dynamic_playlist.id),
+                browse_access_mode: synctv_core::models::PlaylistBrowseAccessMode::Default,
+                source_provider: None,
+                source_config: None,
+                provider_instance_name: None,
+            },
+        )
+        .await;
+    assert!(matches!(child_result, Err(Error::InvalidInput(_))));
+
+    let nested_dynamic_result = room_service
+        .playlist_service()
+        .create_playlist(
+            room.id,
+            owner.id,
+            synctv_core::service::CreatePlaylistRequest {
+                room_id: room.id,
+                name: "invalid nested provider library".to_string(),
+                description: String::new(),
+                parent_id: Some(static_parent.id),
+                browse_access_mode: synctv_core::models::PlaylistBrowseAccessMode::Default,
+                source_provider: Some(SourceProvider::Alist),
+                source_config: Some(synctv_core_testing::alist_directory_playlist_source_config(
+                    "alist-test",
+                    "/library",
+                )),
+                provider_instance_name: None,
+            },
+        )
+        .await;
+    assert!(matches!(nested_dynamic_result, Err(Error::InvalidInput(_))));
+
+    let request = synctv_core::service::AddMediaRequest {
+        playlist_id: Some(dynamic_playlist.id),
+        name: "invalid media".to_string(),
+        description: String::new(),
+        source_provider: SourceProvider::DirectUrl,
+        provider_instance_name: None,
+        source_config: synctv_core_testing::direct_url_media_source_config(
+            "https://example.com/invalid.mp4",
+        ),
+    };
+    assert!(matches!(
+        room_service
+            .media_service()
+            .add_media(room.id, owner.id, request.clone())
+            .await,
+        Err(Error::InvalidInput(_))
+    ));
+    assert!(matches!(
+        room_service
+            .media_service()
+            .add_media_batch(room.id, owner.id, Some(dynamic_playlist.id), vec![request],)
+            .await,
+        Err(Error::InvalidInput(_))
+    ));
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_inactive_dynamic_playlist_blocks_direct_access_to_historical_static_child() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let user_service = make_user_service(&pool);
+    let playlist_repo = PlaylistRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("dynamic_path_owner"))
+        .await
+        .checked("test operation should succeed");
+    let target = user_repo
+        .create(&make_user("dynamic_path_target"))
+        .await
+        .checked("test operation should succeed");
+    let (room, _) = room_service
+        .create_room(
+            "Dynamic Path Lifecycle".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .checked("test operation should succeed");
+    room_service
+        .join_room(room.id, target.id, None)
+        .await
+        .checked("test operation should succeed");
+
+    let dynamic_parent = playlist_repo
+        .create(&make_dynamic_playlist(
+            room.id,
+            target.id,
+            None,
+            "historical dynamic parent",
+        ))
+        .await
+        .checked("test operation should succeed");
+    let static_child = playlist_repo
+        .create(&make_playlist(
+            room.id,
+            owner.id,
+            Some(dynamic_parent.id),
+            "historical static child",
+        ))
+        .await
+        .checked("test operation should succeed");
+    let nested_media = MediaRepository::new(pool.clone())
+        .create(&make_media(
+            room.id,
+            owner.id,
+            Some(static_child.id),
+            "historical nested media",
+        ))
+        .await
+        .checked("test operation should succeed");
+    user_service
+        .ban_user(&target.id, None, Some("path lifecycle test".to_string()))
+        .await
+        .checked("test operation should succeed");
+
+    assert!(
+        !room_service
+            .playlist_availability(&static_child)
+            .await
+            .checked("test operation should succeed")
+            .is_available(),
+        "direct child details must report an inactive dynamic ancestor"
+    );
+    let error = room_service
+        .ensure_client_usable_playlist(&static_child)
+        .await
+        .failed("direct child ID must not bypass an inactive dynamic ancestor");
+    assert!(matches!(error, Error::Authorization(_)));
+    let error = room_service
+        .media_service()
+        .generate_backend_playback_for_source(BackendPlaybackRequest {
+            room_id: room.id,
+            media_id: Some(nested_media.id),
+            playlist_id: None,
+            target: None,
+        })
+        .await
+        .failed("backend playback must not bypass an inactive dynamic ancestor");
+    assert!(matches!(error, Error::Authorization(_)));
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_get_playing_media_rejects_stale_media_from_banned_creator() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let writer = make_room_service(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("stale_playing_media_owner"))
+        .await
+        .checked("test operation should succeed");
+    let creator = user_repo
+        .create(&make_user("stale_playing_media_creator"))
+        .await
+        .checked("test operation should succeed");
+    let (room, _) = writer
+        .create_room(
+            "Stale Playing Media Lifecycle".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .checked("test operation should succeed");
+    writer
+        .join_room(room.id, creator.id, None)
+        .await
+        .checked("test operation should succeed");
+
+    let media = MediaRepository::new(pool.clone())
+        .create(&make_media(
+            room.id,
+            creator.id,
+            None,
+            "stale playing media",
+        ))
+        .await
+        .checked("test operation should succeed");
+    writer
+        .playback_service()
+        .switch(room.id, owner.id, Some(media.id), None, None)
+        .await
+        .checked("test operation should succeed");
+
+    user_repo
+        .ban(
+            &creator.id,
+            Some(&owner.id),
+            Some("stale playback lifecycle test".to_string()),
+        )
+        .await
+        .checked("test operation should succeed");
+
+    let persisted_state = RoomPlaybackStateRepository::new(pool.clone())
+        .get(&room.id)
+        .await
+        .checked("test operation should succeed")
+        .checked("playback state should exist");
+    assert_eq!(persisted_state.playing_media_id, Some(media.id));
+
+    let reader = make_room_service(pool);
+    let error = reader
+        .get_playing_media(&room.id)
+        .await
+        .failed("stale playback must not expose unavailable media");
+    assert!(matches!(error, Error::Authorization(_)));
 }
 
 #[tokio::test]

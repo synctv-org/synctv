@@ -60,6 +60,13 @@ impl UserService {
         media_ids: Vec<MediaId>,
         tx: &mut Transaction<'_, Postgres>,
     ) -> Result<UserDeletedRoomImpact> {
+        crate::service::room::preserve_non_owned_dynamic_playlist_children_in_tx(
+            tx,
+            room_id,
+            deleted_owner_id,
+            &playlist_ids,
+        )
+        .await?;
         let deleted_media_ids =
             Self::collect_deleted_media_ids_in_tx(tx, room_id, &playlist_ids, &media_ids).await?;
 

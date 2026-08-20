@@ -85,6 +85,11 @@ impl PlaylistService {
                 .await?
                 .ok_or_else(|| Error::NotFound("Parent playlist not found".to_string()))?;
             debug_assert_eq!(parent.room_id, room_id);
+            if parent.is_dynamic() {
+                return Err(Error::InvalidInput(
+                    "Dynamic playlists cannot contain room library entries".to_string(),
+                ));
+            }
 
             // Check nesting depth using recursive CTE (single query)
             let path = self
@@ -105,6 +110,12 @@ impl PlaylistService {
                 request.source_config,
                 request.provider_instance_name,
             )?;
+
+        if source_provider.is_some() && request.parent_id.is_some() {
+            return Err(Error::InvalidInput(
+                "Dynamic playlists must be created at the room root".to_string(),
+            ));
+        }
 
         let (source_provider, source_config, provider_instance_name) = if let (
             Some(source_provider),
@@ -132,6 +143,11 @@ impl PlaylistService {
         };
 
         let mut tx = self.playlist_repo.pool().begin().await?;
+        if !bypass_room_permissions {
+            self.permission_service
+                .lock_active_resource_creator_with_executor(&room_id, &user_id, &mut tx)
+                .await?;
+        }
         let position = self
             .playlist_repo
             .get_next_append_position_with_tx(&room_id, request.parent_id.as_ref(), &mut tx)

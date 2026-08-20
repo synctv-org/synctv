@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT users.id AS \"id!: UserId\"\n            FROM users\n            JOIN room_members\n              ON room_members.room_id = $1\n             AND room_members.user_id = users.id\n            WHERE users.id = ANY($2)\n            FOR KEY SHARE OF users, room_members\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8Array"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f599d7cc20f8268a3cdd4b54f9a9a8aba9eedfb7bde22a0825ddf8db112140d3"
+}

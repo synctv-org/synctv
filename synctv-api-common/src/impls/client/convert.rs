@@ -80,6 +80,8 @@ pub struct PlaybackHttpSigningContext<'a> {
     pub room_id: &'a str,
     pub proxy_authorizer_id: &'a str,
     pub actor_id: &'a str,
+    pub playback_generation: i64,
+    pub resource_owner_id: Option<&'a str>,
 }
 
 fn proto_encode_error(kind: &str, error: &str) -> crate::impls::ApiError {
@@ -3958,6 +3960,8 @@ fn p2p_resource_delivery_to_proto(
         signing.room_id,
         signing.actor_id,
         &delivery.swarm_id,
+        signing.playback_generation,
+        signing.resource_owner_id,
     );
     Ok(synctv_proto::client::P2pResourceDelivery {
         swarm_id: delivery.swarm_id,
@@ -5053,6 +5057,8 @@ mod playback_conversion_tests {
             room_id: "room-1",
             proxy_authorizer_id: "user-1",
             actor_id: "user-1",
+            playback_generation: 7,
+            resource_owner_id: Some("user-owner"),
         }
     }
 
@@ -5975,7 +5981,7 @@ mod playback_conversion_tests {
                     &delivery.swarm_id,
                     &delivery.swarm_ticket,
                 )
-                .expect("attachment ticket should bind the current room, user, and swarm");
+                .expect("attachment ticket should bind the current playback");
         }
     }
 }

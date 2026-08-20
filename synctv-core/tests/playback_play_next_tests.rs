@@ -650,7 +650,6 @@ async fn test_sequential_advance_to_next() {
         .create_room("Seq Next".to_string(), String::new(), owner.id, None, None)
         .await
         .checked("test operation should succeed");
-
     let playlist = create_top_level_playlist(&pool, &room.id).await;
     let media1 = insert_media(&pool, &playlist.id, &room.id, "video1", 0).await;
     let media2 = insert_media(&pool, &playlist.id, &room.id, "video2", 1).await;
@@ -675,6 +674,63 @@ async fn test_sequential_advance_to_next() {
         Some(media2.id),
         "Should be playing media2"
     );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_sequential_end_rolls_back_when_outbox_creation_fails() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(&pool);
+    let owner = user_repo
+        .create(&make_user("seq_end_outbox_owner"))
+        .await
+        .checked("test operation should succeed");
+    let (room, _) = room_service
+        .create_room(
+            "Sequential End Outbox".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .checked("test operation should succeed");
+    let media = insert_root_media(&pool, &room.id, "only_item", 0).await;
+    let playback = room_service.playback_service();
+    let original = playback
+        .switch(room.id, owner.id, Some(media.id), None, None)
+        .await
+        .checked("test operation should succeed");
+    let failing_outbox_factory: synctv_core::service::RealtimeOutboxPlaybackStateEventFactory =
+        Arc::new(|_| {
+            Err(synctv_core::Error::Internal(
+                "injected playback outbox failure".to_string(),
+            ))
+        });
+
+    let error = playback
+        .play_next_for_user(
+            &room.id,
+            owner.id,
+            &make_settings_with_mode(PlayMode::Sequential),
+            Some(failing_outbox_factory),
+        )
+        .await
+        .failed("outbox failure must abort the playlist-ended update");
+    assert!(matches!(
+        error,
+        synctv_core::Error::Internal(ref message)
+            if message == "injected playback outbox failure"
+    ));
+
+    let current = playback
+        .get_state(&room.id)
+        .await
+        .checked("playback state should remain readable after rollback");
+    assert_eq!(current.playing_media_id, Some(media.id));
+    assert_eq!(current.version, original.version);
+    assert!(current.is_playing);
 }
 
 #[tokio::test]
@@ -1294,7 +1350,6 @@ async fn test_sequential_advance_restarts_next_media_with_saved_progress() {
         )
         .await
         .checked("test operation should succeed");
-
     let playlist = create_top_level_playlist(&pool, &room.id).await;
     let media1 = insert_media(&pool, &playlist.id, &room.id, "video1_saved_next", 0).await;
     let media2 = insert_media(&pool, &playlist.id, &room.id, "video2_saved_next", 1).await;
@@ -1870,6 +1925,10 @@ async fn test_play_next_stops_when_next_media_creator_becomes_inactive() {
         )
         .await
         .checked("test operation should succeed");
+    room_service
+        .join_room(room.id, next_creator.id, None)
+        .await
+        .checked("test operation should succeed");
 
     let playlist = create_top_level_playlist(&pool, &room.id).await;
     let media_repo = MediaRepository::new(pool.clone());
@@ -1932,6 +1991,35 @@ async fn test_play_next_stops_when_next_media_creator_becomes_inactive() {
         .checked("test operation should succeed");
 
     let settings = make_settings_with_mode(PlayMode::Sequential);
+    let failing_outbox_factory: synctv_core::service::RealtimeOutboxPlaybackStateEventFactory =
+        Arc::new(|_| {
+            Err(synctv_core::Error::Internal(
+                "injected playback outbox failure".to_string(),
+            ))
+        });
+    let error = room_service
+        .playback_service()
+        .play_next_for_user(
+            &room.id,
+            room_owner.id,
+            &settings,
+            Some(failing_outbox_factory),
+        )
+        .await
+        .failed("outbox failure must abort the unavailable-creator reset");
+    assert!(matches!(
+        error,
+        synctv_core::Error::Internal(ref message)
+            if message == "injected playback outbox failure"
+    ));
+    let unchanged = room_service
+        .playback_service()
+        .get_state(&room.id)
+        .await
+        .checked("playback state should remain readable after rollback");
+    assert_eq!(unchanged.playing_media_id, Some(media1.id));
+    assert!(unchanged.is_playing);
+
     let state = room_service
         .playback_service()
         .play_next(&room.id, &settings)
@@ -1977,7 +2065,6 @@ async fn test_dynamic_playlist_sequential_advances_by_target() {
         )
         .await
         .checked("test operation should succeed");
-
     register_alist_provider(&room_service).await;
     let playlist = create_dynamic_playlist(&pool, &room.id, &owner.id, "alist_default").await;
 
@@ -2045,6 +2132,10 @@ async fn test_switch_dynamic_playlist_rejects_inactive_creator() {
         )
         .await
         .checked("test operation should succeed");
+    room_service
+        .join_room(room.id, playlist_creator.id, None)
+        .await
+        .checked("test operation should succeed");
 
     register_alist_provider(&room_service).await;
     let playlist =
@@ -2073,8 +2164,8 @@ async fn test_switch_dynamic_playlist_rejects_inactive_creator() {
     match result.failed("dynamic playlist created by banned user must not be playable") {
         synctv_core::Error::Authorization(message) => {
             assert!(
-                message.contains("creator") && message.contains("active"),
-                "error should explain creator status: {message}"
+                message.contains("creator") && message.contains("unavailable"),
+                "error should explain creator availability: {message}"
             );
         }
         other => std::panic::panic_any(format!("expected authorization error, got: {other:?}")),
@@ -2117,6 +2208,10 @@ async fn test_play_next_stops_when_dynamic_playlist_creator_becomes_inactive() {
             None,
             None,
         )
+        .await
+        .checked("test operation should succeed");
+    room_service
+        .join_room(room.id, playlist_creator.id, None)
         .await
         .checked("test operation should succeed");
 

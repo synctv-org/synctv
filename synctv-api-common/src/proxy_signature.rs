@@ -17,7 +17,7 @@ const MEDIA_SWARM_KEY_DOMAIN_SEPARATOR: &[u8] = b"synctv-media-swarm-signing-key
 const DEFAULT_EXPIRY_SECS: i64 = 30 * 60;
 const MAX_EXPIRY_SECS: i64 = 24 * 60 * 60;
 const MEDIA_SWARM_TICKET_EXPIRY_SECS: i64 = 24 * 60 * 60;
-const MEDIA_SWARM_TICKET_DOMAIN: &str = "synctv-media-swarm-v1";
+const MEDIA_SWARM_TICKET_DOMAIN: &str = "synctv-media-swarm-v2";
 
 /// HMAC-SHA256 signing key for proxy URLs.
 ///
@@ -28,6 +28,12 @@ pub struct ProxySigningKey {
 /// HMAC-SHA256 signing key for WebRTC media swarm capability tickets.
 pub struct MediaSwarmSigningKey {
     key: HmacSha256,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaSwarmTicketClaims {
+    pub playback_generation: i64,
+    pub resource_owner_id: Option<String>,
 }
 
 /// Claims used for signed proxy access.
@@ -230,31 +236,79 @@ impl MediaSwarmSigningKey {
         Ok(Self { key })
     }
 
-    /// Create a room- and actor-bound capability for joining one media swarm.
+    /// Create a capability bound to one actor and one room playback generation.
     #[must_use]
-    pub fn sign_media_swarm_ticket(&self, room_id: &str, actor_id: &str, swarm_id: &str) -> String {
+    pub fn sign_media_swarm_ticket(
+        &self,
+        room_id: &str,
+        actor_id: &str,
+        swarm_id: &str,
+        playback_generation: i64,
+        resource_owner_id: Option<&str>,
+    ) -> String {
         let expires_at = synctv_core::SystemClock
             .now()
             .timestamp()
             .saturating_add(MEDIA_SWARM_TICKET_EXPIRY_SECS);
+        let encoded_resource_owner_id = resource_owner_id.map_or_else(String::new, hex::encode);
         let mut mac = self.key.clone();
         mac.update(
-            Self::media_swarm_ticket_message(room_id, actor_id, swarm_id, expires_at).as_bytes(),
+            Self::media_swarm_ticket_message(
+                room_id,
+                actor_id,
+                swarm_id,
+                playback_generation,
+                resource_owner_id,
+                expires_at,
+            )
+            .as_bytes(),
         );
-        format!("{expires_at}.{}", hex::encode(mac.finalize().into_bytes()))
+        format!(
+            "2.{expires_at}.{playback_generation}.{encoded_resource_owner_id}.{}",
+            hex::encode(mac.finalize().into_bytes())
+        )
     }
 
-    /// Verify a media swarm capability without resolving playback or provider state.
+    /// Verify and decode a media swarm capability.
     pub fn verify_media_swarm_ticket(
         &self,
         room_id: &str,
         actor_id: &str,
         swarm_id: &str,
         ticket: &str,
-    ) -> Result<(), MediaSwarmTicketError> {
-        let (expires_at, signature) = ticket
-            .split_once('.')
+    ) -> Result<MediaSwarmTicketClaims, MediaSwarmTicketError> {
+        let mut parts = ticket.split('.');
+        if parts.next() != Some("2") {
+            return Err(MediaSwarmTicketError::InvalidSignature);
+        }
+        let expires_at = parts
+            .next()
             .ok_or(MediaSwarmTicketError::InvalidSignature)?;
+        let playback_generation = parts
+            .next()
+            .ok_or(MediaSwarmTicketError::InvalidSignature)?
+            .parse::<i64>()
+            .map_err(|_| MediaSwarmTicketError::InvalidSignature)?;
+        let encoded_resource_owner_id = parts
+            .next()
+            .ok_or(MediaSwarmTicketError::InvalidSignature)?;
+        let signature = parts
+            .next()
+            .ok_or(MediaSwarmTicketError::InvalidSignature)?;
+        if parts.next().is_some() || playback_generation < 0 {
+            return Err(MediaSwarmTicketError::InvalidSignature);
+        }
+        let resource_owner_id = if encoded_resource_owner_id.is_empty() {
+            None
+        } else {
+            Some(
+                String::from_utf8(
+                    hex::decode(encoded_resource_owner_id)
+                        .map_err(|_| MediaSwarmTicketError::InvalidSignature)?,
+                )
+                .map_err(|_| MediaSwarmTicketError::InvalidSignature)?,
+            )
+        };
         let expires_at = expires_at
             .parse::<i64>()
             .map_err(|_| MediaSwarmTicketError::InvalidSignature)?;
@@ -270,20 +324,35 @@ impl MediaSwarmSigningKey {
             hex::decode(signature).map_err(|_| MediaSwarmTicketError::InvalidSignature)?;
         let mut mac = self.key.clone();
         mac.update(
-            Self::media_swarm_ticket_message(room_id, actor_id, swarm_id, expires_at).as_bytes(),
+            Self::media_swarm_ticket_message(
+                room_id,
+                actor_id,
+                swarm_id,
+                playback_generation,
+                resource_owner_id.as_deref(),
+                expires_at,
+            )
+            .as_bytes(),
         );
         mac.verify_slice(&signature)
-            .map_err(|_| MediaSwarmTicketError::InvalidSignature)
+            .map_err(|_| MediaSwarmTicketError::InvalidSignature)?;
+        Ok(MediaSwarmTicketClaims {
+            playback_generation,
+            resource_owner_id,
+        })
     }
 
     fn media_swarm_ticket_message(
         room_id: &str,
         actor_id: &str,
         swarm_id: &str,
+        playback_generation: i64,
+        resource_owner_id: Option<&str>,
         expires_at: i64,
     ) -> String {
+        let resource_owner_id = resource_owner_id.unwrap_or_default();
         format!(
-            "{MEDIA_SWARM_TICKET_DOMAIN}\nroom:{room_id}\nactor:{actor_id}\nswarm:{swarm_id}\nexpires:{expires_at}"
+            "{MEDIA_SWARM_TICKET_DOMAIN}\nroom:{room_id}\nactor:{actor_id}\nswarm:{swarm_id}\ngeneration:{playback_generation}\nowner:{resource_owner_id}\nexpires:{expires_at}"
         )
     }
 }
@@ -502,17 +571,23 @@ mod tests {
     #[test]
     fn media_swarm_ticket_roundtrip() {
         let key = test_swarm_key();
-        let ticket = key.sign_media_swarm_ticket("room_1", "usr_1", "sm1_resource");
+        let ticket =
+            key.sign_media_swarm_ticket("room_1", "usr_1", "sm1_resource", 7, Some("usr_owner"));
 
-        assert!(key
-            .verify_media_swarm_ticket("room_1", "usr_1", "sm1_resource", &ticket)
-            .is_ok());
+        assert_eq!(
+            key.verify_media_swarm_ticket("room_1", "usr_1", "sm1_resource", &ticket)
+                .expect("ticket should verify"),
+            MediaSwarmTicketClaims {
+                playback_generation: 7,
+                resource_owner_id: Some("usr_owner".to_string()),
+            }
+        );
     }
 
     #[test]
     fn media_swarm_ticket_binds_room_actor_and_swarm() {
         let key = test_swarm_key();
-        let ticket = key.sign_media_swarm_ticket("room_1", "usr_1", "sm1_resource");
+        let ticket = key.sign_media_swarm_ticket("room_1", "usr_1", "sm1_resource", 7, None);
 
         for (room_id, actor_id, swarm_id) in [
             ("room_2", "usr_1", "sm1_resource"),

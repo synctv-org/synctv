@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT rm.room_id AS \"room_id!: RoomId\", rm.user_id AS \"user_id!: UserId\"\n            FROM room_members rm\n            JOIN users u ON u.id = rm.user_id\n            WHERE rm.room_id = ANY($1)\n              AND rm.user_id = ANY($2)\n              AND u.deleted_at IS NULL\n              AND NOT EXISTS (\n                  SELECT 1\n                  FROM user_bans ub\n                  WHERE ub.user_id = u.id\n                    AND ub.revoked_at IS NULL\n                    AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)\n              )\n              AND NOT EXISTS (\n                  SELECT 1\n                  FROM room_member_kick_cooldowns cooldown\n                  WHERE cooldown.room_id = rm.room_id\n                    AND cooldown.user_id = rm.user_id\n                    AND cooldown.ends_at > CURRENT_TIMESTAMP\n              )\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "room_id!: RoomId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "room_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id!: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "user_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8Array",
+        "Int8Array"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "dcfbc6ccc398a0ac8d8106b3a68d8d4c26a04f90627d2d911dfc684374496745"
+}

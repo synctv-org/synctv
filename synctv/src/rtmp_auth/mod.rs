@@ -681,6 +681,17 @@ impl AuthCallback for SyncTvRtmpAuth {
             .register_and_start_ttl(&validated, generation_id)
             .await?;
 
+        if let Err(error) = self.revalidate_registered_publish(&validated).await {
+            self.publisher_cleanup
+                .cleanup_on_publish_rollback(
+                    generation_id,
+                    &validated.room_id.to_string(),
+                    &validated.media_id.to_string(),
+                )
+                .await;
+            return Err(error);
+        }
+
         // Phase 3: Return rewrite so StreamHub uses canonical (room_id, media_id)
         // instead of the raw RTMP identifiers (room_id, JWT_TOKEN).
         Ok(Some(AuthPublishRewrite {
@@ -881,13 +892,7 @@ impl SyncTvRtmpAuth {
 
         // Authorization check
         let (auth_level, media_mode) = self
-            .check_publish_authorization(
-                &user,
-                &expected_room_id,
-                &expected_media_id,
-                &user_id,
-                &claims,
-            )
+            .check_publish_authorization(&user, &expected_room_id, &expected_media_id, &user_id)
             .await?;
 
         Ok(ValidatedPublish {
@@ -907,7 +912,6 @@ impl SyncTvRtmpAuth {
         room_id: &RoomId,
         media_id: &MediaId,
         user_id: &UserId,
-        claims: &synctv_core::service::PublishClaims,
     ) -> Result<
         (&'static str, synctv_core::models::RtmpStreamMode),
         Box<dyn std::error::Error + Send + Sync>,
@@ -943,20 +947,19 @@ impl SyncTvRtmpAuth {
             .get_media(media_id)
             .await
             .map_err(|e| format!("Failed to load media: {e}"))?
-            .ok_or_else(|| format!("Media {} not found", claims.media_id))?;
+            .ok_or_else(|| format!("Media {media_id} not found"))?;
         if media.room_id != *room_id {
-            return Err(format!(
-                "Media {} does not belong to room {}",
-                claims.media_id, room_id
-            )
-            .into());
+            return Err(format!("Media {media_id} does not belong to room {room_id}").into());
         }
+        self.room_service
+            .ensure_client_usable_media(&media)
+            .await
+            .map_err(|error| format!("Media is unavailable: {error}"))?;
 
         let is_media_creator = if !is_global_admin && !is_room_admin_or_creator {
             if room_member.is_none() {
                 return Err(format!(
-                    "Insufficient permissions to publish: user {} is not a member of room {}",
-                    claims.user_id, room_id
+                    "Insufficient permissions to publish: user {user_id} is not a member of room {room_id}"
                 )
                 .into());
             }
@@ -973,8 +976,7 @@ impl SyncTvRtmpAuth {
 
         if !is_global_admin && !is_room_admin_or_creator && !is_media_creator {
             return Err(format!(
-                "Insufficient permissions to publish: user {} is not admin, room admin/creator, or media creator",
-                claims.user_id
+                "Insufficient permissions to publish: user {user_id} is not admin, room admin/creator, or media creator"
             ).into());
         }
 
@@ -990,6 +992,45 @@ impl SyncTvRtmpAuth {
             _ => synctv_core::models::RtmpStreamMode::Default,
         };
         Ok((auth_level, media_mode))
+    }
+
+    async fn revalidate_registered_publish(
+        &self,
+        validated: &ValidatedPublish,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let room = self
+            .room_service
+            .get_room(&validated.room_id)
+            .await
+            .map_err(|error| {
+                format!("Failed to reload room after publisher registration: {error}")
+            })?;
+        validate_rtmp_room_state(&room)
+            .map_err(|reason| reason.into_error(&validated.room_id.to_string()))?;
+
+        let user = self
+            .user_service
+            .get_user(&validated.user_id)
+            .await
+            .map_err(|error| {
+                format!("Failed to reload publisher after publisher registration: {error}")
+            })?;
+        if user.status == UserStatus::Banned || user.deleted_at.is_some() {
+            return Err(format!(
+                "User {} became unavailable during publisher registration",
+                validated.user_id
+            )
+            .into());
+        }
+
+        self.check_publish_authorization(
+            &user,
+            &validated.room_id,
+            &validated.media_id,
+            &validated.user_id,
+        )
+        .await?;
+        Ok(())
     }
 }
 
@@ -1575,6 +1616,124 @@ mod tests {
             auth_level: "test",
             media_mode: synctv_core::models::RtmpStreamMode::Default,
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn registered_publish_is_rolled_back_when_media_creator_becomes_banned() {
+        use synctv_core::{
+            models::{FromProviderParams, Media, SignupMethod, SourceProvider, User},
+            repository::{MediaRepository, UserRepository},
+            service::PublishKeyService,
+        };
+        use synctv_core_testing::{
+            create_test_jwt_service, create_test_pool, create_test_room_service,
+            create_test_user_service, direct_url_media_source_config,
+        };
+
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repository = UserRepository::new(pool.clone());
+        let owner = user_repository
+            .create(&User::new(
+                "rtmp_race_owner".to_string(),
+                SignupMethod::AdminCreated,
+            ))
+            .await
+            .expect("room owner should be created");
+        let creator = user_repository
+            .create(&User::new(
+                "rtmp_race_creator".to_string(),
+                SignupMethod::AdminCreated,
+            ))
+            .await
+            .expect("media creator should be created");
+
+        let room_service = Arc::new(create_test_room_service(pool.clone()));
+        let room = room_service
+            .create_room(
+                "rtmp lifecycle race".to_string(),
+                String::new(),
+                owner.id,
+                None,
+                None,
+            )
+            .await
+            .expect("room should be created")
+            .0;
+        room_service
+            .join_room(room.id, creator.id, None)
+            .await
+            .expect("media creator should join the room");
+        let media = MediaRepository::new(pool.clone())
+            .create(&Media::from_provider_with_params(FromProviderParams {
+                playlist_id: None,
+                room_id: room.id,
+                creator_id: Some(creator.id),
+                name: "creator-owned live media".to_string(),
+                description: String::new(),
+                source_provider: SourceProvider::DirectUrl,
+                source_config: direct_url_media_source_config("https://example.com/live.m3u8"),
+                provider_instance_name: None,
+                position: 0.0,
+            }))
+            .await
+            .expect("media should be created");
+
+        let registry = local_stream_registry();
+        let auth = SyncTvRtmpAuth {
+            room_service: room_service.clone(),
+            user_service: Arc::new(create_test_user_service(pool)),
+            publish_key_service: Arc::new(
+                PublishKeyService::new(
+                    create_test_jwt_service(),
+                    Arc::new(synctv_core::SystemClock),
+                    24,
+                )
+                .expect("publish key service should be created"),
+            ),
+            publisher_cleanup: make_publisher_cleanup_runtime(registry.clone()),
+            public_id_codec: Arc::new(PublicIdCodec::plain()),
+            is_restarting: None,
+        };
+        let validated = ValidatedPublish {
+            room_id: room.id,
+            media_id: media.id,
+            user_id: owner.id,
+            auth_level: "room_admin",
+            media_mode: synctv_core::models::RtmpStreamMode::Default,
+        };
+        let generation_id = Uuid::new();
+        auth.publisher_cleanup
+            .register_and_start_ttl(&validated, generation_id)
+            .await
+            .expect("publisher registration should succeed");
+        auth.revalidate_registered_publish(&validated)
+            .await
+            .expect("publisher should initially remain authorized");
+
+        room_service
+            .ban_user_and_reset_owned_playback_with_outbox(
+                &creator.id,
+                None,
+                Some("race test".to_string()),
+                None,
+                &[],
+            )
+            .await
+            .expect("media creator should be banned");
+
+        let error = auth
+            .revalidate_registered_publish(&validated)
+            .await
+            .expect_err("registered publisher must fail when its media creator is banned");
+        assert!(error.to_string().contains("Media is unavailable"));
+        auth.publisher_cleanup
+            .cleanup_on_publish_rollback(generation_id, &room.id.to_string(), &media.id.to_string())
+            .await;
+        assert!(!registry
+            .is_stream_active(&room.id.to_string(), &media.id.to_string())
+            .await
+            .expect("publisher activity lookup should succeed"));
     }
 
     #[test]

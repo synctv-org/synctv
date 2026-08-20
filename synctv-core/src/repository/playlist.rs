@@ -210,11 +210,11 @@ impl PlaylistRepository {
     ) -> Result<()> {
         builder.push(" FROM playlists p LEFT JOIN users u ON p.creator_id = u.id AND u.deleted_at IS NULL WHERE p.room_id = ");
         builder.push_bind(room_id.as_i64());
-        builder.push(" AND p.deleted_at IS NULL AND (p.creator_id IS NULL OR u.id IS NOT NULL)");
+        builder.push(" AND p.deleted_at IS NULL");
         builder.push(
             " AND EXISTS (SELECT 1 FROM rooms r WHERE r.id = p.room_id AND r.deleted_at IS NULL)",
         );
-        builder.push(" AND (p.parent_id IS NULL OR EXISTS (SELECT 1 FROM playlists parent WHERE parent.id = p.parent_id AND parent.deleted_at IS NULL AND (parent.creator_id IS NULL OR EXISTS (SELECT 1 FROM users pu WHERE pu.id = parent.creator_id AND pu.deleted_at IS NULL))))");
+        builder.push(" AND (p.parent_id IS NULL OR EXISTS (SELECT 1 FROM playlists parent WHERE parent.id = p.parent_id AND parent.deleted_at IS NULL))");
         match parent_id {
             Some(parent_id) => {
                 builder.push(" AND p.parent_id = ");
@@ -256,21 +256,37 @@ impl PlaylistRepository {
         match query.availability {
             Some(true) => {
                 builder.push(
-                    " AND (p.creator_id IS NULL OR (u.id IS NOT NULL AND NOT EXISTS (
+                    " AND (p.source_provider IS NULL OR p.creator_id IS NULL OR (u.id IS NOT NULL AND NOT EXISTS (
                     SELECT 1 FROM user_bans ub
                     WHERE ub.user_id = u.id
                       AND ub.revoked_at IS NULL
                       AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
+                ) AND EXISTS (
+                    SELECT 1 FROM room_members rm
+                    WHERE rm.room_id = p.room_id AND rm.user_id = p.creator_id
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM room_member_kick_cooldowns cooldown
+                    WHERE cooldown.room_id = p.room_id
+                      AND cooldown.user_id = p.creator_id
+                      AND cooldown.ends_at > CURRENT_TIMESTAMP
                 )))",
                 );
             }
             Some(false) => {
                 builder.push(
-                    " AND p.creator_id IS NOT NULL AND (u.id IS NULL OR EXISTS (
+                    " AND p.source_provider IS NOT NULL AND p.creator_id IS NOT NULL AND (u.id IS NULL OR EXISTS (
                     SELECT 1 FROM user_bans ub
                     WHERE ub.user_id = u.id
                       AND ub.revoked_at IS NULL
                       AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
+                ) OR NOT EXISTS (
+                    SELECT 1 FROM room_members rm
+                    WHERE rm.room_id = p.room_id AND rm.user_id = p.creator_id
+                ) OR EXISTS (
+                    SELECT 1 FROM room_member_kick_cooldowns cooldown
+                    WHERE cooldown.room_id = p.room_id
+                      AND cooldown.user_id = p.creator_id
+                      AND cooldown.ends_at > CURRENT_TIMESTAMP
                 ))",
                 );
             }
@@ -309,12 +325,21 @@ impl PlaylistRepository {
                     p.source_provider, p.source_config, NULLIF(p.provider_instance_name, '') AS provider_instance_name,
                     p.created_at, p.updated_at, p.version,
                     CASE
-                      WHEN p.creator_id IS NULL THEN TRUE
+                      WHEN p.source_provider IS NULL OR p.creator_id IS NULL THEN TRUE
                       WHEN u.id IS NOT NULL AND NOT EXISTS (
                           SELECT 1 FROM user_bans ub
                           WHERE ub.user_id = u.id
                             AND ub.revoked_at IS NULL
                             AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
+                      ) AND EXISTS (
+                          SELECT 1 FROM room_members rm
+                          WHERE rm.room_id = p.room_id
+                            AND rm.user_id = p.creator_id
+                      ) AND NOT EXISTS (
+                          SELECT 1 FROM room_member_kick_cooldowns cooldown
+                          WHERE cooldown.room_id = p.room_id
+                            AND cooldown.user_id = p.creator_id
+                            AND cooldown.ends_at > CURRENT_TIMESTAMP
                       ) THEN TRUE
                       ELSE FALSE
                     END AS is_available",

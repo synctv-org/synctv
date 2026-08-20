@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT COUNT(*) AS \"count!\"\n            FROM media m\n            LEFT JOIN users u\n              ON m.creator_id = u.id\n             AND u.deleted_at IS NULL\n            WHERE m.playlist_id = $1\n              AND m.deleted_at IS NULL\n              AND (m.creator_id IS NULL OR (\n                  u.id IS NOT NULL AND NOT EXISTS (\n                      SELECT 1 FROM user_bans ub\n                      WHERE ub.user_id = u.id\n                        AND ub.revoked_at IS NULL\n                        AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)\n                  )\n                  AND EXISTS (\n                      SELECT 1 FROM room_members rm\n                      WHERE rm.room_id = m.room_id AND rm.user_id = m.creator_id\n                  )\n                  AND NOT EXISTS (\n                      SELECT 1 FROM room_member_kick_cooldowns cooldown\n                      WHERE cooldown.room_id = m.room_id\n                        AND cooldown.user_id = m.creator_id\n                        AND cooldown.ends_at > CURRENT_TIMESTAMP\n                  )\n              ))\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "592f2cbef4f1008c4ccacb87b858206df9fa7679d90a5a23d364d89ece148018"
+}

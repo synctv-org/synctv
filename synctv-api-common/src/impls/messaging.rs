@@ -11,7 +11,7 @@
 //! - All logic encapsulated in `StreamMessageHandler` (rate limiting, filtering, permissions)
 //! - Complete IO abstraction via `StreamMessage` trait for both sending and receiving
 
-use std::{collections::BTreeSet, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc};
 use synctv_common::ExecutionControl;
 use synctv_core::spawn::spawn_monitored;
 use synctv_core::{
@@ -199,7 +199,8 @@ pub struct StreamMessageHandler {
     /// Used by `cleanup()` to decrement `WEBRTC_PEERS_ACTIVE` on ungraceful disconnect.
     has_voice_rtc_session: Arc<std::sync::atomic::AtomicBool>,
     /// Media swarms announced by this connection.
-    active_media_swarms: Arc<parking_lot::Mutex<BTreeSet<String>>>,
+    active_media_swarms:
+        Arc<parking_lot::Mutex<BTreeMap<String, crate::proxy_signature::MediaSwarmTicketClaims>>>,
     room_capability_transition_lock: Arc<tokio::sync::Mutex<()>>,
     /// When true, `cleanup()` skips broadcasting `UserLeft`.
     ///
@@ -548,7 +549,7 @@ impl StreamMessageHandler {
             resource_observer,
             ws_message_rate_limit: runtime.ws_message_rate_limit,
             has_voice_rtc_session: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            active_media_swarms: Arc::new(parking_lot::Mutex::new(BTreeSet::new())),
+            active_media_swarms: Arc::new(parking_lot::Mutex::new(BTreeMap::new())),
             room_capability_transition_lock: Arc::new(tokio::sync::Mutex::new(())),
             skip_cleanup_user_left: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             realtime_termination_sent: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -713,7 +714,7 @@ impl StreamMessageHandler {
                 ..
             } => {
                 if conn_id == self.connection_id.as_str()
-                    || !self.active_media_swarms.lock().contains(swarm_id)
+                    || !self.active_media_swarms.lock().contains_key(swarm_id)
                 {
                     return Ok(None);
                 }

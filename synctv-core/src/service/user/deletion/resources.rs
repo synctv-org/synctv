@@ -108,6 +108,7 @@ impl UserService {
              JOIN rooms r ON r.id = p.room_id
              WHERE p.creator_id = $1
                AND p.deleted_at IS NULL
+               AND p.source_provider IS NOT NULL
                AND r.deleted_at IS NULL
              ORDER BY p.room_id, p.id"#,
             user_id.as_i64(),
@@ -155,6 +156,27 @@ impl UserService {
         Ok(entries_by_room)
     }
 
+    async fn detach_shared_playlist_ownership_in_tx(
+        user_id: &UserId,
+        tx: &mut Transaction<'_, Postgres>,
+    ) -> Result<()> {
+        sqlx::query!(
+            r#"
+            UPDATE playlists
+            SET creator_id = NULL,
+                version = version + 1
+            WHERE creator_id = $1
+              AND source_provider IS NULL
+              AND deleted_at IS NULL
+            "#,
+            user_id.as_i64(),
+        )
+        .execute(&mut **tx)
+        .await?;
+
+        Ok(())
+    }
+
     pub(super) async fn cleanup_transactional_user_resources(
         &self,
         user_id: &UserId,
@@ -169,6 +191,7 @@ impl UserService {
     )> {
         let owned_room_ids = self.query_owned_room_ids_in_tx(user_id, tx).await?;
         let owned_room_id_set: HashSet<RoomId> = owned_room_ids.iter().copied().collect();
+        Self::detach_shared_playlist_ownership_in_tx(user_id, tx).await?;
         let membership_room_ids = self
             .query_membership_room_ids_in_tx(user_id, &owned_room_id_set, tx)
             .await?;

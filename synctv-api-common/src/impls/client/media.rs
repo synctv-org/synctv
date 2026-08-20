@@ -2574,6 +2574,10 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
         Self::require_playlist_path_access(actor, &static_path)?;
+        self.room_service
+            .ensure_client_usable_playlist(&playlist)
+            .await
+            .map_err(ApiError::from)?;
         let mut current_path: Vec<synctv_proto::client::PlaylistBrowsePathNode> = static_path
             .iter()
             .map(|playlist| try_playlist_path_node_to_proto(playlist, &self.public_id_codec))
@@ -2586,10 +2590,6 @@ impl ClientApiImpl {
                 ));
             };
             require_dynamic_playlist_access(&playlist, uid)?;
-            self.room_service
-                .ensure_client_usable_playlist(&playlist)
-                .await
-                .map_err(ApiError::from)?;
             if !validate_dynamic_playlist_query_support(&playlist, &req)? {
                 return finalize_playlist_items_response_version(
                     synctv_proto::client::ListPlaylistItemsResponse {

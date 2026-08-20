@@ -67,6 +67,24 @@ pub const fn playback_generation_error_allows_state_only(error: &ApiError) -> bo
     )
 }
 
+pub fn playback_snapshot_error_indicates_stale_state<T>(
+    state: &RoomPlaybackState,
+    result: &Result<T, ApiError>,
+) -> bool {
+    if state.playing_media_id.is_none() && state.playing_playlist_id.is_none() {
+        return false;
+    }
+
+    match result {
+        Err(ApiError::Authorization(_)) => true,
+        Err(ApiError::NotFound(message)) => matches!(
+            message.as_str(),
+            "Media not found" | "Playlist not found" | "Dynamic playlist item not found"
+        ),
+        _ => false,
+    }
+}
+
 pub fn normalized_provider_duration(
     playback_kind: Option<PlaybackKind>,
     duration_seconds: Option<f64>,

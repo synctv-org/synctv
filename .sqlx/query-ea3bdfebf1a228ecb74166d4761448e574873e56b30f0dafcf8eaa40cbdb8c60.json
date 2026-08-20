@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT rm.user_id AS \"user_id!: UserId\"\n            FROM room_members rm\n            WHERE rm.room_id = $1\n              AND rm.user_id = $2\n            FOR KEY SHARE\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id!: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "user_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "ea3bdfebf1a228ecb74166d4761448e574873e56b30f0dafcf8eaa40cbdb8c60"
+}

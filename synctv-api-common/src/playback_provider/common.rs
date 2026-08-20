@@ -6,6 +6,7 @@ use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use synctv_core::models::{MediaId, RoomId, UserId};
 use synctv_core::provider::ExecutionControl;
+use synctv_core::provider::ProviderStoreExt;
 use synctv_core::provider::{LiveFlvAccess, PlaybackTransportAction, PlaybackTransportServices};
 use synctv_core::service::UserService;
 use synctv_proto::playback_provider::common::StreamChunk;
@@ -61,6 +62,57 @@ impl PlaybackProviderAccessValidator<'_> {
             .await
             .map_err(map_playback_provider_membership_probe_error)
     }
+
+    async fn validate_playback_generation(
+        &self,
+        provider_stores: &dyn synctv_core::provider::ProviderStoreResolver,
+        provider_name: &str,
+        version: &str,
+        room_id: &RoomId,
+    ) -> Result<(), ApiError> {
+        let store = provider_stores.load(provider_name);
+        let versioned = store
+            .get::<synctv_core::provider::VersionedPlayback>(&format!("v:{version}"))
+            .await
+            .map_err(|error| {
+                ApiError::ServiceUnavailable(format!(
+                    "Playback provider state is temporarily unavailable: {error}"
+                ))
+            })?;
+        let Some(context) = versioned.and_then(|playback| playback.playback_context) else {
+            return Ok(());
+        };
+        if context.room_id != *room_id {
+            return Err(ApiError::Authorization(
+                synctv_common::messages::STALE_PROXY_ACCESS.to_string(),
+            ));
+        }
+        if let Some(resource_owner_id) = context.resource_owner_id {
+            let available = self
+                .playback_transport_services
+                .permission_service
+                .available_resource_creator_pairs(&[(*room_id, resource_owner_id)])
+                .await
+                .map_err(ApiError::from)?;
+            if !available.contains(&(*room_id, resource_owner_id)) {
+                return Err(ApiError::Authorization(
+                    synctv_common::messages::STALE_PROXY_ACCESS.to_string(),
+                ));
+            }
+        }
+        let state = self
+            .playback_transport_services
+            .room_service
+            .get_playback_state(room_id)
+            .await
+            .map_err(ApiError::from)?;
+        if state.playback_generation != context.playback_generation {
+            return Err(ApiError::Authorization(
+                synctv_common::messages::STALE_PROXY_ACCESS.to_string(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl PlaybackProviderAccessDeps<'_> {
@@ -75,6 +127,26 @@ impl PlaybackProviderAccessDeps<'_> {
         }
         .validate_fresh_access(room_id, user_id)
         .await
+    }
+
+    pub async fn validate_resource_owner_access(
+        &self,
+        room_id: &RoomId,
+        resource_owner_id: &UserId,
+    ) -> Result<(), ApiError> {
+        let available = self
+            .playback_transport_services
+            .permission_service
+            .available_resource_creator_pairs(&[(*room_id, *resource_owner_id)])
+            .await
+            .map_err(ApiError::from)?;
+        if available.contains(&(*room_id, *resource_owner_id)) {
+            Ok(())
+        } else {
+            Err(ApiError::Authorization(
+                synctv_common::messages::STALE_PROXY_ACCESS.to_string(),
+            ))
+        }
     }
 }
 
@@ -312,6 +384,7 @@ pub struct LiveFlvChunksRequest {
     pub room_id: RoomId,
     pub media_id: MediaId,
     pub user_id: UserId,
+    pub resource_owner_id: Option<UserId>,
     pub expires_at: i64,
     pub external_source: Option<synctv_core::models::LiveProxyMediaSourceConfig>,
     pub head: bool,
@@ -392,6 +465,7 @@ pub async fn stream_live_flv_chunks(
         std::time::Duration::from_secs(deps.livestream_config.flv_write_timeout_seconds);
     let room_id = req.room_id;
     let user_id = req.user_id;
+    let resource_owner_id = req.resource_owner_id;
     let expires_at = req.expires_at;
 
     let (tx, rx_wrapped) = mpsc::channel::<Result<StreamChunk, ApiError>>(512);
@@ -457,7 +531,12 @@ pub async fn stream_live_flv_chunks(
                     let Ok(event) = disconnect else {
                         break;
                     };
-                    if disconnect_applies_to_live_stream(&event, &room_id, &user_id) {
+                    if disconnect_applies_to_live_stream(
+                        &event,
+                        &room_id,
+                        &user_id,
+                        resource_owner_id.as_ref(),
+                    ) {
                         break;
                     }
                 }
@@ -669,6 +748,17 @@ pub async fn verify_playback_provider_http_access(
         .decode::<RoomId>(&claims.room_id)
         .map_err(|error| ApiError::InvalidInput(format!("Invalid {error} in room_id")))?;
     deps.validate_fresh_access(&room_id, &user_id).await?;
+    PlaybackProviderAccessValidator {
+        user_service: deps.user_service,
+        playback_transport_services: deps.playback_transport_services,
+    }
+    .validate_playback_generation(
+        deps.provider_stores,
+        provider_name,
+        &claims.version,
+        &room_id,
+    )
+    .await?;
     Ok(claims)
 }
 
@@ -1307,14 +1397,17 @@ fn disconnect_applies_to_live_stream(
     event: &synctv_realtime::sync::DisconnectSignal,
     room_id: &RoomId,
     user_id: &UserId,
+    resource_owner_id: Option<&UserId>,
 ) -> bool {
     match event {
-        synctv_realtime::sync::DisconnectSignal::User(uid) => uid == user_id,
+        synctv_realtime::sync::DisconnectSignal::User(uid) => {
+            uid == user_id || resource_owner_id == Some(uid)
+        }
         synctv_realtime::sync::DisconnectSignal::Room { room_id: rid, .. } => rid == room_id,
         synctv_realtime::sync::DisconnectSignal::UserFromRoom {
             user_id: uid,
             room_id: rid,
-        } => uid == user_id && rid == room_id,
+        } => (uid == user_id || resource_owner_id == Some(uid)) && rid == room_id,
         synctv_realtime::sync::DisconnectSignal::Connection(_) => false,
     }
 }
@@ -1618,6 +1711,7 @@ fn metadata_chunk(status: u16, metadata: StreamResponseMetadata) -> StreamChunk 
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use synctv_realtime::sync::DisconnectSignal;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1643,6 +1737,39 @@ mod tests {
         synctv_common::ssrf::SsrfGuard::builder()
             .extra_allowed_host("cdn.example.com".to_string())
             .build()
+    }
+
+    #[test]
+    fn live_flv_disconnect_stops_resource_owner_and_viewer() {
+        let room_id = RoomId::new();
+        let viewer = UserId::new();
+        let owner = UserId::new();
+        let room_kick = |user_id| DisconnectSignal::UserFromRoom { user_id, room_id };
+
+        assert!(disconnect_applies_to_live_stream(
+            &DisconnectSignal::User(viewer),
+            &room_id,
+            &viewer,
+            Some(&owner),
+        ));
+        assert!(disconnect_applies_to_live_stream(
+            &DisconnectSignal::User(owner),
+            &room_id,
+            &viewer,
+            Some(&owner),
+        ));
+        assert!(disconnect_applies_to_live_stream(
+            &room_kick(owner),
+            &room_id,
+            &viewer,
+            Some(&owner),
+        ));
+        assert!(!disconnect_applies_to_live_stream(
+            &DisconnectSignal::User(UserId::new()),
+            &room_id,
+            &viewer,
+            Some(&owner),
+        ));
     }
 
     async fn rewrite_test_hls_body(

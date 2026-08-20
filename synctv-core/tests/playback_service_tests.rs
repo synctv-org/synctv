@@ -4,7 +4,7 @@
 //! optimistic lock behavior with real `PostgreSQL` via testcontainers.
 //!
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use chrono::Utc;
 use sqlx::PgPool;
@@ -569,6 +569,10 @@ async fn test_switch_media_rejects_inactive_creator() {
         .create(&make_user("switch_inactive_media_creator"))
         .await
         .checked("test operation should succeed");
+    room_service
+        .join_room(room.id, media_creator.id, None)
+        .await
+        .checked("media creator should join the room before being banned");
 
     let media = Media {
         id: MediaId::new(),
@@ -611,12 +615,364 @@ async fn test_switch_media_rejects_inactive_creator() {
     match result.failed("media created by banned user must not be playable") {
         Error::Authorization(message) => {
             assert!(
-                message.contains("creator") && message.contains("active"),
-                "error should explain creator status: {message}"
+                message.contains("creator") && message.contains("unavailable"),
+                "error should explain creator availability: {message}"
             );
         }
         other => std::panic::panic_any(format!("expected authorization error, got: {other:?}")),
     }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_switch_media_serializes_with_concurrent_creator_ban() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let media_repo = MediaRepository::new(pool.clone());
+    let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("switch_concurrent_ban_owner"))
+        .await
+        .checked("room owner should be created");
+    let creator = user_repo
+        .create(&make_user("switch_concurrent_ban_creator"))
+        .await
+        .checked("media creator should be created");
+    let (room, _) = room_service
+        .create_room(
+            "Switch Concurrent Creator Ban".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .checked("room should be created");
+    room_service
+        .join_room(room.id, creator.id, None)
+        .await
+        .checked("media creator should join the room");
+
+    let media = media_repo
+        .create(&Media {
+            id: MediaId::new(),
+            playlist_id: None,
+            room_id: room.id,
+            creator_id: Some(creator.id),
+            name: "Concurrent Creator Ban Video".to_string(),
+            description: String::new(),
+            position: 0.0,
+            source_provider: SourceProvider::DirectUrl,
+            source_config: synctv_core_testing::direct_url_media_source_config(
+                "https://example.com/concurrent-creator-ban.mp4",
+            ),
+            provider_instance_name: None,
+            cover_file_reference_id: None,
+            thumbnail_file_reference_id: None,
+            added_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 0,
+        })
+        .await
+        .checked("media should be created");
+    playback_repo
+        .create_or_get(&room.id)
+        .await
+        .checked("empty playback state should be created");
+
+    let mut ban_tx = pool.begin().await.checked("ban transaction should begin");
+    user_repo
+        .get_by_id_for_update_with_executor(&creator.id, &mut *ban_tx)
+        .await
+        .checked("creator row should lock")
+        .checked("creator should exist");
+    user_repo
+        .insert_ban_with_executor(
+            &creator.id,
+            Some(&owner.id),
+            Some("concurrent playback test".to_string()),
+            &mut *ban_tx,
+        )
+        .await
+        .checked("ban should be staged");
+
+    let playback_service = room_service.playback_service().clone();
+    let switch_barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let task_barrier = Arc::clone(&switch_barrier);
+    let mut switch_task = tokio::spawn(async move {
+        task_barrier.wait().await;
+        playback_service
+            .switch(room.id, owner.id, Some(media.id), None, None)
+            .await
+    });
+    switch_barrier.wait().await;
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(250), &mut switch_task)
+            .await
+            .is_err(),
+        "playback switch must wait for the in-flight creator ban"
+    );
+
+    ban_tx
+        .commit()
+        .await
+        .checked("ban transaction should commit");
+    let switch_error = tokio::time::timeout(Duration::from_secs(5), switch_task)
+        .await
+        .checked("playback switch should finish after the ban commits")
+        .checked("playback switch task should join")
+        .failed("banned creator media must not become the playback source");
+    assert!(matches!(switch_error, Error::Authorization(_)));
+
+    let state = playback_repo
+        .get(&room.id)
+        .await
+        .checked("playback state should load")
+        .checked("playback state should exist");
+    assert!(state.playing_media_id.is_none());
+    assert!(state.playing_playlist_id.is_none());
+    assert!(!state.is_playing);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_switch_media_serializes_with_concurrent_dynamic_ancestor_ban() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let playlist_repo = synctv_core::repository::PlaylistRepository::new(pool.clone());
+    let media_repo = MediaRepository::new(pool.clone());
+    let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("switch_ancestor_ban_owner"))
+        .await
+        .checked("room owner should be created");
+    let dynamic_creator = user_repo
+        .create(&make_user("switch_ancestor_ban_dynamic_creator"))
+        .await
+        .checked("dynamic playlist creator should be created");
+    let media_creator = user_repo
+        .create(&make_user("switch_ancestor_ban_media_creator"))
+        .await
+        .checked("media creator should be created");
+    let (room, _) = room_service
+        .create_room(
+            "Switch Concurrent Dynamic Ancestor Ban".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .checked("room should be created");
+    for member_id in [dynamic_creator.id, media_creator.id] {
+        room_service
+            .join_room(room.id, member_id, None)
+            .await
+            .checked("resource creator should join the room");
+    }
+
+    let dynamic_playlist = playlist_repo
+        .create(&Playlist {
+            id: synctv_core::models::PlaylistId::new(),
+            room_id: room.id,
+            creator_id: Some(dynamic_creator.id),
+            browse_access_mode: synctv_core::models::PlaylistBrowseAccessMode::Default,
+            name: "Historical Dynamic Root".to_string(),
+            description: String::new(),
+            cover_file_reference_id: None,
+            parent_id: None,
+            position: 0.0,
+            source_provider: Some(SourceProvider::Alist),
+            source_config: Some(synctv_core_testing::alist_directory_playlist_source_config(
+                "alist-test",
+                "/historical",
+            )),
+            provider_instance_name: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 0,
+        })
+        .await
+        .checked("dynamic playlist should be created");
+    let static_child = playlist_repo
+        .create(&Playlist {
+            id: synctv_core::models::PlaylistId::new(),
+            room_id: room.id,
+            creator_id: Some(media_creator.id),
+            browse_access_mode: synctv_core::models::PlaylistBrowseAccessMode::Default,
+            name: "Historical Static Child".to_string(),
+            description: String::new(),
+            cover_file_reference_id: None,
+            parent_id: Some(dynamic_playlist.id),
+            position: 0.0,
+            source_provider: None,
+            source_config: None,
+            provider_instance_name: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 0,
+        })
+        .await
+        .checked("historical static child should be created directly");
+    let media = media_repo
+        .create(&Media {
+            id: MediaId::new(),
+            playlist_id: Some(static_child.id),
+            room_id: room.id,
+            creator_id: Some(media_creator.id),
+            name: "Historical Nested Video".to_string(),
+            description: String::new(),
+            position: 0.0,
+            source_provider: SourceProvider::DirectUrl,
+            source_config: synctv_core_testing::direct_url_media_source_config(
+                "https://example.com/historical-nested.mp4",
+            ),
+            provider_instance_name: None,
+            cover_file_reference_id: None,
+            thumbnail_file_reference_id: None,
+            added_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 0,
+        })
+        .await
+        .checked("historical nested media should be created directly");
+    playback_repo
+        .create_or_get(&room.id)
+        .await
+        .checked("empty playback state should be created");
+    let media_id = media.id;
+    let static_child_id = static_child.id;
+
+    let mut ban_tx = pool.begin().await.checked("ban transaction should begin");
+    user_repo
+        .get_by_id_for_update_with_executor(&dynamic_creator.id, &mut *ban_tx)
+        .await
+        .checked("dynamic creator row should lock")
+        .checked("dynamic creator should exist");
+    user_repo
+        .insert_ban_with_executor(
+            &dynamic_creator.id,
+            Some(&owner.id),
+            Some("concurrent dynamic ancestor test".to_string()),
+            &mut *ban_tx,
+        )
+        .await
+        .checked("dynamic creator ban should be staged");
+
+    let playback_service = room_service.playback_service().clone();
+    let switch_barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let task_barrier = Arc::clone(&switch_barrier);
+    let mut switch_task = tokio::spawn(async move {
+        task_barrier.wait().await;
+        playback_service
+            .switch(
+                room.id,
+                owner.id,
+                Some(media_id),
+                Some(static_child_id),
+                None,
+            )
+            .await
+    });
+    switch_barrier.wait().await;
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(250), &mut switch_task)
+            .await
+            .is_err(),
+        "playback switch must wait for an in-flight dynamic ancestor ban"
+    );
+
+    ban_tx
+        .commit()
+        .await
+        .checked("ban transaction should commit");
+    let switch_error = tokio::time::timeout(Duration::from_secs(5), switch_task)
+        .await
+        .checked("playback switch should finish after the ban commits")
+        .checked("playback switch task should join")
+        .failed("media below a banned dynamic ancestor must not become the playback source");
+    assert!(matches!(switch_error, Error::Authorization(_)));
+
+    let state = playback_repo
+        .get(&room.id)
+        .await
+        .checked("playback state should load")
+        .checked("playback state should exist");
+    assert!(state.playing_media_id.is_none());
+    assert!(state.playing_playlist_id.is_none());
+    assert!(!state.is_playing);
+
+    make_user_service(&pool)
+        .unban_user(&dynamic_creator.id)
+        .await
+        .checked("dynamic creator should be unbanned");
+    room_service
+        .playback_service()
+        .switch(room.id, owner.id, Some(media_id), None, None)
+        .await
+        .checked("playback should switch after the dynamic creator is unbanned");
+
+    user_repo
+        .ban(
+            &dynamic_creator.id,
+            Some(&owner.id),
+            Some("static child playback path test".to_string()),
+        )
+        .await
+        .checked("dynamic creator should be banned for the path check");
+    let error = room_service
+        .playback_service()
+        .switch(
+            room.id,
+            owner.id,
+            Some(media_id),
+            Some(static_child_id),
+            None,
+        )
+        .await
+        .failed("media below an inactive dynamic ancestor must not be playable");
+    assert!(matches!(error, Error::Authorization(_)));
+
+    make_user_service(&pool)
+        .unban_user(&dynamic_creator.id)
+        .await
+        .checked("dynamic creator should be unbanned after the path check");
+    room_service
+        .playback_service()
+        .switch(
+            room.id,
+            owner.id,
+            Some(media_id),
+            Some(static_child_id),
+            None,
+        )
+        .await
+        .checked("playback should switch after the dynamic ancestor is restored");
+
+    room_service
+        .ban_user_and_reset_owned_playback_with_outbox(
+            &dynamic_creator.id,
+            Some(&owner.id),
+            Some("post-switch dynamic ancestor test".to_string()),
+            None,
+            &[],
+        )
+        .await
+        .checked("banning a dynamic ancestor creator should reset existing playback");
+    let state = playback_repo
+        .get(&room.id)
+        .await
+        .checked("playback state should load")
+        .checked("playback state should exist");
+    assert!(state.playing_media_id.is_none());
+    assert!(state.playing_playlist_id.is_none());
+    assert!(!state.is_playing);
 }
 
 #[tokio::test]

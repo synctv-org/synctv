@@ -8251,6 +8251,8 @@ async fn test_webrtc_media_swarm_membership_has_an_independent_voice_lifecycle()
             .public_actor_id()
             .checked("actor public id should encode"),
         swarm_id,
+        0,
+        None,
     );
 
     handler
@@ -8407,6 +8409,8 @@ async fn test_room_capabilities_reject_new_voice_and_media_sessions() {
             .public_actor_id()
             .checked("actor public id should encode"),
         swarm_id,
+        0,
+        None,
     );
     let media_error = fixture
         .handler
@@ -8453,6 +8457,8 @@ async fn test_room_capability_change_ends_active_voice_and_media_sessions() {
             .public_actor_id()
             .checked("actor public id should encode"),
         swarm_id,
+        0,
+        None,
     );
     fixture
         .handler
@@ -8526,6 +8532,8 @@ async fn test_permission_revocation_ends_active_voice_and_media_sessions() {
             .public_actor_id()
             .checked("actor public id should encode"),
         swarm_id,
+        0,
+        None,
     );
     fixture
         .handler
@@ -8754,6 +8762,8 @@ async fn test_voice_and_p2p_media_permissions_are_independent() {
                 .public_actor_id()
                 .checked("actor public id should encode"),
             voice_swarm_id,
+            0,
+            None,
         );
     let media_error = voice_fixture
         .handler
@@ -8815,6 +8825,8 @@ async fn test_voice_and_p2p_media_permissions_are_independent() {
                 .public_actor_id()
                 .checked("actor public id should encode"),
             media_swarm_id,
+            0,
+            None,
         );
     media_fixture
         .handler
@@ -8855,6 +8867,8 @@ async fn test_webrtc_media_swarm_membership_validates_id_and_ticket_scope() {
             .public_actor_id()
             .checked("actor public id should encode"),
         "sm3_other_resource",
+        0,
+        None,
     );
     let error = handler
         .handle_media_swarm_join(&synctv_proto::client::WebRtcMediaSwarmJoin {
@@ -8865,6 +8879,26 @@ async fn test_webrtc_media_swarm_membership_validates_id_and_ticket_scope() {
         .expect_err("a ticket for another swarm must be rejected");
     assert!(error.contains("Invalid media swarm ticket"));
 
+    let stale_generation_ticket = handler.swarm_signing_key.sign_media_swarm_ticket(
+        &handler
+            .public_room_id()
+            .checked("room public id should encode"),
+        &handler
+            .public_actor_id()
+            .checked("actor public id should encode"),
+        swarm_id,
+        1,
+        None,
+    );
+    let stale_generation_error = handler
+        .handle_media_swarm_join(&synctv_proto::client::WebRtcMediaSwarmJoin {
+            swarm_id: swarm_id.to_string(),
+            swarm_ticket: stale_generation_ticket,
+        })
+        .await
+        .expect_err("a ticket for an old playback generation must be rejected");
+    assert!(stale_generation_error.contains("no longer allowed for this playback"));
+
     let ticket = handler.swarm_signing_key.sign_media_swarm_ticket(
         &handler
             .public_room_id()
@@ -8873,6 +8907,8 @@ async fn test_webrtc_media_swarm_membership_validates_id_and_ticket_scope() {
             .public_actor_id()
             .checked("actor public id should encode"),
         swarm_id,
+        0,
+        None,
     );
     handler
         .handle_media_swarm_join(&synctv_proto::client::WebRtcMediaSwarmJoin {
@@ -8880,7 +8916,53 @@ async fn test_webrtc_media_swarm_membership_validates_id_and_ticket_scope() {
             swarm_ticket: ticket,
         })
         .await
-        .checked("a signed resource swarm should be accepted without playback resolution");
+        .checked("a signed resource swarm for the current playback should be accepted");
+
+    let resource_owner = register_test_user(
+        handler.room_service.user_service(),
+        "webrtc_banned_resource_owner",
+        "webrtc-banned-resource-owner@test.invalid",
+    )
+    .await;
+    handler
+        .room_service
+        .join_room(handler.room_id, resource_owner.id, None)
+        .await
+        .checked("resource owner should join the room");
+    let owner_swarm_id = "sm3_banned_resource_owner";
+    let resource_owner_id = handler
+        .public_id_codec
+        .encode_user_id(resource_owner.id)
+        .checked("resource owner public id should encode");
+    let owner_ticket = handler.swarm_signing_key.sign_media_swarm_ticket(
+        &handler
+            .public_room_id()
+            .checked("room public id should encode"),
+        &handler
+            .public_actor_id()
+            .checked("actor public id should encode"),
+        owner_swarm_id,
+        0,
+        Some(&resource_owner_id),
+    );
+    handler
+        .room_service
+        .user_service()
+        .ban_user(
+            &resource_owner.id,
+            Some(&handler.test_user_id()),
+            Some("P2P lifecycle test".to_string()),
+        )
+        .await
+        .checked("resource owner should be globally banned");
+    let owner_error = handler
+        .handle_media_swarm_join(&synctv_proto::client::WebRtcMediaSwarmJoin {
+            swarm_id: owner_swarm_id.to_string(),
+            swarm_ticket: owner_ticket,
+        })
+        .await
+        .expect_err("a ticket for a globally banned resource owner must be rejected");
+    assert!(owner_error.contains("no longer allowed for this resource"));
     fixture.shutdown().await;
 }
 
@@ -8903,6 +8985,8 @@ async fn test_media_signaling_requires_both_connections_in_the_same_swarm() {
             .public_actor_id()
             .checked("actor public id should encode"),
         swarm_id,
+        0,
+        None,
     );
     let target_connection_id = "conn_media_signal_target";
     let actor_id = handler
@@ -8986,6 +9070,8 @@ async fn test_webrtc_signaling_to_a_disconnected_target_is_a_successful_noop() {
             .public_actor_id()
             .checked("actor public id should encode"),
         swarm_id,
+        0,
+        None,
     );
     handler
         .handle_media_swarm_join(&synctv_proto::client::WebRtcMediaSwarmJoin {

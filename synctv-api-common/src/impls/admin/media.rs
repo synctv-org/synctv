@@ -76,19 +76,22 @@ impl AdminApiImpl {
             })
             .transpose()?
             .flatten();
-        let provider_metadata = self
-            .room_service
-            .media_service()
-            .media_provider_metadata(synctv_core::provider::ProviderActor::System, media)
-            .await
-            .unwrap_or_else(|error| {
-                tracing::debug!(
-                    media_id = %media.id,
-                    error = %error,
-                    "failed to resolve admin media provider metadata"
-                );
-                None
-            });
+        let provider_metadata = if is_available {
+            self.room_service
+                .media_service()
+                .media_provider_metadata(synctv_core::provider::ProviderActor::System, media)
+                .await
+                .unwrap_or_else(|error| {
+                    tracing::debug!(
+                        media_id = %media.id,
+                        error = %error,
+                        "failed to resolve admin media provider metadata"
+                    );
+                    None
+                })
+        } else {
+            None
+        };
         crate::impls::client::convert::try_media_to_proto_for_viewer_with_cover(
             media,
             MediaProtoView {
@@ -149,11 +152,25 @@ impl AdminApiImpl {
     ) -> Result<Vec<synctv_proto::client::Media>, ApiError> {
         stream::iter(0..media.len())
             .map(|index| async move {
-                self.media_to_proto_for_admin_with_loaded_cover(&media[index], true)
+                self.media_to_proto_for_admin_with_current_availability(&media[index])
                     .await
             })
             .buffered(ADMIN_MEDIA_LOAD_CONCURRENCY)
             .try_collect()
+            .await
+    }
+
+    async fn media_to_proto_for_admin_with_current_availability(
+        &self,
+        media: &synctv_core::models::Media,
+    ) -> Result<synctv_proto::client::Media, ApiError> {
+        let is_available = self
+            .room_service
+            .media_availability(media)
+            .await
+            .map_err(ApiError::from)?
+            .is_available();
+        self.media_to_proto_for_admin_with_loaded_cover(media, is_available)
             .await
     }
 
@@ -176,7 +193,7 @@ impl AdminApiImpl {
             })
             .transpose()?
             .flatten();
-        let provider_metadata = if playlist.is_dynamic() {
+        let provider_metadata = if is_available && playlist.is_dynamic() {
             self.room_service
                 .media_service()
                 .playlist_provider_metadata(synctv_core::provider::ProviderActor::System, playlist)
@@ -202,6 +219,21 @@ impl AdminApiImpl {
             &self.public_id_codec,
             provider_metadata.as_ref(),
         )
+    }
+
+    async fn playlist_to_proto_for_admin_with_current_availability(
+        &self,
+        playlist: &synctv_core::models::Playlist,
+        item_count: i32,
+    ) -> Result<synctv_proto::client::Playlist, ApiError> {
+        let is_available = self
+            .room_service
+            .playlist_availability(playlist)
+            .await
+            .map_err(ApiError::from)?
+            .is_available();
+        self.playlist_to_proto_for_admin_with_loaded_cover(playlist, item_count, is_available)
+            .await
     }
 
     async fn load_admin_file_reference(
@@ -256,7 +288,8 @@ impl AdminApiImpl {
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::NotFound(format!("Playlist {playlist_id} not found")))?;
 
-        let (child_playlist_count, media_count) = tokio::join!(
+        let (playlist_availability, child_playlist_count, media_count) = tokio::join!(
+            self.room_service.playlist_availability(&playlist),
             self.room_service
                 .playlist_service()
                 .count_room_children(&rid, &pid),
@@ -264,6 +297,7 @@ impl AdminApiImpl {
                 .media_service()
                 .count_room_playlist_media(&rid, &pid),
         );
+        let playlist_availability = playlist_availability.map_err(ApiError::from)?;
         let child_playlist_count = i64_to_i32_api(
             child_playlist_count.map_err(ApiError::from)?,
             "child playlist count",
@@ -273,8 +307,12 @@ impl AdminApiImpl {
 
         Ok(synctv_proto::client::GetPlaylistResponse {
             playlist: Some(
-                self.playlist_to_proto_for_admin_with_loaded_cover(&playlist, media_count, true)
-                    .await?,
+                self.playlist_to_proto_for_admin_with_loaded_cover(
+                    &playlist,
+                    media_count,
+                    playlist_availability.is_available(),
+                )
+                .await?,
             ),
             child_playlist_count,
             media_count,
@@ -313,6 +351,10 @@ impl AdminApiImpl {
                 .await
                 .map_err(ApiError::from)?
                 .ok_or_else(|| ApiError::NotFound("Parent playlist not found".to_string()))?;
+            self.room_service
+                .ensure_client_usable_playlist(&parent)
+                .await
+                .map_err(ApiError::from)?;
             debug_assert_eq!(parent.room_id, rid);
             Some(parent_id)
         };
@@ -422,7 +464,7 @@ impl AdminApiImpl {
             .map_err(ApiError::from)
             .and_then(|count| i64_to_i32_api(count, "playlist media count"))?;
 
-        self.playlist_to_proto_for_admin_with_loaded_cover(&playlist, item_count, true)
+        self.playlist_to_proto_for_admin_with_current_availability(&playlist, item_count)
             .await
     }
 
@@ -468,7 +510,7 @@ impl AdminApiImpl {
             .map_err(ApiError::from)
             .and_then(|count| i64_to_i32_api(count, "playlist media count"))?;
 
-        self.playlist_to_proto_for_admin_with_loaded_cover(&playlist, item_count, true)
+        self.playlist_to_proto_for_admin_with_current_availability(&playlist, item_count)
             .await
     }
 
@@ -678,6 +720,10 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::NotFound(format!("Playlist {} not found", req.playlist_id)))?;
+        self.room_service
+            .ensure_client_usable_playlist(&playlist)
+            .await
+            .map_err(ApiError::from)?;
 
         let static_path = self
             .room_service
@@ -988,7 +1034,7 @@ impl AdminApiImpl {
 
         self.publish_room_cache_invalidation(&rid);
 
-        self.media_to_proto_for_admin_with_loaded_cover(&media, true)
+        self.media_to_proto_for_admin_with_current_availability(&media)
             .await
     }
 

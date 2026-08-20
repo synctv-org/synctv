@@ -595,14 +595,6 @@ impl MediaService {
             .map_err(|error| Error::Internal(error.to_string()))
     }
 
-    /// Get the credential encryption used for provider source resolution, if configured.
-    #[must_use]
-    pub const fn credential_encryption(
-        &self,
-    ) -> Option<&crate::credential_encryption::CredentialEncryption> {
-        self.credential_encryption.as_ref()
-    }
-
     /// Get the credential repository used for provider source resolution, if configured.
     #[must_use]
     pub const fn credential_repo(&self) -> Option<&Arc<UserProviderCredentialRepository>> {
@@ -1061,18 +1053,6 @@ impl MediaService {
         Ok(updated_media)
     }
 
-    /// Edit media item as a global admin.
-    pub async fn admin_edit_media(
-        &self,
-        room_id: RoomId,
-        admin_user_id: UserId,
-        actor_username: &str,
-        request: EditMediaRequest,
-    ) -> Result<Media> {
-        self.admin_edit_media_with_outbox(room_id, admin_user_id, actor_username, request, None)
-            .await
-    }
-
     pub async fn admin_edit_media_with_outbox(
         &self,
         room_id: RoomId,
@@ -1199,11 +1179,6 @@ impl MediaService {
         self.media_repo.get_by_room_and_id(room_id, media_id).await
     }
 
-    /// Get multiple media items by IDs in a single query
-    pub async fn get_media_batch(&self, media_ids: &[MediaId]) -> Result<Vec<Media>> {
-        self.media_repo.get_by_ids(media_ids).await
-    }
-
     pub async fn ensure_playlist_lifecycle_path_available(
         &self,
         room_id: &RoomId,
@@ -1325,11 +1300,6 @@ impl MediaService {
             .await
     }
 
-    /// Get all media in a playlist.
-    pub async fn get_playlist_media(&self, playlist_id: &PlaylistId) -> Result<Vec<Media>> {
-        self.media_repo.get_by_playlist(playlist_id).await
-    }
-
     /// Get all media in a playlist, scoped to a room.
     pub async fn get_room_playlist_media(
         &self,
@@ -1346,18 +1316,6 @@ impl MediaService {
         self.media_repo.get_room_root(room_id).await
     }
 
-    /// Get paginated media in a playlist.
-    pub async fn get_playlist_media_paginated(
-        &self,
-        playlist_id: &PlaylistId,
-        pagination: crate::models::PageParams,
-    ) -> Result<(Vec<Media>, i64)> {
-        pagination.validate()?;
-        self.media_repo
-            .get_playlist_paginated(playlist_id, pagination)
-            .await
-    }
-
     /// Get paginated media directly under the room root.
     pub async fn get_room_root_media_paginated(
         &self,
@@ -1367,33 +1325,6 @@ impl MediaService {
         pagination.validate()?;
         self.media_repo
             .get_room_root_paginated(room_id, pagination)
-            .await
-    }
-
-    /// Get media items from a playlist with limit and offset (no count query).
-    ///
-    /// This is a simpler version of `get_playlist_media_paginated` that doesn't
-    /// return the total count, useful when you only need the items.
-    pub async fn get_playlist_media_offset_limit(
-        &self,
-        playlist_id: &PlaylistId,
-        limit: i64,
-        offset: i64,
-    ) -> Result<Vec<Media>> {
-        self.media_repo
-            .get_by_playlist_limit_offset(playlist_id, limit, offset)
-            .await
-    }
-
-    /// Get room-root media items with limit and offset (no count query).
-    pub async fn get_room_root_media_offset_limit(
-        &self,
-        room_id: &RoomId,
-        limit: i64,
-        offset: i64,
-    ) -> Result<Vec<Media>> {
-        self.media_repo
-            .get_room_root_limit_offset(room_id, limit, offset)
             .await
     }
 
@@ -1415,17 +1346,6 @@ impl MediaService {
         outbox_event_factory: Option<RealtimeOutboxMediaBatchEventFactory>,
     ) -> Result<Vec<Media>> {
         self.move_media_internal(room_id, user_id, None, request, false, outbox_event_factory)
-            .await
-    }
-
-    pub async fn admin_move_media(
-        &self,
-        room_id: RoomId,
-        admin_user_id: UserId,
-        actor_username: &str,
-        request: MoveMediaRequest,
-    ) -> Result<Vec<Media>> {
-        self.admin_move_media_with_outbox(room_id, admin_user_id, actor_username, request, None)
             .await
     }
 
@@ -1716,20 +1636,6 @@ impl MediaService {
         Ok(moved)
     }
 
-    /// Delete all media in a playlist (single query, no N+1).
-    pub async fn delete_playlist_media(&self, playlist_id: &PlaylistId) -> Result<usize> {
-        self.media_repo.delete_playlist(playlist_id).await
-    }
-
-    /// Delete all media directly under the room root.
-    pub async fn delete_room_root_media(&self, room_id: &RoomId) -> Result<usize> {
-        self.media_repo.delete_room_root(room_id).await
-    }
-
-    pub async fn count_playlist_media(&self, playlist_id: &PlaylistId) -> Result<i64> {
-        self.media_repo.count_by_playlist(playlist_id).await
-    }
-
     pub async fn count_all_media(&self) -> Result<i64> {
         self.media_repo.count_all().await
     }
@@ -1744,12 +1650,6 @@ impl MediaService {
             .await
     }
 
-    pub async fn count_playlist_media_accessible(&self, playlist_id: &PlaylistId) -> Result<i64> {
-        self.media_repo
-            .count_by_playlist_accessible(playlist_id)
-            .await
-    }
-
     pub async fn count_room_root_media(&self, room_id: &RoomId) -> Result<i64> {
         self.media_repo.count_room_root(room_id).await
     }
@@ -1760,15 +1660,6 @@ impl MediaService {
         playlist_ids: &[PlaylistId],
     ) -> Result<std::collections::HashMap<PlaylistId, i64>> {
         self.media_repo.count_by_playlists_batch(playlist_ids).await
-    }
-
-    pub async fn count_playlist_media_batch_accessible(
-        &self,
-        playlist_ids: &[PlaylistId],
-    ) -> Result<std::collections::HashMap<PlaylistId, i64>> {
-        self.media_repo
-            .count_by_playlists_batch_accessible(playlist_ids)
-            .await
     }
 
     /// Get playlist metadata needed by playback/media orchestration.

@@ -18,7 +18,6 @@ use synctv_core::{
         BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, RoomService, UserService,
     },
 };
-use synctv_proto::common::MemberStatus;
 use synctv_realtime::sync::{ConnectionLimits, ConnectionManager};
 
 fn make_user(username: &str) -> User {
@@ -111,7 +110,7 @@ async fn test_join_room_response_exposes_pending_membership_contract() {
         ..Default::default()
     };
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Approval Contract Room".to_string(),
             String::new(),
@@ -125,7 +124,7 @@ async fn test_join_room_response_exposes_pending_membership_contract() {
     let public_id_codec = synctv_api::PublicIdCodec::plain();
     let room_id = public_id_codec.encode_room_id(room.id).unwrap();
     let response = client_api
-        .join_room(
+        .join_room_with_control(
             &joiner.id,
             &room_id,
             synctv_proto::client::JoinRoomRequest {
@@ -135,15 +134,11 @@ async fn test_join_room_response_exposes_pending_membership_contract() {
                 display_tag: String::new(),
             },
             None,
+            None,
         )
         .await
         .unwrap();
 
-    assert_eq!(
-        response.membership_status,
-        MemberStatus::Active as i32,
-        "join response returns the synthetic requester member separately from review status"
-    );
     assert!(
         response.requires_approval,
         "join response must explicitly tell the client that approval is required"

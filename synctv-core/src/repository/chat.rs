@@ -436,13 +436,6 @@ impl ChatRepository {
         })
     }
 
-    pub async fn insert_event(&self, event: &ChatMessageEvent) -> Result<ChatMessageEventLog> {
-        let mut tx = self.pool().begin().await?;
-        let logged = self.insert_event_in_tx(&mut tx, event).await?;
-        tx.commit().await?;
-        Ok(logged)
-    }
-
     pub async fn insert_message_event(
         &self,
         message: &ChatMessage,
@@ -1211,21 +1204,6 @@ impl ChatRepository {
         Ok(())
     }
 
-    pub async fn list_events_after(
-        &self,
-        room_id: &RoomId,
-        after_event_id: Option<&str>,
-        limit: i32,
-    ) -> Result<Vec<ChatMessageEventLog>> {
-        self.list_events_after_with_selection(
-            room_id,
-            after_event_id,
-            limit,
-            &ChatMessageSelection::user_default(),
-        )
-        .await
-    }
-
     pub async fn list_events_after_with_selection(
         &self,
         room_id: &RoomId,
@@ -1313,21 +1291,6 @@ impl ChatRepository {
         };
 
         rows.into_iter().map(ChatEventRow::try_into_log).collect()
-    }
-
-    pub async fn list_events_after_sequence(
-        &self,
-        room_id: &RoomId,
-        after_sequence: i64,
-        limit: i32,
-    ) -> Result<Vec<ChatMessageEventLog>> {
-        self.list_events_after_sequence_with_selection(
-            room_id,
-            after_sequence,
-            limit,
-            &ChatMessageSelection::user_default(),
-        )
-        .await
     }
 
     pub async fn list_events_after_sequence_with_selection(
@@ -2139,25 +2102,6 @@ impl ChatRepository {
         Ok((messages, next_cursor))
     }
 
-    pub async fn list_history_page_for_viewer(
-        &self,
-        room_id: &RoomId,
-        cursor: Option<ChatHistoryCursor>,
-        limit: i32,
-        include_deleted: bool,
-        viewer_user_id: Option<&UserId>,
-    ) -> Result<ChatHistoryPage> {
-        self.list_history_page_for_viewer_with_selection(
-            room_id,
-            cursor,
-            limit,
-            include_deleted,
-            viewer_user_id,
-            &ChatMessageSelection::user_default(),
-        )
-        .await
-    }
-
     pub async fn list_history_page_for_viewer_with_selection(
         &self,
         room_id: &RoomId,
@@ -2322,13 +2266,6 @@ impl ChatRepository {
         })
     }
 
-    pub async fn list_playback_messages(
-        &self,
-        query: &ChatPlaybackMessagesQuery,
-    ) -> Result<Vec<ChatMessageWithAttachments>> {
-        self.list_playback_messages_for_viewer(query, None).await
-    }
-
     pub async fn list_playback_messages_for_viewer(
         &self,
         query: &ChatPlaybackMessagesQuery,
@@ -2419,25 +2356,6 @@ impl ChatRepository {
 
         self.attach_attachments_and_reactions_to_messages(messages, viewer_user_id)
             .await
-    }
-
-    pub async fn list_context_around_message(
-        &self,
-        room_id: &RoomId,
-        message_id: i64,
-        before_limit: i32,
-        after_limit: i32,
-        include_deleted: bool,
-    ) -> Result<Option<ChatMessageContext>> {
-        self.list_context_around_message_for_viewer(
-            room_id,
-            message_id,
-            before_limit,
-            after_limit,
-            include_deleted,
-            None,
-        )
-        .await
     }
 
     pub async fn list_context_around_message_for_viewer(
@@ -2646,15 +2564,6 @@ impl ChatRepository {
         optional_chat_message_from_row(msg)
     }
 
-    pub async fn get_with_attachments_by_room_and_id(
-        &self,
-        room_id: &RoomId,
-        message_id: i64,
-    ) -> Result<Option<ChatMessageWithAttachments>> {
-        self.get_with_attachments_by_room_and_id_for_viewer(room_id, message_id, None)
-            .await
-    }
-
     pub async fn get_with_attachments_by_room_and_id_for_viewer(
         &self,
         room_id: &RoomId,
@@ -2722,70 +2631,6 @@ impl ChatRepository {
             reactions,
             mentions,
             pin,
-        }))
-    }
-
-    pub async fn edit(
-        &self,
-        room_id: &RoomId,
-        message_id: i64,
-        content: &str,
-        metadata: &Option<ChatMetadata>,
-        expected_version: Option<i64>,
-    ) -> Result<Option<ChatMessageWithAttachments>> {
-        let metadata = ChatMetadata::normalized_for_optional_storage(metadata.as_ref())?;
-        let mut builder = sqlx::QueryBuilder::<Postgres>::new(
-            r"
-            UPDATE chat_messages
-            SET content = ",
-        );
-        builder.push_bind(content);
-        builder.push(", metadata = ");
-        builder.push_bind(&metadata);
-        builder.push(", status = ");
-        builder.push_bind(i16::from(ChatMessageStatus::Edited));
-        builder.push(
-            ", version = version + 1, edited_at = NOW()
-            WHERE room_id = ",
-        );
-        builder.push_bind(room_id.as_i64());
-        builder.push(" AND id = ");
-        builder.push_bind(message_id);
-        builder.push(" AND status <> ");
-        builder.push_bind(i16::from(ChatMessageStatus::Deleted));
-        if let Some(version) = expected_version {
-            builder.push(" AND version = ");
-            builder.push_bind(version);
-        }
-        builder.push(
-            r"
-            RETURNING id, room_id, user_id, client_message_id, content, message_type,
-                      status, version, reply_to_message_id, reply_to_message_created_at, metadata, edited_at,
-                      deleted_at, deleted_by, delete_reason, created_at
-            ",
-        );
-
-        let message = builder
-            .build_query_as::<ChatMessage>()
-            .fetch_optional(self.pool())
-            .await?;
-        let Some(message) = message else {
-            return Ok(None);
-        };
-        let attachments = self
-            .attachments_for_message(message.id, message.created_at)
-            .await?;
-        let mentions = self
-            .mentions_for_messages(std::slice::from_ref(&message))
-            .await?
-            .remove(&chat_message_key(&message))
-            .unwrap_or_default();
-        Ok(Some(ChatMessageWithAttachments {
-            message,
-            attachments,
-            reactions: Vec::new(),
-            mentions,
-            pin: None,
         }))
     }
 
@@ -2917,67 +2762,6 @@ impl ChatRepository {
             event: logged,
             inserted: true,
             pin_event,
-        }))
-    }
-
-    pub async fn soft_delete(
-        &self,
-        room_id: &RoomId,
-        message_id: i64,
-        deleted_by: &UserId,
-        reason: Option<&str>,
-        expected_version: Option<i64>,
-    ) -> Result<Option<ChatMessageWithAttachments>> {
-        let mut builder = sqlx::QueryBuilder::<Postgres>::new(
-            r"
-            UPDATE chat_messages
-            SET content = '', status = ",
-        );
-        builder.push_bind(i16::from(ChatMessageStatus::Deleted));
-        builder.push(", version = version + 1, deleted_at = NOW(), deletion_source = ");
-        builder.push_bind(DeletionSource::User);
-        builder.push(", deleted_by = ");
-        builder.push_bind(deleted_by.as_i64());
-        builder.push(", delete_reason = ");
-        builder.push_bind(reason);
-        builder.push(" WHERE room_id = ");
-        builder.push_bind(room_id.as_i64());
-        builder.push(" AND id = ");
-        builder.push_bind(message_id);
-        builder.push(" AND status <> ");
-        builder.push_bind(i16::from(ChatMessageStatus::Deleted));
-        if let Some(version) = expected_version {
-            builder.push(" AND version = ");
-            builder.push_bind(version);
-        }
-        builder.push(
-            r"
-            RETURNING id, room_id, user_id, client_message_id, content, message_type,
-                      status, version, reply_to_message_id, reply_to_message_created_at, metadata, edited_at,
-                      deleted_at, deleted_by, delete_reason, created_at
-            ",
-        );
-
-        let message = builder
-            .build_query_as::<ChatMessage>()
-            .fetch_optional(self.pool())
-            .await?;
-        let Some(message) = message else {
-            return Ok(None);
-        };
-        self.delete_pin_for_message(message.room_id, message.id, message.created_at)
-            .await?;
-        let mentions = self
-            .mentions_for_messages(std::slice::from_ref(&message))
-            .await?
-            .remove(&chat_message_key(&message))
-            .unwrap_or_default();
-        Ok(Some(ChatMessageWithAttachments {
-            message,
-            attachments: Vec::new(),
-            reactions: Vec::new(),
-            mentions,
-            pin: None,
         }))
     }
 
@@ -3129,27 +2913,6 @@ impl ChatRepository {
         Ok(result.rows_affected() > 0)
     }
 
-    pub async fn delete_in_room(
-        &self,
-        room_id: &RoomId,
-        message_id: i64,
-        created_at: DateTime<Utc>,
-    ) -> Result<bool> {
-        let result = sqlx::query!(
-            r"
-            DELETE FROM chat_messages
-            WHERE room_id = $1 AND id = $2 AND created_at = $3
-            ",
-            room_id.as_i64(),
-            message_id,
-            created_at
-        )
-        .execute(self.pool())
-        .await?;
-
-        Ok(result.rows_affected() > 0)
-    }
-
     pub async fn count_by_room(&self, room_id: &RoomId) -> Result<i64> {
         let count = sqlx::query_scalar!(
             r#"
@@ -3189,19 +2952,6 @@ impl ChatRepository {
             ",
             room_id.as_i64(),
             i64::from(keep_count)
-        )
-        .execute(self.pool())
-        .await?;
-
-        Ok(result.rows_affected())
-    }
-
-    pub async fn delete_messages_older_than_retention(&self) -> Result<u64> {
-        let result = sqlx::query!(
-            r"
-            DELETE FROM chat_messages
-            WHERE created_at <= NOW() - INTERVAL '90 days'
-            "
         )
         .execute(self.pool())
         .await?;
@@ -4071,19 +3821,6 @@ impl ChatRepository {
         row.map(ChatPinEventRow::try_into_log).transpose()
     }
 
-    async fn attachments_for_message(
-        &self,
-        message_id: i64,
-        message_created_at: DateTime<Utc>,
-    ) -> Result<Vec<ChatAttachment>> {
-        self.attachments_for_message_from_pool(
-            self.eventually_consistent_pool(),
-            message_id,
-            message_created_at,
-        )
-        .await
-    }
-
     async fn attachments_for_message_from_pool(
         &self,
         pool: &PgPool,
@@ -4461,34 +4198,6 @@ impl ChatRepository {
         .execute(&mut **tx)
         .await?;
         Ok(())
-    }
-
-    async fn delete_pin_for_message(
-        &self,
-        room_id: RoomId,
-        message_id: i64,
-        message_created_at: DateTime<Utc>,
-    ) -> Result<()> {
-        sqlx::query!(
-            r"
-            DELETE FROM chat_message_pins
-            WHERE room_id = $1 AND message_id = $2 AND message_created_at = $3
-            ",
-            room_id.as_i64(),
-            message_id,
-            message_created_at
-        )
-        .execute(self.pool())
-        .await?;
-        Ok(())
-    }
-
-    async fn mentions_for_messages(
-        &self,
-        messages: &[ChatMessage],
-    ) -> Result<HashMap<ChatMessageKey, Vec<ChatMention>>> {
-        self.mentions_for_messages_from_pool(self.eventually_consistent_pool(), messages)
-            .await
     }
 
     async fn mentions_for_messages_from_pool(

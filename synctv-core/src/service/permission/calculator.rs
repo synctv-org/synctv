@@ -18,16 +18,6 @@ impl RuntimePermissionDefaults {
             guest: RoomPermissionSet::default_guest(),
         }
     }
-
-    #[must_use]
-    pub const fn for_role(self, role: &RoomRole) -> RoomPermissionSet {
-        match role {
-            RoomRole::Creator => RoomPermissionSet::all(),
-            RoomRole::Admin => self.admin,
-            RoomRole::Member => self.member,
-            RoomRole::Guest => self.guest,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -39,11 +29,6 @@ impl EffectivePermissionCalculator {
     #[must_use]
     pub const fn new(defaults: RuntimePermissionDefaults) -> Self {
         Self { defaults }
-    }
-
-    #[must_use]
-    pub const fn compiled_defaults() -> Self {
-        Self::new(RuntimePermissionDefaults::compiled())
     }
 
     #[must_use]

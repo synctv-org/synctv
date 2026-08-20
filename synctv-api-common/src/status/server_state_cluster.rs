@@ -6,13 +6,13 @@ use super::*;
 
 #[derive(Clone)]
 pub struct ServerStateGrpcService {
-    runtime: Arc<ServerStateRuntime>,
+    runtime: Arc<ServerStateService>,
     auth: synctv_cluster::grpc::ClusterAuthInterceptor,
 }
 
 impl ServerStateGrpcService {
     #[must_use]
-    pub fn new(runtime: Arc<ServerStateRuntime>, cluster_secret: String) -> Self {
+    pub fn new(runtime: Arc<ServerStateService>, cluster_secret: String) -> Self {
         Self {
             runtime,
             auth: synctv_cluster::grpc::ClusterAuthInterceptor::new(cluster_secret),
@@ -209,11 +209,11 @@ pub(super) fn cluster_proto_to_server_state_node(
         updated_at: node.updated_at,
         version: node.version,
         api_address: node.api_address,
-        realtime: RealtimeStatus {
+        realtime: ServerStateRealtime {
             distributed_enabled: realtime.distributed_enabled,
             connection_count: realtime.connection_count,
         },
-        database: DatabaseStatus {
+        database: ServerStateDatabase {
             status: cluster_database_status_to_core(database.status),
             host: database.host,
             port: database.port,
@@ -230,7 +230,7 @@ pub(super) fn cluster_proto_to_server_state_node(
             read_pool: cluster_database_pool_to_core(database.read_pool.unwrap_or_default()),
             message: non_empty_string(database.message),
         },
-        redis: RedisStatus {
+        redis: ServerStateRedis {
             status: cluster_redis_status_to_core(redis.status),
             configured: redis.configured,
             deployment_mode: redis.deployment_mode,
@@ -244,7 +244,7 @@ pub(super) fn cluster_proto_to_server_state_node(
             ping_latency_ms: redis.ping_latency_ms,
             message: non_empty_string(redis.message),
         },
-        cluster: ClusterStatus {
+        cluster: ServerStateCluster {
             status: cluster_resource_status_to_core(cluster.status),
             enabled: cluster.enabled,
             discovery_mode: cluster.discovery_mode,
@@ -258,16 +258,16 @@ pub(super) fn cluster_proto_to_server_state_node(
                 .collect(),
             message: non_empty_string(cluster.message),
         },
-        ws_ticket: WsTicketStatus {
+        ws_ticket: ServerStateWsTicket {
             status: cluster_ws_ticket_status_to_core(ws_ticket.status),
             cross_node_capable: ws_ticket.cross_node_capable,
             message: non_empty_string(ws_ticket.message),
         },
-        email: EmailStatus {
+        email: ServerStateEmail {
             status: cluster_email_status_to_core(email.status),
             configured: email.configured,
         },
-        livestream: LivestreamStatus {
+        livestream: ServerStateLivestream {
             status: cluster_livestream_status_to_core(livestream.status),
             configured: livestream.configured,
             active_publisher_count: livestream.active_publisher_count,
@@ -281,14 +281,14 @@ pub(super) fn cluster_proto_to_server_state_node(
             hls_storage_path: livestream.hls_storage_path,
             hls_memory_max_mb: livestream.hls_memory_max_mb,
         },
-        memory: MemoryStatus {
+        memory: ServerStateMemory {
             status: cluster_memory_status_to_core(memory.status),
             used_bytes: memory.used_bytes,
             total_bytes: memory.total_bytes,
             available_bytes: memory.available_bytes,
             usage_percent: memory.usage_percent,
         },
-        webrtc: WebRtcStatus {
+        webrtc: ServerStateWebRtc {
             status: cluster_webrtc_status_to_core(webrtc.status),
             mode: webrtc.mode,
             builtin_stun_configured: webrtc.builtin_stun_configured,
@@ -298,7 +298,7 @@ pub(super) fn cluster_proto_to_server_state_node(
             external_addr: webrtc.external_addr,
             message: non_empty_string(webrtc.message),
         },
-        cpu: CpuStatus {
+        cpu: ServerStateCpu {
             status: cluster_cpu_status_to_core(cpu.status),
             available_parallelism: cpu.available_parallelism,
             current_load_1m: cpu.current_load_1m,
@@ -307,7 +307,7 @@ pub(super) fn cluster_proto_to_server_state_node(
             load_average_5m: cpu.load_average_5m,
             load_average_15m: cpu.load_average_15m,
         },
-        slice_cache: SliceCacheStatus {
+        slice_cache: ServerStateSliceCache {
             status: cluster_slice_cache_status_to_core(slice_cache.status),
             engine_enabled: slice_cache.engine_enabled,
             backend: slice_cache.backend,
@@ -330,7 +330,7 @@ pub(super) fn cluster_proto_to_server_state_node(
 }
 
 fn database_pool_to_cluster_proto(
-    pool: &DatabasePoolStatus,
+    pool: &ServerStateDatabasePool,
 ) -> synctv_cluster::grpc::synctv::cluster::ServerStateDatabasePool {
     synctv_cluster::grpc::synctv::cluster::ServerStateDatabasePool {
         size: pool.size,
@@ -341,8 +341,8 @@ fn database_pool_to_cluster_proto(
 
 fn cluster_database_pool_to_core(
     pool: synctv_cluster::grpc::synctv::cluster::ServerStateDatabasePool,
-) -> DatabasePoolStatus {
-    DatabasePoolStatus {
+) -> ServerStateDatabasePool {
+    ServerStateDatabasePool {
         size: pool.size,
         idle_connections: pool.idle_connections,
         active_connections: pool.active_connections,
@@ -350,7 +350,7 @@ fn cluster_database_pool_to_core(
 }
 
 fn cluster_node_to_cluster_proto(
-    node: ClusterNodeStatus,
+    node: ServerStateClusterNode,
 ) -> synctv_cluster::grpc::synctv::cluster::ServerStateClusterNode {
     synctv_cluster::grpc::synctv::cluster::ServerStateClusterNode {
         node_id: node.node_id,
@@ -362,8 +362,8 @@ fn cluster_node_to_cluster_proto(
 
 fn cluster_proto_node_to_core(
     node: synctv_cluster::grpc::synctv::cluster::ServerStateClusterNode,
-) -> ClusterNodeStatus {
-    ClusterNodeStatus {
+) -> ServerStateClusterNode {
+    ServerStateClusterNode {
         node_id: node.node_id,
         cluster_address: node.cluster_address,
         last_heartbeat: node.last_heartbeat,

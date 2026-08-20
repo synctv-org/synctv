@@ -93,11 +93,6 @@ impl RedisOAuthStateStore {
     fn redis_key(&self, token_id: &str) -> String {
         self.key_builder.oauth2_state(token_id)
     }
-
-    #[cfg(test)]
-    pub(crate) fn runtime_ptr_eq(&self, runtime: &Arc<dyn RedisConnectionRuntime>) -> bool {
-        Arc::ptr_eq(&self.conn, runtime)
-    }
 }
 
 pub(crate) async fn run_oauth_state_redis_op<T, F>(

@@ -282,7 +282,7 @@ async fn test_finish_room_password_registration_rejects_session_for_different_ro
         .create(&make_user("password_registration_owner"))
         .await
         .unwrap();
-    let (room_a, _) = room_service
+    let room_a = room_service
         .create_room(
             "Password Registration A".to_string(),
             String::new(),
@@ -292,7 +292,7 @@ async fn test_finish_room_password_registration_rejects_session_for_different_ro
         )
         .await
         .unwrap();
-    let (room_b, _) = room_service
+    let room_b = room_service
         .create_room(
             "Password Registration B".to_string(),
             String::new(),
@@ -360,7 +360,7 @@ async fn test_finish_room_password_login_rejects_session_for_different_room_befo
         .create(&make_user("password_login_member"))
         .await
         .unwrap();
-    let (room_a, _) = room_service
+    let room_a = room_service
         .create_room(
             "Password Login A".to_string(),
             String::new(),
@@ -370,7 +370,7 @@ async fn test_finish_room_password_login_rejects_session_for_different_room_befo
         )
         .await
         .unwrap();
-    let (room_b, _) = room_service
+    let room_b = room_service
         .create_room(
             "Password Login B".to_string(),
             String::new(),
@@ -470,7 +470,7 @@ async fn test_client_api_room_password_success_resets_bruteforce_counter() {
 
     let owner = user_repo.create(&make_user("room_owner")).await.unwrap();
     let member = user_repo.create(&make_user("room_member")).await.unwrap();
-    let (room, _member) = room_service
+    let room = room_service
         .create_room(
             "Protected Room".to_string(),
             "Room with password".to_string(),
@@ -561,7 +561,7 @@ async fn test_preissued_room_password_opaque_sessions_cannot_bypass_finish_locko
         .create(&make_user("preissued_room_member"))
         .await
         .unwrap();
-    let (room, _member) = room_service
+    let room = room_service
         .create_room(
             "Preissued Protected Room".to_string(),
             "Room with password".to_string(),

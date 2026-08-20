@@ -48,7 +48,6 @@
 //!   buffer capacity via configuration
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -66,21 +65,6 @@ const DEFAULT_BUFFER_CAPACITY: usize = 10_000;
 const FLUSH_BATCH_SIZE: usize = 100;
 /// Flush interval in seconds
 const FLUSH_INTERVAL_SECS: u64 = 5;
-
-/// Audit log entry
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AuditLog {
-    pub id: String,
-    pub actor_id: String,
-    pub actor_username: String,
-    pub action: AuditAction,
-    pub target_type: AuditTargetType,
-    pub target_id: Option<String>,
-    pub details: AuditDetails,
-    pub ip_address: Option<String>,
-    pub user_agent: Option<String>,
-    pub created_at: DateTime<Utc>,
-}
 
 /// Parameters for logging an audit event
 #[derive(Debug, Clone)]
@@ -318,66 +302,6 @@ impl AuditService {
         Ok(())
     }
 
-    /// Log user creation
-    pub async fn log_user_created(
-        &self,
-        actor_id: String,
-        actor_username: String,
-        target_user_id: String,
-    ) -> Result<()> {
-        self.log(AuditEventParams {
-            actor_id,
-            actor_username,
-            action: AuditAction::UserCreated,
-            target_type: AuditTargetType::User,
-            target_id: Some(target_user_id),
-            details: AuditDetails::reason("User created via admin panel"),
-            ip_address: None,
-            user_agent: None,
-        })
-        .await
-    }
-
-    /// Log user ban
-    pub async fn log_user_banned(
-        &self,
-        actor_id: String,
-        actor_username: String,
-        target_user_id: String,
-    ) -> Result<()> {
-        self.log(AuditEventParams {
-            actor_id,
-            actor_username,
-            action: AuditAction::UserBanned,
-            target_type: AuditTargetType::User,
-            target_id: Some(target_user_id),
-            details: AuditDetails::reason("User banned by admin"),
-            ip_address: None,
-            user_agent: None,
-        })
-        .await
-    }
-
-    /// Log room deletion
-    pub async fn log_room_deleted(
-        &self,
-        actor_id: String,
-        actor_username: String,
-        room_id: String,
-    ) -> Result<()> {
-        self.log(AuditEventParams {
-            actor_id,
-            actor_username,
-            action: AuditAction::RoomDeleted,
-            target_type: AuditTargetType::Room,
-            target_id: Some(room_id),
-            details: AuditDetails::reason("Room deleted by admin"),
-            ip_address: None,
-            user_agent: None,
-        })
-        .await
-    }
-
     pub async fn log_stream_kicked(&self, request: StreamKickAuditRequest) -> Result<()> {
         let target_id = format!("{}:{}", request.room_id, request.media_id);
         self.log(AuditEventParams {
@@ -427,24 +351,9 @@ impl AuditService {
         })
         .await
     }
-
-    /// Log a user logout event.
-    ///
-    /// Records when a user explicitly logs out (access token blacklisted).
-    pub async fn log_user_logout(
-        &self,
-        user_id: String,
-        username: String,
-        ip_address: Option<String>,
-        user_agent: Option<String>,
-    ) -> Result<()> {
-        self.log(user_logout_event_params(
-            user_id, username, ip_address, user_agent,
-        ))
-        .await
-    }
 }
 
+#[cfg(test)]
 fn user_logout_event_params(
     user_id: String,
     username: String,

@@ -3088,24 +3088,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "http-acl-reqwest"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "729f533eb3acdabd86497d444853185f4bdd320bae44ded1afca41010de55cdd"
-dependencies = [
- "anyhow",
- "async-trait",
- "bytes",
- "http",
- "http-acl",
- "percent-encoding",
- "reqwest",
- "reqwest-middleware",
- "thiserror 2.0.20",
- "url",
-]
-
-[[package]]
 name = "http-auth"
 version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6103,20 +6085,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "reqwest-middleware"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07bc3f1384cffa4f274dad2d4ddd73aed32fed8f786d96c6be8aa4e5fd3c3b58"
-dependencies = [
- "anyhow",
- "async-trait",
- "http",
- "reqwest",
- "thiserror 2.0.20",
- "tower-service",
-]
-
-[[package]]
 name = "resolv-conf"
 version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7630,7 +7598,6 @@ dependencies = [
  "axum",
  "http",
  "serde",
- "serde_json",
  "sqids",
  "synctv-common",
  "synctv-core",
@@ -7960,7 +7927,6 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "http-acl",
- "http-acl-reqwest",
  "iana-time-zone",
  "ipnet",
  "nanoid",
@@ -7989,22 +7955,17 @@ dependencies = [
  "dashmap 7.0.0-rc2",
  "failsafe",
  "futures",
- "futures-util",
  "governor",
  "handlebars",
  "hex",
  "hkdf 0.13.0",
  "hmac 0.13.0",
- "hostname",
  "humantime",
  "image",
  "indexmap 2.14.0",
- "ipnet",
  "jsonwebtoken",
  "lettre",
- "lru",
  "lz4_flex",
- "mockall",
  "moka",
  "nonzero_ext",
  "oauth2",
@@ -8012,7 +7973,6 @@ dependencies = [
  "opendal",
  "opendal-http-transport-reqwest",
  "parking_lot",
- "paste",
  "percent-encoding",
  "prometheus",
  "rand 0.10.2",
@@ -8039,7 +7999,6 @@ dependencies = [
  "tokio-rustls",
  "tokio-socks",
  "tokio-util",
- "tower",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
@@ -8253,7 +8212,6 @@ dependencies = [
  "pbjson",
  "pbjson-types",
  "prost",
- "prost-protovalidate",
  "prost-reflect",
  "prost-types",
  "serde",
@@ -8293,7 +8251,6 @@ dependencies = [
  "pbjson",
  "pbjson-types",
  "prost",
- "prost-protovalidate",
  "prost-reflect",
  "prost-types",
  "serde",
@@ -8322,7 +8279,6 @@ dependencies = [
  "percent-encoding",
  "prost",
  "quick-xml",
- "rand 0.10.2",
  "rayon",
  "reqwest",
  "serde",
@@ -8330,13 +8286,11 @@ dependencies = [
  "subtle",
  "synctv-common",
  "tempfile",
- "thiserror 2.0.20",
  "tokio",
  "tokio-util",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
- "tower",
  "tracing",
  "url",
  "wiremock",
@@ -8352,20 +8306,16 @@ dependencies = [
  "criterion",
  "dashmap 7.0.0-rc2",
  "futures",
- "mockall",
  "moka",
  "parking_lot",
  "prost",
- "rand 0.10.2",
  "redis",
  "serde",
  "serde_json",
- "subtle",
  "synctv-cluster",
  "synctv-common",
  "synctv-core",
  "synctv-core-testing",
- "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",
@@ -8381,10 +8331,8 @@ version = "1.0.2"
 dependencies = [
  "anyhow",
  "async-trait",
- "axum",
  "backon",
  "base64 0.23.1",
- "bincode",
  "byteorder",
  "bytes",
  "chrono",
@@ -8415,7 +8363,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
- "tokio-stream",
  "tokio-util",
  "tracing",
  "url",

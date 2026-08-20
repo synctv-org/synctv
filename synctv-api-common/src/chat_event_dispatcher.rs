@@ -24,7 +24,13 @@ impl ChatEventDispatcher for RealtimeChatEventDispatcher {
     fn dispatch(&self, event: &ChatMessageEvent) -> RealtimeDeliveryOutcome {
         let outcome = self
             .event_service
-            .broadcast_outcome(chat_message_event_to_realtime(event));
+            .broadcast_outcome(RealtimeEvent::ChatMessageEvent {
+                event_id: event.event_id.clone(),
+                room_id: event.room_id,
+                actor_user_id: event.actor_user_id,
+                event: event.clone(),
+                timestamp: event.occurred_at,
+            });
         if outcome.distributed_delivery_missed() {
             tracing::warn!(
                 room_id = %event.room_id,
@@ -41,7 +47,13 @@ impl ChatEventDispatcher for RealtimeChatEventDispatcher {
     fn dispatch_pin(&self, event: &ChatPinEvent) -> RealtimeDeliveryOutcome {
         let outcome = self
             .event_service
-            .broadcast_outcome(chat_pin_event_to_realtime(event));
+            .broadcast_outcome(RealtimeEvent::ChatPinEvent {
+                event_id: event.event_id.clone(),
+                room_id: event.room_id,
+                actor_user_id: event.actor_user_id,
+                event: event.clone(),
+                timestamp: event.occurred_at,
+            });
         if outcome.distributed_delivery_missed() {
             tracing::warn!(
                 room_id = %event.room_id,
@@ -61,28 +73,6 @@ pub fn default_chat_event_dispatcher(
     event_service: Arc<dyn RealtimeEventService>,
 ) -> Arc<dyn ChatEventDispatcher> {
     Arc::new(RealtimeChatEventDispatcher::new(event_service))
-}
-
-#[must_use]
-pub fn chat_message_event_to_realtime(event: &ChatMessageEvent) -> RealtimeEvent {
-    RealtimeEvent::ChatMessageEvent {
-        event_id: event.event_id.clone(),
-        room_id: event.room_id,
-        actor_user_id: event.actor_user_id,
-        event: event.clone(),
-        timestamp: event.occurred_at,
-    }
-}
-
-#[must_use]
-pub fn chat_pin_event_to_realtime(event: &ChatPinEvent) -> RealtimeEvent {
-    RealtimeEvent::ChatPinEvent {
-        event_id: event.event_id.clone(),
-        room_id: event.room_id,
-        actor_user_id: event.actor_user_id,
-        event: event.clone(),
-        timestamp: event.occurred_at,
-    }
 }
 
 #[cfg(test)]

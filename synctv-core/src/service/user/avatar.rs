@@ -3,9 +3,9 @@ use sqlx::{Postgres, Transaction};
 use crate::{
     models::{
         CompleteFileUploadSession, CompleteFileUploadSessionResult, CreateFileUploadSession,
-        FileBlob, FileObjectDownload, FileRangeRequest, FileUploadRange,
-        FileUploadSessionCreateResult, GetFileObject, StoreFileUpload, StoreFileUploadResult,
-        SubmittedFileReference, User, UserId,
+        FileObjectDownload, FileRangeRequest, FileUploadRange, FileUploadSessionCreateResult,
+        GetFileObject, StoreFileUpload, StoreFileUploadResult, SubmittedFileReference, User,
+        UserId,
     },
     service::{
         file_storage::{FileStorageCleanupOrigin, FileStorageContext},
@@ -88,32 +88,6 @@ impl UserService {
                 Error::InvalidInput("file storage is not configured for user avatars".to_string())
             })?
             .complete_upload_session(request)
-            .await
-    }
-
-    pub async fn get_avatar_object(
-        &self,
-        encoded_object_key: &str,
-        read_token: &str,
-    ) -> Result<FileBlob> {
-        self.get_avatar_object_range(encoded_object_key, read_token, None)
-            .await
-    }
-
-    pub async fn get_avatar_object_range(
-        &self,
-        encoded_object_key: &str,
-        read_token: &str,
-        range: Option<FileRangeRequest>,
-    ) -> Result<FileBlob> {
-        self.file_storage_service
-            .as_ref()
-            .ok_or_else(|| Error::NotFound("File object not found".to_string()))?
-            .get_object(GetFileObject {
-                encoded_object_key: encoded_object_key.to_string(),
-                read_token: read_token.to_string(),
-                range,
-            })
             .await
     }
 

@@ -458,45 +458,6 @@ impl PlaybackService {
         self.source_metadata_repo.get(identity).await
     }
 
-    pub async fn upsert_provider_playback_source_metadata(
-        &self,
-        identity: &PlaybackSourceIdentity,
-        playback_kind: PlaybackKind,
-        duration_seconds: Option<f64>,
-        media_name: Option<&str>,
-        playlist_name: Option<&str>,
-    ) -> Result<PlaybackSourceMetadata> {
-        self.source_metadata_repo
-            .upsert_provider_source_metadata(
-                identity,
-                playback_kind,
-                duration_seconds,
-                media_name,
-                playlist_name,
-            )
-            .await
-    }
-
-    pub async fn mark_probeable_playback_source_metadata_unknown_if_absent(
-        &self,
-        identity: &PlaybackSourceIdentity,
-    ) -> Result<PlaybackSourceMetadata> {
-        self.source_metadata_repo
-            .mark_probeable_unknown_if_absent(identity)
-            .await
-    }
-
-    pub async fn update_playback_source_metadata_names(
-        &self,
-        identity: &PlaybackSourceIdentity,
-        media_name: Option<&str>,
-        playlist_name: Option<&str>,
-    ) -> Result<()> {
-        self.source_metadata_repo
-            .update_names_if_present(identity, media_name, playlist_name)
-            .await
-    }
-
     pub async fn source_live_status_for_state(
         &self,
         state: &RoomPlaybackState,
@@ -1341,31 +1302,6 @@ impl PlaybackService {
         .await
     }
 
-    /// Management-only playback switch that is authorized outside the room permission graph.
-    ///
-    /// Callers must validate global admin/root identity before invoking this method.
-    pub async fn admin_switch(
-        &self,
-        room_id: RoomId,
-        actor_user_id: UserId,
-        media_id: Option<MediaId>,
-        playlist_id: Option<PlaylistId>,
-        target: Option<ProviderTarget>,
-    ) -> Result<RoomPlaybackState> {
-        self.admin_switch_with_outbox(
-            room_id,
-            actor_user_id,
-            Some(actor_user_id),
-            SwitchPlaybackTarget {
-                media_id,
-                playlist_id,
-                target,
-            },
-            None,
-        )
-        .await
-    }
-
     pub async fn admin_switch_with_outbox(
         &self,
         room_id: RoomId,
@@ -2010,17 +1946,6 @@ impl PlaybackService {
         .await
     }
 
-    /// Check if the current backend-known source duration has elapsed and advance.
-    pub async fn check_and_auto_play(
-        &self,
-        room_id: &RoomId,
-        settings: &RoomSettings,
-        position: f64,
-    ) -> Result<Option<RoomPlaybackState>> {
-        self.check_and_auto_play_with_outbox(room_id, settings, position, None)
-            .await
-    }
-
     pub async fn check_and_auto_play_with_outbox(
         &self,
         room_id: &RoomId,
@@ -2072,16 +1997,6 @@ impl PlaybackService {
         } else {
             Ok(None)
         }
-    }
-
-    pub async fn auto_advance_due_sources_for_rooms(
-        &self,
-        settings_repo: &crate::repository::RoomSettingsRepository,
-        room_ids: &[RoomId],
-        limit: i64,
-    ) -> Result<usize> {
-        self.auto_advance_due_sources_for_rooms_with_outbox(settings_repo, room_ids, limit, None)
-            .await
     }
 
     pub async fn auto_advance_due_sources_for_rooms_with_outbox(
@@ -2225,18 +2140,6 @@ impl PlaybackService {
             .await
     }
 
-    /// Management-only playback reset that bypasses room membership-derived permissions.
-    ///
-    /// Callers must validate global admin/root identity before invoking this method.
-    pub async fn admin_reset(
-        &self,
-        room_id: RoomId,
-        actor_user_id: UserId,
-    ) -> Result<RoomPlaybackState> {
-        self.admin_reset_with_outbox(room_id, actor_user_id, None)
-            .await
-    }
-
     pub async fn admin_reset_with_outbox(
         &self,
         room_id: RoomId,
@@ -2259,37 +2162,6 @@ impl PlaybackService {
         )
         .await;
         state
-    }
-
-    pub async fn reset_playback_for_creator(
-        &self,
-        creator_id: &UserId,
-    ) -> Result<Vec<RoomPlaybackState>> {
-        self.reset_playback_for_creator_with_outbox(creator_id, None)
-            .await
-    }
-
-    pub async fn reset_playback_for_creator_with_outbox(
-        &self,
-        creator_id: &UserId,
-        outbox_event_factory: Option<RealtimeOutboxPlaybackStateEventFactory>,
-    ) -> Result<Vec<RoomPlaybackState>> {
-        let mut tx = self.playback_repo.pool().begin().await?;
-        let pending = self
-            .prepare_creator_playback_reset_in_tx(
-                creator_id,
-                outbox_event_factory.as_ref(),
-                &mut tx,
-            )
-            .await?;
-        if let Err(error) = tx.commit().await {
-            self.abort_creator_playback_reset(&pending).await;
-            return Err(error.into());
-        }
-
-        Ok(self
-            .finalize_creator_playback_reset_after_commit(pending)
-            .await)
     }
 
     pub(crate) async fn prepare_creator_playback_reset_in_tx(
@@ -2380,24 +2252,6 @@ impl PlaybackService {
                 .await;
         }
         pending.states
-    }
-
-    /// Check if playback is currently active
-    pub async fn is_playing(&self, room_id: &RoomId) -> Result<bool> {
-        let state = self.get_state(room_id).await?;
-        Ok(state.is_playing)
-    }
-
-    /// Get current media being played
-    pub async fn get_playing_media_id(&self, room_id: &RoomId) -> Result<Option<MediaId>> {
-        let state = self.get_state(room_id).await?;
-        Ok(state.playing_media_id)
-    }
-
-    /// Get current playback position
-    pub async fn get_position(&self, room_id: &RoomId) -> Result<f64> {
-        let state = self.get_state(room_id).await?;
-        Ok(state.computed_position())
     }
 
     async fn switch_internal(&self, command: PlaybackSwitchCommand) -> Result<RoomPlaybackState> {
@@ -2851,12 +2705,6 @@ impl PlaybackService {
         .await;
 
         Ok(Some(saved_state))
-    }
-
-    /// Get current playback speed
-    pub async fn get_speed(&self, room_id: &RoomId) -> Result<f64> {
-        let state = self.get_state(room_id).await?;
-        Ok(state.speed)
     }
 
     pub async fn update_playback_state(

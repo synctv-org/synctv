@@ -102,7 +102,7 @@ async fn test_list_my_rooms_relation_filter_and_response_relation_are_consistent
         .await
         .unwrap();
 
-    let (created_room, _) = room_service
+    let created_room = room_service
         .create_room(
             "Actor Created Room".to_string(),
             String::new(),
@@ -113,7 +113,7 @@ async fn test_list_my_rooms_relation_filter_and_response_relation_are_consistent
         .await
         .unwrap();
 
-    let (participating_room, _) = room_service
+    let participating_room = room_service
         .create_room(
             "External Created Room".to_string(),
             String::new(),

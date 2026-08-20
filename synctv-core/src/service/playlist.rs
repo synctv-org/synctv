@@ -110,26 +110,6 @@ impl PlaylistService {
         }
     }
 
-    /// Create a playlist service with provider credential dependencies already wired.
-    #[must_use]
-    pub fn new_with_provider_credentials(
-        playlist_repo: PlaylistRepository,
-        permission_service: PermissionService,
-        providers_manager: Arc<ProvidersManager>,
-        credential_encryption: Option<crate::credential_encryption::CredentialEncryption>,
-        credential_repo: Option<Arc<UserProviderCredentialRepository>>,
-    ) -> Self {
-        Self::new_with_runtime(
-            playlist_repo,
-            permission_service,
-            providers_manager,
-            credential_encryption,
-            credential_repo,
-            None,
-            None,
-        )
-    }
-
     #[must_use]
     pub fn new_with_runtime(
         playlist_repo: PlaylistRepository,

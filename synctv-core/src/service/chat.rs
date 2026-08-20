@@ -20,10 +20,10 @@ use crate::{
         ChatPinEvent, ChatPinnedMessage, ChatPlaybackMessagesQuery, ChatReactionUsersCursor,
         ChatReactionUsersPage, ChatReadStateWithUnread, ChatSearchMessagesPage,
         ChatSearchMessagesQuery, CompleteFileUploadSession, CompleteFileUploadSessionResult,
-        CreateChatAttachmentUploadSession, DeleteChatMessage, EditChatMessage, FileBlob,
-        FileObjectDownload, FileRangeRequest, FileUploadRange, FileUploadSessionCreateResult,
-        GetFileObject, MarkChatRead, PinChatMessage, RoomId, SendChatMessage, SetChatReaction,
-        StoreFileUpload, StoreFileUploadResult, SubmittedFileReference, SubmittedFileReferenceKind,
+        CreateChatAttachmentUploadSession, DeleteChatMessage, EditChatMessage, FileObjectDownload,
+        FileRangeRequest, FileUploadRange, FileUploadSessionCreateResult, GetFileObject,
+        MarkChatRead, PinChatMessage, RoomId, SendChatMessage, SetChatReaction, StoreFileUpload,
+        StoreFileUploadResult, SubmittedFileReference, SubmittedFileReferenceKind,
         UnpinChatMessage, UserId, CHAT_PIN_NOTE_MAX_CHARS,
     },
     repository::{
@@ -105,20 +105,6 @@ impl ChatMessageCleanupService {
             pool,
             file_storage_service,
         }
-    }
-
-    async fn cleanup_room_cap(&self, room_id: RoomId, keep_count: i64) -> Result<u64> {
-        super::cleanup_ops::cleanup_chat_messages_with_files(
-            &self.pool,
-            Some(&self.file_storage_service),
-            super::cleanup_ops::ChatMessageCleanupScope::RoomCap {
-                room_id,
-                keep_count,
-            },
-            FileStorageCleanupOrigin::ReferenceCapExceeded,
-            "room cap purge",
-        )
-        .await
     }
 
     async fn cleanup_active_rooms_cap(
@@ -271,30 +257,6 @@ impl ChatService {
             .await
     }
 
-    pub async fn get_attachment_object(
-        &self,
-        encoded_object_key: &str,
-        read_token: &str,
-    ) -> Result<FileBlob> {
-        self.get_attachment_object_range(encoded_object_key, read_token, None)
-            .await
-    }
-
-    pub async fn get_attachment_object_range(
-        &self,
-        encoded_object_key: &str,
-        read_token: &str,
-        range: Option<FileRangeRequest>,
-    ) -> Result<FileBlob> {
-        self.file_storage_service
-            .get_object(GetFileObject {
-                encoded_object_key: encoded_object_key.to_string(),
-                read_token: read_token.to_string(),
-                range,
-            })
-            .await
-    }
-
     pub async fn get_attachment_object_stream(
         &self,
         encoded_object_key: &str,
@@ -331,52 +293,6 @@ impl ChatService {
             .map_err(|_| Error::Internal("max pinned chat message limit exceeds i64".to_string()))
     }
 
-    /// Send a chat message
-    ///
-    /// # Arguments
-    /// * `room_id` - Room ID
-    /// * `user_id` - User ID sending the message
-    /// * `content` - Message content
-    ///
-    /// # Returns
-    /// The created chat message
-    pub async fn send_message(
-        &self,
-        room_id: RoomId,
-        user_id: UserId,
-        content: String,
-    ) -> Result<ChatMessage> {
-        self.send_message_with_control(room_id, user_id, content, None)
-            .await
-    }
-
-    /// Send a chat message with cooperative execution control.
-    pub async fn send_message_with_control(
-        &self,
-        room_id: RoomId,
-        user_id: UserId,
-        content: String,
-        control: Option<&ExecutionControl>,
-    ) -> Result<ChatMessage> {
-        let event = self
-            .send_message_event_with_control(
-                SendChatMessage {
-                    room_id,
-                    user_id,
-                    client_message_id: None,
-                    content,
-                    message_type: ChatMessageType::User,
-                    reply_to_message_id: None,
-                    metadata: None,
-                    attachments: Vec::new(),
-                    mentions: Vec::new(),
-                },
-                control,
-            )
-            .await?;
-        Ok(event.message.message)
-    }
-
     pub async fn send_message_event(&self, request: SendChatMessage) -> Result<ChatMessageEvent> {
         Ok(self.send_message_event_outcome(request).await?.event)
     }
@@ -387,17 +303,6 @@ impl ChatService {
     ) -> Result<ChatMessageEventOutcome> {
         self.send_message_event_with_control_outcome(request, None)
             .await
-    }
-
-    pub async fn send_message_event_with_control(
-        &self,
-        request: SendChatMessage,
-        control: Option<&ExecutionControl>,
-    ) -> Result<ChatMessageEvent> {
-        Ok(self
-            .send_message_event_with_control_outcome(request, control)
-            .await?
-            .event)
     }
 
     pub async fn send_message_event_with_control_outcome(
@@ -620,17 +525,6 @@ impl ChatService {
         ))
     }
 
-    pub async fn get_history_with_attachments(
-        &self,
-        room_id: &RoomId,
-        cursor: Option<ChatHistoryCursor>,
-        limit: i32,
-        include_deleted: bool,
-    ) -> Result<(Vec<ChatMessageWithAttachments>, Option<ChatHistoryCursor>)> {
-        self.get_history_with_attachments_for_viewer(room_id, cursor, limit, include_deleted, None)
-            .await
-    }
-
     pub async fn get_history_with_attachments_for_viewer(
         &self,
         room_id: &RoomId,
@@ -673,14 +567,6 @@ impl ChatService {
         Ok(page)
     }
 
-    pub async fn get_playback_messages_with_attachments(
-        &self,
-        query: ChatPlaybackMessagesQuery,
-    ) -> Result<Vec<ChatMessageWithAttachments>> {
-        self.get_playback_messages_with_attachments_for_viewer(query, None)
-            .await
-    }
-
     pub async fn get_playback_messages_with_attachments_for_viewer(
         &self,
         query: ChatPlaybackMessagesQuery,
@@ -711,16 +597,6 @@ impl ChatService {
         Ok(page)
     }
 
-    pub async fn get_message_with_attachments(
-        &self,
-        room_id: &RoomId,
-        message_id: i64,
-        include_deleted: bool,
-    ) -> Result<ChatMessageWithAttachments> {
-        self.get_message_with_attachments_for_viewer(room_id, message_id, include_deleted, None)
-            .await
-    }
-
     pub async fn get_message_with_attachments_for_viewer(
         &self,
         room_id: &RoomId,
@@ -739,25 +615,6 @@ impl ChatService {
         self.attach_attachment_view_metadata(std::slice::from_mut(&mut message), viewer_user_id)
             .await?;
         Ok(message)
-    }
-
-    pub async fn get_message_context(
-        &self,
-        room_id: &RoomId,
-        message_id: i64,
-        before_limit: i32,
-        after_limit: i32,
-        include_deleted: bool,
-    ) -> Result<ChatMessageContext> {
-        self.get_message_context_for_viewer(
-            room_id,
-            message_id,
-            before_limit,
-            after_limit,
-            include_deleted,
-            None,
-        )
-        .await
     }
 
     pub async fn get_message_context_for_viewer(
@@ -1282,33 +1139,6 @@ impl ChatService {
         })
     }
 
-    /// Delete a chat message
-    ///
-    /// # Arguments
-    /// * `room_id` - Room that owns the message
-    /// * `message_id` - Message ID to delete
-    /// * `user_id` - User ID requesting deletion (must be sender or have `DELETE_CHAT_MESSAGES` permission)
-    ///
-    /// # Returns
-    /// Result indicating success or failure
-    pub async fn delete_message(
-        &self,
-        room_id: &RoomId,
-        message_id: i64,
-        user_id: &UserId,
-    ) -> Result<bool> {
-        self.delete_message_event(DeleteChatMessage {
-            room_id: *room_id,
-            message_id,
-            user_id: *user_id,
-            client_operation_id: None,
-            reason: None,
-            expected_version: None,
-        })
-        .await
-        .map(|_| true)
-    }
-
     pub async fn list_pinned_messages(
         &self,
         room_id: &RoomId,
@@ -1578,36 +1408,6 @@ impl ChatService {
             debug!(%error, "Failed to invalidate chat reaction detail cache");
         }
         self.reaction_detail_cache.run_pending_tasks().await;
-    }
-
-    /// Cleanup old chat messages for a specific room based on global settings
-    ///
-    /// # Arguments
-    /// * `room_id` - Room ID to cleanup
-    /// * `max_messages` - Maximum messages to keep (0 = unlimited)
-    ///
-    /// # Returns
-    /// Number of messages deleted
-    pub async fn cleanup_room_messages(&self, room_id: &RoomId, max_messages: u64) -> Result<u64> {
-        if max_messages == 0 {
-            return Ok(0);
-        }
-
-        let deleted = self
-            .message_cleanup_service
-            .cleanup_room_cap(*room_id, max_messages_to_keep_count(max_messages)?)
-            .await?;
-
-        if deleted > 0 {
-            debug!(
-                room_id = %room_id,
-                deleted = deleted,
-                max_messages = max_messages,
-                "Cleaned up old chat messages"
-            );
-        }
-
-        Ok(deleted)
     }
 
     /// Cleanup old chat messages for all rooms using global settings

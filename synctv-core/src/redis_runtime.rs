@@ -123,17 +123,9 @@ pub struct OnDemandRedisRuntime {
 impl OnDemandRedisRuntime {
     #[must_use]
     pub fn new(client: redis::Client) -> Self {
-        Self::new_with_connection_options(client, redis::aio::ConnectionManagerConfig::new())
-    }
-
-    #[must_use]
-    pub fn new_with_connection_options(
-        client: redis::Client,
-        manager_options: redis::aio::ConnectionManagerConfig,
-    ) -> Self {
         Self::new_with_connection_options_and_operation_timeout(
             client,
-            manager_options,
+            redis::aio::ConnectionManagerConfig::new(),
             crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
         )
     }
@@ -212,41 +204,6 @@ impl ManagedRedisRuntime {
             operation_timeout,
         }
     }
-
-    pub async fn from_client(client: redis::Client) -> redis::RedisResult<Self> {
-        Self::from_client_with_config(client, redis::aio::ConnectionManagerConfig::new()).await
-    }
-
-    pub async fn from_client_with_config(
-        client: redis::Client,
-        manager_options: redis::aio::ConnectionManagerConfig,
-    ) -> redis::RedisResult<Self> {
-        Self::from_client_with_config_and_operation_timeout(
-            client,
-            manager_options,
-            crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
-        )
-        .await
-    }
-
-    pub async fn from_client_with_config_and_operation_timeout(
-        client: redis::Client,
-        manager_options: redis::aio::ConnectionManagerConfig,
-        operation_timeout: Duration,
-    ) -> redis::RedisResult<Self> {
-        let conn =
-            redis::aio::ConnectionManager::new_with_config(client.clone(), manager_options).await?;
-        Ok(Self::new_with_operation_timeout(
-            client,
-            Arc::new(tokio::sync::RwLock::new(conn)),
-            operation_timeout,
-        ))
-    }
-
-    #[must_use]
-    pub fn shared_conn(&self) -> Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>> {
-        self.conn.clone()
-    }
 }
 
 #[async_trait]
@@ -279,39 +236,10 @@ pub fn direct_runtime(conn: redis::aio::ConnectionManager) -> Arc<dyn RedisConne
 }
 
 #[must_use]
-pub fn direct_runtime_with_operation_timeout(
-    conn: redis::aio::ConnectionManager,
-    operation_timeout: Duration,
-) -> Arc<dyn RedisConnectionRuntime> {
-    Arc::new(DirectRedisConnectionRuntime::new_with_operation_timeout(
-        conn,
-        operation_timeout,
-    ))
-}
-
-#[must_use]
-pub fn direct_runtime_from_conn(
-    conn: Option<redis::aio::ConnectionManager>,
-) -> Option<Arc<dyn RedisConnectionRuntime>> {
-    conn.map(direct_runtime)
-}
-
-#[must_use]
 pub fn shared_runtime(
     conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
 ) -> Arc<dyn RedisConnectionRuntime> {
     Arc::new(SharedRedisConnectionRuntime::new(conn))
-}
-
-#[must_use]
-pub fn shared_runtime_with_operation_timeout(
-    conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
-    operation_timeout: Duration,
-) -> Arc<dyn RedisConnectionRuntime> {
-    Arc::new(SharedRedisConnectionRuntime::new_with_operation_timeout(
-        conn,
-        operation_timeout,
-    ))
 }
 
 #[must_use]
@@ -326,17 +254,6 @@ pub fn coordination_runtime_from_client(
     client: redis::Client,
 ) -> Arc<dyn RedisCoordinationRuntime> {
     Arc::new(OnDemandRedisRuntime::new(client))
-}
-
-#[must_use]
-pub fn coordination_runtime_from_client_with_connection_options(
-    client: redis::Client,
-    manager_options: redis::aio::ConnectionManagerConfig,
-) -> Arc<dyn RedisCoordinationRuntime> {
-    Arc::new(OnDemandRedisRuntime::new_with_connection_options(
-        client,
-        manager_options,
-    ))
 }
 
 #[must_use]

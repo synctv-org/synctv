@@ -1011,11 +1011,14 @@ async fn database_storage_rejects_parts_above_database_part_cap() {
 async fn database_storage_lz4_compresses_blob_and_returns_original_payload() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool.clone()));
-    let storage = DatabaseFileStorageService::new_with_compression(
+    let storage = DatabaseFileStorageService::new_with_compression_config(
         "database",
         repository.clone(),
         "test-file-storage-secret",
-        FileBlobCompression::Lz4,
+        DatabaseFileStorageCompressionConfig {
+            algorithm: FileBlobCompression::Lz4,
+            ..Default::default()
+        },
     );
     let payload = vec![b'b'; 4096];
     let policy = generic_binary_upload_policy(payload_size(&payload));

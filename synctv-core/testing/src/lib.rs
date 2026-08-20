@@ -6,7 +6,6 @@
 use std::path::PathBuf;
 
 pub mod assertions;
-pub mod constants;
 pub(crate) mod docker;
 pub mod external_service;
 pub mod l2_envelope;
@@ -35,18 +34,18 @@ pub use external_service::{
 };
 pub use l2_envelope::{timestamped_l2_envelope, unversioned_l2_envelope, versioned_l2_envelope};
 pub use postgres::{
-    connect_test_pool_url, create_test_database, create_test_database_url_with_label,
+    connect_test_pool_url, create_test_database_url_with_label,
     create_test_database_with_db_and_label, create_test_database_with_options_and_label,
-    create_test_pool, create_test_pool_with_db, create_test_pool_with_db_and_label,
-    create_test_pool_with_options_and_label, ensure_audit_partition_for, ensure_chat_partition_for,
-    ensure_notification_partition_for, ensure_playback_history_partition_for,
-    postgres_connection_url_with_credentials, TestContainer, TestDatabase,
+    create_test_pool, create_test_pool_with_db_and_label, create_test_pool_with_options_and_label,
+    ensure_audit_partition_for, ensure_chat_partition_for, ensure_notification_partition_for,
+    ensure_playback_history_partition_for, postgres_connection_url_with_credentials, TestContainer,
+    TestDatabase,
 };
 pub use redis::{
-    redis_connection_manager, redis_multiplexed_connection, start_dedicated_redis,
-    start_dedicated_redis_url_with_label, start_redis, start_redis_client_manager,
-    start_redis_client_manager_with_label, start_redis_client_url_with_label, start_redis_handle,
-    start_redis_url, start_redis_url_with_label, start_redis_with_client, test_redis_key_prefix,
+    redis_connection_manager, redis_multiplexed_connection, start_redis,
+    start_redis_client_manager, start_redis_client_manager_with_label,
+    start_redis_client_url_with_label, start_redis_handle, start_redis_url,
+    start_redis_url_with_label, start_redis_with_client, test_redis_key_prefix,
     wait_for_redis_ready, RedisContainer,
 };
 pub use result::{err, ok, some, TestOptionExt, TestResultExt};
@@ -65,7 +64,7 @@ pub use source_config::{
     alist_directory_playlist_source_config, alist_file_media_source_config,
     bilibili_video_media_source_config, direct_url_media_source_config,
     direct_url_media_source_config_with_headers, live_proxy_pull_live_media_source_config,
-    media_source_config_json, playlist_source_config_json, rtmp_managed_live_media_source_config,
+    media_source_config_json, rtmp_managed_live_media_source_config,
 };
 #[cfg(feature = "streaming")]
 pub use streaming::{

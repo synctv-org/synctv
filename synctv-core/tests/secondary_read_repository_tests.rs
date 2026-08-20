@@ -2,10 +2,11 @@ use chrono::Utc;
 use sqlx::PgPool;
 use synctv_core::{
     models::{
-        room_settings::MaxMembers, AuditAction, AuditTargetType, ChatMessage, ChatMessageType,
-        ContentReportStatus, ContentReportTarget, CreateContentReport, MyRoomListQuery, PageParams,
-        ReviewStatus, Room, RoomId, RoomListQuery, RoomMember, RoomRole, RoomSettings, RoomStatus,
-        SignupMethod, UpsertRoomCategory, UpsertRoomLabel, User, UserId, UserListQuery,
+        room_settings::MaxMembers, AuditAction, AuditTargetType, ChatMessage, ChatMessageSelection,
+        ChatMessageType, ContentReportStatus, ContentReportTarget, CreateContentReport,
+        MyRoomListQuery, PageParams, ReviewStatus, Room, RoomId, RoomListQuery, RoomMember,
+        RoomRole, RoomSettings, RoomStatus, SignupMethod, UpsertRoomCategory, UpsertRoomLabel,
+        User, UserId, UserListQuery,
     },
     repository::{
         AuditLogQuery, AuditLogRepository, BanRecordListQuery, BanRecordRepository, ChatRepository,
@@ -488,7 +489,14 @@ async fn chat_history_page_uses_primary_snapshot_with_primary_event_cursor() {
 
     let page = ok(
         primary_repo
-            .list_history_page_for_viewer(&room.id, None, 10, false, Some(&creator.id))
+            .list_history_page_for_viewer_with_selection(
+                &room.id,
+                None,
+                10,
+                false,
+                Some(&creator.id),
+                &ChatMessageSelection::user_default(),
+            )
             .await,
         "history page should load",
     );

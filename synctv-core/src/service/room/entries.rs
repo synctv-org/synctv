@@ -47,25 +47,6 @@ pub(crate) struct EntryDeletionImpact {
 }
 
 impl RoomService {
-    pub async fn remove_media(
-        &self,
-        room_id: RoomId,
-        user_id: UserId,
-        media_id: MediaId,
-    ) -> Result<()> {
-        self.delete_entries(
-            room_id,
-            user_id,
-            DeleteEntriesRequest {
-                playlist_ids: Vec::new(),
-                media_ids: vec![media_id],
-                force: false,
-            },
-        )
-        .await?;
-        Ok(())
-    }
-
     /// Delete a mixed set of playlists and media in one transaction.
     pub async fn delete_entries(
         &self,
@@ -94,21 +75,6 @@ impl RoomService {
             )
             .await?;
         Ok(result)
-    }
-
-    pub async fn delete_entries_with_precommit<T, F, Fut>(
-        &self,
-        room_id: RoomId,
-        user_id: UserId,
-        request: DeleteEntriesRequest,
-        precommit: F,
-    ) -> Result<(DeleteEntriesResult, T)>
-    where
-        F: FnOnce(DeleteEntriesPlan) -> Fut,
-        Fut: Future<Output = Result<T>>,
-    {
-        self.delete_entries_with_precommit_and_outbox(room_id, user_id, request, precommit, None)
-            .await
     }
 
     async fn delete_entries_with_precommit_and_outbox<T, F, Fut>(
@@ -205,34 +171,6 @@ impl RoomService {
         Ok((delete_entries_result_from_impact(impact), precommit_result))
     }
 
-    /// Delete a mixed set of media and playlists as a global admin.
-    pub async fn admin_delete_entries(
-        &self,
-        room_id: RoomId,
-        admin_user_id: UserId,
-        request: DeleteEntriesRequest,
-    ) -> Result<DeleteEntriesResult> {
-        let actor = self.load_authorized_admin_actor(&admin_user_id).await?;
-        self.admin_delete_entries_as(room_id, &actor, request).await
-    }
-
-    pub async fn admin_delete_entries_as_with_precommit<T, F, Fut>(
-        &self,
-        room_id: RoomId,
-        actor: &AuthorizedAdminActor,
-        request: DeleteEntriesRequest,
-        precommit: F,
-    ) -> Result<(DeleteEntriesResult, T)>
-    where
-        F: FnOnce(DeleteEntriesPlan) -> Fut,
-        Fut: Future<Output = Result<T>>,
-    {
-        self.admin_delete_entries_as_with_precommit_and_outbox(
-            room_id, actor, request, precommit, None,
-        )
-        .await
-    }
-
     async fn admin_delete_entries_as_with_precommit_and_outbox<T, F, Fut>(
         &self,
         room_id: RoomId,
@@ -302,18 +240,6 @@ impl RoomService {
         );
 
         Ok((delete_entries_result_from_impact(impact), precommit_result))
-    }
-
-    pub async fn admin_delete_entries_as(
-        &self,
-        room_id: RoomId,
-        actor: &AuthorizedAdminActor,
-        request: DeleteEntriesRequest,
-    ) -> Result<DeleteEntriesResult> {
-        let (result, ()) = self
-            .admin_delete_entries_as_with_precommit(room_id, actor, request, |_| async { Ok(()) })
-            .await?;
-        Ok(result)
     }
 
     pub async fn admin_delete_entries_as_with_outbox(

@@ -5785,7 +5785,6 @@ fn render_human_output_uses_room_and_member_enums_by_context() {
             is_public: Some(true),
         }),
         playback_state: None,
-        membership_status: synctv_proto::common::MemberStatus::Active as i32,
         requires_approval: false,
         members: vec![synctv_proto::common::RoomMember {
             room_id: "room-1".into(),

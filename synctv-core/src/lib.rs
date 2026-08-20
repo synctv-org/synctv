@@ -89,7 +89,6 @@ pub mod resilience;
 pub mod service;
 pub mod shared_state;
 pub mod spawn;
-pub mod transaction;
 pub mod validation;
 
 #[cfg(test)]
@@ -102,13 +101,11 @@ pub use clock::{
 };
 pub use error::{Error, InternalExt, Result};
 pub use redis_runtime::{
-    coordination_runtime_from_client, coordination_runtime_from_client_with_connection_options,
+    coordination_runtime_from_client,
     coordination_runtime_from_client_with_connection_options_and_operation_timeout, direct_runtime,
-    direct_runtime_from_conn, direct_runtime_with_operation_timeout,
     redis_connection_manager_options, redis_runtime_snapshot, shared_runtime,
-    shared_runtime_from_conn, shared_runtime_with_operation_timeout, DirectRedisConnectionRuntime,
-    ManagedRedisRuntime, OnDemandRedisRuntime, RedisConnectionRuntime, RedisCoordinationRuntime,
-    RedisDeploymentMode, SharedRedisConnectionRuntime,
+    shared_runtime_from_conn, DirectRedisConnectionRuntime, ManagedRedisRuntime,
+    OnDemandRedisRuntime, RedisConnectionRuntime, RedisCoordinationRuntime, RedisDeploymentMode,
+    SharedRedisConnectionRuntime,
 };
 pub use shared_state::{SharedStateMode, SharedStateProfile};
-pub use transaction::with_transaction;

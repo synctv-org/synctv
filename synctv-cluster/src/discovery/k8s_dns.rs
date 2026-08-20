@@ -19,7 +19,7 @@ use tokio::sync::RwLock;
 use tokio::time::{interval, Duration};
 use tokio_util::sync::CancellationToken;
 
-use super::node_registry::{NodeDiscoverySource, NodeInfo};
+use super::node_registry::NodeInfo;
 use super::probe_node_identity;
 use super::runtime::ClusterNodeDirectory;
 use crate::error::{Error, Result};
@@ -122,16 +122,8 @@ impl K8sDnsDiscovery {
         }
     }
 
-    /// Attach a `NodeRegistry` so that readiness-verified DNS peers are merged
-    /// into the local transient node view used by health monitoring and routing.
-    #[must_use]
-    pub fn with_node_registry<N>(self, registry: Arc<N>) -> Self
-    where
-        N: ClusterNodeDirectory + 'static,
-    {
-        self.with_node_directory(registry)
-    }
-
+    /// Attach a node directory so readiness-verified DNS peers are merged into
+    /// the local transient node view used by health monitoring and routing.
     #[must_use]
     pub fn with_node_directory(mut self, registry: Arc<dyn ClusterNodeDirectory>) -> Self {
         self.node_registry = Some(registry);
@@ -161,19 +153,14 @@ impl K8sDnsDiscovery {
             .collect();
 
         for (_, info) in verified_peers {
-            registry
-                .upsert_discovered_local_node(info, NodeDiscoverySource::K8sDns)
-                .await;
+            registry.upsert_discovered_local_node(info).await;
         }
 
         for node_id in old_mapping
             .values()
             .filter(|node_id| !new_node_ids.contains(*node_id))
         {
-            if !registry
-                .remove_discovered_local_node(node_id, NodeDiscoverySource::K8sDns)
-                .await
-            {
+            if !registry.remove_discovered_local_node(node_id).await {
                 tracing::debug!(
                     node_id,
                     "stale K8s DNS discovered node was already absent from local registry"
@@ -226,7 +213,7 @@ impl K8sDnsDiscovery {
 
     /// Resolve peers and update the internal cache.
     ///
-    /// When a `NodeRegistry` is attached (via [`with_node_registry`]), this also:
+    /// When a node directory is attached via [`with_node_directory`](Self::with_node_directory), this also:
     /// - Probes newly discovered peers to confirm gRPC readiness and real node identity
     /// - Merges verified peers into the registry's transient local node view
     /// - Removes disappeared transient DNS-only entries without touching Redis membership
@@ -252,10 +239,9 @@ impl K8sDnsDiscovery {
                     let mut verified_peers = Vec::new();
                     for (peer, identity) in probe_results {
                         if let Some(identity) = identity {
-                            let mut info =
+                            let info =
                                 NodeInfo::new(identity.node_id, peer.cluster_address.clone())
                                     .with_epoch(identity.epoch);
-                            info.set_discovery_source(NodeDiscoverySource::K8sDns);
                             verified_peers.push((peer.ip.clone(), info));
                         } else {
                             tracing::debug!(
@@ -444,21 +430,20 @@ mod tests {
             8080,
             "10.0.0.1".to_string(),
         )
-        .with_node_registry(registry.clone());
+        .with_node_directory(registry.clone());
 
-        let mut node_info =
+        let node_info =
             NodeInfo::new("peer-node-1".to_string(), "10.0.0.2:50051".to_string()).with_epoch(7);
-        node_info.set_discovery_source(NodeDiscoverySource::K8sDns);
 
         disc.sync_verified_peers_to_registry(vec![("10.0.0.2".to_string(), node_info)])
             .await;
 
         assert!(
-            registry.test_get_local("peer-node-1").await.is_some(),
+            registry.get_node_local("peer-node-1").await.is_some(),
             "verified DNS peers must be keyed by probed node_id"
         );
         assert!(
-            registry.test_get_local("10.0.0.2").await.is_none(),
+            registry.get_node_local("10.0.0.2").await.is_none(),
             "DNS IP must not be used as authoritative node_id"
         );
         Ok(())
@@ -472,18 +457,17 @@ mod tests {
             8080,
             "10.0.0.1".to_string(),
         )
-        .with_node_registry(registry.clone());
+        .with_node_directory(registry.clone());
 
-        let mut node_info = NodeInfo::new("peer-node-1".to_string(), "10.0.0.2:50051".to_string());
-        node_info.set_discovery_source(NodeDiscoverySource::K8sDns);
+        let node_info = NodeInfo::new("peer-node-1".to_string(), "10.0.0.2:50051".to_string());
 
         disc.sync_verified_peers_to_registry(vec![("10.0.0.2".to_string(), node_info)])
             .await;
-        assert!(registry.test_get_local("peer-node-1").await.is_some());
+        assert!(registry.get_node_local("peer-node-1").await.is_some());
 
         disc.sync_verified_peers_to_registry(Vec::new()).await;
         assert!(
-            registry.test_get_local("peer-node-1").await.is_none(),
+            registry.get_node_local("peer-node-1").await.is_none(),
             "vanished DNS peers should be removed from transient local cache"
         );
         Ok(())
@@ -498,10 +482,9 @@ mod tests {
             8080,
             "10.0.0.1".to_string(),
         )
-        .with_node_registry(registry.clone());
+        .with_node_directory(registry.clone());
 
-        let mut dns_node = NodeInfo::new("peer-node-1".to_string(), "10.0.0.2:50051".to_string());
-        dns_node.set_discovery_source(NodeDiscoverySource::K8sDns);
+        let dns_node = NodeInfo::new("peer-node-1".to_string(), "10.0.0.2:50051".to_string());
 
         disc.sync_verified_peers_to_registry(vec![("10.0.0.2".to_string(), dns_node)])
             .await;
@@ -515,7 +498,7 @@ mod tests {
 
         disc.sync_verified_peers_to_registry(Vec::new()).await;
         assert!(
-            registry.test_get_local("peer-node-1").await.is_some(),
+            registry.get_node_local("peer-node-1").await.is_some(),
             "DNS disappearance must not evict a real node entry that replaced the transient DNS one"
         );
         Ok(())
@@ -530,24 +513,22 @@ mod tests {
             8080,
             "10.0.0.1".to_string(),
         )
-        .with_node_registry(registry.clone());
+        .with_node_directory(registry.clone());
 
-        let mut original =
+        let original =
             NodeInfo::new("peer-node-1".to_string(), "10.0.0.2:50051".to_string()).with_epoch(7);
-        original.set_discovery_source(NodeDiscoverySource::K8sDns);
 
         disc.sync_verified_peers_to_registry(vec![("10.0.0.2".to_string(), original)])
             .await;
 
-        let mut restarted =
+        let restarted =
             NodeInfo::new("peer-node-1".to_string(), "10.0.0.9:50051".to_string()).with_epoch(8);
-        restarted.set_discovery_source(NodeDiscoverySource::K8sDns);
 
         disc.sync_verified_peers_to_registry(vec![("10.0.0.9".to_string(), restarted)])
             .await;
 
         let node = registry
-            .test_get_local("peer-node-1")
+            .get_node_local("peer-node-1")
             .await
             .ok_or_else(|| {
                 crate::Error::NotFound("transient DNS peer should still exist".to_string())

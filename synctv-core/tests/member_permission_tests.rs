@@ -102,7 +102,7 @@ async fn test_manage_member_permissions_requires_grant_permission() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "SMP Room".to_string(),
             String::new(),
@@ -161,7 +161,7 @@ async fn test_manage_member_permissions_creator_can_set() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "SMP2 Room".to_string(),
             String::new(),
@@ -217,7 +217,7 @@ async fn test_manage_member_permissions_updates_admin_override_fields_for_admin_
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "SMP Admin Room".to_string(),
             String::new(),
@@ -302,7 +302,7 @@ async fn test_admin_update_member_role_to_admin_persists_admin_overrides() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Admin Update Member Override Room".to_string(),
             String::new(),
@@ -387,7 +387,7 @@ async fn test_transfer_room_ownership_commits_permission_fences_for_both_members
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Transfer Fence Room".to_string(),
             String::new(),
@@ -467,7 +467,7 @@ async fn test_manage_member_permissions_rejects_lifecycle_only_delete_room_permi
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Disallow Delete Room Permission".to_string(),
             String::new(),
@@ -516,7 +516,7 @@ async fn test_manage_member_permissions_optimistic_lock_retry() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "OLR Room".to_string(),
             String::new(),
@@ -604,7 +604,7 @@ async fn test_concurrent_single_bit_grants_retry_optimistic_conflicts() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Grant Race Room".to_string(),
             String::new(),
@@ -689,7 +689,7 @@ async fn test_concurrent_single_bit_revokes_retry_optimistic_conflicts() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Revoke Race Room".to_string(),
             String::new(),
@@ -774,7 +774,7 @@ async fn test_remanage_member_permissions_clears_all_overrides() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Reset Perm Room".to_string(),
             String::new(),
@@ -856,7 +856,7 @@ async fn test_remanage_member_permissions_requires_grant_permission() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Reset Perm Check Room".to_string(),
             String::new(),
@@ -909,7 +909,7 @@ async fn test_grant_and_revoke_permission_target_admin_use_admin_override_fields
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Grant Admin Room".to_string(),
             String::new(),
@@ -1003,7 +1003,7 @@ async fn test_grant_permission_rejects_lifecycle_only_delete_room_permission() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Disallow Delete Room Grant".to_string(),
             String::new(),
@@ -1053,7 +1053,7 @@ async fn test_stale_admin_role_grant_fails_closed_without_writing_override_colum
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Stale Admin Grant".to_string(),
             String::new(),

@@ -453,15 +453,6 @@ pub fn effective_log_level(config: &LoggingOptions) -> anyhow::Result<Level> {
     parse_log_level(&config.global.level)
 }
 
-/// Generate a trace ID for request tracing.
-#[must_use]
-pub fn generate_trace_id() -> String {
-    use rand::RngExt;
-    let mut rng = rand::rng();
-    let trace_id: u128 = rng.random();
-    format!("{trace_id:032x}")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

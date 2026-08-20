@@ -4,8 +4,7 @@ use crate::test_helpers::TestResultExt;
 /// Test that `resolve_alist_client` returns local client when no remote connection is provided
 #[test]
 fn test_resolve_alist_client_returns_local_without_remote_connection() {
-    let manager =
-        ProviderClientManager::new_for_tests().checked("default provider HTTP client should build");
+    let manager = ProviderClientManager::new().checked("default provider HTTP client should build");
     let local_client = manager.local_alist_client();
     let resolved_client = manager.resolve_alist_client(None);
 

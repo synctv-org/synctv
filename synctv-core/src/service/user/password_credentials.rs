@@ -18,7 +18,9 @@ impl UserService {
     }
 
     pub async fn has_usable_password_authentication(&self, user: &User) -> Result<bool> {
-        self.user_password_repository.has_credential(&user.id).await
+        self.user_password_repository
+            .has_opaque_credential(&user.id)
+            .await
     }
 
     /// Revoke a user's password credential and invalidate password-bound tokens.

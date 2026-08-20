@@ -2,7 +2,7 @@ use sqlx::PgPool;
 use std::sync::Arc;
 
 use crate::{
-    cache::{KeyBuilder, UsernameCache},
+    cache::KeyBuilder,
     models::{StoredFileReference, User, UserId, UserLifecycleMetadata},
     repository::FileStorageRepository,
     service::{file_storage::FileStorageService, TokenBlacklistStore, UserService},
@@ -105,11 +105,6 @@ impl UserService {
 
     pub fn access_token_duration_seconds(&self) -> Result<i64> {
         self.jwt_service.access_token_duration_seconds()
-    }
-
-    #[must_use]
-    pub const fn username_cache(&self) -> &UsernameCache {
-        &self.username_cache
     }
 
     #[must_use]

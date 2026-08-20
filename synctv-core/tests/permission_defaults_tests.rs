@@ -25,7 +25,7 @@ async fn test_creator_has_all_permissions() {
         "creator should be created",
     );
 
-    let (room, _) = ok(
+    let room = ok(
         room_service
             .create_room(
                 "Perm Creator Room".to_string(),

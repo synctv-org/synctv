@@ -186,10 +186,6 @@ impl CredentialEncryption {
             .internal_with_err("Decrypted credential is not valid JSON")
     }
 
-    pub fn decrypt_value(&self, value: &serde_json::Value) -> Result<serde_json::Value> {
-        self.decrypt_value_with_context(value, b"")
-    }
-
     pub fn decrypt_value_with_context(
         &self,
         value: &serde_json::Value,
@@ -201,11 +197,6 @@ impl CredentialEncryption {
                 "Credential value must be an encrypted string with 'enc:' prefix, got {other}."
             ))),
         }
-    }
-
-    /// Encrypt a JSON Value and return as a string Value for DB storage
-    pub fn encrypt_to_value(&self, plaintext: &serde_json::Value) -> Result<serde_json::Value> {
-        self.encrypt_to_value_with_context(plaintext, b"")
     }
 
     pub fn encrypt_to_value_with_context(
@@ -271,7 +262,7 @@ mod tests {
     }
 
     #[test]
-    fn test_decrypt_value_encrypted() {
+    fn test_decrypt_value_with_context_encrypted() {
         let enc = ok(
             CredentialEncryption::new(&test_key()),
             "encryption should build",
@@ -279,7 +270,7 @@ mod tests {
         let original = json!({"apiKey": "secret123"});
 
         let encrypted_value = ok(
-            enc.encrypt_to_value(&original),
+            enc.encrypt_to_value_with_context(&original, b"test-context"),
             "credential value should encrypt",
         );
         assert!(encrypted_value
@@ -287,21 +278,21 @@ mod tests {
             .is_some_and(|s| s.starts_with("enc:")));
 
         let decrypted = ok(
-            enc.decrypt_value(&encrypted_value),
+            enc.decrypt_value_with_context(&encrypted_value, b"test-context"),
             "credential value should decrypt",
         );
         assert_eq!(original, decrypted);
     }
 
     #[test]
-    fn test_decrypt_value_plaintext_returns_error() {
+    fn test_decrypt_value_with_context_plaintext_returns_error() {
         let enc = ok(
             CredentialEncryption::new(&test_key()),
             "encryption should build",
         );
         let plaintext = json!({"cookies": {"SESSDATA": "test"}});
 
-        let result = enc.decrypt_value(&plaintext);
+        let result = enc.decrypt_value_with_context(&plaintext, b"test-context");
         assert!(result.is_err(), "Plaintext JSON values should be rejected");
     }
 

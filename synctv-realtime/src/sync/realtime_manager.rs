@@ -401,12 +401,6 @@ impl RealtimeManager {
         &self.message_hub
     }
 
-    /// Get the deduplicator
-    #[must_use]
-    pub const fn deduplicator(&self) -> &Arc<MessageDeduplicator> {
-        &self.deduplicator
-    }
-
     /// Get this node's unique identifier
     #[must_use]
     pub fn node_id(&self) -> &str {

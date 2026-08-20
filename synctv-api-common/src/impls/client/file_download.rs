@@ -6,12 +6,6 @@ use crate::impls::ApiError;
 // protobuf chunks. Core storage owns range resolution and byte streaming; HTTP
 // uses the same FileObjectDownload as a normal binary response body.
 
-pub fn metadata_content_range(
-    metadata: &synctv_core::models::FileObjectMetadata,
-) -> Option<synctv_proto::client::FileByteRange> {
-    metadata.range.map(super::media::file_byte_range_to_proto)
-}
-
 /// Generic helper to convert FileObjectDownload into a proto chunk stream.
 /// `build_proto` receives (mime_type, sha256, data, content_range, total_size).
 fn generic_chunk_stream<T, F>(
@@ -25,7 +19,7 @@ where
         + 'static,
 {
     let metadata = download.metadata;
-    let content_range = metadata_content_range(&metadata);
+    let content_range = metadata.range.map(super::media::file_byte_range_to_proto);
     let mime_type = metadata.mime_type;
     let content_manifest_sha256 = metadata.content_manifest_sha256;
     let total_size_bytes = metadata.total_size_bytes;

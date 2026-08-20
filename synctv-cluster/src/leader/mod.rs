@@ -583,28 +583,6 @@ impl Default for LeaderElectorConfig {
 }
 
 impl LeaderElector {
-    /// Create a new leader elector with default configuration.
-    ///
-    /// The `key_prefix` is prepended to the leader election lock key in Redis
-    /// (e.g. `"synctv:"` produces the lock key `synctv:leader_election`).
-    /// Pass an empty string to use the unprefixed default key.
-    ///
-    /// # Safety Warning: Sentinel Mode
-    ///
-    /// When `is_sentinel` is true, a startup warning is logged about the
-    /// distributed lock vulnerability during Sentinel failover. For production
-    /// deployments with Redis Sentinel, consider using K8s Lease-based leader
-    /// election instead (requires `k8s` feature).
-    pub fn new(
-        redis_conn: redis::aio::ConnectionManager,
-        identity: String,
-        key_prefix: &str,
-        is_sentinel: bool,
-    ) -> Self {
-        let config = LeaderElectorConfig::default();
-        Self::new_with_config(redis_conn, identity, &config, key_prefix, is_sentinel)
-    }
-
     /// Create a new leader elector with custom configuration.
     ///
     /// The `key_prefix` is prepended to the leader election lock key in Redis.
@@ -634,17 +612,6 @@ impl LeaderElector {
     ) -> Self {
         let config = LeaderElectorConfig::default();
         Self::new_with_runtime_config(redis_runtime, identity, &config, key_prefix, is_sentinel)
-    }
-
-    pub fn new_with_shared_runtime(
-        redis_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
-        identity: String,
-        config: &LeaderElectorConfig,
-        key_prefix: &str,
-        is_sentinel: bool,
-    ) -> Self {
-        let redis_runtime = synctv_core::shared_runtime(redis_conn);
-        Self::new_with_runtime_config(redis_runtime, identity, config, key_prefix, is_sentinel)
     }
 
     pub fn new_with_runtime_config(

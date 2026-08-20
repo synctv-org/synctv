@@ -244,12 +244,6 @@ impl PermissionService {
         Ok(())
     }
 
-    pub async fn is_creator(&self, room_id: &RoomId, user_id: &UserId) -> Result<bool> {
-        let member = self.member_repo()?.get(room_id, user_id).await?;
-
-        Ok(member.is_some_and(|m| m.role == RoomRole::Creator))
-    }
-
     pub async fn is_admin_or_creator(&self, room_id: &RoomId, user_id: &UserId) -> Result<bool> {
         let member = self.member_repo()?.get(room_id, user_id).await?;
 

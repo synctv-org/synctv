@@ -421,17 +421,8 @@ impl TieredTokenBlacklistStore {
         redis_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
         key_prefix: String,
     ) -> Self {
-        Self::from_durable_runtime(Arc::new(durable), redis_runtime, key_prefix)
-    }
-
-    #[must_use]
-    pub fn from_durable_runtime(
-        durable: Arc<dyn TokenBlacklistStore>,
-        redis_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
-        key_prefix: String,
-    ) -> Self {
         Self {
-            durable,
+            durable: Arc::new(durable),
             redis_runtime,
             // L1 blacklist: max 100k entries, background eviction at 120s
             l1_blacklist: moka::future::Cache::builder()

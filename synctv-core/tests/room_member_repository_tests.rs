@@ -7,9 +7,8 @@
 use chrono::Utc;
 use synctv_core::{
     models::{
-        AddMemberOptions, MemberStatus, MyRoomListQuery, MyRoomListSortBy, PageParams, Room,
-        RoomId, RoomMember, RoomRole, RoomStatus, SortDirection, User, UserId, UserRole,
-        UserStatus,
+        AddMemberOptions, MyRoomListQuery, MyRoomListSortBy, PageParams, Room, RoomId, RoomMember,
+        RoomRole, RoomStatus, SortDirection, User, UserId, UserRole, UserStatus,
     },
     repository::{
         room_member::KickCooldownInsert, RoomMemberRepository, RoomRepository, UserRepository,
@@ -109,7 +108,7 @@ async fn test_add_with_options_full_flow() {
         .checked("test operation should succeed");
 
     let member = make_member(room.id, joiner.id, RoomRole::Member);
-    let options = AddMemberOptions::new();
+    let options = AddMemberOptions::default();
 
     let result = member_repo
         .add_with_options(&member, &options)
@@ -117,7 +116,6 @@ async fn test_add_with_options_full_flow() {
         .checked("test operation should succeed");
     assert_eq!(result.user_id, joiner.id);
     assert_eq!(result.role, RoomRole::Member);
-    assert_eq!(result.status, MemberStatus::Active);
 }
 
 #[tokio::test]
@@ -180,23 +178,12 @@ async fn test_my_room_queries_preserve_cover_reference() {
         pagination: PageParams::new(Some(1), Some(10)),
         ..Default::default()
     };
-    let (primary_rooms, _) = member_repo
-        .list_by_user_with_query(&viewer.id, &query)
-        .await
-        .checked("primary my-room query should succeed");
-    let (read_rooms, _) = member_repo
+    let (rooms, _) = member_repo
         .list_accessible_by_user_with_query_eventually_consistent(&viewer.id, &query)
         .await
-        .checked("read-pool my-room query should succeed");
+        .checked("my-room query should succeed");
 
-    assert_eq!(
-        primary_rooms[0].0.cover_file_reference_id,
-        Some(cover_reference_id)
-    );
-    assert_eq!(
-        read_rooms[0].0.cover_file_reference_id,
-        Some(cover_reference_id)
-    );
+    assert_eq!(rooms[0].0.cover_file_reference_id, Some(cover_reference_id));
 }
 
 #[tokio::test]
@@ -317,7 +304,7 @@ async fn test_record_visit_deduplicates_and_drives_room_sorting() {
         ..Default::default()
     };
     let (frequent_results, _) = member_repo
-        .list_by_user_with_query(
+        .list_accessible_by_user_with_query_eventually_consistent(
             &visitor.id,
             &MyRoomListQuery {
                 sort_by: MyRoomListSortBy::Frequent,
@@ -329,7 +316,7 @@ async fn test_record_visit_deduplicates_and_drives_room_sorting() {
     assert_eq!(frequent_results[0].0.id, frequent_room.id);
 
     let (recent_results, _) = member_repo
-        .list_by_user_with_query(
+        .list_accessible_by_user_with_query_eventually_consistent(
             &visitor.id,
             &MyRoomListQuery {
                 sort_by: MyRoomListSortBy::LastVisitedAt,
@@ -364,7 +351,7 @@ async fn test_add_with_options_capacity_at_max_members() {
         .await
         .checked("test operation should succeed");
     let m1 = make_member(room.id, user1.id, RoomRole::Member);
-    let options_fill = AddMemberOptions::new().with_max_members(1);
+    let options_fill = AddMemberOptions::default().with_max_members(1);
     member_repo
         .add_with_options(&m1, &options_fill)
         .await
@@ -376,7 +363,7 @@ async fn test_add_with_options_capacity_at_max_members() {
         .await
         .checked("test operation should succeed");
     let m2 = make_member(room.id, user2.id, RoomRole::Member);
-    let options_reject = AddMemberOptions::new().with_max_members(1);
+    let options_reject = AddMemberOptions::default().with_max_members(1);
     let err = member_repo
         .add_with_options(&m2, &options_reject)
         .await
@@ -407,7 +394,7 @@ async fn test_add_with_options_removed_members_do_not_consume_capacity() {
         .checked("test operation should succeed");
     let departed_member = make_member(room.id, removed_user.id, RoomRole::Member);
     member_repo
-        .add_with_options(&departed_member, &AddMemberOptions::new())
+        .add_with_options(&departed_member, &AddMemberOptions::default())
         .await
         .checked("test operation should succeed");
     member_repo
@@ -422,7 +409,10 @@ async fn test_add_with_options_removed_members_do_not_consume_capacity() {
     let active_member = make_member(room.id, active_user.id, RoomRole::Member);
 
     member_repo
-        .add_with_options(&active_member, &AddMemberOptions::new().with_max_members(1))
+        .add_with_options(
+            &active_member,
+            &AddMemberOptions::default().with_max_members(1),
+        )
         .await
         .checked("pending members must not count against max_members");
 }
@@ -455,7 +445,7 @@ async fn test_add_with_options_inactive_room_rejection() {
         .await
         .checked("test operation should succeed");
     let member = make_member(room.id, joiner.id, RoomRole::Member);
-    let options = AddMemberOptions::new();
+    let options = AddMemberOptions::default();
 
     let err = member_repo
         .add_with_options(&member, &options)
@@ -486,7 +476,7 @@ async fn test_add_with_options_duplicate_membership_check() {
         .checked("test operation should succeed");
 
     let member = make_member(room.id, joiner.id, RoomRole::Member);
-    let options = AddMemberOptions::new();
+    let options = AddMemberOptions::default();
 
     // First join succeeds
     member_repo
@@ -521,7 +511,7 @@ async fn test_add_with_options_max_members_zero_bypass() {
         .checked("test operation should succeed");
 
     // max_members=0 means unlimited - even with check enabled, it bypasses
-    let mut options = AddMemberOptions::new();
+    let mut options = AddMemberOptions::default();
     options.check_max_members = true;
     options.max_members = 0;
 
@@ -1119,7 +1109,7 @@ async fn test_count_by_rooms_batch_empty_input() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_list_by_user_with_details_pagination() {
+async fn test_list_accessible_by_user_with_query_pagination() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
@@ -1151,7 +1141,13 @@ async fn test_list_by_user_with_details_pagination() {
     // Page 1 with page_size=2
     let page1 = PageParams::new(Some(1), Some(2));
     let (rooms_p1, total_p1) = member_repo
-        .list_by_user_with_details(&user.id, page1)
+        .list_accessible_by_user_with_query_eventually_consistent(
+            &user.id,
+            &MyRoomListQuery {
+                pagination: page1,
+                ..Default::default()
+            },
+        )
         .await
         .checked("test operation should succeed");
     assert_eq!(total_p1, 5);
@@ -1160,7 +1156,13 @@ async fn test_list_by_user_with_details_pagination() {
     // Page 2 with page_size=2
     let page2 = PageParams::new(Some(2), Some(2));
     let (rooms_p2, total_p2) = member_repo
-        .list_by_user_with_details(&user.id, page2)
+        .list_accessible_by_user_with_query_eventually_consistent(
+            &user.id,
+            &MyRoomListQuery {
+                pagination: page2,
+                ..Default::default()
+            },
+        )
         .await
         .checked("test operation should succeed");
     assert_eq!(total_p2, 5);
@@ -1169,7 +1171,13 @@ async fn test_list_by_user_with_details_pagination() {
     // Page 3 with page_size=2 (only 1 remaining)
     let page3 = PageParams::new(Some(3), Some(2));
     let (rooms_p3, total_p3) = member_repo
-        .list_by_user_with_details(&user.id, page3)
+        .list_accessible_by_user_with_query_eventually_consistent(
+            &user.id,
+            &MyRoomListQuery {
+                pagination: page3,
+                ..Default::default()
+            },
+        )
         .await
         .checked("test operation should succeed");
     assert_eq!(total_p3, 5);
@@ -1178,7 +1186,13 @@ async fn test_list_by_user_with_details_pagination() {
     // Out-of-range pages still need the real total for pagination controls.
     let page4 = PageParams::new(Some(4), Some(2));
     let (rooms_p4, total_p4) = member_repo
-        .list_by_user_with_details(&user.id, page4)
+        .list_accessible_by_user_with_query_eventually_consistent(
+            &user.id,
+            &MyRoomListQuery {
+                pagination: page4,
+                ..Default::default()
+            },
+        )
         .await
         .checked("test operation should succeed");
     assert_eq!(total_p4, 5);
@@ -1192,9 +1206,9 @@ async fn test_list_by_user_with_details_pagination() {
     assert!(room_ids_p4.is_empty());
 
     // Verify no overlapping room IDs between pages
-    let ids_p1: Vec<_> = rooms_p1.iter().map(|(r, _, _, _)| r.id).collect();
-    let ids_p2: Vec<_> = rooms_p2.iter().map(|(r, _, _, _)| r.id).collect();
-    let ids_p3: Vec<_> = rooms_p3.iter().map(|(r, _, _, _)| r.id).collect();
+    let ids_p1: Vec<_> = rooms_p1.iter().map(|(r, _, _)| r.id).collect();
+    let ids_p2: Vec<_> = rooms_p2.iter().map(|(r, _, _)| r.id).collect();
+    let ids_p3: Vec<_> = rooms_p3.iter().map(|(r, _, _)| r.id).collect();
 
     for id in &ids_p1 {
         assert!(!ids_p2.contains(id));
@@ -1266,7 +1280,7 @@ async fn test_list_by_user_with_query_respects_filters_sort_and_pagination() {
     };
 
     let (page1, total_page1) = member_repo
-        .list_by_user_with_query(&user.id, &query)
+        .list_accessible_by_user_with_query_eventually_consistent(&user.id, &query)
         .await
         .checked("test operation should succeed");
     assert_eq!(total_page1, 2);
@@ -1274,7 +1288,7 @@ async fn test_list_by_user_with_query_respects_filters_sort_and_pagination() {
     assert_eq!(page1[0].0.name, "Alpha Room");
 
     let (page2, total_page2) = member_repo
-        .list_by_user_with_query(
+        .list_accessible_by_user_with_query_eventually_consistent(
             &user.id,
             &MyRoomListQuery {
                 pagination: PageParams::new(Some(2), Some(1)),
@@ -1334,7 +1348,7 @@ async fn test_list_by_user_with_query_member_count_counts_active_only_rows() {
         .checked("test operation should succeed");
 
     let (rows, total) = member_repo
-        .list_by_user_with_query(
+        .list_accessible_by_user_with_query_eventually_consistent(
             &viewer.id,
             &MyRoomListQuery {
                 pagination: PageParams::new(Some(1), Some(10)),
@@ -1348,7 +1362,7 @@ async fn test_list_by_user_with_query_member_count_counts_active_only_rows() {
     assert_eq!(total, 1);
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].0.id, room.id);
-    assert_eq!(rows[0].3, 2, "only owner + active viewer should count");
+    assert_eq!(rows[0].2, 2, "only owner + active viewer should count");
 }
 
 #[tokio::test]
@@ -1520,7 +1534,6 @@ async fn test_add_after_remove_creates_fresh_membership() {
 
     assert!(result.is_ok());
     let rejoined = result.checked("test operation should succeed");
-    assert_eq!(rejoined.status, MemberStatus::Active);
     assert_eq!(rejoined.added_permissions, 0);
     assert_eq!(rejoined.removed_permissions, 0);
     assert_eq!(rejoined.admin_added_permissions, 0);
@@ -1564,7 +1577,7 @@ async fn test_update_permissions_after_member_removed_should_fail() {
     // Add member with no permissions
     let new_member = make_member(room.id, member_user.id, RoomRole::Member);
     let _member = member_repo
-        .add_with_options(&new_member, &AddMemberOptions::new())
+        .add_with_options(&new_member, &AddMemberOptions::default())
         .await
         .checked("test operation should succeed");
 
@@ -1623,7 +1636,7 @@ async fn test_update_permissions_for_active_member_should_succeed() {
     // Add active member
     let new_member = make_member(room.id, member_user.id, RoomRole::Member);
     let member = member_repo
-        .add_with_options(&new_member, &AddMemberOptions::new())
+        .add_with_options(&new_member, &AddMemberOptions::default())
         .await
         .checked("test operation should succeed");
 

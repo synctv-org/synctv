@@ -7,7 +7,6 @@ mod presence_service;
 
 pub use presence_client::{FanOutResult, RealtimePresenceClient, RealtimePresenceClientConfig};
 pub use presence_service::RealtimePresenceServiceImpl;
-pub use proto::realtime_presence_service_client::RealtimePresenceServiceClient as RealtimePresenceGrpcClient;
 pub use proto::realtime_presence_service_server::{
     RealtimePresenceService, RealtimePresenceServiceServer,
 };

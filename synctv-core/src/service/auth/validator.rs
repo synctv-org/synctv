@@ -4,7 +4,7 @@
 //! request entrypoints.
 
 use super::{jwt::JwtService, Claims};
-use crate::{models::UserId, Error, Result};
+use crate::{Error, Result};
 use std::sync::Arc;
 
 /// JWT validator for authentication credentials.
@@ -56,20 +56,6 @@ impl JwtValidator {
     pub fn validate_token(&self, token: &str) -> Result<Claims> {
         self.jwt_service.verify_access_token(token)
     }
-
-    /// Validate JWT token and return user ID
-    ///
-    /// Convenience method that extracts just the `user_id` from the token.
-    ///
-    /// # Arguments
-    /// * `token` - JWT token string
-    ///
-    /// # Returns
-    /// User ID extracted from the token
-    pub fn validate_and_extract_user_id(&self, token: &str) -> Result<UserId> {
-        let claims = self.validate_token(token)?;
-        Ok(claims.user_id())
-    }
 }
 
 impl std::fmt::Debug for JwtValidator {
@@ -96,28 +82,12 @@ impl JwtValidator {
         let token = Self::extract_bearer_token(auth_header)?;
         self.validate_token(&token)
     }
-
-    /// Validate JWT from an Authorization header value and extract user ID.
-    ///
-    /// Convenience method for call sites that only need the `user_id`.
-    ///
-    /// # Arguments
-    /// * `auth_header` - Authorization header value (e.g., "Bearer <token>")
-    ///
-    /// # Returns
-    /// User ID extracted from the token
-    pub fn validate_authorization_header_extract_user_id(
-        &self,
-        auth_header: &str,
-    ) -> Result<UserId> {
-        let claims = self.validate_authorization_header(auth_header)?;
-        Ok(claims.user_id())
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::UserId;
 
     fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
         match result {
@@ -194,21 +164,5 @@ mod tests {
 
         let result = validator.validate_authorization_header("Basic invalid");
         assert!(matches!(result, Err(Error::Authentication(_))));
-    }
-
-    #[test]
-    fn test_validate_authorization_header_extract_user_id() {
-        let jwt_service = create_test_jwt_service();
-        let validator = JwtValidator::new(jwt_service.clone());
-
-        let token = create_test_token(&jwt_service, 98_003);
-
-        let user_id =
-            validator.validate_authorization_header_extract_user_id(&format!("Bearer {token}"));
-        let user_id = ok(
-            user_id,
-            "authorization header bearer token user ID should extract",
-        );
-        assert_eq!(user_id.to_string(), "98003");
     }
 }

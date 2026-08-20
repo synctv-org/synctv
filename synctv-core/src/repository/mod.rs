@@ -87,7 +87,7 @@ pub use room_resource_event::{
     RoomResourceEventSummary, RoomResourceEventSummaryDetails, RoomResourceKind,
 };
 pub use room_settings::RoomSettingsRepository;
-pub use room_taxonomy::{RoomTaxonomyAssignment, RoomTaxonomyRepository};
+pub use room_taxonomy::RoomTaxonomyRepository;
 pub use settings::SettingsRepository;
 pub use system_stats::{SystemStats, SystemStatsRepository};
 pub use totp_credential::{TotpCredential, TotpCredentialRepository};

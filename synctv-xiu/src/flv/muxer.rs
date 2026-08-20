@@ -1,5 +1,6 @@
 use {
-    super::errors::FlvMuxerError, crate::bytesio::bytes_writer::BytesWriter, byteorder::BigEndian,
+    crate::bytesio::{bytes_errors::BytesWriteError, bytes_writer::BytesWriter},
+    byteorder::BigEndian,
 };
 
 const FLV_HEADER_AV: [u8; 9] = [
@@ -57,7 +58,7 @@ impl FlvMuxer {
         &mut self,
         has_audio: bool,
         has_video: bool,
-    ) -> Result<(), FlvMuxerError> {
+    ) -> Result<(), BytesWriteError> {
         if has_audio && has_video {
             self.writer.write(&FLV_HEADER_AV)?;
         } else if has_audio {
@@ -75,7 +76,7 @@ impl FlvMuxer {
         tag_type: u8,
         data_size: u32,
         timestamp: u32,
-    ) -> Result<(), FlvMuxerError> {
+    ) -> Result<(), BytesWriteError> {
         //tag type
         self.writer.write_u8(tag_type)?;
         //data size
@@ -92,12 +93,12 @@ impl FlvMuxer {
         Ok(())
     }
 
-    pub fn write_flv_tag_body(&mut self, body: &[u8]) -> Result<(), FlvMuxerError> {
+    pub fn write_flv_tag_body(&mut self, body: &[u8]) -> Result<(), BytesWriteError> {
         self.writer.write(body)?;
         Ok(())
     }
 
-    pub fn write_previous_tag_size(&mut self, size: u32) -> Result<(), FlvMuxerError> {
+    pub fn write_previous_tag_size(&mut self, size: u32) -> Result<(), BytesWriteError> {
         self.writer.write_u32::<BigEndian>(size)?;
         Ok(())
     }

@@ -34,17 +34,6 @@ fn joined<T>(result: std::result::Result<T, tokio::task::JoinError>, context: &s
     }
 }
 
-#[tokio::test]
-async fn test_redis_oauth_state_store_accepts_trait_object_runtime() {
-    let runtime = failing_redis_runtime();
-    let store = RedisOAuthStateStore::from_runtime(runtime.clone(), "synctv:");
-
-    assert!(
-        store.runtime_ptr_eq(&runtime),
-        "OAuth2 Redis store should retain the injected runtime object"
-    );
-}
-
 #[test]
 fn test_state_store_from_shared_state_profile_uses_memory_without_shared_runtime() {
     let profile = SharedStateProfile::for_cluster_runtime(None, "test:", false);

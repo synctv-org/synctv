@@ -224,7 +224,7 @@ async fn test_add_media_without_permission_denied() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Add Media Room".to_string(),
             String::new(),
@@ -291,7 +291,7 @@ async fn test_add_media_with_permission_succeeds() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Add Media OK Room".to_string(),
             String::new(),
@@ -336,7 +336,7 @@ async fn test_add_media_rejects_missing_shared_bilibili_credential() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Add Media Bilibili Room".to_string(),
             String::new(),
@@ -393,7 +393,7 @@ async fn test_add_media_with_bilibili_without_repo_allows_anonymous_playback() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Add Media Missing Repo".to_string(),
             String::new(),
@@ -440,7 +440,7 @@ async fn test_backend_playback_for_static_live_proxy_binds_media_id() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Live Proxy Backend Playback Room".to_string(),
             String::new(),
@@ -509,7 +509,7 @@ async fn test_backend_playback_rejects_static_media_from_banned_creator() {
         .create(&make_user("backend_banned_media_creator"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Backend Banned Media".to_string(),
             String::new(),
@@ -573,7 +573,7 @@ async fn test_create_dynamic_playlist_with_credential_backed_provider_without_re
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Dynamic Playlist Missing Repo".to_string(),
             String::new(),
@@ -629,7 +629,7 @@ async fn test_list_dynamic_playlist_items_with_credential_backed_provider_withou
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Dynamic Playlist Runtime Missing Repo".to_string(),
             String::new(),
@@ -705,11 +705,11 @@ async fn test_add_media_cross_room_playlist_rejected() {
         .await
         .checked("test operation should succeed");
 
-    let (room_a, _) = room_service
+    let room_a = room_service
         .create_room("Room A".to_string(), String::new(), creator.id, None, None)
         .await
         .checked("test operation should succeed");
-    let (room_b, _) = room_service
+    let room_b = room_service
         .create_room("Room B".to_string(), String::new(), creator.id, None, None)
         .await
         .checked("test operation should succeed");
@@ -754,7 +754,7 @@ async fn test_add_media_batch_over_100_rejected() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Batch Room".to_string(),
             String::new(),
@@ -810,7 +810,7 @@ async fn test_add_media_batch_empty_returns_empty() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Batch Empty Room".to_string(),
             String::new(),
@@ -845,7 +845,7 @@ async fn test_add_media_batch_exactly_100_accepted() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Batch 100 Room".to_string(),
             String::new(),
@@ -901,7 +901,7 @@ async fn test_add_media_batch_uses_batch_target_playlist() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Batch Target Room".to_string(),
             String::new(),
@@ -956,7 +956,7 @@ async fn test_edit_media_optimistic_lock_retry_exhaustion() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Edit OLR Room".to_string(),
             String::new(),
@@ -1057,7 +1057,7 @@ async fn test_edit_media_persists_playback_proxy_mode_and_preserves_source_confi
         .create(&make_user("edit_proxy_mode_creator"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Edit Proxy Mode Room".to_string(),
             String::new(),
@@ -1154,7 +1154,7 @@ async fn test_edit_media_can_switch_provider_instance_without_replacing_source_c
         .create(&make_user("edit_media_provider_instance"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Edit Media Provider Instance Room".to_string(),
             String::new(),
@@ -1273,7 +1273,7 @@ async fn test_move_media_rejects_conflicting_anchor_flags() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Move Media Validation".to_string(),
             String::new(),
@@ -1342,7 +1342,7 @@ async fn test_move_media_reorders_using_anchor_positions() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Move Media Order".to_string(),
             String::new(),
@@ -1445,7 +1445,7 @@ async fn test_move_media_batch_preserves_request_order() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Move Media Batch".to_string(),
             String::new(),
@@ -1542,7 +1542,7 @@ async fn test_move_media_to_another_playlist_appends_by_default() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Move Media Cross Playlist".to_string(),
             String::new(),
@@ -1687,7 +1687,7 @@ async fn test_move_all_media_from_scope_to_playlist_preserves_source_order() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Move All Media Scope".to_string(),
             String::new(),

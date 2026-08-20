@@ -97,7 +97,7 @@ async fn test_add_member_respects_max_members() {
         ..Default::default()
     };
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Max Members Room".to_string(),
             String::new(),
@@ -141,7 +141,7 @@ async fn test_kick_member_role_hierarchy() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Kick Hierarchy Room".to_string(),
             String::new(),
@@ -199,7 +199,7 @@ async fn test_kick_member_creator_can_kick_admin() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Kick Creator Room".to_string(),
             String::new(),
@@ -252,7 +252,7 @@ async fn test_set_member_role_rejects_promoting_another_member_to_creator() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Unique Creator Room".to_string(),
             String::new(),
@@ -292,7 +292,7 @@ async fn test_set_member_role_rejects_demoting_the_room_creator() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Demote Creator Room".to_string(),
             String::new(),
@@ -341,7 +341,7 @@ async fn test_grant_permission_bitwise_or() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Grant Room".to_string(),
             String::new(),
@@ -392,7 +392,7 @@ async fn test_revoke_permission() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Revoke Room".to_string(),
             String::new(),
@@ -454,7 +454,7 @@ async fn test_kick_member_removes_active_membership() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Kick Broadcast Room".to_string(),
             String::new(),
@@ -505,7 +505,7 @@ async fn test_kick_member_cooldown_blocks_rejoin_until_expired() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Kick Cooldown Room".to_string(),
             String::new(),
@@ -584,7 +584,7 @@ async fn test_delete_active_membership_returns_not_found_for_non_member() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Delete Membership NotFound Room".to_string(),
             String::new(),
@@ -635,7 +635,7 @@ async fn test_delete_active_membership_idempotent_not_found_after_deletion() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Delete Membership Idempotent Room".to_string(),
             String::new(),
@@ -721,7 +721,7 @@ async fn test_delete_active_membership_concurrent_no_race() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Delete Membership Concurrent Room".to_string(),
             String::new(),

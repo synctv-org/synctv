@@ -95,7 +95,6 @@ impl CachedMemberPermissionSource {
             room_id: self.room_id,
             user_id: self.user_id,
             role: self.role,
-            status: crate::models::MemberStatus::Active,
             added_permissions: self.added_permissions,
             removed_permissions: self.removed_permissions,
             admin_added_permissions: self.admin_added_permissions,

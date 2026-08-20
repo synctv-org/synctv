@@ -42,27 +42,7 @@ impl RoomService {
         created_by: UserId,
         password: Option<String>,
         settings: Option<RoomSettings>,
-    ) -> Result<(Room, RoomMember)> {
-        Box::pin(self.create_room_with_outbox(
-            name,
-            description,
-            created_by,
-            password,
-            settings,
-            None,
-        ))
-        .await
-    }
-
-    pub async fn create_room_with_outbox(
-        &self,
-        name: String,
-        description: String,
-        created_by: UserId,
-        password: Option<String>,
-        settings: Option<RoomSettings>,
-        outbox_event_factory: Option<RealtimeOutboxRoomEventFactory>,
-    ) -> Result<(Room, RoomMember)> {
+    ) -> Result<Room> {
         self.create_room_with_taxonomy_outbox(
             CreateRoomWithTaxonomyRequest {
                 name,
@@ -74,7 +54,7 @@ impl RoomService {
                 label_ids: Vec::new(),
                 is_public: true,
             },
-            outbox_event_factory,
+            None,
         )
         .await
     }
@@ -83,7 +63,7 @@ impl RoomService {
         &self,
         request: CreateRoomWithTaxonomyRequest,
         outbox_event_factory: Option<RealtimeOutboxRoomEventFactory>,
-    ) -> Result<(Room, RoomMember)> {
+    ) -> Result<Room> {
         if let Some(ref lock) = self.distributed_lock {
             let created_by = request.created_by;
             let lock_key = format!("create_room:{created_by}");
@@ -107,7 +87,7 @@ impl RoomService {
         &self,
         request: CreateRoomWithTaxonomyRequest,
         outbox_event_factory: Option<RealtimeOutboxRoomEventFactory>,
-    ) -> Result<(Room, RoomMember)> {
+    ) -> Result<Room> {
         self.do_create_room_with_policy(request, true, outbox_event_factory)
             .await
     }
@@ -117,7 +97,7 @@ impl RoomService {
         command: CreateRoomWithTaxonomyRequest,
         enforce_creation_policy: bool,
         outbox_event_factory: Option<RealtimeOutboxRoomEventFactory>,
-    ) -> Result<(Room, RoomMember)> {
+    ) -> Result<Room> {
         let CreateRoomWithTaxonomyRequest {
             name,
             description,
@@ -209,8 +189,6 @@ impl RoomService {
                 )
                 .await?;
             tx.commit().await?;
-            let pending_member = RoomMember::new(pending_room.id, created_by, RoomRole::Creator);
-
             if let Some(ref notif_service) = self.user_notification_service {
                 let query = UserListQuery {
                     pagination: PageParams::new(Some(1), Some(100)),
@@ -259,7 +237,7 @@ impl RoomService {
                 }
             }
 
-            return Ok((pending_room, pending_member));
+            return Ok(pending_room);
         }
 
         let mut tx = self.pool.begin().await?;
@@ -329,6 +307,6 @@ impl RoomService {
         let mut created_room = created_room;
         self.hydrate_room_taxonomy(&mut created_room).await?;
 
-        Ok((created_room, created_member))
+        Ok(created_room)
     }
 }

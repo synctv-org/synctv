@@ -275,10 +275,6 @@ pub enum VideoId {
     Aid(u64),
 }
 
-/// Anime episode ID
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EpisodeId(pub String);
-
 /// Quality levels
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Quality {
@@ -715,35 +711,6 @@ pub struct LiveMasterInfo {
     pub uname: String,
     pub face: String,
     pub uid: u64,
-}
-
-/// Live stream URL response
-#[derive(Debug, Clone, Deserialize)]
-pub struct GetLiveStreamResp {
-    pub data: LiveStreamData,
-    pub message: String,
-    pub code: i32,
-    pub ttl: i32,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct LiveStreamData {
-    pub accept_quality: Vec<String>,
-    pub quality_description: Vec<QualityDesc>,
-    pub durl: Vec<LiveDurl>,
-    pub current_quality: u64,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct QualityDesc {
-    pub desc: String,
-    pub qn: u64,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct LiveDurl {
-    pub url: String,
-    pub order: u32,
 }
 
 #[derive(Debug, Clone, Deserialize)]

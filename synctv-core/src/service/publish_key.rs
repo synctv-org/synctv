@@ -291,10 +291,6 @@ impl PublishKeyService {
         Ok(Self::from_store(jwt_service, clock, token_ttl_hours, store))
     }
 
-    pub fn with_default_ttl(jwt_service: JwtService, clock: Arc<dyn Clock>) -> Result<Self> {
-        Self::new(jwt_service, clock, 24)
-    }
-
     fn with_redis_runtime(
         jwt_service: JwtService,
         clock: Arc<dyn Clock>,

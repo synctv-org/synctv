@@ -105,18 +105,6 @@ impl NetConnection {
         Ok(())
     }
 
-    pub async fn write_connect_with_value(
-        &mut self,
-        transaction_id: &f64,
-        properties: IndexMap<String, Amf0ValueType>,
-    ) -> Result<(), NetConnectionError> {
-        self.amf0_writer.write_string(&String::from("connect"))?;
-        self.amf0_writer.write_number(transaction_id)?;
-
-        self.amf0_writer.write_object(&properties)?;
-
-        self.write_chunk().await
-    }
     pub async fn write_connect(
         &mut self,
         transaction_id: &f64,

@@ -344,20 +344,6 @@ pub struct SynologySubtitle {
     pub need_preview: bool,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct SynologyWatchStatusInfo {
-    #[serde(default)]
-    pub watch_status: SynologyWatchStatus,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct SynologyWatchStatus {
-    #[serde(default)]
-    pub last_update: Option<i64>,
-    #[serde(default)]
-    pub position: u64,
-}
-
 #[derive(Debug, Clone, Deserialize)]
 pub struct SynologyStreamSession {
     pub stream_id: String,

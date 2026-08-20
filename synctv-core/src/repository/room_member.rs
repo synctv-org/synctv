@@ -2,8 +2,8 @@ use sqlx::PgPool;
 
 use crate::{
     models::{
-        AddMemberOptions, MemberStatus, MyRoomListQuery, MyRoomListSortBy, MyRoomRelation,
-        PageParams, RoomCategoryId, RoomId, RoomMember, RoomMemberListQuery, RoomMemberListSortBy,
+        AddMemberOptions, MyRoomListQuery, MyRoomListSortBy, MyRoomRelation, PageParams,
+        RoomCategoryId, RoomId, RoomMember, RoomMemberListQuery, RoomMemberListSortBy,
         RoomMemberWithUser, RoomRole, RoomStatus, UserId,
     },
     repository::query_builder::trusted_dynamic_sql,
@@ -45,7 +45,6 @@ struct RoomMemberWithUserRow {
     admin_added_permissions: i64,
     admin_removed_permissions: i64,
     joined_at: chrono::DateTime<chrono::Utc>,
-    is_active: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -229,31 +228,6 @@ impl RoomMemberRepository {
         Ok(version)
     }
 
-    pub async fn next_lifecycle_version_with_executor<'e, E>(
-        &self,
-        room_id: &RoomId,
-        user_id: &UserId,
-        executor: E,
-    ) -> Result<i64>
-    where
-        E: sqlx::PgExecutor<'e>,
-    {
-        let version = sqlx::query_scalar!(
-            "INSERT INTO room_member_versions (room_id, user_id, version, is_member, updated_at)
-             VALUES ($1, $2, 1, FALSE, CURRENT_TIMESTAMP)
-             ON CONFLICT (room_id, user_id) DO UPDATE
-             SET version = room_member_versions.version + 1,
-                 is_member = FALSE,
-                 updated_at = CURRENT_TIMESTAMP
-             RETURNING version",
-            room_id as &RoomId,
-            user_id as &UserId,
-        )
-        .fetch_one(executor)
-        .await?;
-        Ok(version)
-    }
-
     pub async fn mark_active_lifecycle_with_executor<'e, E>(
         &self,
         room_id: &RoomId,
@@ -398,9 +372,7 @@ impl RoomMemberRepository {
         }
     }
 
-    fn my_room_result_from_row(
-        row: MyRoomListRow,
-    ) -> (crate::models::Room, RoomRole, MemberStatus, i32) {
+    fn my_room_result_from_row(row: MyRoomListRow) -> (crate::models::Room, RoomRole, i32) {
         let status = if row.closed_at.is_some() {
             crate::models::RoomStatus::Closed
         } else {
@@ -434,7 +406,7 @@ impl RoomMemberRepository {
             version: row.version,
         };
 
-        (room, row.user_role, MemberStatus::Active, row.member_count)
+        (room, row.user_role, row.member_count)
     }
 
     /// Add user to room with role.
@@ -983,7 +955,6 @@ impl RoomMemberRepository {
                 rm.added_permissions, rm.removed_permissions,
                 rm.admin_added_permissions, rm.admin_removed_permissions,
                 rm.joined_at,
-                TRUE AS "is_active!",
                 u.username,
                 rm.remark_name,
                 rm.display_tag
@@ -1006,34 +977,6 @@ impl RoomMemberRepository {
         rows.into_iter()
             .map(Self::typed_row_to_member_with_user)
             .collect()
-    }
-
-    /// List active members in a room with database-level pagination
-    ///
-    /// Uses a separate count query so out-of-range pages still return the
-    /// number of matching members.
-    ///
-    /// Returns a tuple of (members, total_count) where:
-    /// - `members`: Vec of `RoomMemberWithUser` for the current page
-    /// - `total_count`: Total number of active members in the room (i64)
-    ///
-    /// # Exclusions
-    ///
-    /// This method excludes members blocked by active kick cooldown rules and
-    /// soft-deleted users.
-    pub async fn list_by_room_paginated(
-        &self,
-        room_id: &RoomId,
-        pagination: PageParams,
-    ) -> Result<(Vec<RoomMemberWithUser>, i64)> {
-        self.list_by_room_query(
-            room_id,
-            &RoomMemberListQuery {
-                pagination,
-                ..Default::default()
-            },
-        )
-        .await
     }
 
     pub async fn list_by_room_query(
@@ -1078,7 +1021,6 @@ impl RoomMemberRepository {
                 rm.added_permissions, rm.removed_permissions,
                 rm.admin_added_permissions, rm.admin_removed_permissions,
                 rm.joined_at,
-                TRUE AS is_active,
                 u.username,
                 rm.remark_name,
                 rm.display_tag
@@ -1121,55 +1063,6 @@ impl RoomMemberRepository {
             .collect();
 
         Ok((members?, total_count))
-    }
-
-    /// List all active members in a room with online status
-    pub async fn list_by_room_with_online(
-        &self,
-        room_id: &RoomId,
-        online_user_ids: &[UserId],
-    ) -> Result<Vec<RoomMemberWithUser>> {
-        let rows = sqlx::query_as!(
-            RoomMemberWithUserRow,
-            r#"SELECT
-                rm.room_id AS "room_id: RoomId",
-                rm.user_id AS "user_id: UserId",
-                rm.role AS "role: RoomRole",
-                rm.added_permissions, rm.removed_permissions,
-                rm.admin_added_permissions, rm.admin_removed_permissions,
-                rm.joined_at,
-                TRUE AS "is_active!",
-                u.username,
-                rm.remark_name,
-                rm.display_tag
-             FROM room_members rm
-             JOIN users u ON rm.user_id = u.id
-             WHERE rm.room_id = $1
-	               AND NOT EXISTS (
-	                   SELECT 1 FROM room_member_kick_cooldowns rmkc
-	                   WHERE rmkc.room_id = rm.room_id
-	                     AND rmkc.user_id = rm.user_id
-	                     AND rmkc.ends_at > CURRENT_TIMESTAMP
-	               )
-	               AND u.deleted_at IS NULL
-             ORDER BY rm.joined_at ASC"#,
-            room_id.as_i64()
-        )
-        .fetch_all(self.pools.primary())
-        .await?;
-
-        let online_set: std::collections::HashSet<_> = online_user_ids
-            .iter()
-            .map(super::super::models::id::UserId::as_i64)
-            .collect();
-
-        rows.into_iter()
-            .map(|row| {
-                let mut member = Self::typed_row_to_member_with_user(row)?;
-                member.is_online = online_set.contains(&member.user_id.as_i64());
-                Ok(member)
-            })
-            .collect()
     }
 
     /// Update member role with optimistic locking.
@@ -1272,23 +1165,6 @@ impl RoomMemberRepository {
         .transpose()?;
 
         member.ok_or_else(|| Error::NotFound("User is not a member of this room".to_string()))
-    }
-
-    pub async fn update_display_info(
-        &self,
-        room_id: &RoomId,
-        user_id: &UserId,
-        remark_name: Option<&str>,
-        display_tag: Option<&str>,
-    ) -> Result<RoomMember> {
-        self.update_display_info_with_executor(
-            room_id,
-            user_id,
-            remark_name,
-            display_tag,
-            self.pools.primary(),
-        )
-        .await
     }
 
     /// Update member role inside an existing transaction with optimistic locking.
@@ -1875,47 +1751,6 @@ impl RoomMemberRepository {
         }
     }
 
-    /// Atomically grant admin-specific permission bits.
-    ///
-    /// Only applies to current members. Returns `NotFound` if the membership no longer exists.
-    pub async fn grant_admin_permission_atomic(
-        &self,
-        room_id: &RoomId,
-        user_id: &UserId,
-        permission: u64,
-    ) -> Result<RoomMember> {
-        let member = sqlx::query_as!(
-            RoomMemberRow,
-            r#"UPDATE room_members
-             SET admin_added_permissions = admin_added_permissions | $3,
-                 version = version + 1
-             WHERE room_id = $1 AND user_id = $2
-             RETURNING room_id as "room_id: RoomId",
-                       user_id as "user_id: UserId",
-                       role as "role: RoomRole",
-                       added_permissions,
-                       removed_permissions,
-                       admin_added_permissions,
-                       admin_removed_permissions,
-                       remark_name,
-                       display_tag,
-                       joined_at,
-                       version"#,
-            room_id as &RoomId,
-            user_id as &UserId,
-            permission_bits_to_i64(permission)?,
-        )
-        .fetch_optional(self.pools.primary())
-        .await?
-        .map(Self::typed_row_to_member)
-        .transpose()?;
-
-        match member {
-            Some(m) => Ok(m),
-            None => Err(Error::NotFound("Active room member not found".to_string())),
-        }
-    }
-
     /// Atomically grant admin-specific permission bits for an active admin that still matches the expected role.
     pub async fn grant_admin_permission_atomic_for_role(
         &self,
@@ -2136,47 +1971,6 @@ impl RoomMemberRepository {
         match member {
             Some(m) => Ok(m),
             None => Err(Error::OptimisticLockConflict),
-        }
-    }
-
-    /// Atomically revoke admin-specific permission bits.
-    ///
-    /// Only applies to current members. Returns `NotFound` if the membership no longer exists.
-    pub async fn revoke_admin_permission_atomic(
-        &self,
-        room_id: &RoomId,
-        user_id: &UserId,
-        permission: u64,
-    ) -> Result<RoomMember> {
-        let member = sqlx::query_as!(
-            RoomMemberRow,
-            r#"UPDATE room_members
-             SET admin_removed_permissions = admin_removed_permissions | $3,
-                 version = version + 1
-             WHERE room_id = $1 AND user_id = $2
-             RETURNING room_id as "room_id: RoomId",
-                       user_id as "user_id: UserId",
-                       role as "role: RoomRole",
-                       added_permissions,
-                       removed_permissions,
-                       admin_added_permissions,
-                       admin_removed_permissions,
-                       remark_name,
-                       display_tag,
-                       joined_at,
-                       version"#,
-            room_id as &RoomId,
-            user_id as &UserId,
-            permission_bits_to_i64(permission)?,
-        )
-        .fetch_optional(self.pools.primary())
-        .await?
-        .map(Self::typed_row_to_member)
-        .transpose()?;
-
-        match member {
-            Some(m) => Ok(m),
-            None => Err(Error::NotFound("Active room member not found".to_string())),
         }
     }
 
@@ -2408,34 +2202,6 @@ impl RoomMemberRepository {
         Ok(exists)
     }
 
-    pub async fn is_in_kick_cooldown_with_executor<'e, E>(
-        &self,
-        room_id: &RoomId,
-        user_id: &UserId,
-        executor: E,
-    ) -> Result<bool>
-    where
-        E: sqlx::PgExecutor<'e>,
-    {
-        let exists = sqlx::query_scalar!(
-            r#"
-            SELECT EXISTS(
-                SELECT 1
-                FROM room_member_kick_cooldowns
-                WHERE room_id = $1
-                  AND user_id = $2
-                  AND ends_at > CURRENT_TIMESTAMP
-            ) as "exists!"
-            "#,
-            room_id as &RoomId,
-            user_id as &UserId,
-        )
-        .fetch_one(executor)
-        .await?;
-
-        Ok(exists)
-    }
-
     pub async fn add_kick_cooldown_with_executor<'e, E>(
         &self,
         insert: KickCooldownInsert<'_>,
@@ -2588,113 +2354,6 @@ impl RoomMemberRepository {
         Ok((room_ids, total_count))
     }
 
-    /// Get rooms where a user is a member with full room details and member count (optimized)
-    /// Returns (room, role, status, `member_count`) tuples
-    ///
-    /// Uses a separate count query so out-of-range pages still return the
-    /// number of matching rooms.
-    pub async fn list_by_user_with_details(
-        &self,
-        user_id: &UserId,
-        pagination: PageParams,
-    ) -> Result<(Vec<(crate::models::Room, RoomRole, MemberStatus, i32)>, i64)> {
-        self.list_by_user_with_query(
-            user_id,
-            &MyRoomListQuery {
-                pagination,
-                ..Default::default()
-            },
-        )
-        .await
-    }
-
-    /// List rooms where a user is a member with full room details and query semantics.
-    pub async fn list_by_user_with_query(
-        &self,
-        user_id: &UserId,
-        query: &MyRoomListQuery,
-    ) -> Result<(Vec<(crate::models::Room, RoomRole, MemberStatus, i32)>, i64)> {
-        let limit = query.pagination.limit_i64()?;
-        let offset = query.pagination.offset_i64()?;
-        let search_pattern = query.search.as_deref().and_then(ilike_contains_pattern);
-        let wb = Self::build_my_room_list_conditions(query);
-        let (count_where_sql, _) = wb.build(2)?;
-        let (where_sql, _) = wb.build(4)?;
-        let order_by_sql = Self::my_room_order_by_sql(query);
-        let count_sql = format!(
-            r"
-            SELECT COUNT(*)
-            FROM room_members rm
-            JOIN rooms r ON rm.room_id = r.id
-            WHERE rm.user_id = $1 AND {count_where_sql}
-            "
-        );
-        let total_count = Self::bind_my_room_count_filters(
-            sqlx::query_scalar::<_, i64>(trusted_dynamic_sql(count_sql)).bind(user_id),
-            search_pattern.as_deref(),
-        )
-        .fetch_one(self.pools.primary())
-        .await?;
-        let sql = format!(
-            r"
-            SELECT
-                r.id, r.name, r.description,
-                r.cover_file_reference_id,
-                rc.id AS category_id,
-                rc.key AS category_key,
-                rc.name AS category_name,
-                rc.description AS category_description,
-                rc.sort_order AS category_sort_order,
-                rc.is_enabled AS category_is_enabled,
-                rc.created_at AS category_created_at,
-                rc.updated_at AS category_updated_at,
-                r.created_by, r.closed_at,
-                r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,
-                r.is_public,
-                {ACTIVE_ROOM_BAN_EXISTS_SQL} AS is_banned,
-                rm.role as user_role,
-                COUNT(rm2.user_id)::int as member_count
-            FROM room_members rm
-            JOIN rooms r ON rm.room_id = r.id
-            LEFT JOIN room_categories rc ON rc.id = r.category_id
-            LEFT JOIN room_members rm2
-                ON r.id = rm2.room_id
-	                   AND NOT EXISTS (
-	                       SELECT 1 FROM room_member_kick_cooldowns rmkc2
-	                       WHERE rmkc2.room_id = rm2.room_id
-	                         AND rmkc2.user_id = rm2.user_id
-	                         AND rmkc2.ends_at > CURRENT_TIMESTAMP
-	                   )
-		            WHERE rm.user_id = $1 AND {where_sql}
-	            GROUP BY r.id, r.name, r.description, r.cover_file_reference_id, r.category_id,
-	                     r.created_by, r.closed_at,
-	                     r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,
-                         rc.id, rc.key, rc.name, rc.description, rc.sort_order, rc.is_enabled,
-                         rc.created_at, rc.updated_at,
-	                     rm.role, rm.joined_at, rm.last_visited_at, rm.visit_count
-            ORDER BY {order_by_sql}
-            LIMIT $2 OFFSET $3
-            "
-        );
-
-        let rows = Self::bind_my_room_filters(
-            sqlx::query_as::<_, MyRoomListRow>(trusted_dynamic_sql(sql))
-                .bind(user_id)
-                .bind(limit)
-                .bind(offset),
-            search_pattern.as_deref(),
-        )
-        .fetch_all(self.pools.primary())
-        .await?;
-
-        let results = rows
-            .into_iter()
-            .map(Self::my_room_result_from_row)
-            .collect();
-
-        Ok((results, total_count))
-    }
-
     /// List joined rooms whose creator account still exists.
     ///
     /// Moderation and account-status restrictions are represented through the
@@ -2704,7 +2363,7 @@ impl RoomMemberRepository {
         &self,
         user_id: &UserId,
         query: &MyRoomListQuery,
-    ) -> Result<(Vec<(crate::models::Room, RoomRole, MemberStatus, i32)>, i64)> {
+    ) -> Result<(Vec<(crate::models::Room, RoomRole, i32)>, i64)> {
         self.list_accessible_by_user_with_query_from_pool(user_id, query, self.pools.read())
             .await
     }
@@ -2714,7 +2373,7 @@ impl RoomMemberRepository {
         user_id: &UserId,
         query: &MyRoomListQuery,
         pool: &PgPool,
-    ) -> Result<(Vec<(crate::models::Room, RoomRole, MemberStatus, i32)>, i64)> {
+    ) -> Result<(Vec<(crate::models::Room, RoomRole, i32)>, i64)> {
         let limit = query.pagination.limit_i64()?;
         let offset = query.pagination.offset_i64()?;
         let search_pattern = query.search.as_deref().and_then(ilike_contains_pattern);
@@ -2809,8 +2468,7 @@ impl RoomMemberRepository {
                 rm.remark_name,
                       rm.display_tag,
                       rm.joined_at,
-                u.username,
-                TRUE AS "is_active!"
+                u.username
              FROM room_members rm
              JOIN users u ON rm.user_id = u.id
              WHERE rm.room_id = $1 AND u.deleted_at IS NULL
@@ -2943,7 +2601,6 @@ impl RoomMemberRepository {
             user_id: row.user_id,
             username: row.username,
             role: row.role,
-            status: MemberStatus::Active,
             added_permissions: db_permission_i64_to_u64(
                 row.added_permissions,
                 "added_permissions",
@@ -2964,7 +2621,6 @@ impl RoomMemberRepository {
             display_tag: row.display_tag,
             joined_at: row.joined_at,
             is_online: false,
-            is_active: row.is_active,
         })
     }
 
@@ -2973,7 +2629,6 @@ impl RoomMemberRepository {
             room_id: row.room_id,
             user_id: row.user_id,
             role: row.role,
-            status: MemberStatus::Active,
             added_permissions: db_permission_i64_to_u64(
                 row.added_permissions,
                 "added_permissions",

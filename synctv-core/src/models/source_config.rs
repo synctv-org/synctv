@@ -16,8 +16,7 @@ pub enum PlaybackProxyMode {
 }
 
 impl PlaybackProxyMode {
-    #[must_use]
-    pub const fn is_auto(&self) -> bool {
+    const fn is_auto(&self) -> bool {
         matches!(self, Self::Auto)
     }
 

@@ -369,21 +369,6 @@ impl WbiState {
     fn api_call_count(&self) -> usize {
         self.api_call_count.load(Ordering::Relaxed)
     }
-
-    #[cfg(test)]
-    pub(crate) fn record_failure_for_tests(&self) {
-        self.record_failure();
-    }
-
-    #[cfg(test)]
-    pub(crate) fn has_exceeded_max_failures_for_tests(&self) -> bool {
-        self.has_exceeded_max_failures()
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn acquire_refresh_for_tests(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.refresh.lock().await
-    }
 }
 
 fn wbi_refresh_unavailable_error() -> BilibiliError {
@@ -483,23 +468,19 @@ pub struct BilibiliClient {
     live_danmaku_device_cookies: Arc<OnceCell<HashMap<String, String>>>,
     wbi_state: Arc<WbiState>,
     endpoints: BilibiliEndpoints,
-    #[allow(dead_code)]
+    #[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots"))]
     ssrf_guard: SsrfGuard,
 }
 
 impl BilibiliClient {
     /// Create a new Bilibili client (reuses shared connection pool and rate limiter).
     pub fn new() -> Result<Self, BilibiliError> {
-        Self::new_with_wbi_state(Arc::new(WbiState::default()))
-    }
-
-    pub(crate) fn new_with_wbi_state(wbi_state: Arc<WbiState>) -> Result<Self, BilibiliError> {
         let client = shared_client()?;
         Ok(Self::new_with_transport(
             client.clone(),
             client,
             BilibiliEndpoints::default(),
-            wbi_state,
+            Arc::new(WbiState::default()),
             SsrfGuard::strict_policy(),
         ))
     }
@@ -511,6 +492,8 @@ impl BilibiliClient {
         wbi_state: Arc<WbiState>,
         ssrf_guard: SsrfGuard,
     ) -> Self {
+        #[cfg(not(any(feature = "tls-webpki-roots", feature = "tls-native-roots")))]
+        let _ = ssrf_guard;
         Self {
             client,
             short_link_client,
@@ -518,6 +501,7 @@ impl BilibiliClient {
             live_danmaku_device_cookies: Arc::new(OnceCell::new()),
             wbi_state,
             endpoints,
+            #[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots"))]
             ssrf_guard,
         }
     }
@@ -581,6 +565,8 @@ impl BilibiliClient {
         wbi_state: Arc<WbiState>,
         ssrf_guard: SsrfGuard,
     ) -> Self {
+        #[cfg(not(any(feature = "tls-webpki-roots", feature = "tls-native-roots")))]
+        let _ = ssrf_guard;
         Self {
             client,
             short_link_client,
@@ -588,6 +574,7 @@ impl BilibiliClient {
             live_danmaku_device_cookies: Arc::new(OnceCell::new()),
             wbi_state,
             endpoints,
+            #[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots"))]
             ssrf_guard,
         }
     }
@@ -600,36 +587,9 @@ impl BilibiliClient {
         self
     }
 
-    pub fn with_cookies_and_transport_defaults(
-        cookies: HashMap<String, String>,
-        client: Client,
-        endpoints: BilibiliEndpoints,
-    ) -> Result<Self, BilibiliError> {
-        let short_link_client = crate::provider_http_client_builder(SsrfGuard::strict_policy())
-            .user_agent(USER_AGENT)
-            .build()
-            .map_err(|err| BilibiliError::Network(err.to_string()))?;
-        Ok(Self::with_cookies_and_transport(
-            cookies,
-            client,
-            short_link_client,
-            endpoints,
-            Arc::new(WbiState::default()),
-            SsrfGuard::strict_policy(),
-        ))
-    }
-
     #[cfg(test)]
     pub(crate) fn shared_wbi_state(&self) -> Arc<WbiState> {
         self.wbi_state.clone()
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn get_wbi_mixin_key_for_tests(
-        &self,
-        force_refresh: bool,
-    ) -> Result<String, BilibiliError> {
-        self.get_wbi_mixin_key_internal(force_refresh).await
     }
 
     /// Get WBI mixin key, fetching and caching it if necessary.
@@ -3566,12 +3526,6 @@ impl LiveDanmakuConnection {
             handle.abort();
         }
     }
-
-    /// Check if the heartbeat loop is currently running
-    pub async fn is_heartbeat_running(&self) -> bool {
-        let handle_guard = self.heartbeat_handle.lock().await;
-        handle_guard.as_ref().is_some_and(|h| !h.is_finished())
-    }
 }
 
 impl LiveDanmakuConnection {
@@ -3883,16 +3837,6 @@ impl ReconnectableLiveDanmakuConnection {
     /// Get the room ID
     pub const fn room_id(&self) -> u64 {
         self.room_id
-    }
-
-    /// Check if the connection is currently active
-    pub const fn is_connected(&self) -> bool {
-        self.connection.is_some()
-    }
-
-    /// Get the current retry count
-    pub const fn current_retry(&self) -> u32 {
-        self.current_retry
     }
 
     /// Stop the connection and prevent further reconnection attempts

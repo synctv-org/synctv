@@ -319,12 +319,17 @@ fn file_storage_options(config: &AppConfig) -> FileStorageOptions {
 
     FileStorageOptions {
         upload_token_secret: config.file_storage.upload_token_secret.clone(),
-        default_backend: config.file_storage.default_backend.clone(),
-        chat_attachments_backend: config.file_storage.chat_attachments_backend.clone(),
-        user_avatars_backend: config.file_storage.user_avatars_backend.clone(),
-        media_covers_backend: config.file_storage.media_covers_backend.clone(),
-        room_covers_backend: config.file_storage.room_covers_backend.clone(),
-        playlist_covers_backend: config.file_storage.playlist_covers_backend.clone(),
+        chat_attachments_backend: config
+            .file_storage
+            .backend_for_chat_attachments()
+            .to_string(),
+        user_avatars_backend: config.file_storage.backend_for_user_avatars().to_string(),
+        media_covers_backend: config.file_storage.backend_for_media_covers().to_string(),
+        room_covers_backend: config.file_storage.backend_for_room_covers().to_string(),
+        playlist_covers_backend: config
+            .file_storage
+            .backend_for_playlist_covers()
+            .to_string(),
         backends,
     }
 }

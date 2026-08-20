@@ -1086,13 +1086,6 @@ impl AdminApiImpl {
         }
     }
 
-    pub async fn send_test_email(
-        &self,
-        req: synctv_proto::admin::SendTestEmailRequest,
-    ) -> Result<synctv_proto::admin::SendTestEmailResponse, ApiError> {
-        self.send_test_email_with_control(req, None).await
-    }
-
     pub async fn send_test_email_with_control(
         &self,
         req: synctv_proto::admin::SendTestEmailRequest,

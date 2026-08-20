@@ -17,15 +17,7 @@ impl RoomService {
     /// Delete a room from the admin plane.
     pub async fn admin_delete_room(&self, room_id: &RoomId, admin_user_id: &UserId) -> Result<()> {
         let actor = self.load_authorized_admin_actor(admin_user_id).await?;
-        self.admin_delete_room_as(room_id, &actor).await
-    }
-
-    pub async fn admin_delete_room_as(
-        &self,
-        room_id: &RoomId,
-        actor: &AuthorizedAdminActor,
-    ) -> Result<()> {
-        self.admin_delete_room_as_with_outbox(room_id, actor, None)
+        self.admin_delete_room_as_with_outbox(room_id, &actor, None)
             .await
     }
 

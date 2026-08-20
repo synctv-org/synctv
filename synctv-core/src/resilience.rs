@@ -71,20 +71,6 @@ pub mod timeout {
             self.redis = timeout;
             self
         }
-
-        /// Set HTTP request timeout
-        #[must_use]
-        pub const fn with_http_timeout(mut self, timeout: Duration) -> Self {
-            self.http = timeout;
-            self
-        }
-
-        /// Set the remote transport call timeout.
-        #[must_use]
-        pub const fn with_remote_transport_timeout(mut self, timeout: Duration) -> Self {
-            self.remote_transport = timeout;
-            self
-        }
     }
 }
 
@@ -163,15 +149,6 @@ pub mod circuit_breaker {
         let backoff = failsafe::backoff::exponential(min_backoff, max_backoff);
         let policy = failsafe::failure_policy::consecutive_failures(failure_threshold, backoff);
         failsafe::Config::new().failure_policy(policy).build()
-    }
-
-    /// Create a circuit breaker with default settings (5 failures, 10-60s backoff)
-    #[must_use]
-    pub fn create_default() -> failsafe::StateMachine<
-        failsafe::failure_policy::ConsecutiveFailures<failsafe::backoff::Exponential>,
-        (),
-    > {
-        create(5, Duration::from_secs(10), Duration::from_mins(1))
     }
 }
 

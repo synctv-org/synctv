@@ -140,7 +140,7 @@ async fn test_get_room_members_requires_view_members_permission() {
         .await
         .unwrap();
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Member Visibility Room".to_string(),
             String::new(),
@@ -222,7 +222,7 @@ async fn test_get_room_members_hides_pending_members_from_non_moderators() {
         ..Default::default()
     };
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Pending Visibility Room".to_string(),
             String::new(),
@@ -341,7 +341,7 @@ async fn test_get_room_members_returns_stable_version_until_membership_changes()
         .await
         .unwrap();
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Member Version Room".to_string(),
             String::new(),
@@ -420,7 +420,7 @@ async fn test_get_room_members_marks_realtime_connections_online() {
         .await
         .unwrap();
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Member Online Room".to_string(),
             String::new(),

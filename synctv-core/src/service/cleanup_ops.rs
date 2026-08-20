@@ -27,10 +27,6 @@ pub(super) const CHAT_MESSAGE_COUNT_PRUNING_DAYS: i32 = 90;
 
 #[derive(Clone, Copy)]
 pub(super) enum ChatMessageCleanupScope {
-    RoomCap {
-        room_id: RoomId,
-        keep_count: i64,
-    },
     ActiveRoomsCap {
         keep_count: i64,
         activity_window_minutes: i32,
@@ -469,27 +465,6 @@ pub(super) async fn cleanup_chat_messages_with_files(
                 log_context,
             )
             .await
-        }
-        ChatMessageCleanupScope::RoomCap {
-            room_id,
-            keep_count,
-        } => {
-            let mut tx = pool.begin().await?;
-            let batch = cleanup_room_chat_messages_batch(&mut tx, room_id, keep_count).await?;
-            tx.commit()
-                .await
-                .internal_with_err("Failed to commit chat message cleanup batch")?;
-            if let Some(storage) = storage {
-                schedule_chat_attachment_cleanup(
-                    storage,
-                    origin,
-                    &batch.attachments,
-                    batch.deleted,
-                    log_context,
-                )
-                .await;
-            }
-            Ok(batch.deleted)
         }
         ChatMessageCleanupScope::Retention { retention_days } => {
             let mut tx = pool.begin().await?;

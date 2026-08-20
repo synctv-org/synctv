@@ -124,19 +124,6 @@ pub enum PlaybackTransportAction {
     },
 }
 
-impl PlaybackTransportAction {
-    #[must_use]
-    pub const fn bypasses_unary_timeout(&self) -> bool {
-        matches!(
-            self,
-            Self::LiveFlv { .. }
-                | Self::LiveHlsMaster { .. }
-                | Self::LiveHlsPlaylist { .. }
-                | Self::LiveHlsSegment { .. }
-        )
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LiveFlvAccess {
     pub user_id: UserId,

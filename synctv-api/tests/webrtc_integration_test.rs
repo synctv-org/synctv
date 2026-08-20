@@ -161,7 +161,9 @@ mod permissions {
     use super::*;
     use std::sync::Arc;
 
-    use synctv_api::{ApiError, ClientApiImpl};
+    use synctv_api::{
+        ApiError, ClientApiImpl, EndpointRateLimitCategory, RequestMetadata, TransportProtocol,
+    };
     use synctv_core::cache::{l2_backend::RedisCacheL2, KeyBuilder, UsernameCache};
     use synctv_core::models::room_settings::{AllowGuestJoin, GuestAddedPermissions};
     use synctv_core::repository::SettingsRepository;
@@ -338,7 +340,7 @@ mod permissions {
         let creator = register_fixture_user(&fixture, "webrtc_turn_creator").await;
         let member = register_fixture_user(&fixture, "webrtc_turn_member").await;
 
-        let (room, _) = fixture
+        let room = fixture
             .room_service
             .create_room(
                 "WebRTC Custom ICE Room".to_string(),
@@ -406,7 +408,7 @@ mod permissions {
 
         let creator = register_fixture_user(&fixture, "webrtc_guest_creator").await;
 
-        let (room, _) = fixture
+        let room = fixture
             .room_service
             .create_room(
                 "WebRTC Guest ICE Room".to_string(),
@@ -447,17 +449,17 @@ mod permissions {
             .public_id_codec
             .encode_room_id(room.id)
             .expect("public room id");
-        let actor = fixture
-            .client_api
-            .room_actor_for_authorization(&format!("Bearer {token}"), &public_room_id)
-            .await
-            .expect("guest actor");
-
-        let response = fixture
-            .client_api
-            .get_ice_servers_for_actor(&actor)
-            .await
-            .expect("guest ICE bootstrap");
+        let metadata = RequestMetadata::new(TransportProtocol::Http)
+            .with_authorization(Some(format!("Bearer {token}")));
+        let response = ClientApiImpl::execute_room_actor_endpoint(
+            Arc::new(fixture.client_api.clone()),
+            &metadata,
+            public_room_id,
+            EndpointRateLimitCategory::Read,
+            |client_api, actor| async move { client_api.get_ice_servers_for_actor(&actor).await },
+        )
+        .await
+        .expect("guest ICE bootstrap");
 
         assert_eq!(
             response.servers[0].urls,
@@ -485,7 +487,7 @@ mod permissions {
         let creator = register_fixture_user(&fixture, "webrtc_creator").await;
         let member = register_fixture_user(&fixture, "webrtc_member").await;
 
-        let (room, _) = fixture
+        let room = fixture
             .room_service
             .create_room(
                 "WebRTC Permission Room".to_string(),
@@ -557,7 +559,7 @@ mod permissions {
         let creator = register_fixture_user(&fixture, "webrtc_banned_creator").await;
         let member = register_fixture_user(&fixture, "webrtc_banned_member").await;
 
-        let (room, _) = fixture
+        let room = fixture
             .room_service
             .create_room(
                 "WebRTC Banned Room".to_string(),
@@ -602,7 +604,7 @@ mod permissions {
         let creator = register_fixture_user(&fixture, "webrtc_closed_creator").await;
         let member = register_fixture_user(&fixture, "webrtc_closed_member").await;
 
-        let (mut room, _) = fixture
+        let mut room = fixture
             .room_service
             .create_room(
                 "WebRTC Closed Room".to_string(),

@@ -16,7 +16,8 @@ struct OAuth2ExchangeContext<'a> {
 }
 
 impl OAuth2Service {
-    pub async fn exchange_code_for_user_info(
+    #[cfg(test)]
+    pub(crate) async fn exchange_code_for_user_info(
         &self,
         instance_name: &str,
         code: &str,
@@ -26,7 +27,8 @@ impl OAuth2Service {
             .await
     }
 
-    pub async fn exchange_code_for_user_info_with_control(
+    #[cfg(test)]
+    pub(crate) async fn exchange_code_for_user_info_with_control(
         &self,
         instance_name: &str,
         code: &str,

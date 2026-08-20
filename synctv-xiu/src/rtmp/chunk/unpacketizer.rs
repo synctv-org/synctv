@@ -118,14 +118,6 @@ impl ChunkUnpacketizer {
         }
     }
 
-    /// Clear cached chunk headers to free memory
-    /// Call this when the connection is closed or when memory usage is a concern
-    pub fn clear_cached_headers(&mut self) {
-        self.chunk_message_headers.clear();
-        self.in_progress_chunks.clear();
-        self.in_progress_payload_bytes = 0;
-    }
-
     pub fn extend_data(&mut self, data: &[u8]) -> Result<(), UnpackError> {
         self.reader.extend_from_slice(data)?;
 

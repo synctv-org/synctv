@@ -88,7 +88,7 @@ fn map_slice_cache_error(
 pub struct AdminServiceImpl {
     admin_api: Arc<AdminApiImpl>,
     runtime_settings: Arc<synctv_api_common::ApiRuntimeSettings>,
-    slice_cache_runtime: Arc<synctv_api_common::status::SliceCacheManagementRuntime>,
+    slice_cache_runtime: Arc<synctv_api_common::status::SliceCacheManagementService>,
 }
 
 impl AdminServiceImpl {
@@ -96,7 +96,7 @@ impl AdminServiceImpl {
     pub const fn new(
         admin_api: Arc<AdminApiImpl>,
         runtime_settings: Arc<synctv_api_common::ApiRuntimeSettings>,
-        slice_cache_runtime: Arc<synctv_api_common::status::SliceCacheManagementRuntime>,
+        slice_cache_runtime: Arc<synctv_api_common::status::SliceCacheManagementService>,
     ) -> Self {
         Self {
             admin_api,

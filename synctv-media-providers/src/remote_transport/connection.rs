@@ -174,20 +174,6 @@ pub struct RemoteProviderConnection {
 
 impl RemoteProviderConnection {
     #[must_use]
-    pub(crate) fn new_with_transport_compression(
-        channel: TransportChannel,
-        auth_secret: Option<impl Into<String>>,
-        transport_compression_enabled: bool,
-    ) -> Self {
-        Self {
-            channel,
-            auth_secret: auth_secret.map(|secret| Arc::<str>::from(secret.into())),
-            request_context: None,
-            transport_compression_enabled,
-        }
-    }
-
-    #[must_use]
     pub(crate) fn build_provider_client<T>(&self, create: impl FnOnce(TransportChannel) -> T) -> T {
         create(self.channel.clone())
     }
@@ -236,11 +222,12 @@ pub fn create_remote_connection(
         options.jwt_secret.as_deref(),
     )?))
     .map_err(|error| ProviderClientError::InvalidConfig(error.to_string()))?;
-    Ok(RemoteProviderConnection::new_with_transport_compression(
+    Ok(RemoteProviderConnection {
         channel,
-        auth_secret,
-        transport_config.compression_enabled,
-    ))
+        auth_secret: auth_secret.map(Arc::<str>::from),
+        request_context: None,
+        transport_compression_enabled: transport_config.compression_enabled,
+    })
 }
 
 fn create_transport_channel(

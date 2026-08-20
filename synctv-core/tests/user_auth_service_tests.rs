@@ -2234,13 +2234,16 @@ async fn test_create_user_with_role_succeeds_when_username_cache_write_fails() {
     let service = create_user_service_with_failing_username_cache(&pool);
 
     let created = service
-        .create_user_with_role(
+        .create_user_with_optional_direct_password(
             format!("cache_fail_admin_{}", synctv_common::snanoid!(6)),
             Some(format!(
                 "cache_fail_admin_{}@test.com",
                 synctv_common::snanoid!(6)
             )),
+            None,
             Some(synctv_core::models::UserRole::Admin),
+            None,
+            None,
         )
         .await
         .checked("Admin user creation must succeed even when username cache write fails");
@@ -2294,12 +2297,13 @@ async fn test_create_user_with_initial_banned_status_persists_ban_record() {
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service(&pool);
     let reviewer = service
-        .create_user_with_role_and_status(
+        .create_user_with_optional_direct_password(
             format!("initial_banned_reviewer_{}", synctv_common::snanoid!(6)),
             Some(format!(
                 "initial_banned_reviewer_{}@test.com",
                 synctv_common::snanoid!(6)
             )),
+            None,
             Some(synctv_core::models::UserRole::Admin),
             Some(synctv_core::models::UserStatus::Active),
             None,
@@ -2308,12 +2312,13 @@ async fn test_create_user_with_initial_banned_status_persists_ban_record() {
         .checked("reviewer should be created");
 
     let created = service
-        .create_user_with_role_and_status(
+        .create_user_with_optional_direct_password(
             format!("initial_banned_{}", synctv_common::snanoid!(6)),
             Some(format!(
                 "initial_banned_{}@test.com",
                 synctv_common::snanoid!(6)
             )),
+            None,
             Some(synctv_core::models::UserRole::User),
             Some(synctv_core::models::UserStatus::Banned),
             Some(&reviewer.id),

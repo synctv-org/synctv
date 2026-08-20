@@ -173,15 +173,6 @@ pub fn search_chat_messages_query_from_client_proto(
     client::build_search_chat_messages_query(room_id, request, public_id_codec)
 }
 
-pub fn chat_message_receive_to_client_proto(
-    message: &synctv_core::models::ChatMessageWithAttachments,
-    public_id_codec: &synctv_adapter::PublicIdCodec,
-    username: Option<String>,
-) -> Result<synctv_proto::client::ChatMessageReceive, ApiError> {
-    synctv_adapter::chat::chat_message_receive_to_proto(message, public_id_codec, username)
-        .map_err(|error| ApiError::Internal(error.to_string()))
-}
-
 pub fn chat_history_cursor_to_client_proto(
     cursor: synctv_core::models::ChatHistoryCursor,
 ) -> String {
@@ -374,13 +365,6 @@ pub fn proto_validated_optional_playlist_id(
     proto_validated_optional_id(value, public_id_codec)
 }
 
-pub fn proto_validated_optional_room_id(
-    value: impl AsRef<str>,
-    public_id_codec: &synctv_adapter::PublicIdCodec,
-) -> Result<Option<synctv_core::models::RoomId>, ApiError> {
-    proto_validated_optional_id(value, public_id_codec)
-}
-
 pub fn proto_validated_media_ids(
     values: Vec<String>,
     public_id_codec: &synctv_adapter::PublicIdCodec,
@@ -399,22 +383,6 @@ pub fn proto_validated_playlist_ids(
         .into_iter()
         .map(|value| proto_validated_playlist_id(&value, public_id_codec))
         .collect()
-}
-
-pub fn parse_optional_media_id_param(
-    value: &str,
-    field: &'static str,
-    public_id_codec: &synctv_adapter::PublicIdCodec,
-) -> Result<Option<synctv_core::models::MediaId>, ApiError> {
-    parse_optional_id_param(value, field, public_id_codec)
-}
-
-pub fn parse_optional_playlist_id_param(
-    value: &str,
-    field: &'static str,
-    public_id_codec: &synctv_adapter::PublicIdCodec,
-) -> Result<Option<synctv_core::models::PlaylistId>, ApiError> {
-    parse_optional_id_param(value, field, public_id_codec)
 }
 
 pub fn parse_optional_id_param<T>(

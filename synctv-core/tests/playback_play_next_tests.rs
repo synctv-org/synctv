@@ -84,7 +84,7 @@ async fn test_switch_rejects_missing_provider_before_state_change() {
         .create(&make_user("missing_provider_owner"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Missing Provider".to_string(),
             String::new(),
@@ -646,7 +646,7 @@ async fn test_sequential_advance_to_next() {
         .create(&make_user("seq_next_owner"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room("Seq Next".to_string(), String::new(), owner.id, None, None)
         .await
         .checked("test operation should succeed");
@@ -686,7 +686,7 @@ async fn test_sequential_end_rolls_back_when_outbox_creation_fails() {
         .create(&make_user("seq_end_outbox_owner"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Sequential End Outbox".to_string(),
             String::new(),
@@ -743,7 +743,7 @@ async fn test_sequential_advance_preserves_static_playlist_context() {
         .create(&make_user("seq_context_owner"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Sequential Context".to_string(),
             String::new(),
@@ -808,7 +808,7 @@ async fn test_auto_advance_after_previous_uses_recorded_forward_history() {
         .create(&make_user("history_forward_owner"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "History Forward".to_string(),
             String::new(),
@@ -918,7 +918,7 @@ async fn test_navigation_from_empty_playback_uses_first_item_and_recent_history(
         .create(&make_user("empty_navigation_owner"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Empty Navigation".to_string(),
             String::new(),
@@ -968,7 +968,7 @@ async fn test_playback_history_cleanup_preserves_cursor_and_adjacent_navigation(
         .create(&make_user("history_cleanup_owner"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "History Cleanup".to_string(),
             String::new(),
@@ -1065,7 +1065,7 @@ async fn test_deleted_media_and_playlist_cascade_playback_history() {
         .create(&make_user("history_cascade_owner"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "History Cascade".to_string(),
             String::new(),
@@ -1154,7 +1154,7 @@ async fn test_history_view_permission_cannot_change_playback() {
         .create(&make_user("history_permission_viewer"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "History Permission".to_string(),
             String::new(),
@@ -1232,7 +1232,7 @@ async fn test_previous_recomputes_history_after_optimistic_retry() {
         .create(&make_user("previous_retry_owner"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Previous Retry".to_string(),
             String::new(),
@@ -1340,7 +1340,7 @@ async fn test_sequential_advance_restarts_next_media_with_saved_progress() {
         .create(&make_user("seq_next_saved_owner"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Seq Next Saved Progress".to_string(),
             String::new(),
@@ -1409,7 +1409,7 @@ async fn test_sequential_end_of_playlist_persists_paused_state() {
         .create(&make_user("seq_end_owner"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room("Seq End".to_string(), String::new(), owner.id, None, None)
         .await
         .checked("test operation should succeed");
@@ -1467,7 +1467,7 @@ async fn test_repeat_one_replays_current() {
         .create(&make_user("rep1_owner"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room("Rep1".to_string(), String::new(), owner.id, None, None)
         .await
         .checked("test operation should succeed");
@@ -1512,7 +1512,7 @@ async fn test_repeat_all_wraps_around_at_end() {
         .create(&make_user("repa_owner"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room("RepAll".to_string(), String::new(), owner.id, None, None)
         .await
         .checked("test operation should succeed");
@@ -1554,7 +1554,7 @@ async fn test_repeat_all_middle_advances_to_next() {
         .create(&make_user("repa_mid_owner"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "RepAll Mid".to_string(),
             String::new(),
@@ -1602,7 +1602,7 @@ async fn test_shuffle_with_single_item_keeps_current_media() {
         .create(&make_user("shuf_single_owner"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Shuffle Single".to_string(),
             String::new(),
@@ -1648,7 +1648,7 @@ async fn test_shuffle_with_multiple_items_excludes_current_media() {
         .create(&make_user("shuf_multi_owner"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Shuffle Multi".to_string(),
             String::new(),
@@ -1695,7 +1695,7 @@ async fn test_auto_play_disabled_returns_none() {
         .create(&make_user("noauto_owner"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room("No Auto".to_string(), String::new(), owner.id, None, None)
         .await
         .checked("test operation should succeed");
@@ -1741,7 +1741,7 @@ async fn test_empty_playlist_returns_none() {
         .create(&make_user("empty_pl_owner"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room("Empty PL".to_string(), String::new(), owner.id, None, None)
         .await
         .checked("test operation should succeed");
@@ -1768,7 +1768,7 @@ async fn test_no_current_media_plays_first() {
         .create(&make_user("nocur_owner"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "No Current".to_string(),
             String::new(),
@@ -1856,7 +1856,7 @@ async fn test_no_current_media_ignores_other_rooms_root_media() {
         .create(&make_user("nocur_root_scope_owner"))
         .await
         .checked("test operation should succeed");
-    let (room_a, _) = room_service
+    let room_a = room_service
         .create_room(
             "No Current Root A".to_string(),
             String::new(),
@@ -1866,7 +1866,7 @@ async fn test_no_current_media_ignores_other_rooms_root_media() {
         )
         .await
         .checked("test operation should succeed");
-    let (room_b, _) = room_service
+    let room_b = room_service
         .create_room(
             "No Current Root B".to_string(),
             String::new(),
@@ -1915,7 +1915,7 @@ async fn test_play_next_stops_when_next_media_creator_becomes_inactive() {
         .create(&make_user("play_next_inactive_creator"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Play Next Inactive Media".to_string(),
             String::new(),
@@ -2055,7 +2055,7 @@ async fn test_dynamic_playlist_sequential_advances_by_target() {
         .create(&make_user("dynamic_seq_owner"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Dynamic Seq".to_string(),
             String::new(),
@@ -2122,7 +2122,7 @@ async fn test_switch_dynamic_playlist_rejects_inactive_creator() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Dynamic Inactive Creator".to_string(),
             String::new(),
@@ -2200,7 +2200,7 @@ async fn test_play_next_stops_when_dynamic_playlist_creator_becomes_inactive() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Dynamic Play Next Inactive Creator".to_string(),
             String::new(),
@@ -2276,7 +2276,7 @@ async fn test_dynamic_playlist_repeat_all_wraps_to_first_item() {
         .create(&make_user("dynamic_repeat_all_owner"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Dynamic Repeat All".to_string(),
             String::new(),
@@ -2337,7 +2337,7 @@ async fn test_dynamic_playlist_play_next_uses_bound_provider_instance() {
         .create(&make_user("dynamic_bound_instance_owner"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Dynamic Bound Instance".to_string(),
             String::new(),
@@ -2416,7 +2416,7 @@ async fn test_list_dynamic_playlist_items_passes_credential_encryption_to_provid
         .create(&make_user("dynamic_sensitive_list_owner"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Dynamic Sensitive List".to_string(),
             String::new(),

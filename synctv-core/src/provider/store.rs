@@ -63,10 +63,6 @@ impl StoreLockGuard {
             release: Some(Box::new(release)),
         }
     }
-
-    pub fn noop() -> Self {
-        Self { release: None }
-    }
 }
 
 impl Drop for StoreLockGuard {

@@ -18,7 +18,7 @@ async fn test_is_admin_or_creator_for_creator() {
         "creator user should be created",
     );
 
-    let (room, _) = ok(
+    let room = ok(
         room_service
             .create_room(
                 "Is Admin Room".to_string(),
@@ -58,7 +58,7 @@ async fn test_is_admin_or_creator_for_regular_member() {
         "regular member user should be created",
     );
 
-    let (room, _) = ok(
+    let room = ok(
         room_service
             .create_room(
                 "Is Admin 2 Room".to_string(),
@@ -101,7 +101,7 @@ async fn test_is_admin_or_creator_for_non_member() {
         "outsider user should be created",
     );
 
-    let (room, _) = ok(
+    let room = ok(
         room_service
             .create_room(
                 "Is Admin 3 Room".to_string(),

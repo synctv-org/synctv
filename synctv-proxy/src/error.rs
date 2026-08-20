@@ -9,20 +9,6 @@ pub enum ProxyErrorKind {
     Upstream,
 }
 
-impl ProxyErrorKind {
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Cancelled => "cancelled",
-            Self::Timeout => "timeout",
-            Self::Connection => "connection",
-            Self::Ssrf => "ssrf",
-            Self::InvalidRequest => "invalid_request",
-            Self::RangeNotSatisfiable => "range_not_satisfiable",
-            Self::Upstream => "upstream",
-        }
-    }
-}
-
 #[derive(Debug)]
 pub(crate) enum ProxyError {
     Cancelled(String),
@@ -100,17 +86,6 @@ pub fn proxy_error_kind_from_std_error(
         current = cause.source();
     }
     None
-}
-
-pub(crate) fn classify_reqwest_body_error(error: &reqwest::Error) -> ProxyError {
-    let message = error.to_string();
-    if error.is_timeout() {
-        ProxyError::Timeout(message)
-    } else if reqwest_error_indicates_connection_failure(error) {
-        ProxyError::Connection(message)
-    } else {
-        ProxyError::Upstream(message)
-    }
 }
 
 pub(crate) fn reqwest_error_indicates_connection_failure(error: &reqwest::Error) -> bool {

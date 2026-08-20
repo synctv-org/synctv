@@ -130,32 +130,6 @@ impl PlaylistService {
             .await
     }
 
-    pub async fn get_cover_object(
-        &self,
-        encoded_object_key: &str,
-        read_token: &str,
-    ) -> Result<crate::models::FileBlob> {
-        self.get_cover_object_range(encoded_object_key, read_token, None)
-            .await
-    }
-
-    pub async fn get_cover_object_range(
-        &self,
-        encoded_object_key: &str,
-        read_token: &str,
-        range: Option<FileRangeRequest>,
-    ) -> Result<crate::models::FileBlob> {
-        self.file_storage_service
-            .as_ref()
-            .ok_or_else(|| Error::NotFound("File object not found".to_string()))?
-            .get_object(GetFileObject {
-                encoded_object_key: encoded_object_key.to_string(),
-                read_token: read_token.to_string(),
-                range,
-            })
-            .await
-    }
-
     pub async fn get_cover_object_stream(
         &self,
         encoded_object_key: &str,

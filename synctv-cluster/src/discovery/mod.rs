@@ -16,8 +16,8 @@ pub use health_monitor::{HealthMonitor, NodeHealth};
 pub use k8s_dns::{K8sDnsDiscovery, K8sDnsDiscoveryOptions};
 pub use load_balancer::{LoadBalancer, LoadBalancingStrategy};
 pub use node_registry::{
-    ClusterMode, HeartbeatResult, LocalClusterNodeDirectoryFactory, NodeInfo, NodeRegistry,
-    NodeViewMode, RedisClusterNodeDirectoryFactory,
+    ClusterMode, HeartbeatResult, NodeInfo, NodeRegistry, NodeViewMode,
+    RedisClusterNodeDirectoryFactory,
 };
 pub use runtime::{ClusterHealthRuntime, ClusterNodeDirectory, ClusterNodeDirectoryFactory};
 pub use static_discovery::{
@@ -35,11 +35,6 @@ pub fn build_cluster_node_directory_factory(
     runtime: Arc<dyn RedisCoordinationRuntime>,
 ) -> Arc<dyn ClusterNodeDirectoryFactory> {
     Arc::new(RedisClusterNodeDirectoryFactory::new(runtime))
-}
-
-#[must_use]
-pub fn build_local_cluster_node_directory_factory() -> Arc<dyn ClusterNodeDirectoryFactory> {
-    Arc::new(LocalClusterNodeDirectoryFactory)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

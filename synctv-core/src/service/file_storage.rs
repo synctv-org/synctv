@@ -147,10 +147,6 @@ impl<T> FileObjectReadSeek for T where T: AsyncRead + AsyncSeek + Send + Unpin {
 
 pub type FileObjectReader = Box<dyn FileObjectReadSeek>;
 
-pub(crate) fn file_blob_to_reader(blob: FileBlob) -> FileObjectReader {
-    Box::new(Cursor::new(blob.data))
-}
-
 pub(crate) fn merge_file_variants_metadata(
     metadata: &FileMetadata,
     variants: &[crate::models::FileObjectVariant],
@@ -747,7 +743,7 @@ pub trait FileStorageService: Send + Sync {
     ) -> Result<FileObjectReader> {
         self.get_object_by_key(storage_backend, object_key)
             .await
-            .map(file_blob_to_reader)
+            .map(|blob| Box::new(Cursor::new(blob.data)) as FileObjectReader)
     }
 
     async fn put_object_by_key(

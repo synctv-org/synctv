@@ -299,36 +299,6 @@ impl PlaybackSourceMetadataRepository {
         Ok(metadata)
     }
 
-    pub async fn update_names_if_present(
-        &self,
-        identity: &PlaybackSourceIdentity,
-        media_name: Option<&str>,
-        playlist_name: Option<&str>,
-    ) -> Result<()> {
-        sqlx::query!(
-            r#"UPDATE playback_source_metadata
-               SET media_name = COALESCE($5, media_name),
-                   playlist_name = COALESCE($6, playlist_name),
-                   updated_at = CURRENT_TIMESTAMP,
-                   version = version + 1
-               WHERE room_id = $1
-                 AND media_id IS NOT DISTINCT FROM $2
-                 AND playlist_id IS NOT DISTINCT FROM $3
-                 AND target_hash = $4
-                 AND (media_name IS DISTINCT FROM COALESCE($5, media_name)
-                   OR playlist_name IS DISTINCT FROM COALESCE($6, playlist_name))"#,
-            identity.room_id.as_i64(),
-            identity.media_id.map(i64::from),
-            identity.playlist_id.map(i64::from),
-            &identity.target_hash,
-            media_name,
-            playlist_name,
-        )
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
     pub async fn list_active_finite_sources_for_rooms(
         &self,
         room_ids: &[RoomId],

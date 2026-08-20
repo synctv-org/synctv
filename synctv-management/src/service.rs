@@ -36,7 +36,7 @@ use crate::mapping::{
     chat_history_cursor_to_client_proto, created_media_to_client_proto,
     created_playlist_to_client_proto, created_room_to_client_proto,
     evict_expired_slice_cache_to_management, get_slice_cache_stats_to_management, map_api_error,
-    map_api_result, map_ban_record_target_type_filter, map_classified_result, map_core_error,
+    map_ban_record_target_type_filter, map_classified_result, map_core_error,
     map_management_core_sort_direction, map_management_room_list_sort_by,
     map_management_sort_direction, map_management_user_list_sort_by,
     map_management_user_lookup_error, map_optional_management_sort_direction,
@@ -2400,7 +2400,7 @@ impl ManagementService for ManagementServiceImpl {
                 }
             });
 
-        let (room, _member) = self
+        let room = self
             .room_service
             .create_room_with_taxonomy_outbox(
                 synctv_core::service::CreateRoomWithTaxonomyRequest {

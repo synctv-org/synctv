@@ -678,7 +678,7 @@ async fn test_shutdown_unregisters_node_after_heartbeat_stops() -> TestResult {
     // Node is still registered because shutdown awaits heartbeat before unregistering.
     assert!(
         registry
-            .test_get_local("shutdown-race-node")
+            .get_node_local("shutdown-race-node")
             .await
             .is_some(),
         "shutdown should still be waiting for heartbeat, node not yet unregistered"
@@ -694,7 +694,7 @@ async fn test_shutdown_unregisters_node_after_heartbeat_stops() -> TestResult {
     // The late re-registration must be cleaned up by unregister.
     assert!(
         registry
-            .test_get_local("shutdown-race-node")
+            .get_node_local("shutdown-race-node")
             .await
             .is_none(),
         "shutdown must unregister the node even after a late heartbeat re-registration"

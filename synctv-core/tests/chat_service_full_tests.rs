@@ -1,7 +1,7 @@
 //! `ChatService` integration tests
 //!
-//! Tests `send_message` permission check, `chat_enabled` setting, rate limit mapping,
-//! and `delete_message` permission logic with real `PostgreSQL`
+//! Tests chat message permission checks, `chat_enabled` settings, rate limit mapping,
+//! and message deletion permissions with real `PostgreSQL`
 //! via testcontainers.
 //!
 use std::sync::Arc;
@@ -17,8 +17,8 @@ use synctv_core::{
         ChatMemberJoinedMetadata, ChatMessage, ChatMessageSelection, ChatMessageStatus,
         ChatMessageType, ChatMetadata, DeleteChatMessage, EditChatMessage, FileBlobCompression,
         FileReferenceTarget, FileUploadManifestPart, FileUploadSessionCreateResult, NewStoredFile,
-        RoomAdminPermissionBits, RoomMemberPermissionBits, RoomRole, RoomSettings, SendChatMessage,
-        SubmittedFileReference, User, UserId, UserRole, UserStatus,
+        RoomAdminPermissionBits, RoomId, RoomMemberPermissionBits, RoomRole, RoomSettings,
+        SendChatMessage, SubmittedFileReference, User, UserId, UserRole, UserStatus,
     },
     repository::{
         ChatRepository, FileStorageRepository, RoomMemberRepository, RoomRepository,
@@ -34,6 +34,63 @@ use synctv_core::{
     Error,
 };
 use synctv_core_testing::{create_test_pool, TestOptionExt, TestResultExt};
+
+trait ChatServiceTestExt {
+    async fn send_message(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        content: String,
+    ) -> synctv_core::Result<ChatMessage>;
+
+    async fn delete_message(
+        &self,
+        room_id: &RoomId,
+        message_id: i64,
+        user_id: &UserId,
+    ) -> synctv_core::Result<bool>;
+}
+
+impl ChatServiceTestExt for ChatService {
+    async fn send_message(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        content: String,
+    ) -> synctv_core::Result<ChatMessage> {
+        self.send_message_event(SendChatMessage {
+            room_id,
+            user_id,
+            client_message_id: None,
+            content,
+            message_type: ChatMessageType::User,
+            reply_to_message_id: None,
+            metadata: None,
+            attachments: Vec::new(),
+            mentions: Vec::new(),
+        })
+        .await
+        .map(|event| event.message.message)
+    }
+
+    async fn delete_message(
+        &self,
+        room_id: &RoomId,
+        message_id: i64,
+        user_id: &UserId,
+    ) -> synctv_core::Result<bool> {
+        self.delete_message_event(DeleteChatMessage {
+            room_id: *room_id,
+            message_id,
+            user_id: *user_id,
+            client_operation_id: None,
+            reason: None,
+            expected_version: None,
+        })
+        .await
+        .map(|_| true)
+    }
+}
 
 fn png_test_image() -> Vec<u8> {
     let mut out = Vec::new();
@@ -371,7 +428,7 @@ async fn test_send_message_without_chat_permission_denied() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Chat Perm Room".to_string(),
             String::new(),
@@ -434,7 +491,7 @@ async fn test_send_message_chat_disabled_rejected() {
         chat_enabled: ChatEnabled(false),
         ..Default::default()
     };
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Chat Disabled".to_string(),
             String::new(),
@@ -477,7 +534,7 @@ async fn test_send_message_rate_limit_triggers() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Chat RL Room".to_string(),
             String::new(),
@@ -571,7 +628,7 @@ async fn test_delete_message_owner_can_delete_own() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Del Msg Room".to_string(),
             String::new(),
@@ -623,7 +680,7 @@ async fn test_delete_message_non_owner_requires_delete_chat_messages_permission(
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Del Msg Perm Room".to_string(),
             String::new(),
@@ -685,7 +742,7 @@ async fn test_delete_message_non_owner_with_delete_chat_messages_succeeds() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Del Msg Admin Room".to_string(),
             String::new(),
@@ -770,7 +827,7 @@ async fn test_admin_delete_records_actor_reason_and_original_author() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Admin Delete Audit Room".to_string(),
             String::new(),
@@ -952,7 +1009,7 @@ async fn test_send_message_broadcasts_to_room_members() {
         },
     );
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Broadcast Test Room".to_string(),
             String::new(),
@@ -1002,7 +1059,7 @@ async fn test_get_history_cursor_pagination_basic() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Cursor Pagination Room".to_string(),
             String::new(),
@@ -1088,7 +1145,7 @@ async fn test_get_history_empty_room() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Empty Chat Room".to_string(),
             String::new(),
@@ -1129,7 +1186,7 @@ async fn test_get_history_single_page() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Single Page Room".to_string(),
             String::new(),
@@ -1183,7 +1240,7 @@ async fn test_get_history_limit_capped_at_100() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Limit Cap Room".to_string(),
             String::new(),
@@ -1231,11 +1288,11 @@ async fn test_get_history_messages_from_correct_room() {
         .await
         .checked("test operation should succeed");
 
-    let (room1, _) = room_service
+    let room1 = room_service
         .create_room("Room 1".to_string(), String::new(), creator.id, None, None)
         .await
         .checked("test operation should succeed");
-    let (room2, _) = room_service
+    let room2 = room_service
         .create_room("Room 2".to_string(), String::new(), creator.id, None, None)
         .await
         .checked("test operation should succeed");
@@ -1291,7 +1348,7 @@ async fn test_chat_history_with_deleted_user_returns_none_user_id() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Deleted User Chat Room".to_string(),
             String::new(),
@@ -1362,7 +1419,7 @@ async fn test_send_message_oversized_content_rejected() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Oversized Msg Room".to_string(),
             String::new(),
@@ -1407,7 +1464,7 @@ async fn test_send_message_valid_content_persisted() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Valid Msg Room".to_string(),
             String::new(),
@@ -1453,7 +1510,7 @@ async fn test_send_message_event_idempotency_returns_existing_message() {
         .set(&creator.id, &creator.username)
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Idempotent Chat Room".to_string(),
             String::new(),
@@ -1524,7 +1581,7 @@ async fn test_chat_history_page_returns_event_cursor_for_gapless_observe() {
         .set(&creator.id, &creator.username)
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Chat History Cursor Room".to_string(),
             String::new(),
@@ -1639,7 +1696,7 @@ async fn test_chat_history_and_events_use_include_message_types_for_system_join(
         .set(&joined.id, &joined.username)
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Chat Include Cursor Room".to_string(),
             String::new(),
@@ -1788,7 +1845,7 @@ async fn test_get_events_after_unknown_event_id_returns_invalid_cursor() {
         .set(&creator.id, &creator.username)
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Chat Event Cursor Room".to_string(),
             String::new(),
@@ -1830,7 +1887,7 @@ async fn test_send_message_event_idempotency_rejects_different_payload() {
         .set(&creator.id, &creator.username)
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Idempotent Conflict Room".to_string(),
             String::new(),
@@ -1887,7 +1944,7 @@ async fn test_edit_message_increments_version_and_checks_expected_version() {
         .set(&creator.id, &creator.username)
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Edit Version Room".to_string(),
             String::new(),
@@ -1979,7 +2036,7 @@ async fn test_edit_message_rejects_system_message_owned_by_actor() {
         .set(&creator.id, &creator.username)
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "System Edit Room".to_string(),
             String::new(),
@@ -2034,7 +2091,7 @@ async fn test_edit_message_client_operation_id_replays_without_expected_version(
         .set(&creator.id, &creator.username)
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Edit Operation Room".to_string(),
             String::new(),
@@ -2097,7 +2154,7 @@ async fn test_delete_message_event_soft_deletes_and_checks_expected_version() {
         .set(&creator.id, &creator.username)
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Delete Event Room".to_string(),
             String::new(),
@@ -2186,7 +2243,7 @@ async fn test_delete_message_client_operation_id_replays_without_expected_versio
         .set(&creator.id, &creator.username)
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Delete Operation Room".to_string(),
             String::new(),
@@ -2251,7 +2308,7 @@ async fn test_attachment_message_history_returns_attachment_metadata() {
         .set(&creator.id, &creator.username)
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Attachment History Room".to_string(),
             String::new(),
@@ -2303,7 +2360,7 @@ async fn test_attachment_message_history_returns_attachment_metadata() {
         .checked("test operation should succeed");
 
     let (history, _) = chat_service
-        .get_history_with_attachments(&room.id, None, 10, true)
+        .get_history_with_attachments_for_viewer(&room.id, None, 10, true, None)
         .await
         .checked("test operation should succeed");
 
@@ -2367,7 +2424,7 @@ async fn test_reused_chat_attachment_object_keeps_storage_until_last_reference_i
         .set(&creator.id, &creator.username)
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Shared Attachment Room".to_string(),
             String::new(),
@@ -2492,7 +2549,7 @@ async fn test_attachment_message_idempotency_replays_and_rejects_changed_attachm
         .set(&creator.id, &creator.username)
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Attachment Idempotent Room".to_string(),
             String::new(),
@@ -2608,7 +2665,7 @@ async fn test_chat_message_attachments_require_matching_room_id() {
         .set(&creator.id, &creator.username)
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Attachment Room FK".to_string(),
             String::new(),
@@ -2618,7 +2675,7 @@ async fn test_chat_message_attachments_require_matching_room_id() {
         )
         .await
         .checked("test operation should succeed");
-    let (other_room, _) = room_service
+    let other_room = room_service
         .create_room(
             "Other Attachment Room FK".to_string(),
             String::new(),
@@ -2685,7 +2742,7 @@ async fn test_deleted_attachment_message_history_hides_attachment_metadata() {
         .set(&creator.id, &creator.username)
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Deleted Attachment History Room".to_string(),
             String::new(),
@@ -2749,7 +2806,7 @@ async fn test_deleted_attachment_message_history_hides_attachment_metadata() {
         .checked("test operation should succeed");
 
     let (history, _) = chat_service
-        .get_history_with_attachments(&room.id, None, 10, true)
+        .get_history_with_attachments_for_viewer(&room.id, None, 10, true, None)
         .await
         .checked("test operation should succeed");
 
@@ -2759,7 +2816,7 @@ async fn test_deleted_attachment_message_history_hides_attachment_metadata() {
     assert!(history[0].attachments.is_empty());
 
     let (visible_history, _) = chat_service
-        .get_history_with_attachments(&room.id, None, 10, false)
+        .get_history_with_attachments_for_viewer(&room.id, None, 10, false, None)
         .await
         .checked("test operation should succeed");
     assert!(visible_history.is_empty());
@@ -2781,7 +2838,7 @@ async fn test_send_message_rejects_missing_or_deleted_reply_target() {
         .set(&creator.id, &creator.username)
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Reply Target Room".to_string(),
             String::new(),
@@ -2890,7 +2947,7 @@ async fn test_idempotent_reply_send_replays_after_reply_target_is_deleted() {
         .set(&creator.id, &creator.username)
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Reply Replay Room".to_string(),
             String::new(),
@@ -2978,7 +3035,7 @@ async fn test_send_message_html_xss_stripped() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "XSS Strip Room".to_string(),
             String::new(),
@@ -3036,7 +3093,7 @@ async fn test_delete_message_with_deleted_user_requires_permission() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Del Null User Room".to_string(),
             String::new(),

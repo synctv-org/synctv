@@ -1193,13 +1193,6 @@ pub struct EmailRuntimeSettings {
     pub whitelist_domains: Vec<String>,
 }
 
-impl EmailRuntimeSettings {
-    #[must_use]
-    pub fn whitelist_raw(&self) -> String {
-        self.whitelist_domains.join(",")
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WebRtcRuntimeSettings {
     pub external_ice_servers: IceServerList,

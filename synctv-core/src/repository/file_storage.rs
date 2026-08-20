@@ -573,36 +573,6 @@ impl FileStorageRepository {
         Ok(object)
     }
 
-    pub async fn get_any_object_by_manifest(
-        &self,
-        storage_backend: &str,
-        content_manifest_sha256: &str,
-        size_bytes: i64,
-    ) -> Result<Option<FileObject>> {
-        validate_required_sha256(content_manifest_sha256, "content_manifest_sha256")?;
-        let object = sqlx::query_as!(
-            FileObject,
-            r#"
-            SELECT storage_backend, object_key, mime_type, size_bytes,
-                   content_manifest_sha256, metadata AS "metadata!: FileMetadata",
-                   created_at, validated_at, deleting_at
-            FROM file_objects
-            WHERE storage_backend = $1
-              AND content_manifest_sha256 = $2
-              AND size_bytes = $3
-              AND deleting_at IS NULL
-            ORDER BY validated_at DESC NULLS LAST, created_at ASC
-            LIMIT 1
-            "#,
-            storage_backend,
-            content_manifest_sha256.trim().to_ascii_lowercase(),
-            size_bytes,
-        )
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(object)
-    }
-
     pub async fn update_object_metadata(
         &self,
         storage_backend: &str,
@@ -1260,42 +1230,6 @@ impl FileStorageRepository {
         Ok(session)
     }
 
-    pub async fn get_active_reference_by_target(
-        &self,
-        reference_kind: &str,
-        reference_id: &str,
-    ) -> Result<Option<StoredFileReference>> {
-        let reference = sqlx::query_as!(
-            StoredFileReferenceRow,
-            r#"
-            SELECT r.id AS file_reference_id,
-                   o.storage_backend,
-                   o.object_key,
-                   o.mime_type,
-                   o.size_bytes,
-                   o.content_manifest_sha256,
-                   r.metadata AS "metadata!: FileReferenceMetadata",
-                   o.created_at,
-                   o.validated_at
-            FROM file_references r
-            JOIN file_objects o
-              ON o.storage_backend = r.storage_backend
-             AND o.object_key = r.object_key
-            WHERE r.reference_kind = $1
-              AND r.reference_id = $2
-              AND r.released_at IS NULL
-              AND o.deleting_at IS NULL
-            ORDER BY r.updated_at DESC, r.id DESC
-            LIMIT 1
-            "#,
-            reference_kind,
-            reference_id,
-        )
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(reference.map(StoredFileReference::from))
-    }
-
     pub async fn get_active_reference_metadata_by_target(
         &self,
         reference_kind: &str,
@@ -1406,40 +1340,6 @@ impl FileStorageRepository {
         .fetch_one(&self.pool)
         .await?;
         scalar_value(exists, "file blob part EXISTS")
-    }
-
-    pub async fn get_blob(
-        &self,
-        storage_backend: &str,
-        object_key: &str,
-    ) -> Result<Option<FileBlob>> {
-        let Some(object) = self.get_object(storage_backend, object_key).await? else {
-            return Ok(None);
-        };
-        let parts = self.list_blob_parts(storage_backend, object_key).await?;
-        if parts.is_empty() {
-            return Ok(None);
-        }
-        let compression = parts
-            .first()
-            .map_or(FileBlobCompression::None, |part| part.compression);
-        let mut data = Vec::new();
-        for part in parts {
-            data.extend_from_slice(&part.data);
-        }
-        Ok(Some(FileBlob {
-            storage_backend: object.storage_backend,
-            object_key: object.object_key,
-            mime_type: object.mime_type,
-            size_bytes: object.size_bytes,
-            total_size_bytes: object.size_bytes,
-            content_manifest_sha256: object.content_manifest_sha256,
-            compression,
-            range: None,
-            data: data.into(),
-            metadata: object.metadata,
-            created_at: object.created_at,
-        }))
     }
 
     pub async fn delete_blob(&self, storage_backend: &str, object_key: &str) -> Result<bool> {
@@ -2023,59 +1923,6 @@ impl FileStorageRepository {
                 reference_id: row.reference_id,
             })
             .collect())
-    }
-
-    pub async fn enqueue_cleanup_jobs(
-        &self,
-        origin: &str,
-        files: &[FileReferenceTarget],
-        metadata: &FileCleanupMetadata,
-        error: &str,
-    ) -> Result<()> {
-        if files.is_empty() {
-            return Ok(());
-        }
-        validate_required_text(origin, "file cleanup origin", FILE_CLEANUP_ORIGIN_MAX_CHARS)?;
-
-        let mut tx = self.pool.begin().await?;
-        for file in files {
-            validate_file_reference_fields(
-                &file.storage_backend,
-                &file.object_key,
-                &file.reference_kind,
-                &file.reference_id,
-            )?;
-            sqlx::query!(
-                r#"
-                INSERT INTO file_cleanup_jobs (
-                    origin, storage_backend, object_key, reference_kind,
-                    reference_id, metadata, last_error
-                )
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
-                ON CONFLICT (reference_kind, reference_id, storage_backend, object_key)
-                DO UPDATE SET
-                    origin = EXCLUDED.origin,
-                    metadata = EXCLUDED.metadata,
-                    last_error = EXCLUDED.last_error,
-                    next_attempt_at = CURRENT_TIMESTAMP,
-                    locked_at = NULL,
-                    locked_by = NULL,
-                    completed_at = NULL,
-                    updated_at = CURRENT_TIMESTAMP
-                "#,
-                origin,
-                &file.storage_backend,
-                &file.object_key,
-                &file.reference_kind,
-                &file.reference_id,
-                metadata as &FileCleanupMetadata,
-                error,
-            )
-            .execute(&mut *tx)
-            .await?;
-        }
-        tx.commit().await?;
-        Ok(())
     }
 
     pub async fn release_references_and_enqueue_cleanup_jobs(

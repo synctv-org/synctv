@@ -515,38 +515,6 @@ impl RoomPlaybackStateRepository {
         self.update_in_tx(state, state.version + 1, None).await
     }
 
-    /// Update playback state with optimistic locking and an externally allocated version.
-    ///
-    /// Strong-cache write paths reserve the next version from Redis first, then
-    /// store that exact version in Postgres so Redis cannot lag behind the DB.
-    pub async fn update_with_exact_version(
-        &self,
-        state: &RoomPlaybackState,
-        new_version: i64,
-    ) -> Result<RoomPlaybackState> {
-        self.update_in_tx(state, new_version, None).await
-    }
-
-    pub async fn update_with_exact_version_and_previous_progress(
-        &self,
-        state: &RoomPlaybackState,
-        new_version: i64,
-        previous_progress_position: Option<f64>,
-    ) -> Result<RoomPlaybackState> {
-        self.update_in_tx(state, new_version, previous_progress_position)
-            .await
-    }
-
-    pub async fn update_with_exact_version_executor(
-        &self,
-        state: &RoomPlaybackState,
-        new_version: i64,
-        conn: &mut PgConnection,
-    ) -> Result<RoomPlaybackState> {
-        self.update_with_exact_version_on_conn(state, new_version, None, conn)
-            .await
-    }
-
     pub async fn update_with_exact_version_executor_and_previous_progress(
         &self,
         state: &RoomPlaybackState,
@@ -555,15 +523,6 @@ impl RoomPlaybackStateRepository {
         conn: &mut PgConnection,
     ) -> Result<RoomPlaybackState> {
         self.update_with_exact_version_on_conn(state, new_version, previous_progress_position, conn)
-            .await
-    }
-
-    /// List playback states impacted by media/playlists owned by a creator.
-    pub async fn find_playback_for_creator(
-        &self,
-        creator_id: &UserId,
-    ) -> Result<Vec<RoomPlaybackState>> {
-        self.find_playback_for_creator_with_executor(creator_id, &self.pool)
             .await
     }
 

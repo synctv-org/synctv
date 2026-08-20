@@ -10,11 +10,8 @@ use redis::Script;
 use std::future::Future;
 use std::sync::{Arc, LazyLock};
 
-mod guard;
 #[cfg(test)]
 mod tests;
-
-pub use guard::LockGuard;
 
 static GENERATE_FENCING_TOKEN_SCRIPT: LazyLock<Script> = LazyLock::new(|| {
     Script::new(
@@ -187,44 +184,6 @@ impl DistributedLock {
     #[must_use]
     pub fn new(redis: RedisConnectionManager) -> Self {
         Self::from_runtime(crate::direct_runtime(redis))
-    }
-
-    /// Create a distributed lock service from the shared Redis handle used by
-    /// the rest of the application.
-    ///
-    /// This keeps the lock service aligned with Sentinel failover hot-swaps so
-    /// it does not keep talking to a stale master after reconnection.
-    #[must_use]
-    pub fn new_shared(redis: Arc<tokio::sync::RwLock<RedisConnectionManager>>) -> Self {
-        Self::from_runtime(crate::shared_runtime(redis))
-    }
-
-    /// Create a new distributed lock service and log a warning if the Redis URL
-    /// indicates Sentinel mode. Call this at startup instead of `new()` when the
-    /// Redis URL is available.
-    pub fn new_with_sentinel_check(redis: RedisConnectionManager, redis_url: &str) -> Self {
-        if redis_url.contains("sentinel") || redis_url.contains("SENTINEL") {
-            Self::log_sentinel_warning();
-        }
-        Self::new(redis)
-    }
-
-    /// Create a new distributed lock service with deployment mode awareness.
-    ///
-    /// When `is_sentinel` is true, emits a startup warning about the split-brain
-    /// window during Sentinel failover. This is more reliable than URL-based
-    /// detection in `new_with_sentinel_check`.
-    pub fn new_with_mode(redis: RedisConnectionManager, is_sentinel: bool) -> Self {
-        Self::from_runtime_with_mode(crate::direct_runtime(redis), is_sentinel)
-    }
-
-    /// Create a distributed lock service from the shared Redis handle with
-    /// deployment-mode awareness.
-    pub fn new_shared_with_mode(
-        redis: Arc<tokio::sync::RwLock<RedisConnectionManager>>,
-        is_sentinel: bool,
-    ) -> Self {
-        Self::from_runtime_with_mode(crate::shared_runtime(redis), is_sentinel)
     }
 
     async fn conn(&self, operation: impl Into<String>) -> crate::Result<RedisConnectionManager> {
@@ -565,56 +524,6 @@ impl DistributedLock {
             }
 
             result
-        })
-        .await
-    }
-
-    /// Try to acquire a lock and execute an operation (with fencing token)
-    ///
-    /// Same as `try_with_lock` but passes the fencing token to the operation.
-    ///
-    /// # Example
-    /// ```text
-    /// let updated = match lock.try_with_lock_token("update_settings:room123", 10, |token| async move {
-    ///     room_service.update_settings_with_token(settings, token).await
-    /// }).await? {
-    ///     Some(result) => result,
-    ///     None => return Ok(()),
-    /// };
-    /// ```
-    pub async fn try_with_lock_token<F, Fut, T>(
-        &self,
-        key: &str,
-        ttl_seconds: u64,
-        operation: F,
-    ) -> Result<Option<T>>
-    where
-        F: FnOnce(u64) -> Fut,
-        Fut: Future<Output = Result<T>>,
-    {
-        let client_timeout = std::time::Duration::from_secs(ttl_seconds + 5);
-
-        run_distributed_lock_client_op(key, client_timeout, async {
-            // Try to acquire lock with token
-            let Some((lock_value, fencing_token)) =
-                self.acquire_with_token(key, ttl_seconds).await?
-            else {
-                return Ok(None);
-            };
-
-            // Execute operation with fencing token
-            let result = operation(fencing_token).await;
-
-            // Always release lock
-            if let Err(e) = self.release(key, &lock_value).await {
-                tracing::error!(
-                    key = %key,
-                    error = %e,
-                    "Failed to release lock after operation"
-                );
-            }
-
-            result.map(Some)
         })
         .await
     }

@@ -1,4 +1,5 @@
 use synctv_common::ExecutionControl;
+#[cfg(test)]
 use tracing::debug;
 
 use crate::{
@@ -9,59 +10,35 @@ use crate::{
 };
 
 impl OAuth2Service {
-    pub async fn get_authorization_url(
+    #[cfg(test)]
+    pub(crate) async fn get_authorization_url(
         &self,
         instance_name: &str,
         redirect_url: Option<String>,
-    ) -> Result<(String, String)> {
-        self.get_authorization_url_with_control(instance_name, redirect_url, None)
-            .await
-    }
-
-    pub async fn get_authorization_url_with_control(
-        &self,
-        instance_name: &str,
-        redirect_url: Option<String>,
-        control: Option<&ExecutionControl>,
     ) -> Result<(String, String)> {
         self.build_authorization_url(
             instance_name,
             redirect_url,
             OAuth2Operation::Login,
             None,
-            control,
-        )
-        .await
-    }
-
-    pub async fn get_authorization_url_with_user(
-        &self,
-        instance_name: &str,
-        redirect_url: Option<String>,
-        user_id: Option<UserId>,
-    ) -> Result<(String, String)> {
-        self.get_authorization_url_with_user_with_control(
-            instance_name,
-            redirect_url,
-            user_id,
             None,
         )
         .await
     }
 
-    pub async fn get_authorization_url_with_user_with_control(
+    #[cfg(test)]
+    pub(crate) async fn get_authorization_url_with_user(
         &self,
         instance_name: &str,
         redirect_url: Option<String>,
         user_id: Option<UserId>,
-        control: Option<&ExecutionControl>,
     ) -> Result<(String, String)> {
         self.build_authorization_url(
             instance_name,
             redirect_url,
             OAuth2Operation::Bind,
             user_id,
-            control,
+            None,
         )
         .await
     }
@@ -129,6 +106,7 @@ impl OAuth2Service {
             .await
     }
 
+    #[cfg(test)]
     async fn build_authorization_url(
         &self,
         instance_name: &str,

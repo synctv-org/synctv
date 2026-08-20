@@ -40,7 +40,7 @@ impl RoomService {
         room_id: RoomId,
         user_id: UserId,
         password: Option<String>,
-    ) -> Result<(Room, RoomMember, Vec<RoomMemberWithUser>)> {
+    ) -> Result<(Room, Vec<RoomMemberWithUser>)> {
         self.join_room_with_outbox(
             room_id,
             user_id,
@@ -60,7 +60,7 @@ impl RoomService {
         remark_name: String,
         display_tag: String,
         outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
-    ) -> Result<(Room, RoomMember, Vec<RoomMemberWithUser>)> {
+    ) -> Result<(Room, Vec<RoomMemberWithUser>)> {
         let proof = password.map_or(
             RoomPasswordJoinProof::None,
             RoomPasswordJoinProof::Plaintext,
@@ -84,7 +84,7 @@ impl RoomService {
         remark_name: String,
         display_tag: String,
         outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
-    ) -> BoxFuture<'_, Result<(Room, RoomMember, Vec<RoomMemberWithUser>)>> {
+    ) -> BoxFuture<'_, Result<(Room, Vec<RoomMemberWithUser>)>> {
         Box::pin(async move {
             tracing::info!(
                 room_id = %room_id,
@@ -253,7 +253,7 @@ impl RoomService {
     async fn do_join_room(
         &self,
         request: JoinRoomExecution,
-    ) -> Result<(Room, RoomMember, Vec<RoomMemberWithUser>)> {
+    ) -> Result<(Room, Vec<RoomMemberWithUser>)> {
         let JoinRoomExecution {
             room,
             settings,
@@ -263,7 +263,7 @@ impl RoomService {
             display_tag,
             outbox_event_factory,
         } = request;
-        if let Some(existing_member) = self.member_repo.get(&room_id, &user_id).await? {
+        if self.member_repo.get(&room_id, &user_id).await?.is_some() {
             tracing::debug!(
                 room_id = %room_id,
                 user_id = %user_id,
@@ -271,7 +271,7 @@ impl RoomService {
             );
             let members = self.member_service.list_members(&room_id).await?;
             self.touch_room_activity(room_id).await;
-            return Ok((room, existing_member, members));
+            return Ok((room, members));
         }
 
         if !settings.allow_auto_join.0 {
@@ -282,18 +282,17 @@ impl RoomService {
         }
 
         if settings.require_approval.0 {
-            let pending_member = self
-                .create_or_get_pending_join_request(&room_id, &user_id, RoomRole::Member)
+            self.create_or_get_pending_join_request(&room_id, &user_id, RoomRole::Member)
                 .await?;
             tracing::info!(
                 room_id = %room_id,
                 user_id = %user_id,
                 "Join request created and is awaiting approval"
             );
-            return Ok((room, pending_member, Vec::new()));
+            return Ok((room, Vec::new()));
         }
 
-        let options = AddMemberOptions::new().with_max_members(settings.max_members.0);
+        let options = AddMemberOptions::default().with_max_members(settings.max_members.0);
         let mut member = RoomMember::new(room_id, user_id, RoomRole::Member);
         member.remark_name = remark_name;
         member.display_tag = display_tag;
@@ -312,16 +311,15 @@ impl RoomService {
                     "User is already a member of the room (idempotent join)"
                 );
                 tx.rollback().await?;
-                let existing_member =
-                    self.member_repo
-                        .get(&room_id, &user_id)
-                        .await?
-                        .ok_or_else(|| {
-                            Error::Internal("Member disappeared after AlreadyExists".to_string())
-                        })?;
+                self.member_repo
+                    .get(&room_id, &user_id)
+                    .await?
+                    .ok_or_else(|| {
+                        Error::Internal("Member disappeared after AlreadyExists".to_string())
+                    })?;
                 let members = self.member_service.list_members(&room_id).await?;
                 self.touch_room_activity(room_id).await;
-                return Ok((room, existing_member, members));
+                return Ok((room, members));
             }
             Err(e) => return Err(e),
         };
@@ -359,7 +357,7 @@ impl RoomService {
 
         self.touch_room_activity(room_id).await;
 
-        Ok((room, created_member, members))
+        Ok((room, members))
     }
 
     async fn create_or_get_pending_join_request(
@@ -367,7 +365,7 @@ impl RoomService {
         room_id: &RoomId,
         user_id: &UserId,
         role: RoomRole,
-    ) -> Result<RoomMember> {
+    ) -> Result<()> {
         let mut tx = self.pool.begin().await?;
         sqlx::query!(
             "SELECT pg_advisory_xact_lock($1, hashtext($2))",
@@ -421,7 +419,7 @@ impl RoomService {
         }
 
         tx.commit().await?;
-        Ok(RoomMember::new(*room_id, *user_id, role))
+        Ok(())
     }
 
     pub(super) async fn load_pending_join_request_by_id_for_update(

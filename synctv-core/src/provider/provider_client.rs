@@ -71,11 +71,6 @@ impl ProviderClientManager {
         Ok(Self::new_with_provider_http_client(provider_client))
     }
 
-    #[cfg(test)]
-    pub(crate) fn new_for_tests() -> Result<Self, synctv_media_providers::ProviderClientError> {
-        Self::new()
-    }
-
     /// Create a new `ProviderClientManager` with a shared local provider HTTP client.
     #[must_use]
     pub fn new_with_provider_http_client(client: reqwest::Client) -> Self {

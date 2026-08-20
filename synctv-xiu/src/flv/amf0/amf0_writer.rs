@@ -24,13 +24,6 @@ impl Amf0Writer {
             writer: BytesWriter::new(),
         }
     }
-    pub fn write_anys(&mut self, values: &Vec<Amf0ValueType>) -> Result<(), Amf0WriteError> {
-        for val in values {
-            self.write_any(val)?;
-        }
-
-        Ok(())
-    }
     pub fn write_any(&mut self, value: &Amf0ValueType) -> Result<(), Amf0WriteError> {
         match *value {
             Amf0ValueType::Boolean(ref val) => self.write_bool(val),

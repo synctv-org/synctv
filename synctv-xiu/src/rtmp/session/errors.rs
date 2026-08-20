@@ -8,7 +8,6 @@ use {
         messages::errors::MessageError,
         netconnection::errors::NetConnectionError,
         netstream::errors::NetStreamError,
-        protocol_control_messages::errors::ControlMessagesError,
         user_control_messages::errors::EventMessagesError,
     },
     crate::streamhub::errors::StreamHubError,
@@ -32,8 +31,6 @@ pub enum SessionErrorValue {
 
     #[error("message error: {0}")]
     MessageError(#[from] MessageError),
-    #[error("control message error: {0}")]
-    ControlMessagesError(#[from] ControlMessagesError),
     #[error("net connection error: {0}")]
     NetConnectionError(#[from] NetConnectionError),
     #[error("net stream error: {0}")]
@@ -116,14 +113,6 @@ impl From<UnpackError> for SessionError {
 
 impl From<MessageError> for SessionError {
     fn from(error: MessageError) -> Self {
-        Self {
-            value: error.into(),
-        }
-    }
-}
-
-impl From<ControlMessagesError> for SessionError {
-    fn from(error: ControlMessagesError) -> Self {
         Self {
             value: error.into(),
         }

@@ -104,24 +104,8 @@ pub(crate) async fn send_with_redirect_validation(
     request: reqwest::RequestBuilder,
     ssrf_guard: &synctv_common::ssrf::SsrfGuard,
 ) -> Result<ProxyResponse, anyhow::Error> {
-    send_with_redirect_validation_with_control(client, request, ssrf_guard, None).await
-}
-
-#[cfg(test)]
-pub(crate) async fn send_with_redirect_validation_with_control(
-    client: &reqwest::Client,
-    request: reqwest::RequestBuilder,
-    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
-    request_control: Option<&ExecutionControl>,
-) -> Result<ProxyResponse, anyhow::Error> {
-    send_with_redirect_validation_with_control_and_timeout(
-        client,
-        request,
-        ssrf_guard,
-        request_control,
-        None,
-    )
-    .await
+    send_with_redirect_validation_with_control_and_timeout(client, request, ssrf_guard, None, None)
+        .await
 }
 
 pub async fn send_with_redirect_validation_with_control_and_timeout(

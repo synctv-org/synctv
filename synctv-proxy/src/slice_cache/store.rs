@@ -457,21 +457,6 @@ impl SliceCache {
         Self::new_with_client_and_ssrf_guard(config, client, ssrf_guard)
     }
 
-    /// Create a new in-memory `SliceCache` with an explicit outbound HTTP client.
-    ///
-    /// This is the preferred constructor for runtime code so the proxy/cache stack
-    /// shares one injected client instance.
-    pub fn new_with_client(
-        config: SliceCacheConfig,
-        client: reqwest::Client,
-    ) -> anyhow::Result<Self> {
-        Self::new_with_client_and_ssrf_guard(
-            config,
-            client,
-            synctv_common::ssrf::SsrfGuard::strict_policy(),
-        )
-    }
-
     pub fn new_with_client_and_ssrf_guard(
         config: SliceCacheConfig,
         client: reqwest::Client,
@@ -501,19 +486,6 @@ impl SliceCache {
     ) -> anyhow::Result<Self> {
         let client = crate::build_proxy_http_client(ssrf_guard.clone())?;
         Self::try_new_with_client_and_ssrf_guard(config, client, ssrf_guard).await
-    }
-
-    /// Create a new `SliceCache` with an explicit outbound HTTP client.
-    pub async fn try_new_with_client(
-        config: SliceCacheConfig,
-        client: reqwest::Client,
-    ) -> anyhow::Result<Self> {
-        Self::try_new_with_client_and_ssrf_guard(
-            config,
-            client,
-            synctv_common::ssrf::SsrfGuard::strict_policy(),
-        )
-        .await
     }
 
     pub async fn try_new_with_client_and_ssrf_guard(

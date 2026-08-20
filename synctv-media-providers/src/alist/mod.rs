@@ -10,7 +10,7 @@
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let mut client = AlistClient::new("https://alist.example.com")?;
-//! let token = client.login("username", "password", false).await?;
+//! let token = client.login_with_otp("username", "password", false, None).await?;
 //! let file_info = client
 //!     .fs_get(
 //!         "/movies/video.mp4",

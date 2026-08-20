@@ -33,10 +33,7 @@ pub mod stream;
 mod user;
 mod webrtc;
 pub use playback::{build_playback_state_update, build_start_playback_request};
-pub use user::{
-    token_auth_context_from_claims, user_notification_preferences_to_proto,
-    user_preferences_update_from_proto,
-};
+pub use user::{user_notification_preferences_to_proto, user_preferences_update_from_proto};
 
 // Proto conversion helpers used across impls modules within this crate.
 pub mod convert;
@@ -63,8 +60,7 @@ pub use convert::{
 use crate::chat_event_dispatcher::{default_chat_event_dispatcher, ChatEventDispatcher};
 use crate::fanout::{default_room_settings_fanout_service, RoomSettingsFanoutService};
 use crate::impls::{
-    ApiError, ApiRequestContext, EndpointRateLimitCategory, EndpointRateLimitScope,
-    RequestExecutor, RequestMetadata,
+    ApiError, EndpointRateLimitCategory, EndpointRateLimitScope, RequestExecutor, RequestMetadata,
 };
 use crate::media_fanout::{default_media_fanout_service, MediaFanoutService};
 use crate::membership_event_fanout::{
@@ -1045,39 +1041,6 @@ impl ClientApiImpl {
         synctv_core::service::JwtService::token_type_hint(token) == Some(TokenType::Guest)
     }
 
-    async fn room_actor_for_bearer_token(
-        &self,
-        token: &str,
-        public_room_id: &str,
-    ) -> Result<RoomActor, ApiError> {
-        if Self::is_guest_token(token) {
-            return self
-                .validate_guest_room_access(token, public_room_id)
-                .await
-                .map(RoomActor::Guest);
-        }
-
-        let claims = self.jwt_validator.validate_token(token).map_err(|_| {
-            ApiError::Authentication(synctv_common::messages::INVALID_OR_EXPIRED_TOKEN.to_string())
-        })?;
-        let authenticated = self
-            .request_executor()
-            .security_check_claims(&claims)
-            .await?;
-        self.room_actor_for_user(&authenticated.user_id(), public_room_id)
-            .await
-    }
-
-    pub async fn room_actor_for_authorization(
-        &self,
-        authorization: &str,
-        public_room_id: &str,
-    ) -> Result<RoomActor, ApiError> {
-        let token = Self::bearer_token_from_authorization(authorization)?;
-        self.room_actor_for_bearer_token(&token, public_room_id)
-            .await
-    }
-
     pub fn require_guest_permission(
         access: &GuestRoomAccess,
         permission: synctv_core::models::RoomPermission,
@@ -1137,12 +1100,6 @@ impl ClientApiImpl {
             synctv_core::Error::NotFound(_) => ApiError::NotFound(not_found_message.to_string()),
             other => ApiError::from(other),
         }
-    }
-
-    pub(super) fn map_livestream_backend_error(
-        error: &(dyn std::error::Error + 'static),
-    ) -> ApiError {
-        crate::impls::map_livestream_backend_error(error)
     }
 
     #[must_use]
@@ -1287,27 +1244,6 @@ impl ClientApiImpl {
         })
     }
 
-    pub fn execute_public_endpoint_with_context<'a, T, E, F, Fut>(
-        &'a self,
-        metadata: &'a RequestMetadata,
-        category: EndpointRateLimitCategory,
-        operation: F,
-    ) -> BoxFuture<'a, Result<T, ApiError>>
-    where
-        T: Send + 'a,
-        E: Into<ApiError> + Send + 'a,
-        F: FnOnce(ApiRequestContext) -> Fut + Send + 'a,
-        Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
-    {
-        self.request_executor().execute_public_with_context(
-                metadata,
-                category,
-                move |request_context| async move {
-                    operation(request_context).await.map_err(Into::into)
-                },
-            )
-    }
-
     pub fn execute_public_endpoint_with_control<'a, T, E, F, Fut>(
         &'a self,
         metadata: &'a RequestMetadata,
@@ -1327,26 +1263,6 @@ impl ClientApiImpl {
                     operation(request_control).await.map_err(Into::into)
                 },
             )
-    }
-
-    pub fn execute_scoped_public_endpoint_with_control<'a, T, E, F, Fut>(
-        &'a self,
-        metadata: &'a RequestMetadata,
-        category: EndpointRateLimitCategory,
-        scope: EndpointRateLimitScope,
-        operation: F,
-    ) -> BoxFuture<'a, Result<T, ApiError>>
-    where
-        T: Send + 'a,
-        E: Into<ApiError> + Send + 'a,
-        F: FnOnce(synctv_core::provider::ExecutionControl) -> Fut + Send + 'a,
-        Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
-    {
-        let metadata = metadata.clone().with_endpoint_scope(Some(scope));
-        Box::pin(async move {
-            self.execute_public_endpoint_with_control(&metadata, category, operation)
-                .await
-        })
     }
 
     pub fn execute_user_endpoint<'a, T, E, F, Fut>(
@@ -1385,29 +1301,6 @@ impl ClientApiImpl {
             self.execute_user_endpoint(&metadata, category, operation)
                 .await
         })
-    }
-
-    pub fn execute_user_endpoint_with_context<'a, T, E, F, Fut>(
-        &'a self,
-        metadata: &'a RequestMetadata,
-        category: EndpointRateLimitCategory,
-        operation: F,
-    ) -> BoxFuture<'a, Result<T, ApiError>>
-    where
-        T: Send + 'a,
-        E: Into<ApiError> + Send + 'a,
-        F: FnOnce(ApiRequestContext, synctv_core::service::AuthenticatedToken) -> Fut + Send + 'a,
-        Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
-    {
-        self.request_executor().execute_user_with_context(
-            metadata,
-            category,
-            move |request_context, authenticated| async move {
-                operation(request_context, authenticated)
-                    .await
-                    .map_err(Into::into)
-            },
-        )
     }
 
     pub fn execute_user_endpoint_with_control<'a, T, E, F, Fut>(

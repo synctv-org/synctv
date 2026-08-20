@@ -73,11 +73,6 @@ impl Error {
     pub const fn kick_cooldown_denied_message() -> &'static str {
         KICK_COOLDOWN_DENIED_MESSAGE
     }
-
-    #[must_use]
-    pub fn is_kick_cooldown_denied(&self) -> bool {
-        matches!(self, Self::KickCooldownDenied)
-    }
 }
 
 impl From<sqlx::Error> for Error {
@@ -293,7 +288,6 @@ mod tests {
         let error = Error::kick_cooldown_denied();
 
         assert!(matches!(error, Error::KickCooldownDenied));
-        assert!(error.is_kick_cooldown_denied());
         assert_eq!(
             Error::kick_cooldown_denied_message(),
             "User was recently kicked from this room and cannot access it yet"

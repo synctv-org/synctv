@@ -28,13 +28,6 @@ use crate::{
     SharedStateProfile,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConsistencyPolicy {
-    EventuallyConsistent,
-    ReadYourWrites,
-    Strong,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum CacheDomain {
     Permission {
@@ -145,13 +138,6 @@ fn cache_domain_metric_label(domain: &CacheDomain) -> &'static str {
         CacheDomain::UserAuthSecurity { .. } => "user_auth_security",
         CacheDomain::RuntimeSetting { .. } => "runtime_setting",
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VersionedCacheValue<T> {
-    pub version: i64,
-    pub value: T,
 }
 
 #[async_trait]
@@ -1173,22 +1159,6 @@ impl ConsistencyCoordinator {
             }
             Err(error) => Err(error),
         }
-    }
-
-    pub async fn commit_observed_write(&self, domain: &CacheDomain, version: i64) -> Result<i64> {
-        if !self.is_authoritative() {
-            Self::record_success(domain, "commit_bypass");
-            return Ok(version);
-        }
-
-        let reservation = VersionFenceReservation {
-            version,
-            token: String::new(),
-            started_at_ms: None,
-        };
-        let result = self.fence_store.commit_write(domain, &reservation).await;
-        Self::record_result(domain, "commit_write", &result);
-        result
     }
 
     pub async fn commit_reserved_write(

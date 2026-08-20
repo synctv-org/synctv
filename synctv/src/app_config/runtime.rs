@@ -223,10 +223,6 @@ impl AppConfig {
     /// Public RTMP host for publisher-facing URLs.
     #[must_use]
     pub fn public_rtmp_host(&self) -> String {
-        self.public_rtmp_host_without_internal_advertise_fallback()
-    }
-
-    pub(super) fn public_rtmp_host_without_internal_advertise_fallback(&self) -> String {
         if !self.livestream.public_rtmp_host.is_empty() {
             return self.livestream.public_rtmp_host.clone();
         }

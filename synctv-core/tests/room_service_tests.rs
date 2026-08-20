@@ -10,7 +10,7 @@ use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     models::{
         room_settings::{AllowAutoJoin, MaxMembers, RequireApproval},
-        DeletionSource, Media, MediaId, MemberStatus, MyRoomListQuery, PageParams, Playlist,
+        AddMemberOptions, DeletionSource, Media, MediaId, MyRoomListQuery, PageParams, Playlist,
         PlaylistId, ReviewRequestId, RoomAdminPermissionBits, RoomId, RoomListQuery, RoomRole,
         RoomSettings, RoomStatus, SourceProvider, UpsertRoomCategory, UpsertRoomLabel, User,
         UserId, UserRole, UserStatus,
@@ -22,9 +22,9 @@ use synctv_core::{
     },
     service::{
         BackendPlaybackRequest, BruteForceProtection, CreateRoomWithTaxonomyRequest,
-        GuestKickReason, InMemoryTokenBlacklistStore, JwtService, RoomCategoryUpdate, RoomEvent,
-        RoomPasswordPolicy, RoomService, RoomServiceOptions, RuntimeSettingsStore, SettingsService,
-        UserService,
+        DeleteEntriesRequest, GuestKickReason, InMemoryTokenBlacklistStore, JwtService,
+        RoomCategoryUpdate, RoomEvent, RoomPasswordPolicy, RoomService, RoomServiceOptions,
+        RuntimeSettingsStore, SettingsService, UserService,
     },
     Error,
 };
@@ -213,7 +213,7 @@ async fn test_create_room_initializes_password_settings_and_playlist_state() {
         .await
         .checked("test operation should succeed");
 
-    let (password_room, password_member) = room_service
+    let password_room = room_service
         .create_room(
             "Password Room".to_string(),
             "A password-protected room".to_string(),
@@ -223,7 +223,7 @@ async fn test_create_room_initializes_password_settings_and_playlist_state() {
         )
         .await
         .checked("test operation should succeed");
-    let (open_room, open_member) = room_service
+    let open_room = room_service
         .create_room(
             "No Password Room".to_string(),
             "An open room".to_string(),
@@ -235,9 +235,16 @@ async fn test_create_room_initializes_password_settings_and_playlist_state() {
         .checked("test operation should succeed");
 
     assert_eq!(password_room.name, "Password Room");
-    assert_eq!(password_member.role, RoomRole::Creator);
     assert_eq!(open_room.name, "No Password Room");
-    assert_eq!(open_member.role, RoomRole::Creator);
+    let member_repo = RoomMemberRepository::new(pool.clone());
+    for (room, owner) in [(&password_room, &password_owner), (&open_room, &open_owner)] {
+        let member = member_repo
+            .get(&room.id, &owner.id)
+            .await
+            .checked("creator membership lookup should succeed")
+            .checked("creator membership should be persisted");
+        assert_eq!(member.role, RoomRole::Creator);
+    }
 
     let credential = password_repo
         .get_opaque_credential(&password_room.id)
@@ -306,7 +313,7 @@ async fn test_join_room_correct_password() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Join Test Room".to_string(),
             String::new(),
@@ -317,14 +324,18 @@ async fn test_join_room_correct_password() {
         .await
         .checked("test operation should succeed");
 
-    let (joined_room, member, members) = room_service
+    let (joined_room, members) = room_service
         .join_room(room.id, joiner.id, Some("CorrectPassword123".to_string()))
         .await
         .checked("test operation should succeed");
 
     assert_eq!(joined_room.id, room.id);
-    assert_eq!(member.user_id, joiner.id);
-    assert_eq!(member.role, RoomRole::Member);
+    assert!(
+        members
+            .iter()
+            .any(|member| member.user_id == joiner.id && member.role == RoomRole::Member),
+        "joined member should be present in the persisted member list"
+    );
     assert!(
         members.len() >= 2,
         "Should have at least creator and joiner"
@@ -347,7 +358,7 @@ async fn test_join_room_wrong_password_rejected() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Wrong Pwd Room".to_string(),
             String::new(),
@@ -390,7 +401,7 @@ async fn test_join_room_ignores_stale_password_when_room_password_disabled() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Stale Password Room".to_string(),
             String::new(),
@@ -432,7 +443,7 @@ async fn test_join_room_password_required_not_provided() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Pwd Required Room".to_string(),
             String::new(),
@@ -478,7 +489,7 @@ async fn test_join_room_requires_approval_returns_pending_membership() {
         ..Default::default()
     };
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Approval Room".to_string(),
             String::new(),
@@ -489,12 +500,11 @@ async fn test_join_room_requires_approval_returns_pending_membership() {
         .await
         .checked("test operation should succeed");
 
-    let (_joined_room, member, members) = room_service
+    let (_joined_room, members) = room_service
         .join_room(room.id, joiner.id, None)
         .await
         .checked("test operation should succeed");
 
-    assert_eq!(member.status, MemberStatus::Active);
     assert!(
         members.is_empty(),
         "pending joins must not broadcast active members"
@@ -546,7 +556,7 @@ async fn test_join_room_rejects_self_join_when_auto_join_disabled() {
         ..Default::default()
     };
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Manual Join Room".to_string(),
             String::new(),
@@ -595,7 +605,7 @@ async fn test_reject_member_marks_membership_rejected_and_allows_reapply() {
         ..Default::default()
     };
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Reject Room".to_string(),
             String::new(),
@@ -606,11 +616,10 @@ async fn test_reject_member_marks_membership_rejected_and_allows_reapply() {
         .await
         .checked("test operation should succeed");
 
-    let (_joined_room, pending_member, _) = room_service
+    room_service
         .join_room(room.id, joiner.id, None)
         .await
         .checked("test operation should succeed");
-    assert_eq!(pending_member.status, MemberStatus::Active);
 
     let request_id = sqlx::query_scalar!(
         r#"
@@ -662,11 +671,10 @@ async fn test_reject_member_marks_membership_rejected_and_allows_reapply() {
     .checked("test operation should succeed");
     assert!(rejected_request_exists);
 
-    let (_joined_room, pending_again, _) = room_service
+    room_service
         .join_room(room.id, joiner.id, None)
         .await
         .checked("test operation should succeed");
-    assert_eq!(pending_again.status, MemberStatus::Active);
 }
 
 #[tokio::test]
@@ -691,7 +699,7 @@ async fn test_join_review_approval_transition_does_not_touch_new_pending_request
         ..Default::default()
     };
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Stale Join Approval Room".to_string(),
             String::new(),
@@ -800,7 +808,7 @@ async fn test_approve_join_request_rejects_room_banned_after_request() {
         require_approval: RequireApproval(true),
         ..Default::default()
     };
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Join Approval Banned Room".to_string(),
             String::new(),
@@ -836,10 +844,11 @@ async fn test_approve_join_request_rejects_room_banned_after_request() {
         .checked("test operation should succeed");
 
     let err = room_service
-        .approve_join_request(
+        .approve_join_request_with_outbox(
             room.id,
             creator.id,
             ReviewRequestId::expect_positive(request_id),
+            None,
         )
         .await
         .failed("approval must re-check current room ban state");
@@ -870,7 +879,7 @@ async fn test_leave_room_creator_cannot_leave() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Leave Test Room".to_string(),
             String::new(),
@@ -912,7 +921,7 @@ async fn test_leave_room_member_succeeds() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Leave Success Room".to_string(),
             String::new(),
@@ -960,7 +969,7 @@ async fn test_member_removal_serializes_with_resource_creation() {
         .create(&make_user("resource_race_member"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Resource Race Room".to_string(),
             String::new(),
@@ -1123,7 +1132,7 @@ async fn test_leave_room_cleans_member_created_media_resources() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Leave Cleanup Room".to_string(),
             String::new(),
@@ -1361,7 +1370,7 @@ async fn test_kick_member_cleans_resources_and_blocks_until_cooldown_expires() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Kick Cleanup Room".to_string(),
             String::new(),
@@ -1507,7 +1516,7 @@ async fn test_ban_user_rolls_back_when_owned_playback_reset_fails() {
         .create(&make_user("ban_atomic_target"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Ban Atomic Playback".to_string(),
             String::new(),
@@ -1584,7 +1593,7 @@ async fn test_dynamic_playlists_reject_room_library_children() {
         .create(&make_user("dynamic_structure_owner"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Dynamic Structure Room".to_string(),
             String::new(),
@@ -1708,7 +1717,7 @@ async fn test_inactive_dynamic_playlist_blocks_direct_access_to_historical_stati
         .create(&make_user("dynamic_path_target"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Dynamic Path Lifecycle".to_string(),
             String::new(),
@@ -1796,7 +1805,7 @@ async fn test_get_playing_media_rejects_stale_media_from_banned_creator() {
         .create(&make_user("stale_playing_media_creator"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = writer
+    let room = writer
         .create_room(
             "Stale Playing Media Lifecycle".to_string(),
             String::new(),
@@ -1866,7 +1875,7 @@ async fn test_leave_room_non_member_is_rejected() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Leave Non Member Room".to_string(),
             String::new(),
@@ -1907,7 +1916,7 @@ async fn test_delete_room_sets_deleted_at() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Delete Room".to_string(),
             String::new(),
@@ -1959,7 +1968,7 @@ async fn test_settings_cas_exhaustion_returns_internal() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "CAS Test Room".to_string(),
             String::new(),
@@ -2040,7 +2049,7 @@ async fn test_kicked_user_cannot_rejoin_until_cooldown_expires() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Ban Rejoin Room".to_string(),
             String::new(),
@@ -2095,7 +2104,7 @@ async fn test_room_with_banned_creator_becomes_unavailable_to_existing_members()
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Inactive Owner Room".to_string(),
             String::new(),
@@ -2144,7 +2153,7 @@ async fn test_room_with_banned_creator_rejects_new_joins() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Inactive Join Room".to_string(),
             String::new(),
@@ -2200,7 +2209,7 @@ async fn test_room_description_unicode_500_chars_accepted() {
         .await;
 
     assert!(result.is_ok(), "500 Unicode chars should be accepted");
-    let (room, _) = result.checked("test operation should succeed");
+    let room = result.checked("test operation should succeed");
     assert_eq!(room.description.chars().count(), 500);
 }
 
@@ -2267,7 +2276,7 @@ async fn test_join_room_uses_current_password_state_after_updates() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Password Transition Room".to_string(),
             String::new(),
@@ -2292,24 +2301,26 @@ async fn test_join_room_uses_current_password_state_after_updates() {
         .await;
     assert!(matches!(result, Err(Error::Authorization(_))));
 
-    let (joined_room, member, _) = room_service
+    let (joined_room, members) = room_service
         .join_room(room.id, new_joiner.id, Some("NewPassword456".to_string()))
         .await
         .checked("new password should allow join");
     assert_eq!(joined_room.id, room.id);
-    assert_eq!(member.user_id, new_joiner.id);
+    assert!(members.iter().any(|member| member.user_id == new_joiner.id));
 
     room_service
         .update_room_password(&room.id, None)
         .await
         .checked("room password should be disabled");
 
-    let (joined_room, member, _) = room_service
+    let (joined_room, members) = room_service
         .join_room(room.id, clear_joiner.id, None)
         .await
         .checked("cleared password should allow join");
     assert_eq!(joined_room.id, room.id);
-    assert_eq!(member.user_id, clear_joiner.id);
+    assert!(members
+        .iter()
+        .any(|member| member.user_id == clear_joiner.id));
 
     room_service
         .update_room_password(&room.id, Some("AddedPassword123".to_string()))
@@ -2321,7 +2332,7 @@ async fn test_join_room_uses_current_password_state_after_updates() {
         .await;
     assert!(matches!(result, Err(Error::Authorization(_))));
 
-    let (joined_room, member, _) = room_service
+    let (joined_room, members) = room_service
         .join_room(
             room.id,
             added_joiner.id,
@@ -2330,7 +2341,9 @@ async fn test_join_room_uses_current_password_state_after_updates() {
         .await
         .checked("added password should allow join");
     assert_eq!(joined_room.id, room.id);
-    assert_eq!(member.user_id, added_joiner.id);
+    assert!(members
+        .iter()
+        .any(|member| member.user_id == added_joiner.id));
 }
 
 #[tokio::test]
@@ -2490,7 +2503,7 @@ async fn test_password_update_invalidates_room_cache() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Password Cache Room".to_string(),
             String::new(),
@@ -2550,7 +2563,7 @@ async fn test_password_removal_disables_room_password_and_preserves_credential()
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Password Remove Room".to_string(),
             String::new(),
@@ -2596,7 +2609,7 @@ async fn test_update_room_password_updates_password_state_without_settings_notif
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Password Notify Room".to_string(),
             String::new(),
@@ -2653,7 +2666,7 @@ async fn test_kick_member_invalidates_permission_cache() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Ban Sync Room".to_string(),
             String::new(),
@@ -2722,7 +2735,7 @@ async fn test_kick_prevents_room_access_even_with_cached_permissions() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Ban Cache Room".to_string(),
             String::new(),
@@ -2773,7 +2786,7 @@ async fn test_settings_update_retries_on_version_conflict() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Retry Settings Room".to_string(),
             String::new(),
@@ -2839,7 +2852,7 @@ async fn test_settings_update_returns_internal_error_after_max_retries() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Max Retry Room".to_string(),
             String::new(),
@@ -2911,7 +2924,7 @@ async fn test_single_setting_update_with_retry() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Single Setting Room".to_string(),
             String::new(),
@@ -2960,7 +2973,7 @@ async fn test_password_update_with_cas_retry() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Password Retry Room".to_string(),
             String::new(),
@@ -3012,7 +3025,7 @@ async fn test_room_deletion_invalidates_caches() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Cache Invalidation Room".to_string(),
             String::new(),
@@ -3060,7 +3073,7 @@ async fn test_room_password_uses_unique_salt_per_room() {
         .await
         .checked("test operation should succeed");
 
-    let (room1, _) = room_service
+    let room1 = room_service
         .create_room(
             "Salt Room 1".to_string(),
             String::new(),
@@ -3071,7 +3084,7 @@ async fn test_room_password_uses_unique_salt_per_room() {
         .await
         .checked("test operation should succeed");
 
-    let (room2, _) = room_service
+    let room2 = room_service
         .create_room(
             "Salt Room 2".to_string(),
             String::new(),
@@ -3133,7 +3146,7 @@ async fn test_max_members_enforces_capacity_and_zero_unlimited() {
         max_members: MaxMembers(3),
         ..Default::default()
     };
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Max Members Room".to_string(),
             String::new(),
@@ -3178,7 +3191,7 @@ async fn test_max_members_enforces_capacity_and_zero_unlimited() {
         max_members: MaxMembers(0),
         ..Default::default()
     };
-    let (unlimited_room, _) = room_service
+    let unlimited_room = room_service
         .create_room(
             "Unlimited Room".to_string(),
             String::new(),
@@ -3204,7 +3217,7 @@ async fn test_max_members_enforces_capacity_and_zero_unlimited() {
         max_members: MaxMembers(1),
         ..Default::default()
     };
-    let (boundary_room, _) = room_service
+    let boundary_room = room_service
         .create_room(
             "Boundary Room".to_string(),
             String::new(),
@@ -3271,7 +3284,7 @@ async fn test_room_settings_update_validates_permissions_no_escalation() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Permission Escalation Room".to_string(),
             String::new(),
@@ -3328,7 +3341,7 @@ async fn test_room_settings_guest_mode_change_kicks_guests() {
         ..Default::default()
     };
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Guest Kick Room".to_string(),
             String::new(),
@@ -3342,7 +3355,12 @@ async fn test_room_settings_guest_mode_change_kicks_guests() {
     // Add guest as member with Guest role
     let member_service = room_service.member_service();
     member_service
-        .add_member(room.id, guest.id, RoomRole::Guest)
+        .add_member_with_options(
+            room.id,
+            guest.id,
+            RoomRole::Guest,
+            AddMemberOptions::default(),
+        )
         .await
         .checked("test operation should succeed");
 
@@ -3426,7 +3444,7 @@ async fn test_manage_room_settings_emits_settings_updated_notification() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Settings Notify Room".to_string(),
             String::new(),
@@ -3475,7 +3493,7 @@ async fn test_get_room_settings_with_version_refreshes_local_cache_after_write()
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Settings Cache Refresh Room".to_string(),
             String::new(),
@@ -3525,7 +3543,7 @@ async fn test_room_settings_mutations_return_committed_snapshots() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Settings Snapshot Room".to_string(),
             String::new(),
@@ -3611,7 +3629,7 @@ async fn test_manage_room_settings_disabling_guest_join_kicks_guests() {
         ..RoomSettings::default()
     };
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Full Replace Guest Kick Room".to_string(),
             String::new(),
@@ -3624,7 +3642,12 @@ async fn test_manage_room_settings_disabling_guest_join_kicks_guests() {
 
     room_service
         .member_service()
-        .add_member(room.id, guest.id, RoomRole::Guest)
+        .add_member_with_options(
+            room.id,
+            guest.id,
+            RoomRole::Guest,
+            AddMemberOptions::default(),
+        )
         .await
         .checked("test operation should succeed");
     assert!(member_repo
@@ -3691,7 +3714,7 @@ async fn test_room_settings_password_required_triggers_guest_kick() {
         ..Default::default()
     };
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Password Kick Room".to_string(),
             String::new(),
@@ -3704,7 +3727,12 @@ async fn test_room_settings_password_required_triggers_guest_kick() {
 
     room_service
         .member_service()
-        .add_member(room.id, guest.id, RoomRole::Guest)
+        .add_member_with_options(
+            room.id,
+            guest.id,
+            RoomRole::Guest,
+            AddMemberOptions::default(),
+        )
         .await
         .checked("test operation should succeed");
     assert!(member_repo
@@ -3780,7 +3808,7 @@ async fn test_remove_media_respects_admin_override_columns() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Admin Remove Media Room".to_string(),
             String::new(),
@@ -3793,7 +3821,12 @@ async fn test_remove_media_respects_admin_override_columns() {
 
     room_service
         .member_service()
-        .add_member(room.id, admin.id, RoomRole::Admin)
+        .add_member_with_options(
+            room.id,
+            admin.id,
+            RoomRole::Admin,
+            AddMemberOptions::default(),
+        )
         .await
         .checked("test operation should succeed");
 
@@ -3816,7 +3849,16 @@ async fn test_remove_media_respects_admin_override_columns() {
         .await
         .checked("test operation should succeed");
 
-    let result = room_service.remove_media(room.id, admin.id, media.id).await;
+    let result = room_service
+        .delete_entries(
+            room.id,
+            admin.id,
+            DeleteEntriesRequest {
+                media_ids: vec![media.id],
+                ..DeleteEntriesRequest::default()
+            },
+        )
+        .await;
     assert!(
         matches!(result, Err(Error::Authorization(_))),
         "admin DELETE_MEDIA revoke must be enforced by transactional SQL, got: {result:?}"
@@ -3837,7 +3879,7 @@ async fn test_delete_entries_removes_media_and_playlists_in_one_request() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Delete Entries Room".to_string(),
             String::new(),
@@ -3923,7 +3965,7 @@ async fn test_leave_room_removes_owned_resources_before_former_member_can_delete
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Delete Owned Left Room".to_string(),
             String::new(),
@@ -3936,7 +3978,12 @@ async fn test_leave_room_removes_owned_resources_before_former_member_can_delete
 
     room_service
         .member_service()
-        .add_member(room.id, member.id, RoomRole::Admin)
+        .add_member_with_options(
+            room.id,
+            member.id,
+            RoomRole::Admin,
+            AddMemberOptions::default(),
+        )
         .await
         .checked("test operation should succeed");
 
@@ -3973,7 +4020,7 @@ async fn test_get_playlist_only_returns_room_root_media() {
         .await
         .checked("test operation should succeed");
 
-    let (room_a, _) = room_service
+    let room_a = room_service
         .create_room(
             "Root Scope A".to_string(),
             String::new(),
@@ -3983,7 +4030,7 @@ async fn test_get_playlist_only_returns_room_root_media() {
         )
         .await
         .checked("test operation should succeed");
-    let (room_b, _) = room_service
+    let room_b = room_service
         .create_room(
             "Root Scope B".to_string(),
             String::new(),
@@ -4031,7 +4078,7 @@ async fn test_delete_entries_allows_foreign_playlist_delete_with_delete_any_perm
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Delete Entries Grant".to_string(),
             String::new(),
@@ -4093,7 +4140,7 @@ async fn test_delete_entries_denies_foreign_playlist_delete_when_delete_any_revo
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Delete Entries Revoke".to_string(),
             String::new(),
@@ -4106,7 +4153,12 @@ async fn test_delete_entries_denies_foreign_playlist_delete_when_delete_any_revo
 
     room_service
         .member_service()
-        .add_member(room.id, admin.id, RoomRole::Admin)
+        .add_member_with_options(
+            room.id,
+            admin.id,
+            RoomRole::Admin,
+            AddMemberOptions::default(),
+        )
         .await
         .checked("test operation should succeed");
     room_service
@@ -4160,7 +4212,7 @@ async fn test_delete_entries_allows_admin_default_delete_movie_any_for_foreign_m
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Delete Entries Media".to_string(),
             String::new(),
@@ -4173,7 +4225,12 @@ async fn test_delete_entries_allows_admin_default_delete_movie_any_for_foreign_m
 
     room_service
         .member_service()
-        .add_member(room.id, admin.id, RoomRole::Admin)
+        .add_member_with_options(
+            room.id,
+            admin.id,
+            RoomRole::Admin,
+            AddMemberOptions::default(),
+        )
         .await
         .checked("test operation should succeed");
 
@@ -4215,7 +4272,7 @@ async fn test_delete_entries_notifies_local_media_removed_subscribers() {
         .create(&make_user("delete_entries_notify_owner"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Delete Entries Notify".to_string(),
             String::new(),
@@ -4273,7 +4330,7 @@ async fn test_clear_playlist_notifies_local_media_removed_subscribers() {
         .create(&make_user("clear_playlist_notify_owner"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Clear Playlist Notify".to_string(),
             String::new(),
@@ -4339,7 +4396,7 @@ async fn test_clear_playlist_resets_and_invalidates_cached_playback_state_for_ro
         .create(&make_user("clear_playlist_playback_owner"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Clear Playlist Playback".to_string(),
             String::new(),
@@ -4400,7 +4457,7 @@ async fn test_clear_playlist_scope_keeps_target_playlist_and_removes_children() 
         .create(&make_user("clear_playlist_scope_owner"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Clear Playlist Scope".to_string(),
             String::new(),
@@ -4482,7 +4539,7 @@ async fn test_delete_entries_counts_media_deleted_via_playlist_cascade() {
         .create(&make_user("delete_entries_cascade_count_owner"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Delete Entries Cascade Count".to_string(),
             String::new(),
@@ -4567,7 +4624,7 @@ async fn test_delete_entries_notifies_local_media_removed_for_playlist_cascade()
         .create(&make_user("delete_entries_cascade_notify_owner"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Delete Entries Cascade Notify".to_string(),
             String::new(),
@@ -4635,7 +4692,7 @@ async fn test_delete_entries_notifies_local_playlist_deleted_subscribers() {
         .create(&make_user("delete_entries_playlist_notify_owner"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Delete Entries Playlist Notify".to_string(),
             String::new(),
@@ -4694,7 +4751,7 @@ async fn test_delete_entries_rejects_currently_playing_resources_without_force()
         .create(&make_user("delete_entries_playing_media_owner"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Delete Entries Playing Media".to_string(),
             String::new(),
@@ -4738,7 +4795,7 @@ async fn test_delete_entries_rejects_currently_playing_resources_without_force()
         .checked("test operation should succeed")
         .is_some());
 
-    let (playlist_room, _) = room_service
+    let playlist_room = room_service
         .create_room(
             "Delete Entries Playing Playlist".to_string(),
             String::new(),
@@ -4815,7 +4872,7 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_playing_res
         .create(&make_user("delete_entries_force_media_owner"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Delete Entries Force Media".to_string(),
             String::new(),
@@ -4867,7 +4924,7 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_playing_res
     assert!(!state.is_playing);
     assert_f64_eq(state.position, 0.0);
 
-    let (playlist_room, _) = room_service
+    let playlist_room = room_service
         .create_room(
             "Delete Entries Force Playlist".to_string(),
             String::new(),
@@ -4970,7 +5027,7 @@ async fn test_create_room_preserves_supported_name_and_description_text() {
         .checked("test operation should succeed");
 
     let unicode_name = "Room \u{4e2d}\u{6587} \u{65e5}\u{672c}\u{8a9e} \u{c0}\u{e9}\u{f1}";
-    let (unicode_room, _) = room_service
+    let unicode_room = room_service
         .create_room(
             unicode_name.to_string(),
             String::new(),
@@ -4983,7 +5040,7 @@ async fn test_create_room_preserves_supported_name_and_description_text() {
     assert_eq!(unicode_room.name, unicode_name);
 
     let name_with_spaces = "  Room with spaces  ";
-    let (spaced_room, _) = room_service
+    let spaced_room = room_service
         .create_room(
             name_with_spaces.to_string(),
             String::new(),
@@ -4996,7 +5053,7 @@ async fn test_create_room_preserves_supported_name_and_description_text() {
     assert_eq!(spaced_room.name, name_with_spaces);
 
     let description = "Line 1\nLine 2\nLine 3\n\nParagraph 2";
-    let (description_room, _) = room_service
+    let description_room = room_service
         .create_room(
             "Newline Room".to_string(),
             description.to_string(),
@@ -5026,7 +5083,7 @@ async fn test_cannot_join_closed_room() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Closed Room".to_string(),
             String::new(),
@@ -5068,7 +5125,7 @@ async fn test_room_creation_creates_all_related_records_atomically() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _member) = room_service
+    let room = room_service
         .create_room(
             "Atomic Room".to_string(),
             String::new(),
@@ -5143,7 +5200,7 @@ async fn test_non_creator_cannot_delete_room() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Non-Creator Delete Room".to_string(),
             String::new(),
@@ -5177,7 +5234,7 @@ async fn test_room_admin_can_delete_room_with_permission() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Room Admin Delete Room".to_string(),
             String::new(),
@@ -5190,7 +5247,12 @@ async fn test_room_admin_can_delete_room_with_permission() {
 
     room_service
         .member_service()
-        .add_member(room.id, room_admin.id, RoomRole::Admin)
+        .add_member_with_options(
+            room.id,
+            room_admin.id,
+            RoomRole::Admin,
+            AddMemberOptions::default(),
+        )
         .await
         .checked("test operation should succeed");
     room_service
@@ -5237,7 +5299,7 @@ async fn test_room_admin_without_delete_room_cannot_delete_room() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Room Admin No Delete Room".to_string(),
             String::new(),
@@ -5286,7 +5348,7 @@ async fn test_global_admin_can_delete_room_via_delete_room() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Global Admin Delete Room".to_string(),
             String::new(),
@@ -5334,7 +5396,7 @@ async fn test_admin_delete_room_bypasses_permission_check() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Admin Delete Room".to_string(),
             String::new(),
@@ -5369,7 +5431,7 @@ async fn test_admin_delete_room_requires_admin_or_root_role() {
         .create(&make_user("owner"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room("Test Room".to_string(), String::new(), owner.id, None, None)
         .await
         .checked("test operation should succeed");
@@ -5429,7 +5491,7 @@ async fn test_admin_delete_room_requires_admin_or_root_role() {
         .create(&make_user("owner2"))
         .await
         .checked("test operation should succeed");
-    let (root_room, _) = room_service
+    let root_room = room_service
         .create_room(
             "Test Room 2".to_string(),
             String::new(),
@@ -5473,7 +5535,7 @@ async fn test_delete_nonexistent_room_returns_error() {
         .create(&make_user("delete_nonexistent_owner"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "To Be Deleted".to_string(),
             String::new(),
@@ -5517,7 +5579,7 @@ async fn test_get_member_count_batch_efficient_query() {
 
     let mut room_ids = Vec::new();
     for i in 0..5 {
-        let (room, _) = room_service
+        let room = room_service
             .create_room(
                 format!("Batch Room {i}"),
                 String::new(),
@@ -5557,7 +5619,7 @@ async fn test_room_exists_is_efficient() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Exists Room".to_string(),
             String::new(),
@@ -5650,7 +5712,7 @@ async fn test_list_accessible_rooms_excludes_rooms_with_inactive_creator() {
         .await
         .checked("test operation should succeed");
 
-    let (visible_room, _) = room_service
+    let visible_room = room_service
         .create_room(
             "Visible Room".to_string(),
             String::new(),
@@ -5719,7 +5781,7 @@ async fn test_list_accessible_joined_rooms_retains_rooms_with_banned_creator() {
         .await
         .checked("test operation should succeed");
 
-    let (visible_room, _) = room_service
+    let visible_room = room_service
         .create_room(
             "Joined Visible Room".to_string(),
             String::new(),
@@ -5729,7 +5791,7 @@ async fn test_list_accessible_joined_rooms_retains_rooms_with_banned_creator() {
         )
         .await
         .checked("test operation should succeed");
-    let (hidden_room, _) = room_service
+    let hidden_room = room_service
         .create_room(
             "Joined Hidden Room".to_string(),
             String::new(),
@@ -5844,7 +5906,7 @@ async fn test_guest_cannot_join_password_protected_room() {
         ..Default::default()
     };
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Guest Password Room".to_string(),
             String::new(),
@@ -5889,7 +5951,7 @@ async fn test_check_guest_allowed_when_disabled_globally() {
         ..Default::default()
     };
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Guest Disabled Room".to_string(),
             String::new(),
@@ -5923,7 +5985,7 @@ async fn test_update_room_description_enforces_permissions_and_length() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Description Update Room".to_string(),
             "Original description".to_string(),
@@ -5994,7 +6056,7 @@ async fn test_update_room_visibility_revokes_guest_access_and_enforces_permissio
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Visibility Room".to_string(),
             String::new(),
@@ -6011,7 +6073,12 @@ async fn test_update_room_visibility_revokes_guest_access_and_enforces_permissio
 
     room_service
         .member_service()
-        .add_member(room.id, guest.id, RoomRole::Guest)
+        .add_member_with_options(
+            room.id,
+            guest.id,
+            RoomRole::Guest,
+            AddMemberOptions::default(),
+        )
         .await
         .checked("test operation should succeed");
     let guest_version_before = room_service
@@ -6122,7 +6189,7 @@ async fn test_join_room_idempotent_same_user() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Idempotent Room".to_string(),
             String::new(),
@@ -6167,7 +6234,7 @@ async fn test_create_room_persists_default_max_members_setting() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Settings Test Room".to_string(),
             String::new(),
@@ -6212,7 +6279,7 @@ async fn test_concurrent_joins_cannot_exceed_max_members() {
         ..Default::default()
     };
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Concurrent Room".to_string(),
             String::new(),
@@ -6316,7 +6383,7 @@ async fn test_soft_delete_retains_recoverable_data_and_cleans_up_volatile_data()
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Cleanup Test Room".to_string(),
             String::new(),
@@ -6544,7 +6611,7 @@ async fn test_admin_delete_orphaned_room_removes_rooms_with_inactive_creators() 
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Orphaned Room 1".to_string(),
             String::new(),
@@ -6602,7 +6669,7 @@ async fn test_admin_delete_orphaned_room_removes_rooms_with_inactive_creators() 
         .await
         .checked("test operation should succeed");
 
-    let (banned_room, _) = room_service
+    let banned_room = room_service
         .create_room(
             "Banned Creator Room".to_string(),
             String::new(),
@@ -6660,7 +6727,7 @@ async fn test_admin_delete_orphaned_room_rejects_invalid_requests() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Active Creator Room".to_string(),
             String::new(),
@@ -6693,7 +6760,7 @@ async fn test_admin_delete_orphaned_room_rejects_invalid_requests() {
         .create(&make_user("orphan_creator_non_admin"))
         .await
         .checked("test operation should succeed");
-    let (orphan_room, _) = room_service
+    let orphan_room = room_service
         .create_room(
             "Orphaned Room Non Admin".to_string(),
             String::new(),
@@ -6733,7 +6800,7 @@ async fn test_admin_delete_orphaned_room_rejects_invalid_requests() {
         .create(&make_user("orphan_already_del"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Already Deleted Room".to_string(),
             String::new(),
@@ -6923,7 +6990,7 @@ async fn test_transfer_room_ownership_updates_room_and_member_roles() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Ownership Transfer Room".to_string(),
             "transfer test".to_string(),
@@ -6982,7 +7049,7 @@ async fn test_transfer_room_ownership_respects_max_rooms_per_user() {
         .await
         .checked("test operation should succeed");
 
-    let (room_to_transfer, _) = room_service
+    let room_to_transfer = room_service
         .create_room(
             "Transfer Source Room".to_string(),
             String::new(),
@@ -6993,7 +7060,7 @@ async fn test_transfer_room_ownership_respects_max_rooms_per_user() {
         .await
         .checked("test operation should succeed");
 
-    let (_existing_room, _) = room_service
+    let _existing_room = room_service
         .create_room(
             "Already Owned Room".to_string(),
             String::new(),
@@ -7037,7 +7104,7 @@ async fn test_transfer_room_ownership_rejects_duplicate_name_for_new_owner() {
         .await
         .checked("test operation should succeed");
 
-    let (room_to_transfer, _) = room_service
+    let room_to_transfer = room_service
         .create_room(
             "Shared Transfer Name".to_string(),
             String::new(),
@@ -7379,7 +7446,7 @@ async fn test_approve_pending_room_allows_the_request_itself_while_checking_name
         .await
         .checked("test operation should succeed");
 
-    let (pending_room, _) = room_service
+    let pending_room = room_service
         .create_room(
             "Self Exclusion Pending Name".to_string(),
             String::new(),
@@ -7424,7 +7491,7 @@ async fn test_approve_pending_room_preserves_password_when_policy_required() {
         .await
         .checked("test operation should succeed");
 
-    let (pending_room, _) = room_service
+    let pending_room = room_service
         .create_room(
             "Pending Password Required Room".to_string(),
             String::new(),
@@ -7489,7 +7556,7 @@ async fn test_approve_pending_room_rejects_creator_banned_after_request() {
         .await
         .checked("test operation should succeed");
 
-    let (pending_room, _) = room_service
+    let pending_room = room_service
         .create_room(
             "Pending Room Banned Later".to_string(),
             String::new(),
@@ -7545,7 +7612,7 @@ async fn test_set_member_role_only_creator_can_change_roles() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Role Test Room".to_string(),
             "Testing roles".to_string(),
@@ -7659,7 +7726,7 @@ async fn test_room_taxonomy_is_admin_curated_and_filterable() {
         .await
         .checked("test operation should succeed");
 
-    let (movie_room, _) = room_service
+    let movie_room = room_service
         .create_room_with_taxonomy_outbox(
             CreateRoomWithTaxonomyRequest {
                 name: "Taxonomy Movie".to_string(),
@@ -7675,7 +7742,7 @@ async fn test_room_taxonomy_is_admin_curated_and_filterable() {
         )
         .await
         .checked("test operation should succeed");
-    let (game_room, _) = room_service
+    let game_room = room_service
         .create_room_with_taxonomy_outbox(
             CreateRoomWithTaxonomyRequest {
                 name: "Taxonomy Game".to_string(),
@@ -7786,12 +7853,18 @@ async fn test_room_taxonomy_is_admin_curated_and_filterable() {
     );
 
     let (joined_rooms, _) = room_service
-        .list_joined_rooms_with_details(&owner.id, PageParams::new(Some(1), Some(10)))
+        .list_accessible_joined_rooms_with_query_eventually_consistent(
+            &owner.id,
+            &MyRoomListQuery {
+                pagination: PageParams::new(Some(1), Some(10)),
+                ..Default::default()
+            },
+        )
         .await
         .checked("joined room list should load taxonomy");
     let joined_movie_room = joined_rooms
         .iter()
-        .map(|(room, _, _, _)| room)
+        .map(|(room, _, _)| room)
         .find(|room| room.id == movie_room.id)
         .expect("joined room list should contain movie room");
     assert_eq!(
@@ -7956,7 +8029,7 @@ async fn test_room_taxonomy_is_admin_curated_and_filterable() {
         .create(&make_user("taxonomy_review_owner"))
         .await
         .checked("test operation should succeed");
-    let (pending_room, _) = review_room_service
+    let pending_room = review_room_service
         .create_room_with_taxonomy_outbox(
             CreateRoomWithTaxonomyRequest {
                 name: "Taxonomy Pending Review".to_string(),
@@ -8003,7 +8076,7 @@ async fn test_room_taxonomy_is_admin_curated_and_filterable() {
     );
     assert!(!approved_room.is_public);
 
-    let (stale_pending_room, _) = review_room_service
+    let stale_pending_room = review_room_service
         .create_room_with_taxonomy_outbox(
             CreateRoomWithTaxonomyRequest {
                 name: "Taxonomy Stale Pending Review".to_string(),
@@ -8057,7 +8130,7 @@ async fn test_kick_member_completes_quickly() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Kick Test Room".to_string(),
             "Testing kick".to_string(),

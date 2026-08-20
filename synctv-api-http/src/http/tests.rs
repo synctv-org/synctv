@@ -1912,7 +1912,7 @@ async fn test_chat_events_sse_receives_live_send_event() -> TestResult {
             .await,
     )?;
     let access_token = core_ok(state.jwt_service.sign_access_token(&owner.id, 0))?;
-    let (room, _) = core_ok(
+    let room = core_ok(
         state
             .room_service
             .create_room(
@@ -2030,7 +2030,7 @@ async fn test_chat_events_sse_replays_after_last_event_id_header() -> TestResult
             .await,
     )?;
     let access_token = core_ok(state.jwt_service.sign_access_token(&owner.id, 0))?;
-    let (room, _) = core_ok(
+    let room = core_ok(
         state
             .room_service
             .create_room(
@@ -2177,7 +2177,7 @@ async fn test_chat_events_sse_unknown_last_event_id_returns_bad_request() -> Tes
             .await,
     )?;
     let access_token = core_ok(state.jwt_service.sign_access_token(&owner.id, 0))?;
-    let (room, _) = core_ok(
+    let room = core_ok(
         state
             .room_service
             .create_room(

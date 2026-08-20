@@ -171,15 +171,6 @@ impl EmailTokenService {
         }
     }
 
-    pub async fn check_generate_token_rate_limit(
-        &self,
-        user_id: &UserId,
-        token_type: EmailTokenType,
-    ) -> Result<()> {
-        self.check_generate_token_rate_limit_with_control(user_id, token_type, None)
-            .await
-    }
-
     pub async fn check_generate_token_rate_limit_with_control(
         &self,
         user_id: &UserId,
@@ -431,23 +422,6 @@ impl EmailTokenService {
         self.repository
             .is_unused_and_valid(token, user_id, token_type, self.clock.now())
             .await
-    }
-
-    /// Cleanup expired tokens
-    pub async fn cleanup_expired(&self) -> Result<usize> {
-        self.cleanup_expired_with_control(None).await
-    }
-
-    pub async fn cleanup_expired_with_control(
-        &self,
-        control: Option<&ExecutionControl>,
-    ) -> Result<usize> {
-        let now = self.clock.now();
-        let count = Self::run_with_control(control, self.repository.cleanup_expired(now)).await?;
-        if count > 0 {
-            info!("Cleaned up {} expired email tokens", count);
-        }
-        Ok(count)
     }
 }
 

@@ -9,12 +9,10 @@ pub mod leader;
 #[cfg(feature = "k8s")]
 pub use discovery::K8sDnsDiscovery;
 pub use discovery::{
-    build_cluster_node_directory_factory, build_local_cluster_node_directory_factory,
-    normalize_static_peer_address, ClusterHealthRuntime, ClusterMode, ClusterNodeDirectory,
-    ClusterNodeDirectoryFactory, HealthMonitor, HeartbeatResult, LoadBalancer,
-    LoadBalancingStrategy, LocalClusterNodeDirectoryFactory, NodeHealth, NodeInfo, NodeRegistry,
-    NodeViewMode, RedisClusterNodeDirectoryFactory, StaticDiscovery, StaticDiscoveryConfig,
-    StaticPeerConfig,
+    build_cluster_node_directory_factory, normalize_static_peer_address, ClusterHealthRuntime,
+    ClusterMode, ClusterNodeDirectory, ClusterNodeDirectoryFactory, HealthMonitor, HeartbeatResult,
+    LoadBalancer, LoadBalancingStrategy, NodeHealth, NodeInfo, NodeRegistry, NodeViewMode,
+    RedisClusterNodeDirectoryFactory, StaticDiscovery, StaticDiscoveryConfig, StaticPeerConfig,
 };
 pub use error::{Error, Result};
 pub use grpc::{

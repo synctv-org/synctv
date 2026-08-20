@@ -203,16 +203,6 @@ pub(super) fn build_provider_http_client(
         .internal_with_err("Failed to build HTTP client")
 }
 
-#[cfg(test)]
-pub(super) fn build_oauth2_http_client_with_timeout(
-    timeout: Duration,
-    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
-) -> Result<OAuth2HttpClient, Error> {
-    build_ssrf_safe_provider_client(timeout, ssrf_guard)
-        .map(OAuth2HttpClient::new)
-        .internal_with_err("Failed to build OAuth2 HTTP client")
-}
-
 pub(super) fn build_oauth2_http_client(
     ssrf_guard: &synctv_common::ssrf::SsrfGuard,
 ) -> Result<Arc<OAuth2HttpClient>, Error> {
@@ -375,7 +365,9 @@ mod tests {
     #[tokio::test]
     async fn token_exchange_client_allows_localhost_but_request_still_fails_without_server() {
         let guard = synctv_common::ssrf::SsrfGuard::disabled();
-        let http_client = build_oauth2_http_client_with_timeout(Duration::from_millis(50), &guard)
+        let http_client = build_ssrf_safe_provider_client(Duration::from_millis(50), &guard)
+            .map(OAuth2HttpClient::new)
+            .internal_with_err("Failed to build OAuth2 HTTP client")
             .checked("operation should succeed");
 
         let client = BasicClient::new(ClientId::new("client_id".to_string()))

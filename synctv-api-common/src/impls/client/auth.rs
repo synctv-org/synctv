@@ -182,31 +182,6 @@ fn nonnegative_token_ttl_seconds(exp: i64, now: i64) -> Result<u64, ApiError> {
     })
 }
 
-/// Outcome of a logout operation.
-///
-/// Logout always succeeds (the user's intent to log out is respected),
-/// but `message` indicates if token invalidation may be delayed.
-pub struct LogoutOutcome {
-    pub blacklist_ok: bool,
-    pub message: &'static str,
-}
-
-impl LogoutOutcome {
-    pub const fn success() -> Self {
-        Self {
-            blacklist_ok: true,
-            message: "",
-        }
-    }
-
-    pub const fn blacklist_failed() -> Self {
-        Self {
-            blacklist_ok: false,
-            message: "Logged out but token invalidation may be delayed",
-        }
-    }
-}
-
 impl ClientApiImpl {
     pub async fn start_login_with_control(
         &self,
@@ -869,13 +844,6 @@ impl ClientApiImpl {
         login_outcome_to_proto(outcome, &self.public_id_codec)
     }
 
-    pub async fn refresh_token(
-        &self,
-        req: synctv_proto::client::RefreshTokenRequest,
-    ) -> Result<synctv_proto::client::RefreshTokenResponse, ApiError> {
-        self.refresh_token_with_control(req, None).await
-    }
-
     pub async fn refresh_token_with_control(
         &self,
         req: synctv_proto::client::RefreshTokenRequest,
@@ -905,7 +873,7 @@ impl ClientApiImpl {
     ///
     /// Returns an error when token revocation fails so callers never treat a
     /// non-revoked token as successfully logged out.
-    pub async fn logout(&self, raw_token: &str) -> Result<LogoutOutcome, ApiError> {
+    pub async fn logout(&self, raw_token: &str) -> Result<(), ApiError> {
         let now = self.clock.now().timestamp();
         revoke_session_for_logout(
             &self.jwt_service,
@@ -929,7 +897,7 @@ impl ClientApiImpl {
             },
         )
         .await?;
-        Ok(LogoutOutcome::success())
+        Ok(())
     }
 }
 

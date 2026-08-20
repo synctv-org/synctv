@@ -83,8 +83,6 @@ pub enum SourceProvider {
     TikTok,
 }
 
-pub type ProviderType = SourceProvider;
-
 impl FromStr for SourceProvider {
     type Err = String;
 
@@ -241,15 +239,6 @@ pub fn provider_type_name_from_code(code: i16) -> Result<String, String> {
     SourceProvider::try_from(code).map(|provider| provider.to_string())
 }
 
-pub fn provider_type_codes_from_names<'a>(
-    names: impl IntoIterator<Item = &'a String>,
-) -> Result<Vec<i16>, String> {
-    names
-        .into_iter()
-        .map(|name| provider_type_code_from_name(name))
-        .collect()
-}
-
 impl std::fmt::Display for SourceProvider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
@@ -296,17 +285,6 @@ pub struct FromProviderParams {
     pub position: f64,
 }
 
-#[derive(Debug, Clone)]
-pub struct DirectMultimodeParams {
-    pub playlist_id: Option<PlaylistId>,
-    pub room_id: RoomId,
-    pub creator_id: Option<UserId>,
-    pub name: String,
-    pub playback_infos: HashMap<String, PlaybackInfo>,
-    pub default_mode: String,
-    pub position: f64,
-}
-
 impl Media {
     #[must_use]
     pub fn from_provider_with_params(params: FromProviderParams) -> Self {
@@ -330,74 +308,6 @@ impl Media {
             updated_at: now,
             version: 0,
         }
-    }
-
-    pub fn from_direct_multimode(params: DirectMultimodeParams) -> crate::Result<Self> {
-        let default_info = params
-            .playback_infos
-            .get(&params.default_mode)
-            .or_else(|| params.playback_infos.values().next());
-        let default_media = default_info.and_then(|info| {
-            info.default_media_index
-                .and_then(|index| info.medias.get(index))
-                .or_else(|| info.medias.first())
-        });
-        let default_url = default_media
-            .and_then(PlaybackMedia::direct_url)
-            .ok_or_else(|| {
-                crate::Error::InvalidInput("direct media requires a playback URL".to_string())
-            })?;
-        let default_headers = default_media.map_or_else(
-            std::collections::HashMap::new,
-            PlaybackMedia::upstream_headers,
-        );
-
-        let source_config = super::MediaSourceConfig::DirectUrl(
-            super::DirectUrlMediaSourceConfig::single(default_url.to_string(), default_headers),
-        );
-
-        let now = crate::SystemClock.now();
-        Ok(Self {
-            id: MediaId::new(),
-            playlist_id: params.playlist_id,
-            room_id: params.room_id,
-            creator_id: params.creator_id,
-            name: params.name,
-            description: String::new(),
-            position: params.position,
-            source_provider: SourceProvider::DirectUrl,
-            source_config,
-            provider_instance_name: None,
-            cover_file_reference_id: None,
-            thumbnail_file_reference_id: None,
-            added_at: now,
-            updated_at: now,
-            version: 0,
-        })
-    }
-
-    /// Create a direct URL media with single playback info (convenience method)
-    pub fn from_direct_single_mode(
-        playlist_id: Option<PlaylistId>,
-        room_id: RoomId,
-        creator_id: Option<UserId>,
-        name: String,
-        mode_name: &str,
-        playback_info: PlaybackInfo,
-        position: f64,
-    ) -> crate::Result<Self> {
-        let mut playback_infos = HashMap::new();
-        playback_infos.insert(mode_name.to_string(), playback_info);
-
-        Self::from_direct_multimode(DirectMultimodeParams {
-            playlist_id,
-            room_id,
-            creator_id,
-            name,
-            playback_infos,
-            default_mode: mode_name.to_string(),
-            position,
-        })
     }
 
     #[must_use]
@@ -2048,14 +1958,6 @@ impl PlaybackMetadata {
             _ => None,
         }
     }
-
-    #[must_use]
-    pub const fn as_live(&self) -> Option<&LivePlaybackMetadata> {
-        match self {
-            Self::Live(metadata) => Some(metadata),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -2721,33 +2623,6 @@ pub struct SynologySubtitleMetadata {
 // Helper implementations
 
 impl PlaybackResult {
-    /// Create a `PlaybackResult` from Media and single mode `PlaybackInfo`
-    #[must_use]
-    pub fn from_media_single_mode(
-        media: &Media,
-        mode_name: &str,
-        playback_info: PlaybackInfo,
-    ) -> Self {
-        let mut playback_infos = std::collections::HashMap::new();
-        playback_infos.insert(mode_name.to_string(), playback_info);
-
-        Self {
-            id: Some(media.id),
-            playlist_id: media.playlist_id,
-            room_id: media.room_id,
-            name: media.name.clone(),
-            provider: media.source_provider,
-            provider_instance_name: media.provider_instance_name.clone(),
-            position: media.position,
-            playback_infos,
-            default_mode: mode_name.to_string(),
-            duration_seconds: None,
-            playback_kind: PlaybackKind::Regular,
-            target: None,
-            metadata: None,
-        }
-    }
-
     /// Create a new builder
     #[must_use]
     pub fn builder(
@@ -2771,19 +2646,6 @@ impl PlaybackResult {
             target: None,
             metadata: None,
         }
-    }
-
-    /// Replace metadata.
-    #[must_use]
-    pub fn with_metadata(mut self, metadata: PlaybackMetadata) -> Self {
-        self.metadata = Some(metadata);
-        self
-    }
-
-    /// Get the default playback info
-    #[must_use]
-    pub fn get_default_playback_info(&self) -> Option<&PlaybackInfo> {
-        self.playback_infos.get(&self.default_mode)
     }
 }
 
@@ -2988,20 +2850,6 @@ impl PlaybackInfoBuilder {
 }
 
 impl PlaybackMedia {
-    #[must_use]
-    pub fn direct_url(&self) -> Option<&str> {
-        match &self.provider {
-            PlaybackMediaProvider::Cloudreve(PlaybackCloudreveMedia::Direct { url, .. })
-            | PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::Direct { url, .. }) => {
-                Some(url)
-            }
-            PlaybackMediaProvider::Alist(PlaybackAlistMedia::Direct { url, .. })
-            | PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::Direct { url, .. })
-            | PlaybackMediaProvider::Emby(PlaybackEmbyMedia::Direct { url, .. }) => Some(url),
-            _ => None,
-        }
-    }
-
     #[must_use]
     pub fn upstream_url(&self) -> Option<&str> {
         match &self.provider {

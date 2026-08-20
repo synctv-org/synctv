@@ -107,7 +107,7 @@ tonic-prost = "=0.14.6"
 tonic-prost-build = "=0.14.6"
 prost = "=0.14.4"
 prost-types = "=0.14.4"
-prost-reflect = "=0.16.5"
+prost-reflect = { version = "=0.16.5", features = ["derive"] }
 prost-reflect-build = "=0.16.1"
 prost-protovalidate = "=0.6.0"
 pbjson = "=0.9.0"

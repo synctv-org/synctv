@@ -59,13 +59,6 @@ impl SsrfSafeClientBuilder {
         self
     }
 
-    /// Disable SSRF DNS enforcement.
-    #[must_use]
-    pub fn disable_ssrf_guard(mut self) -> Self {
-        self.ssrf_guard = None;
-        self
-    }
-
     /// Override the overall request timeout.
     #[must_use]
     pub const fn request_timeout(mut self, timeout: Duration) -> Self {
@@ -190,12 +183,6 @@ mod tests {
         let b = SsrfSafeClientBuilder::new().resolve("example.com", addr);
 
         assert_eq!(b.resolves, vec![("example.com".to_string(), addr)]);
-    }
-
-    #[test]
-    fn test_disable_ssrf_guard_is_explicit() {
-        let builder = SsrfSafeClientBuilder::new().disable_ssrf_guard();
-        assert!(builder.ssrf_guard.is_none());
     }
 
     #[test]

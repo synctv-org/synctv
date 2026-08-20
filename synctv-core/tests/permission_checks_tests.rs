@@ -103,7 +103,7 @@ async fn test_strong_permission_read_rejects_stale_l1_after_fence_bump() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Permission Fence Room".to_string(),
             String::new(),
@@ -190,7 +190,7 @@ async fn test_strong_permission_read_rejects_stale_l1_after_room_settings_fence_
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Permission Room Fence Room".to_string(),
             String::new(),
@@ -273,7 +273,7 @@ async fn test_eventual_permission_cache_preserves_room_settings_version() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Permission Eventual Settings Version Room".to_string(),
             String::new(),
@@ -382,7 +382,7 @@ async fn test_strong_permission_read_treats_missing_fences_as_cache_miss() {
         .create(&make_user("perm_missing_fence_member"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Permission Missing Fence Room".to_string(),
             String::new(),
@@ -479,7 +479,7 @@ async fn test_check_permissions_batch_all_present() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Batch Perm Room".to_string(),
             String::new(),
@@ -522,7 +522,7 @@ async fn test_check_permissions_batch_one_missing_fails() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Batch Miss Room".to_string(),
             String::new(),
@@ -582,7 +582,7 @@ async fn test_check_permissions_batch_rejects_stale_l1_after_room_settings_fence
         .create(&make_user("batch_stale_member"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Batch Stale Permission Room".to_string(),
             String::new(),
@@ -641,7 +641,7 @@ async fn test_check_role_creator_passes() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Check Role Room".to_string(),
             String::new(),
@@ -676,7 +676,7 @@ async fn test_check_role_member_not_creator_fails() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Check Role 2 Room".to_string(),
             String::new(),
@@ -716,7 +716,7 @@ async fn test_check_permission_bypasses_stale_l1_after_membership_removed() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Strong Permission Room".to_string(),
             String::new(),

@@ -28,11 +28,6 @@ enum RoomMemberRole {
   ROOM_MEMBER_ROLE_GUEST = 4;
 }
 
-enum MemberStatus {
-  MEMBER_STATUS_UNSPECIFIED = 0;
-  MEMBER_STATUS_ACTIVE = 1;
-}
-
 // Room lifecycle status. Banned state is tracked via is_banned.
 enum RoomStatus {
   ROOM_STATUS_UNSPECIFIED = 0;

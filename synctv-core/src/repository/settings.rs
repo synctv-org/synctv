@@ -73,59 +73,6 @@ impl SettingsRepository {
         Ok(version)
     }
 
-    /// Insert or update a setting using the exact version reserved in the
-    /// runtime-setting version fence.
-    pub async fn upsert_with_exact_version(
-        &self,
-        key: &str,
-        group_name: &str,
-        value: &str,
-        expected_version: i32,
-        new_version: i32,
-    ) -> Result<RuntimeSetting> {
-        if new_version <= expected_version {
-            return Err(Error::InvalidInput(format!(
-                "new setting version {new_version} must be greater than expected version {expected_version}"
-            )));
-        }
-
-        let row = sqlx::query_as!(
-            RuntimeSetting,
-            r"
-            INSERT INTO settings (key, group_name, value, version)
-            VALUES ($1, $2, $3, $5)
-            ON CONFLICT (key) DO UPDATE
-            SET group_name = EXCLUDED.group_name,
-                value = EXCLUDED.value,
-                version = EXCLUDED.version,
-                updated_at = NOW()
-            WHERE settings.version = $4
-            RETURNING key, group_name, value, version, created_at, updated_at
-            ",
-            key,
-            group_name,
-            value,
-            expected_version,
-            new_version,
-        )
-        .fetch_optional(&self.pool)
-        .await?;
-
-        if let Some(row) = row {
-            debug!(
-                "Upserted setting '{}' with exact version ({} -> {})",
-                key, expected_version, row.version
-            );
-            Ok(row)
-        } else {
-            debug!(
-                "Optimistic lock conflict for exact-version setting upsert '{}' (expected {})",
-                key, expected_version
-            );
-            Err(Error::OptimisticLockConflict)
-        }
-    }
-
     /// Update a setting value by key
     ///
     /// A database trigger on the `settings` table automatically sends a

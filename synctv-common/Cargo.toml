@@ -14,7 +14,6 @@ tls-native-roots = []
 
 [dependencies]
 http-acl.workspace = true
-http-acl-reqwest.workspace = true
 ipnet.workspace = true
 reqwest.workspace = true
 rustls = { workspace = true, optional = true }

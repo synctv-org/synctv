@@ -66,18 +66,6 @@ impl ImageTags {
     pub const fn has_any(&self) -> bool {
         self.primary.is_some() || self.thumb.is_some()
     }
-
-    /// Get the preferred image tag (Primary first, then Thumb)
-    #[must_use]
-    pub const fn preferred_tag(&self) -> Option<(&str, &str)> {
-        if let Some(ref tag) = self.primary {
-            Some(("Primary", tag.as_str()))
-        } else if let Some(ref tag) = self.thumb {
-            Some(("Thumb", tag.as_str()))
-        } else {
-            None
-        }
-    }
 }
 
 /// Media item information
@@ -272,12 +260,6 @@ pub struct MediaStream {
     pub protocol: String,
     #[serde(rename = "DeliveryUrl", default)]
     pub delivery_url: String,
-}
-
-/// Device profile for codec negotiation
-#[must_use]
-pub fn default_device_profile() -> Value {
-    device_profile_from_playback_client_profile(None)
 }
 
 #[must_use]

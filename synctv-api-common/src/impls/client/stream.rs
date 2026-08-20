@@ -314,7 +314,7 @@ impl ClientApiImpl {
         let media_ids = infrastructure
             .list_streams_for_room(&rid.to_string())
             .await
-            .map_err(|error| Self::map_livestream_backend_error(&*error))?;
+            .map_err(|error| crate::impls::map_livestream_backend_error(&*error))?;
 
         let media_ids = media_ids
             .into_iter()
@@ -474,8 +474,7 @@ mod tests {
                 None,
                 None,
             )
-            .await?
-            .0;
+            .await?;
         room_service
             .join_room(room.id, banned_creator.id, None)
             .await?;

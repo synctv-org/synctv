@@ -177,7 +177,8 @@ impl OAuth2Service {
     }
 
     /// Verify `OAuth2` state during callback
-    pub async fn verify_state(&self, state_token: &str) -> Result<OAuth2State> {
+    #[cfg(test)]
+    pub(crate) async fn verify_state(&self, state_token: &str) -> Result<OAuth2State> {
         self.verify_state_with_control(state_token, None).await
     }
 

@@ -32,7 +32,9 @@ impl CliConfigContext {
     }
 
     pub(super) fn strict_validated_config(&self) -> Result<crate::app_config::AppConfig> {
-        self.validated_config()
+        let mut options = self.global.load_options(true);
+        options.unknown_config_policy = crate::config_loader::UnknownConfigPolicy::Reject;
+        load_config_with_options(&options)
     }
 
     pub(super) fn public_id_config(&self) -> Result<synctv_adapter::PublicIdConfig> {

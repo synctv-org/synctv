@@ -416,8 +416,16 @@ pub struct LoadConfigOptions {
     pub data_dir: Option<String>,
     pub load_dotenv: bool,
     pub validate: bool,
+    pub unknown_config_policy: UnknownConfigPolicy,
     pub verbose: bool,
     pub extensions: ConfigLoadExtensions,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum UnknownConfigPolicy {
+    #[default]
+    Warn,
+    Reject,
 }
 
 pub fn load_dotenv(verbose: bool) -> Result<()> {
@@ -561,6 +569,7 @@ pub fn load_config() -> Result<Config> {
         data_dir: None,
         load_dotenv: true,
         validate: true,
+        unknown_config_policy: UnknownConfigPolicy::Warn,
         verbose: false,
         extensions: public_id_config_extensions(),
     })
@@ -732,6 +741,26 @@ fn is_cli_only_synctv_env_var(key: &str) -> bool {
     matches!(key, "SYNCTV_MANAGEMENT_ENDPOINT") || key.starts_with("SYNCTV_TEST_")
 }
 
+fn handle_unknown_config(
+    unknown: &UnknownConfigDiagnostics,
+    policy: UnknownConfigPolicy,
+) -> Result<()> {
+    if unknown.is_empty() {
+        return Ok(());
+    }
+
+    let message = unknown.strict_error_message();
+    match policy {
+        UnknownConfigPolicy::Warn => {
+            eprintln!("Warning: Ignoring unknown configuration setting(s): {message}");
+            Ok(())
+        }
+        UnknownConfigPolicy::Reject => Err(anyhow::anyhow!(
+            "Unknown configuration setting(s): {message}"
+        )),
+    }
+}
+
 pub fn load_config_with_options(options: &LoadConfigOptions) -> Result<Config> {
     if options.load_dotenv {
         load_dotenv(options.verbose)?;
@@ -765,10 +794,7 @@ pub fn load_config_with_options(options: &LoadConfigOptions) -> Result<Config> {
             &options.extensions,
         ) {
             Ok(loaded) => {
-                if !loaded.unknown.is_empty() {
-                    let message = loaded.unknown.strict_error_message();
-                    eprintln!("Warning: Ignoring unknown configuration setting(s): {message}");
-                }
+                handle_unknown_config(&loaded.unknown, options.unknown_config_policy)?;
                 if options.verbose {
                     tracing::info!(path = %display_path, "Config file loaded");
                 }
@@ -809,10 +835,7 @@ pub fn load_config_with_options(options: &LoadConfigOptions) -> Result<Config> {
                 options.data_dir.as_deref(),
                 &options.extensions,
             )?;
-            if !loaded.unknown.is_empty() {
-                let message = loaded.unknown.strict_error_message();
-                eprintln!("Warning: Ignoring unknown configuration setting(s): {message}");
-            }
+            handle_unknown_config(&loaded.unknown, options.unknown_config_policy)?;
             loaded.config
         }
     };
@@ -851,7 +874,7 @@ mod tests {
     use super::{
         load_config, load_config_with_options, load_core_config_file,
         load_public_id_config_with_options, public_id_config_extensions, ConfigLoadExtensions,
-        LoadConfigOptions,
+        LoadConfigOptions, UnknownConfigPolicy,
     };
     use std::fmt::Debug;
     use std::sync::MutexGuard;
@@ -1221,6 +1244,7 @@ server:
             data_dir: None,
             load_dotenv: false,
             validate: true,
+            unknown_config_policy: UnknownConfigPolicy::Warn,
             verbose: false,
             extensions: ConfigLoadExtensions::default(),
         })
@@ -1249,6 +1273,7 @@ jwt:
             data_dir: None,
             load_dotenv: false,
             validate: false,
+            unknown_config_policy: UnknownConfigPolicy::Warn,
             verbose: false,
             extensions: ConfigLoadExtensions::default(),
         })
@@ -1274,6 +1299,7 @@ jwt:
             data_dir: None,
             load_dotenv: false,
             validate: false,
+            unknown_config_policy: UnknownConfigPolicy::Warn,
             verbose: false,
             extensions: ConfigLoadExtensions::default(),
         })
@@ -1305,6 +1331,7 @@ public_ids:
             data_dir: None,
             load_dotenv: false,
             validate: false,
+            unknown_config_policy: UnknownConfigPolicy::Warn,
             verbose: false,
             extensions: ConfigLoadExtensions::default(),
         })
@@ -1335,6 +1362,7 @@ public_ids:
             data_dir: None,
             load_dotenv: false,
             validate: false,
+            unknown_config_policy: UnknownConfigPolicy::Warn,
             verbose: false,
             extensions: public_id_config_extensions(),
         })
@@ -1342,7 +1370,7 @@ public_ids:
     }
 
     #[test]
-    fn test_load_config_with_options_rejects_file_and_env_unknowns() {
+    fn test_load_config_with_options_warns_for_file_and_env_unknowns() {
         let _lock = acquire_process_config_test_lock();
         let dir = tempdir().checked("temp dir should be created");
         let _secret_env = clear_secret_env_overrides();
@@ -1365,10 +1393,46 @@ metrics:
             data_dir: None,
             load_dotenv: false,
             validate: false,
+            unknown_config_policy: UnknownConfigPolicy::Warn,
             verbose: false,
             extensions: ConfigLoadExtensions::default(),
         })
         .checked("default config loading should warn and continue for unsupported inputs");
+    }
+
+    #[test]
+    fn test_load_config_with_options_rejects_file_and_env_unknowns_in_strict_mode() {
+        let _lock = acquire_process_config_test_lock();
+        let dir = tempdir().checked("temp dir should be created");
+        let _secret_env = clear_secret_env_overrides();
+        let _unknown_env = EnvVarGuard::set("SYNCTV_UNKNOWN_SETTING", "1");
+        let config_path = dir.path().join("unknown.yaml");
+        std::fs::write(
+            &config_path,
+            r#"
+jwt:
+  secret: "12345678901234567890123456789012"
+metrics:
+  enabled: true
+  obsolete_token: "ignored"
+"#,
+        )
+        .checked("config should be written");
+
+        let error = load_config_with_options(&LoadConfigOptions {
+            config_path: Some(config_path.to_string_lossy().to_string()),
+            data_dir: None,
+            load_dotenv: false,
+            validate: false,
+            unknown_config_policy: UnknownConfigPolicy::Reject,
+            verbose: false,
+            extensions: ConfigLoadExtensions::default(),
+        })
+        .expect_err("strict config loading should reject unsupported inputs")
+        .to_string();
+
+        assert!(error.contains("metrics.obsolete_token"));
+        assert!(error.contains("SYNCTV_UNKNOWN_SETTING"));
     }
 
     #[test]
@@ -1395,6 +1459,7 @@ management:
             data_dir: None,
             load_dotenv: false,
             validate: false,
+            unknown_config_policy: UnknownConfigPolicy::Warn,
             verbose: false,
             extensions: ConfigLoadExtensions::default(),
         })
@@ -1425,6 +1490,7 @@ jwt:
             data_dir: None,
             load_dotenv: false,
             validate: false,
+            unknown_config_policy: UnknownConfigPolicy::Warn,
             verbose: false,
             extensions: ConfigLoadExtensions::default(),
         })
@@ -1446,6 +1512,7 @@ jwt:
             data_dir: Some(data_dir.to_string_lossy().to_string()),
             load_dotenv: false,
             validate: false,
+            unknown_config_policy: UnknownConfigPolicy::Warn,
             verbose: false,
             extensions: ConfigLoadExtensions::default(),
         })
@@ -1474,6 +1541,7 @@ jwt:
             data_dir: Some(cli_data_dir.to_string_lossy().to_string()),
             load_dotenv: false,
             validate: false,
+            unknown_config_policy: UnknownConfigPolicy::Warn,
             verbose: false,
             extensions: ConfigLoadExtensions::default(),
         })

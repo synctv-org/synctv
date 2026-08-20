@@ -13,7 +13,7 @@ impl RoomService {
         room_id: &RoomId,
     ) -> Result<AddMemberOptions> {
         let room_settings = self.room_settings_repo.get(room_id).await?;
-        Ok(AddMemberOptions::new().with_max_members(room_settings.max_members.0))
+        Ok(AddMemberOptions::default().with_max_members(room_settings.max_members.0))
     }
 
     pub(super) fn validate_user_can_join(user: &User) -> Result<()> {

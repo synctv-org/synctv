@@ -545,24 +545,6 @@ impl RealtimeOutboxRepository {
         .await?;
         Ok(result.rows_affected())
     }
-
-    pub async fn notify_dispatchers(&self) -> Result<()> {
-        sqlx::query!("SELECT pg_notify($1, '')", REALTIME_OUTBOX_CHANNEL)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
-
-    #[cfg(test)]
-    pub async fn notify_dispatchers_with_executor<'e, E>(&self, executor: E) -> Result<()>
-    where
-        E: sqlx::PgExecutor<'e>,
-    {
-        sqlx::query!("SELECT pg_notify($1, '')", REALTIME_OUTBOX_CHANNEL)
-            .execute(executor)
-            .await?;
-        Ok(())
-    }
 }
 
 fn ensure_outbox_row_updated(rows_affected: u64, id: &str, operation: &str) -> Result<()> {

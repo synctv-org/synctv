@@ -58,9 +58,7 @@ pub use crate::repository::{
     realtime_outbox::NewRealtimeOutboxEvent, MediaListItem, PlaylistListItem,
     RoomResourceEventPayload, RoomResourceKind, WebAuthnCredential,
 };
-pub use audit::{
-    AuditEventParams, AuditFlushHandle, AuditLog, AuditService, StreamKickAuditRequest,
-};
+pub use audit::{AuditEventParams, AuditFlushHandle, AuditService, StreamKickAuditRequest};
 pub use audit_partition_manager::{
     ensure_audit_partitions_on_startup, AuditPartitionManager, PartitionHealth, PartitionStats,
 };
@@ -82,7 +80,7 @@ pub use content_report::{
     ContentReportListQuery, ContentReportListScope, ContentReportPage, ContentReportService,
 };
 pub use db_maintenance::{DatabaseMaintenanceOptions, DatabaseMaintenanceService};
-pub use distributed_lock::{with_coordination_lock, CoordinationLock, DistributedLock, LockGuard};
+pub use distributed_lock::{with_coordination_lock, CoordinationLock, DistributedLock};
 pub use email::{
     mask_email, EmailConfig, EmailConfigProvider, EmailService, SmtpCredentials, SmtpProxyConfig,
 };
@@ -221,7 +219,7 @@ pub use room::{
     UpdateMemberWithOutboxRequest, UserLeftOutboxSnapshot, ROOM_OPAQUE_LOGIN_SESSION_TTL_SECS,
     ROOM_OPAQUE_REGISTRATION_SESSION_TTL_SECS,
 };
-pub use room_settings::{CacheStats, RoomSettingsRuntime, RoomSettingsService};
+pub use room_settings::{RoomSettingsRuntime, RoomSettingsService};
 pub use server_state::{
     check_memory_health, email_health, livestream_snapshot_from_publishers,
     response_for_server_state_nodes, summarize_server_state, validate_server_state_selection,

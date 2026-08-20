@@ -17,9 +17,8 @@ use crate::docker::{
     current_test_run_id as docker_current_test_run_id,
     current_test_run_id_from as docker_current_test_run_id_from,
     docker_named_container_belongs_to_current_run, docker_port_candidates, docker_rm_force,
-    ensure_docker_image, host_address_family, sanitize_container_name,
-    startup_error_is_named_container_conflict, startup_error_is_retriable, DockerSlotGuard,
-    ProcessLock, TEST_RUN_LABEL,
+    ensure_docker_image, host_address_family, startup_error_is_named_container_conflict,
+    startup_error_is_retriable, DockerSlotGuard, ProcessLock, TEST_RUN_LABEL,
 };
 use crate::postgres::{docker_startup_parallelism, docker_startup_timeout};
 
@@ -602,66 +601,6 @@ pub async fn start_redis() -> (RedisContainer, redis::aio::ConnectionManager) {
 
 pub async fn start_redis_url_with_label(label: &str) -> (RedisContainer, String) {
     let (container, redis_url, _client) = start_redis_inner(label).await;
-    (container, redis_url)
-}
-
-/// Start a **dedicated** Redis container that is NOT shared with other tests.
-///
-/// Use this for tests that need to terminate or otherwise destroy their Redis
-/// instance (e.g. fail-closed tests).  The shared container must never be
-/// terminated because other concurrent test processes depend on it.
-pub async fn start_dedicated_redis() -> (RedisContainer, redis::aio::ConnectionManager) {
-    let run_lock = redis_run_lock(&current_test_run_id()).await;
-    let container_name = format!(
-        "synctv-redis-dedicated-{}-{}",
-        current_process_id(),
-        sanitize_container_name(
-            &std::env::var("NEXTEST_TEST_NAME")
-                .ok()
-                .or_else(|| std::thread::current().name().map(str::to_owned))
-                .unwrap_or_else(|| "unknown".to_string()),
-            "redis-test"
-        )
-    );
-    let image_descriptor = named_redis_request(&container_name).descriptor();
-    ensure_docker_image(&image_descriptor, docker_startup_timeout())
-        .await
-        .unwrap_or_else(|error| panic!("Failed to prepare Redis image: {error}"));
-    let container = tokio::time::timeout(
-        docker_startup_timeout(),
-        named_redis_request(&container_name).start(),
-    )
-    .await
-    .expect("Docker container startup timed out (is Docker running?)")
-    .expect("Failed to start dedicated Redis");
-
-    let (host, port) = resolve_host_port(&container, 6379).await;
-    let redis_url = redis_connection_url(&host, port);
-    let client = redis::Client::open(redis_url.clone()).expect("Failed to create Redis client");
-    wait_for_redis_ready(&client).await;
-    let manager = redis::aio::ConnectionManager::new(client)
-        .await
-        .expect("Failed to create Redis connection manager");
-
-    let shared = Arc::new(SharedRedisServer {
-        _container: Some(std::mem::ManuallyDrop::new(container)),
-        name: container_name,
-        host,
-        port,
-        _run_lock: run_lock,
-    });
-
-    (RedisContainer::new(shared), manager)
-}
-
-/// Start a **dedicated** Redis container (not shared) and return its URL.
-///
-/// Use for tests that terminate or destroy their Redis instance.
-/// The label is used for the container name; each invocation creates a
-/// separate container.
-pub async fn start_dedicated_redis_url_with_label(_label: &str) -> (RedisContainer, String) {
-    let (container, _manager) = start_dedicated_redis().await;
-    let redis_url = container.connection_url();
     (container, redis_url)
 }
 

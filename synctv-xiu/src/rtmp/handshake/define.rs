@@ -23,7 +23,6 @@ pub const RTMP_HANDSHAKE_SIZE: usize = 1536;
 pub const RTMP_HANDSHAKE_RANDOM_SIZE_U32: u32 = 1528;
 
 pub const RTMP_SERVER_VERSION: [u8; 4] = [0x0D, 0x0E, 0x0A, 0x0D];
-pub const RTMP_CLIENT_VERSION: [u8; 4] = [0x0C, 0x00, 0x0D, 0x0E];
 
 pub const RTMP_DIGEST_LENGTH: usize = 32;
 pub const RTMP_SERVER_KEY_FIRST_HALF: &str = "Genuine Adobe Flash Media Server 001";

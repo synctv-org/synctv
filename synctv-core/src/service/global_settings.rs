@@ -1080,13 +1080,6 @@ impl RuntimeSettingsStore {
         Ok(())
     }
 
-    pub fn runtime_settings_update_entries(
-        &self,
-        settings: &RuntimeSettings,
-    ) -> crate::Result<Vec<(String, String)>> {
-        self.runtime_settings_update_entries_for_mask(settings, &RuntimeSettingsUpdateMask::all())
-    }
-
     pub fn runtime_settings_update_entries_for_mask(
         &self,
         settings: &RuntimeSettings,
@@ -1282,7 +1275,7 @@ impl RuntimeSettingsStore {
             &mut entries,
             update_mask.email.whitelist_domains,
             &self.email.whitelist,
-            &settings.email.whitelist_raw(),
+            &settings.email.whitelist_domains.join(","),
         )?;
 
         Self::push_update_entry(

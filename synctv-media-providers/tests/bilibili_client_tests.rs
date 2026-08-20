@@ -276,10 +276,6 @@ async fn test_match_resource_resolves_short_link_to_typed_video() {
     );
 }
 
-// Quality type tests
-
-// VideoId / EpisodeId types
-
 // Type deserialization tests (verify JSON response shapes)
 
 #[test]

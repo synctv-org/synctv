@@ -8,8 +8,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use synctv_core::{
     models::{
-        MemberStatus, Playlist, PlaylistId, Room, RoomId, RoomMember, RoomRole, RoomStatus,
-        SourceProvider, User, UserId, UserRole, UserStatus,
+        Playlist, PlaylistId, Room, RoomId, RoomMember, RoomRole, RoomStatus, SourceProvider, User,
+        UserId, UserRole, UserStatus,
     },
     repository::{
         MediaRepository, PlaylistRepository, RoomMemberRepository, RoomRepository, UserRepository,
@@ -96,7 +96,6 @@ async fn setup_media_edit_fixture(
         room_id: room.id,
         user_id: owner.id,
         role: RoomRole::Creator,
-        status: MemberStatus::Active,
         added_permissions: 0,
         removed_permissions: 0,
         admin_added_permissions: 0,

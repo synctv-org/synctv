@@ -100,7 +100,9 @@ fn test_amf0_multiple_values_roundtrip() {
     ];
 
     let mut writer = Amf0Writer::new();
-    writer.write_anys(&values).unwrap();
+    for value in &values {
+        writer.write_any(value).unwrap();
+    }
     let bytes = writer.extract_current_bytes();
 
     let reader = BytesReader::new(bytes);

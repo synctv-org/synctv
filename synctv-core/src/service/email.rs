@@ -481,95 +481,7 @@ impl EmailService {
         Ok(())
     }
 
-    pub async fn send_password_reset_token_email_with_control(
-        &self,
-        email: &str,
-        token: &str,
-        control: Option<&ExecutionControl>,
-    ) -> Result<()> {
-        Self::validate_email(email)?;
-
-        if let Some(control) = control {
-            control
-                .check_active()
-                .map_err(|error| Error::Timeout(error.to_string()))?;
-        }
-
-        let config = self.current_config()?.ok_or_else(|| {
-            Error::ServiceUnavailable(
-                "Email delivery is not configured on this server.".to_string(),
-            )
-        })?;
-
-        self.send_password_reset_email_impl(&config, email, token, None, control)
-            .await
-            .map_err(map_email_send_failure)?;
-
-        tracing::info!("Sent password reset email to {}", mask_email(email));
-        Ok(())
-    }
-
-    pub async fn send_email_login_token_email_with_control(
-        &self,
-        email: &str,
-        token: &str,
-        control: Option<&ExecutionControl>,
-    ) -> Result<()> {
-        Self::validate_email(email)?;
-
-        if let Some(control) = control {
-            control
-                .check_active()
-                .map_err(|error| Error::Timeout(error.to_string()))?;
-        }
-
-        let config = self.current_config()?.ok_or_else(|| {
-            Error::ServiceUnavailable(
-                "Email delivery is not configured on this server.".to_string(),
-            )
-        })?;
-
-        self.send_email_login_email_impl(&config, email, token, None, control)
-            .await
-            .map_err(map_email_send_failure)?;
-
-        tracing::info!("Sent email login code to {}", mask_email(email));
-        Ok(())
-    }
-
-    pub async fn send_email_registration_token_email_with_control(
-        &self,
-        email: &str,
-        token: &str,
-        control: Option<&ExecutionControl>,
-    ) -> Result<()> {
-        Self::validate_email(email)?;
-
-        if let Some(control) = control {
-            control
-                .check_active()
-                .map_err(|error| Error::Timeout(error.to_string()))?;
-        }
-
-        let config = self.current_config()?.ok_or_else(|| {
-            Error::ServiceUnavailable(
-                "Email delivery is not configured on this server.".to_string(),
-            )
-        })?;
-
-        self.send_email_registration_email_impl(&config, email, token, None, control)
-            .await
-            .map_err(map_email_send_failure)?;
-
-        tracing::info!("Sent email registration code to {}", mask_email(email));
-        Ok(())
-    }
-
     /// Send a test email to verify email configuration
-    pub async fn send_test_email(&self, to: &str) -> Result<()> {
-        self.send_test_email_with_control(to, None).await
-    }
-
     pub async fn send_test_email_with_control(
         &self,
         to: &str,
@@ -1297,7 +1209,7 @@ mod tests {
             ok(
                 tokio::time::timeout(
                     std::time::Duration::from_secs(5),
-                    service.send_test_email("recipient@example.com"),
+                    service.send_test_email_with_control("recipient@example.com", None),
                 )
                 .await,
                 "SOCKS5 SMTP send timeout",

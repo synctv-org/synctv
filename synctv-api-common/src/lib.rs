@@ -42,9 +42,7 @@ pub mod test_support;
 pub mod webrtc_status;
 
 pub use api_runtime::*;
-pub use app_state::{
-    create_app_state_from_options, AppState, ProxyCacheLifecycleRuntime, RouterOptions,
-};
+pub use app_state::{build_app_state, AppState, ProxyCacheLifecycleRuntime, RouterOptions};
 pub use http_error::{AppError, AppResult};
 pub use impls::*;
 pub use metrics_auth::{MetricsAccessController, MetricsAccessError};

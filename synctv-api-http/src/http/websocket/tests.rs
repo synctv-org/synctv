@@ -868,8 +868,7 @@ async fn test_validate_websocket_room_membership_rejects_room_with_inactive_crea
             None,
         )
         .await
-        .map_err(|error| test_error(error.to_string()))?
-        .0;
+        .map_err(|error| test_error(error.to_string()))?;
     room_service
         .join_room(room.id, member.id, None)
         .await

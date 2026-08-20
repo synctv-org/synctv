@@ -24,20 +24,6 @@ pub struct SetPlaylistRequest {
 }
 
 impl PlaylistService {
-    /// Set playlist properties
-    ///
-    /// Uses optimistic locking with automatic retry on version conflicts.
-    /// Retries use exponential backoff with jitter to avoid thundering herd.
-    pub async fn set_playlist(
-        &self,
-        room_id: RoomId,
-        user_id: UserId,
-        request: SetPlaylistRequest,
-    ) -> Result<Playlist> {
-        self.set_playlist_with_outbox(room_id, user_id, request, None)
-            .await
-    }
-
     pub async fn set_playlist_with_outbox(
         &self,
         room_id: RoomId,
@@ -46,17 +32,6 @@ impl PlaylistService {
         outbox_event_factory: Option<RealtimeOutboxPlaylistEventFactory>,
     ) -> Result<Playlist> {
         self.set_playlist_internal(room_id, user_id, request, false, outbox_event_factory)
-            .await
-    }
-
-    /// Management-only playlist update that bypasses room membership permission checks.
-    pub async fn admin_set_playlist(
-        &self,
-        room_id: RoomId,
-        actor_user_id: UserId,
-        request: SetPlaylistRequest,
-    ) -> Result<Playlist> {
-        self.admin_set_playlist_with_outbox(room_id, actor_user_id, request, None)
             .await
     }
 

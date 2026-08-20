@@ -123,7 +123,7 @@ async fn create_room_with_media_source_config(
     media_name: &str,
     source_config: synctv_core::models::MediaSourceConfig,
 ) -> (Room, Media, synctv_core::models::RoomPlaybackState) {
-    let (room, _) = room_service
+    let room = room_service
         .create_room(room_name.to_string(), String::new(), owner_id, None, None)
         .await
         .checked("test room should be created");
@@ -154,7 +154,7 @@ async fn create_room_with_media(
     room_name: &str,
     media_name: &str,
 ) -> (Room, Media, synctv_core::models::RoomPlaybackState) {
-    let (room, _) = room_service
+    let room = room_service
         .create_room(room_name.to_string(), String::new(), owner_id, None, None)
         .await
         .checked("test room should be created");
@@ -221,7 +221,7 @@ async fn create_room_with_dynamic_playlist(
     playlist_name: &str,
     target_path: &str,
 ) -> (Room, Playlist, synctv_core::models::RoomPlaybackState) {
-    let (room, _) = room_service
+    let room = room_service
         .create_room(room_name.to_string(), String::new(), owner_id, None, None)
         .await
         .checked("test room should be created");
@@ -257,7 +257,7 @@ async fn claim_duration_probe_for_active_source_claims_only_current_source() {
         .create(&make_user("duration_probe_owner"))
         .await
         .checked("test owner should be created");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Duration Probe Room".to_string(),
             String::new(),

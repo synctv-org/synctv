@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE room_members\n             SET admin_removed_permissions = admin_removed_permissions | $3,\n                 version = version + 1\n             WHERE room_id = $1 AND user_id = $2\n             RETURNING room_id as \"room_id: RoomId\",\n                       user_id as \"user_id: UserId\",\n                       role as \"role: RoomRole\",\n                       added_permissions,\n                       removed_permissions,\n                       admin_added_permissions,\n                       admin_removed_permissions,\n                       remark_name,\n                       display_tag,\n                       joined_at,\n                       version",
+  "query": "SELECT\n                rm.room_id AS \"room_id: RoomId\",\n                rm.user_id AS \"user_id: UserId\",\n                rm.role AS \"role: RoomRole\",\n                rm.added_permissions, rm.removed_permissions,\n                rm.admin_added_permissions, rm.admin_removed_permissions,\n                rm.remark_name,\n                      rm.display_tag,\n                      rm.joined_at,\n                u.username\n             FROM room_members rm\n             JOIN users u ON rm.user_id = u.id\n             WHERE rm.room_id = $1 AND u.deleted_at IS NULL\n             ORDER BY rm.joined_at ASC",
   "describe": {
     "columns": [
       {
@@ -115,20 +115,18 @@
       },
       {
         "ordinal": 10,
-        "name": "version",
-        "type_info": "Int8",
+        "name": "username",
+        "type_info": "Varchar",
         "origin": {
           "Table": {
-            "table": "room_members",
-            "name": "version"
+            "table": "users",
+            "name": "username"
           }
         }
       }
     ],
     "parameters": {
       "Left": [
-        "Int8",
-        "Int8",
         "Int8"
       ]
     },
@@ -146,5 +144,5 @@
       false
     ]
   },
-  "hash": "c939ee0cc41a3cc6606836e1e31c54756e8d8bfbca9cf4f15c07d9e9ea4dd3a7"
+  "hash": "eb0c8329b5bae62f9a8aef48f3777fb0b3277d87e457049d6ccaf31edfa5413f"
 }

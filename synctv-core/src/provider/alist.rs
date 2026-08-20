@@ -1295,7 +1295,10 @@ impl AlistProvider {
     pub fn otp_code_from_secret(otp_secret: Option<&str>) -> Result<String, ProviderError> {
         otp_secret.map_or_else(
             || Ok(String::new()),
-            |secret| Self::current_otp_code(secret).map_err(ProviderError::InvalidConfig),
+            |secret| {
+                Self::otp_code_at_timestamp(secret, crate::SystemClock.now().timestamp())
+                    .map_err(ProviderError::InvalidConfig)
+            },
         )
     }
 
@@ -1320,10 +1323,6 @@ impl AlistProvider {
 
             Some(trimmed.to_string())
         })
-    }
-
-    pub fn current_otp_code(otp_secret: &str) -> Result<String, String> {
-        Self::otp_code_at_timestamp(otp_secret, crate::SystemClock.now().timestamp())
     }
 
     pub fn otp_code_at_timestamp(otp_secret: &str, timestamp: i64) -> Result<String, String> {
@@ -3482,7 +3481,7 @@ mod tests {
 
     fn test_provider(client: Arc<RotatingAlistClient>) -> TestResult<AlistProvider> {
         let defaults = ok(
-            ProviderClientManager::new_for_tests(),
+            ProviderClientManager::new(),
             "default provider clients should build",
         )?;
         let manager = ProviderClientManager::with_custom_clients(

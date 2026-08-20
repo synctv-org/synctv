@@ -247,18 +247,21 @@ async fn test_list_playback_messages_filters_by_context_and_time_window() {
 
     let messages = ok(
         chat_repo
-            .list_playback_messages(&ChatPlaybackMessagesQuery {
-                room_id: room.id,
-                media_id: Some(media_id),
-                playlist_id: Some(playlist_id),
-                target: Some(target.clone()),
-                selection: ChatMessageSelection::user_default(),
-                position_seconds: 11.0,
-                before_seconds: 1.0,
-                after_seconds: 1.0,
-                limit: 100,
-                include_deleted: false,
-            })
+            .list_playback_messages_for_viewer(
+                &ChatPlaybackMessagesQuery {
+                    room_id: room.id,
+                    media_id: Some(media_id),
+                    playlist_id: Some(playlist_id),
+                    target: Some(target.clone()),
+                    selection: ChatMessageSelection::user_default(),
+                    position_seconds: 11.0,
+                    before_seconds: 1.0,
+                    after_seconds: 1.0,
+                    limit: 100,
+                    include_deleted: false,
+                },
+                None,
+            )
             .await,
         "playback chat messages should list",
     );
@@ -271,23 +274,26 @@ async fn test_list_playback_messages_filters_by_context_and_time_window() {
 
     let messages_with_system = ok(
         chat_repo
-            .list_playback_messages(&ChatPlaybackMessagesQuery {
-                room_id: room.id,
-                media_id: Some(media_id),
-                playlist_id: Some(playlist_id),
-                target: Some(target),
-                selection: ChatMessageSelection {
-                    include_message_types: vec![
-                        ChatMessageType::User,
-                        ChatMessageType::SystemMemberJoined,
-                    ],
+            .list_playback_messages_for_viewer(
+                &ChatPlaybackMessagesQuery {
+                    room_id: room.id,
+                    media_id: Some(media_id),
+                    playlist_id: Some(playlist_id),
+                    target: Some(target),
+                    selection: ChatMessageSelection {
+                        include_message_types: vec![
+                            ChatMessageType::User,
+                            ChatMessageType::SystemMemberJoined,
+                        ],
+                    },
+                    position_seconds: 11.0,
+                    before_seconds: 1.0,
+                    after_seconds: 1.0,
+                    limit: 100,
+                    include_deleted: false,
                 },
-                position_seconds: 11.0,
-                before_seconds: 1.0,
-                after_seconds: 1.0,
-                limit: 100,
-                include_deleted: false,
-            })
+                None,
+            )
             .await,
         "playback chat messages with system type should list",
     );
@@ -349,18 +355,21 @@ async fn test_list_playback_messages_handles_nullable_metadata_and_missing_targe
 
     let without_target = ok(
         chat_repo
-            .list_playback_messages(&ChatPlaybackMessagesQuery {
-                room_id: room.id,
-                media_id: Some(media_id),
-                playlist_id: Some(playlist_id),
-                target: None,
-                selection: ChatMessageSelection::user_default(),
-                position_seconds: 42.0,
-                before_seconds: 0.0,
-                after_seconds: 0.0,
-                limit: 100,
-                include_deleted: false,
-            })
+            .list_playback_messages_for_viewer(
+                &ChatPlaybackMessagesQuery {
+                    room_id: room.id,
+                    media_id: Some(media_id),
+                    playlist_id: Some(playlist_id),
+                    target: None,
+                    selection: ChatMessageSelection::user_default(),
+                    position_seconds: 42.0,
+                    before_seconds: 0.0,
+                    after_seconds: 0.0,
+                    limit: 100,
+                    include_deleted: false,
+                },
+                None,
+            )
             .await,
         "playback chat messages without target should list",
     );
@@ -374,18 +383,21 @@ async fn test_list_playback_messages_handles_nullable_metadata_and_missing_targe
 
     let with_target = ok(
         chat_repo
-            .list_playback_messages(&ChatPlaybackMessagesQuery {
-                room_id: room.id,
-                media_id: Some(media_id),
-                playlist_id: Some(playlist_id),
-                target: Some(target),
-                selection: ChatMessageSelection::user_default(),
-                position_seconds: 42.0,
-                before_seconds: 0.0,
-                after_seconds: 0.0,
-                limit: 100,
-                include_deleted: false,
-            })
+            .list_playback_messages_for_viewer(
+                &ChatPlaybackMessagesQuery {
+                    room_id: room.id,
+                    media_id: Some(media_id),
+                    playlist_id: Some(playlist_id),
+                    target: Some(target),
+                    selection: ChatMessageSelection::user_default(),
+                    position_seconds: 42.0,
+                    before_seconds: 0.0,
+                    after_seconds: 0.0,
+                    limit: 100,
+                    include_deleted: false,
+                },
+                None,
+            )
             .await,
         "playback chat messages with target should list",
     );

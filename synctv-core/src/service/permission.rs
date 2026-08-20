@@ -141,43 +141,6 @@ impl PermissionService {
         self.runtime_settings_store.is_some()
     }
 
-    /// Check if room settings repository is configured
-    ///
-    /// Returns `true` if a room settings repository was provided through
-    /// `PermissionServiceRuntime`, `false` otherwise.
-    ///
-    /// When `false`, strong permission checks fail because room settings are
-    /// part of the authoritative permission model.
-    #[must_use]
-    pub const fn has_room_settings_repo(&self) -> bool {
-        self.room_settings_repo.is_some()
-    }
-
-    /// Log a warning if `room_settings_repo` is not configured
-    ///
-    /// Call this during application startup to surface invalid service wiring
-    /// before authorization requests start failing.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// // This example is ignored because PermissionService requires multiple dependencies.
-    /// // In practice, use your dependency injection framework to construct the service.
-    /// use synctv_core::service::PermissionService;
-    ///
-    /// // Assuming you have a properly constructed PermissionService:
-    /// // permission_service.warn_if_missing_settings_repo();
-    /// ```
-    pub fn warn_if_missing_settings_repo(&self) {
-        if !self.has_room_settings_repo() {
-            tracing::warn!(
-                "PermissionService started without room_settings_repo; \
-                 strong permission checks will fail. \
-                 Provide room_settings_repo through PermissionServiceRuntime."
-            );
-        }
-    }
-
     /// Get user's effective permissions without cache (for critical operations).
     ///
     /// This always fetches from the database to ensure fresh permission state.
@@ -521,14 +484,6 @@ impl PermissionService {
     /// When the main cache's Pub/Sub is lagging, cross-replica invalidation messages
     /// may be delayed or lost. Using a short TTL ensures that even if invalidation
     /// doesn't work, stale data won't be served for more than 30 seconds.
-    pub async fn get_user_permissions_degraded(
-        &self,
-        room_id: &RoomId,
-        user_id: &UserId,
-    ) -> Result<RoomPermissionSet> {
-        self.get_user_permissions_strong(room_id, user_id).await
-    }
-
     /// Invalidate cache for a specific user in a room
     ///
     /// If cache invalidation service is configured, this also broadcasts the

@@ -359,56 +359,6 @@ async fn stream_original_range_with_learned_meta(
     stream_existing_response_with_status(resp, CacheStatus::Bypass)
 }
 
-/// Send a HEAD request to discover the upstream `Content-Length`.
-///
-/// Falls back to a constrained `GET Range: bytes=0-0` request when the origin
-/// rejects HEAD or omits `Content-Length`, while still reusing the proxy's
-/// SSRF-safe redirect validation path.
-pub async fn head_content_length(
-    client: &reqwest::Client,
-    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
-    url: &str,
-    provider_headers: &ProviderHeaders,
-) -> Result<u64, anyhow::Error> {
-    head::head_content_length(client, ssrf_guard, url, provider_headers).await
-}
-
-pub async fn head_content_length_with_control(
-    client: &reqwest::Client,
-    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
-    url: &str,
-    provider_headers: &ProviderHeaders,
-    request_control: Option<&ExecutionControl>,
-) -> Result<u64, anyhow::Error> {
-    head::head_content_length_with_control(
-        client,
-        ssrf_guard,
-        url,
-        provider_headers,
-        request_control,
-    )
-    .await
-}
-
-pub async fn head_content_length_with_control_and_timeout(
-    client: &reqwest::Client,
-    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
-    url: &str,
-    provider_headers: &ProviderHeaders,
-    request_control: Option<&ExecutionControl>,
-    upstream_header_timeout: Option<Duration>,
-) -> Result<u64, anyhow::Error> {
-    head::head_content_length_with_control_and_timeout(
-        client,
-        ssrf_guard,
-        url,
-        provider_headers,
-        request_control,
-        upstream_header_timeout,
-    )
-    .await
-}
-
 /// Serve a request through the slice cache with an optional origin-specific
 /// fallback from a failed range probe to an ordinary GET.
 ///

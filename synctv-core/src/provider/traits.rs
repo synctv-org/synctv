@@ -279,16 +279,6 @@ impl<'a> SourceConfig<'a> {
             Self::DynamicPlaylist(_) => SourceConfigKind::DynamicPlaylist,
         }
     }
-
-    #[must_use]
-    pub const fn is_media(self) -> bool {
-        matches!(self, Self::Media(_))
-    }
-
-    #[must_use]
-    pub const fn is_dynamic_playlist(self) -> bool {
-        matches!(self, Self::DynamicPlaylist(_))
-    }
 }
 
 impl From<SourceConfig<'_>> for PreparedSourceConfig {

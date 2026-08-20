@@ -15,8 +15,8 @@ pub mod username_cache;
 
 pub use consistency::version_fence_store_from_shared_state_profile;
 pub use consistency::{
-    CacheDomain, ConsistencyCoordinator, ConsistencyPolicy, LocalVersionFenceStore,
-    RedisVersionFenceStore, VersionFenceReservation, VersionFenceStore, VersionedCacheValue,
+    CacheDomain, ConsistencyCoordinator, LocalVersionFenceStore, RedisVersionFenceStore,
+    VersionFenceReservation, VersionFenceStore,
 };
 pub use invalidation::{CacheInvalidationRuntime, CacheInvalidationService, InvalidationMessage};
 pub use key_builder::KeyBuilder;

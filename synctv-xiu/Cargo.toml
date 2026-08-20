@@ -32,7 +32,6 @@ anyhow.workspace = true
 # Async runtime
 tokio.workspace = true
 tokio-util.workspace = true
-tokio-stream.workspace = true
 futures.workspace = true
 async-trait.workspace = true
 retina.workspace = true
@@ -44,7 +43,6 @@ tracing.workspace = true
 serde = { workspace = true, features = ["rc"] }
 serde_json.workspace = true
 indexmap.workspace = true
-bincode.workspace = true
 
 # Time
 chrono.workspace = true
@@ -63,7 +61,6 @@ lru.workspace = true
 uuid.workspace = true
 
 # HTTP
-axum.workspace = true
 url.workspace = true
 percent-encoding.workspace = true
 

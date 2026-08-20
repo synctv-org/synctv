@@ -1215,10 +1215,8 @@ async fn prepare_websocket_upgrade(
     request_meta: &ApiRequestMetadata,
     handshake_control: &ExecutionControl,
 ) -> Result<PreparedWebSocketUpgrade, AppError> {
-    synctv_api_common::impls::validation::validate_websocket_connect_request(
-        &websocket_connect_request(query),
-    )
-    .map_err(crate::http::error::map_api_error)?;
+    synctv_api_common::impls::validate_proto_request(&websocket_connect_request(query))
+        .map_err(crate::http::error::map_api_error)?;
 
     validate_websocket_origin(
         headers,

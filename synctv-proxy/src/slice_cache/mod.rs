@@ -60,9 +60,11 @@ pub use backend::{CacheBackend, SliceCacheBackend};
 pub use config::{CacheBackendConfig, SliceCacheConfig};
 pub use etag::{CachedResourceMeta, StoredEntry};
 pub use filter::{
+    SliceCacheProxyMethod, SliceCacheProxyRequest, SliceCacheProxyStrategy, SliceRangeProbeFallback,
+};
+pub use head::{
     head_content_length, head_content_length_with_control,
-    head_content_length_with_control_and_timeout, SliceCacheProxyMethod, SliceCacheProxyRequest,
-    SliceCacheProxyStrategy, SliceRangeProbeFallback,
+    head_content_length_with_control_and_timeout,
 };
 pub use lifecycle::CacheLifecycleManager;
 pub use range::{parse_content_range, ContentRange};

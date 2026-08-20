@@ -1089,7 +1089,7 @@ pub async fn logout(
     let authorization = request_meta.authorization.clone();
     let executor = state.shared_api_runtime.client_api.clone();
     let client_api = state.shared_api_runtime.client_api.clone();
-    let outcome = executor
+    executor
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Write,
@@ -1113,7 +1113,7 @@ pub async fn logout(
 
     Ok(Json(LogoutResponse {
         success: true,
-        message: outcome.message.to_string(),
+        message: String::new(),
     }))
 }
 

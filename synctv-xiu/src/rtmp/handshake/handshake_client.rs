@@ -1,8 +1,5 @@
 use {
-    super::{
-        define, define::ClientHandshakeState, errors::HandshakeError,
-        handshake_trait::THandshakeClient, utils,
-    },
+    super::{define, define::ClientHandshakeState, errors::HandshakeError, utils},
     crate::bytesio::{bytes_reader::BytesReader, bytes_writer::AsyncBytesWriter, net_io::TNetIO},
     byteorder::BigEndian,
     bytes::BytesMut,
@@ -78,7 +75,7 @@ impl SimpleHandshakeClient {
     }
 }
 
-impl THandshakeClient for SimpleHandshakeClient {
+impl SimpleHandshakeClient {
     fn write_c0(&mut self) -> Result<(), HandshakeError> {
         self.writer.write_u8(rtmp_version_u8())?;
         Ok(())

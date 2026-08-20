@@ -72,19 +72,6 @@ impl RedisJtiStore {
     }
 
     #[must_use]
-    pub fn new_shared_fail_closed(
-        shared_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
-        key_prefix: String,
-        cache_ttl_secs: u64,
-    ) -> Self {
-        Self::from_runtime_fail_closed(
-            crate::shared_runtime(shared_conn),
-            key_prefix,
-            cache_ttl_secs,
-        )
-    }
-
-    #[must_use]
     pub fn from_runtime_fail_closed(
         redis_runtime: Arc<dyn RedisConnectionRuntime>,
         key_prefix: String,

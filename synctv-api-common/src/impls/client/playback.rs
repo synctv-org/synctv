@@ -722,7 +722,7 @@ impl ClientApiImpl {
             Some(infrastructure) => infrastructure
                 .find_publisher(&room_id.to_string(), &media_id.to_string())
                 .await
-                .map_err(|error| Self::map_livestream_backend_error(error.as_ref()))?,
+                .map_err(|error| crate::impls::map_livestream_backend_error(error.as_ref()))?,
             None => None,
         };
         apply_live_stream_generation(metadata, publisher.as_ref());
@@ -1059,18 +1059,6 @@ impl ClientApiImpl {
     ) -> Result<synctv_proto::client::GetPlaybackResponse, ApiError> {
         let actor = self.room_actor_for_user(user_id, room_id).await?;
         self.get_playback_for_actor(&actor, req, None).await
-    }
-
-    pub async fn get_playback_with_context(
-        &self,
-        user_id: &UserId,
-        room_id: &str,
-        req: synctv_proto::client::GetPlaybackRequest,
-        request_control: &ExecutionControl,
-    ) -> Result<synctv_proto::client::GetPlaybackResponse, ApiError> {
-        let actor = self.room_actor_for_user(user_id, room_id).await?;
-        self.get_playback_for_actor(&actor, req, Some(request_control))
-            .await
     }
 
     pub async fn get_playback_as_guest(

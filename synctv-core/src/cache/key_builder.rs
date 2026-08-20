@@ -81,43 +81,6 @@ impl KeyBuilder {
         self.prefixed_key(&format!("cluster:nodes:{node_id}"))
     }
 
-    /// Active nodes list (Sorted Set)
-    ///
-    /// Type: Sorted Set
-    /// Member: `node_id`
-    /// Score: timestamp (for cleanup)
-    #[must_use]
-    pub fn cluster_nodes_active(&self) -> String {
-        self.prefixed_key("cluster:nodes:active")
-    }
-
-    /// Stream publisher information
-    ///
-    /// Type: Hash + TTL (300s)
-    /// Fields: `node_id`, `started_at`, status, `viewer_count`
-    #[must_use]
-    pub fn stream_info(&self, stream_key: &str) -> String {
-        self.prefixed_key(&format!("stream:info:{stream_key}"))
-    }
-
-    /// Stream pull subscribers
-    ///
-    /// Type: Set + TTL (300s)
-    /// Members: `node_id` (nodes that are pulling this stream)
-    #[must_use]
-    pub fn stream_subscribers(&self, stream_key: &str) -> String {
-        self.prefixed_key(&format!("stream:subscribers:{stream_key}"))
-    }
-
-    /// Stream statistics
-    ///
-    /// Type: Hash + TTL (600s)
-    /// Fields: viewers, bitrate, packets, bytes
-    #[must_use]
-    pub fn stream_stats(&self, stream_key: &str) -> String {
-        self.prefixed_key(&format!("stream:stats:{stream_key}"))
-    }
-
     /// Room current state
     ///
     /// Type: Hash
@@ -134,43 +97,6 @@ impl KeyBuilder {
     #[must_use]
     pub fn room_members(&self, room_id: &str) -> String {
         self.prefixed_key(&format!("room:{room_id}:members"))
-    }
-
-    /// Room online users
-    ///
-    /// Type: Sorted Set
-    /// Members: `user_id`
-    /// Score: `last_activity_timestamp`
-    #[must_use]
-    pub fn room_online_users(&self, room_id: &str) -> String {
-        self.prefixed_key(&format!("room:{room_id}:online"))
-    }
-
-    /// Room viewer count
-    ///
-    /// Type: String + TTL (60s)
-    /// Value: number (count)
-    #[must_use]
-    pub fn room_viewers(&self, room_id: &str) -> String {
-        self.prefixed_key(&format!("room:{room_id}:viewers"))
-    }
-
-    /// Playback information cache
-    ///
-    /// Type: String + TTL (dynamic)
-    /// Value: JSON with playback state
-    #[must_use]
-    pub fn playback_cache(&self, cache_key: &str) -> String {
-        self.prefixed_key(&format!("playback:{cache_key}"))
-    }
-
-    /// User session
-    ///
-    /// Type: String + TTL (dynamic)
-    /// Value: JSON with session data
-    #[must_use]
-    pub fn user_session(&self, session_id: &str) -> String {
-        self.prefixed_key(&format!("session:{session_id}"))
     }
 
     /// Short-lived auth/session workflow key.
@@ -329,22 +255,6 @@ impl KeyBuilder {
     pub fn cache_invalidation_stream(&self) -> String {
         self.prefixed_key("cache:invalidate:stream")
     }
-
-    /// Cluster events pub/sub channel
-    ///
-    /// Used for cross-cluster message broadcasting
-    #[must_use]
-    pub fn realtime_events_channel(&self) -> String {
-        self.prefixed_key("cluster:events")
-    }
-
-    /// Room-specific messages channel
-    ///
-    /// Used for room message broadcasting.
-    #[must_use]
-    pub fn room_messages_channel(&self, room_id: &str) -> String {
-        self.prefixed_key(&format!("room:{room_id}:messages"))
-    }
 }
 
 #[cfg(test)]
@@ -356,8 +266,6 @@ mod tests {
         let builder = KeyBuilder::new("prod");
 
         assert_eq!(builder.cluster_node("node-1"), "prod:cluster:nodes:node-1");
-
-        assert_eq!(builder.stream_info("room_123"), "prod:stream:info:room_123");
     }
 
     #[test]

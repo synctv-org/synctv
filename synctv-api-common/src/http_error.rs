@@ -38,14 +38,6 @@ impl AppError {
         Self::new(StatusCode::FORBIDDEN, message)
     }
 
-    pub fn too_many_requests(message: impl Into<String>) -> Self {
-        Self::new(StatusCode::TOO_MANY_REQUESTS, message)
-    }
-
-    pub fn payload_too_large(message: impl Into<String>) -> Self {
-        Self::new(StatusCode::PAYLOAD_TOO_LARGE, message)
-    }
-
     pub fn too_many_requests_with_retry(message: impl Into<String>, retry_after: u64) -> Self {
         let api_error = crate::impls::ApiError::RateLimitedWithRetry {
             message: message.into(),
@@ -55,12 +47,6 @@ impl AppError {
             api_error: crate::api_error_model::sanitized_api_error(&api_error),
             extra_headers: Vec::new(),
         }
-    }
-
-    #[must_use]
-    pub fn with_header(mut self, name: HeaderName, value: HeaderValue) -> Self {
-        self.extra_headers.push((name, value));
-        self
     }
 
     #[must_use]
@@ -85,35 +71,9 @@ impl AppError {
         Self::new(StatusCode::INTERNAL_SERVER_ERROR, message)
     }
 
-    // Common user-facing error messages for consistency
-    #[must_use]
-    pub fn invalid_credentials() -> Self {
-        Self::unauthorized("Invalid username or password")
-    }
-
-    #[must_use]
-    pub fn session_expired() -> Self {
-        Self::unauthorized("Your session has expired. Please log in again.")
-    }
-
-    #[must_use]
-    pub fn token_invalid() -> Self {
-        Self::unauthorized(synctv_common::messages::INVALID_OR_EXPIRED_TOKEN)
-    }
-
     #[must_use]
     pub fn permission_denied() -> Self {
         Self::forbidden("You do not have permission to perform this action")
-    }
-
-    #[must_use]
-    pub fn resource_not_found(resource: &str) -> Self {
-        Self::not_found(format!("{resource} not found"))
-    }
-
-    #[must_use]
-    pub fn validation_failed(field: &str, reason: &str) -> Self {
-        Self::bad_request(format!("Invalid {field}: {reason}"))
     }
 
     #[must_use]
@@ -130,11 +90,6 @@ impl AppError {
             StatusCode::SERVICE_UNAVAILABLE,
             "Service temporarily unavailable. Please try again later.",
         )
-    }
-
-    #[must_use]
-    pub fn missing_authorization_header() -> Self {
-        Self::unauthorized(synctv_common::messages::MISSING_AUTHORIZATION_HEADER)
     }
 
     #[must_use]
@@ -270,7 +225,7 @@ impl From<crate::impls::ApiError> for AppError {
         };
         if let crate::impls::ApiError::RangeNotSatisfiable { total_size } = err {
             if let Ok(value) = HeaderValue::from_str(&format!("bytes */{total_size}")) {
-                app_err = app_err.with_header(header::CONTENT_RANGE, value);
+                app_err.extra_headers.push((header::CONTENT_RANGE, value));
             }
         }
         app_err
@@ -467,16 +422,6 @@ mod tests {
         let err = AppError::internal_server_error("boom");
         assert_eq!(err.status(), StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(err.message(), "Internal error");
-    }
-
-    #[test]
-    fn test_missing_authorization_header_helper() {
-        let err = AppError::missing_authorization_header();
-        assert_eq!(err.status(), StatusCode::UNAUTHORIZED);
-        assert_eq!(
-            err.message(),
-            synctv_common::messages::MISSING_AUTHORIZATION_HEADER
-        );
     }
 
     #[test]

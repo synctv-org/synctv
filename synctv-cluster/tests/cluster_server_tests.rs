@@ -15,7 +15,7 @@ fn make_server() -> (Arc<NodeRegistry>, ClusterServer) {
         NodeRegistry::new_local_only("test-node".to_string(), 30, "cluster-server-test:")
             .expect("local registry should initialize"),
     );
-    let server = ClusterServer::new(registry.clone());
+    let server = ClusterServer::from_runtime(registry.clone());
     (registry, server)
 }
 

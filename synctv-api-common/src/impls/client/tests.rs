@@ -8,9 +8,9 @@ use std::sync::{
     Arc,
 };
 use synctv_core::models::{
-    MediaId, MemberStatus, Playlist, PlaylistBrowseAccessMode, PlaylistId, RoomGuestPermissionBits,
-    RoomId, RoomMemberPermissionBits, RoomPermission, RoomPermissionSet, RoomRole, RoomStatus,
-    UserId, UserRole, UserStatus,
+    MediaId, Playlist, PlaylistBrowseAccessMode, PlaylistId, RoomGuestPermissionBits, RoomId,
+    RoomMemberPermissionBits, RoomPermission, RoomPermissionSet, RoomRole, RoomStatus, UserId,
+    UserRole, UserStatus,
 };
 use synctv_core::provider::{ProviderStore, ProviderStoreResolver, StoreError, StoreLockGuard};
 
@@ -54,7 +54,7 @@ impl synctv_core::provider::MediaProvider for ProviderEnrichmentProbe {
         source_config: synctv_core::provider::SourceConfig<'_>,
     ) -> Result<Option<synctv_core::provider::SourceCover>, synctv_core::provider::ProviderError>
     {
-        if source_config.is_media() {
+        if matches!(source_config, synctv_core::provider::SourceConfig::Media(_)) {
             self.media_calls.fetch_add(1, Ordering::SeqCst);
         } else {
             self.playlist_calls.fetch_add(1, Ordering::SeqCst);
@@ -121,30 +121,6 @@ fn test_public_id_codec() -> synctv_adapter::PublicIdCodec {
 }
 
 type TestResult<T = ()> = anyhow::Result<T>;
-
-fn direct_url_playback_info(url: &str, name: &str) -> synctv_core::models::PlaybackInfo {
-    synctv_core::models::PlaybackInfo {
-        thumbnail: None,
-        medias: vec![synctv_core::models::PlaybackMedia {
-            name: name.to_string(),
-            format: String::new(),
-            expire_at: None,
-            metadata: None,
-            p2p_swarm_id: None,
-            provider: synctv_core::models::PlaybackMediaProvider::DirectUrl(
-                synctv_core::models::PlaybackDirectUrlMedia::Direct {
-                    url: url.to_string(),
-                    headers: std::collections::HashMap::new(),
-                },
-            ),
-        }],
-        default_media_index: None,
-        subtitles: Vec::new(),
-        default_subtitle_index: None,
-        danmakus: Vec::new(),
-        default_danmaku_index: None,
-    }
-}
 
 fn test_error(message: impl Into<String>) -> anyhow::Error {
     anyhow::anyhow!(message.into())
@@ -595,7 +571,7 @@ fn test_room_list_backend_outage_maps_to_service_unavailable() {
 fn test_livestream_backend_error_service_unavailable_stays_service_unavailable() {
     let stream_error =
         synctv_livestream::StreamError::RegistryError("redis temporarily unavailable".to_string());
-    let mapped = super::ClientApiImpl::map_livestream_backend_error(&stream_error);
+    let mapped = crate::impls::map_livestream_backend_error(&stream_error);
 
     assert!(
         matches!(mapped, ApiError::ServiceUnavailable(ref msg) if msg == "Live streaming service is temporarily unavailable. Please try again later."),
@@ -610,7 +586,7 @@ fn test_livestream_backend_error_finds_nested_stream_error() {
     ))
     .context("wrapped by anyhow");
 
-    let mapped = super::ClientApiImpl::map_livestream_backend_error(err.as_ref());
+    let mapped = crate::impls::map_livestream_backend_error(err.as_ref());
 
     assert!(
         matches!(mapped, ApiError::RateLimited(ref msg) if msg == "Live streaming capacity limit reached. Please try again later."),
@@ -1439,16 +1415,21 @@ fn test_seafile_source_metadata_uses_native_path() -> TestResult {
 #[test]
 fn test_media_to_proto_direct_media_omits_default_instance_binding() -> TestResult {
     let public_id_codec = test_public_id_codec();
-    let media = synctv_core::models::Media::from_direct_single_mode(
-        Some(PlaylistId::expect_positive(305)),
-        RoomId::expect_positive(301),
-        Some(UserId::expect_positive(304)),
-        "Direct Media".to_string(),
-        "direct",
-        direct_url_playback_info("https://example.com/video.mp4", "1080p"),
-        1.0,
-    )
-    .map_err(|error| test_error(error.to_string()))?;
+    let media = synctv_core::models::Media::from_provider_with_params(
+        synctv_core::models::FromProviderParams {
+            playlist_id: Some(PlaylistId::expect_positive(305)),
+            room_id: RoomId::expect_positive(301),
+            creator_id: Some(UserId::expect_positive(304)),
+            name: "Direct Media".to_string(),
+            description: String::new(),
+            source_config: synctv_core_testing::direct_url_media_source_config(
+                "https://example.com/video.mp4",
+            ),
+            source_provider: synctv_core::models::SourceProvider::DirectUrl,
+            provider_instance_name: None,
+            position: 1.0,
+        },
+    );
     let proto = api_ok(try_media_to_proto_for_viewer_without_cover(
         &media,
         true,
@@ -1472,14 +1453,12 @@ fn make_test_member(role: RoomRole) -> synctv_core::models::RoomMemberWithUser {
         remark_name: "Alice Remark".to_string(),
         display_tag: "VIP".to_string(),
         role,
-        status: MemberStatus::Active,
         added_permissions: 0,
         removed_permissions: 0,
         admin_added_permissions: 0,
         admin_removed_permissions: 0,
         joined_at: synctv_core::SystemClock.now(),
         is_online: true,
-        is_active: true,
     }
 }
 

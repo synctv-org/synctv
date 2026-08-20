@@ -23,12 +23,6 @@ pub static PROVIDERS_DESCRIPTOR_POOL: std::sync::LazyLock<prost_reflect::Descrip
             .expect("synctv-proto provider descriptor pool must decode")
     });
 
-pub fn validate<M: prost_reflect::ReflectMessage>(
-    message: &M,
-) -> Result<(), prost_protovalidate::Error> {
-    prost_protovalidate::validate(message)
-}
-
 // Providers
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[allow(clippy::pedantic)]

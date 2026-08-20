@@ -87,7 +87,7 @@ fn playback_provider_options_preflight_for_server(
         None => None,
     };
     let cors_config = synctv_proxy::CorsConfig::new(server.cors_allowed_origins.clone());
-    synctv_proxy::proxy_options_preflight_with_cors(origin, &cors_config)
+    synctv_proxy::handle_cors_preflight(origin, &cors_config)
 }
 
 pub(crate) fn app_error_from_control(err: &synctv_common::ExecutionControlError) -> AppError {

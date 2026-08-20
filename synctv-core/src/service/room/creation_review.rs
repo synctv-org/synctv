@@ -1,7 +1,6 @@
 use crate::{
     models::{
-        AuditAction, AuditDetails, AuditTargetType, PageParams, ReviewStatus, Room, RoomId,
-        RoomMember, RoomRole, RoomStatus, UserId,
+        AuditAction, AuditDetails, AuditTargetType, Room, RoomId, RoomMember, RoomRole, UserId,
     },
     repository::ReviewRepository,
     Error, Result,
@@ -229,83 +228,5 @@ impl RoomService {
         tracing::info!(room_id = %room_id, ?admin_id, "Room rejected");
 
         Ok(updated)
-    }
-
-    /// List pending room_creation creation requests (admin only).
-    ///
-    /// Returns room-shaped DTOs synthesized from pending request records.
-    pub async fn list_pending_rooms(
-        &self,
-        admin_id: UserId,
-        pagination: PageParams,
-    ) -> Result<(Vec<Room>, i64)> {
-        pagination.validate()?;
-
-        // Verify admin permission
-        let admin = self.user_service.get_user(&admin_id).await?;
-
-        if !admin.role.is_admin_or_above() {
-            return Err(Error::Authorization(
-                "Only admins can list pending rooms".to_string(),
-            ));
-        }
-
-        let total = sqlx::query_scalar!(
-            r#"
-            SELECT COUNT(*) AS "count!"
-            FROM room_creation_requests
-            WHERE reviewed_at IS NULL AND status = $1
-            "#,
-            i16::from(ReviewStatus::Pending),
-        )
-        .fetch_one(&self.pool)
-        .await?;
-
-        let rows = sqlx::query!(
-            r#"
-            SELECT id AS "id: RoomId",
-                   requested_by AS "requested_by: UserId",
-                   name,
-                   description,
-                   is_public,
-                   requested_at
-            FROM room_creation_requests
-            WHERE reviewed_at IS NULL AND status = $1
-            ORDER BY requested_at DESC, id DESC
-            LIMIT $2 OFFSET $3
-            "#,
-            i16::from(ReviewStatus::Pending),
-            pagination.limit_i64()?,
-            pagination.offset_i64()?,
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        let rooms = rows
-            .into_iter()
-            .map(|row| {
-                let requested_at = row.requested_at;
-                Room {
-                    id: row.id,
-                    name: row.name,
-                    description: row.description,
-                    cover_file_reference_id: None,
-                    category: None,
-                    labels: Vec::new(),
-                    created_by: row.requested_by,
-                    status: RoomStatus::Active,
-                    is_banned: false,
-                    is_public: row.is_public,
-                    closed_at: None,
-                    created_at: requested_at,
-                    updated_at: requested_at,
-                    deleted_at: None,
-                    version: 0,
-                    last_activity_at: requested_at,
-                }
-            })
-            .collect();
-
-        Ok((rooms, total))
     }
 }

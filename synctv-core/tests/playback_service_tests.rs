@@ -149,7 +149,7 @@ async fn test_seek_negative_rejected() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Seek Neg Room".to_string(),
             String::new(),
@@ -189,7 +189,7 @@ async fn test_seek_rejects_live_direct_url_source() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Seek Live Direct URL Room".to_string(),
             String::new(),
@@ -266,7 +266,7 @@ async fn test_speed_zero_rejected() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Speed Zero Room".to_string(),
             String::new(),
@@ -305,7 +305,7 @@ async fn test_speed_above_max_rejected() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Speed Max Room".to_string(),
             String::new(),
@@ -345,7 +345,7 @@ async fn test_switch_media_resets_position() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Switch Media Room".to_string(),
             String::new(),
@@ -423,7 +423,7 @@ async fn test_switch_media_rejects_target() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Switch Media Relative Path Room".to_string(),
             String::new(),
@@ -484,7 +484,7 @@ async fn test_switch_media_validates_static_playlist_context() {
         .create(&make_user("switch_static_context_owner"))
         .await
         .checked("test operation should succeed");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Switch Static Context Room".to_string(),
             String::new(),
@@ -554,7 +554,7 @@ async fn test_switch_media_rejects_inactive_creator() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Switch Inactive Creator Room".to_string(),
             String::new(),
@@ -640,7 +640,7 @@ async fn test_switch_media_serializes_with_concurrent_creator_ban() {
         .create(&make_user("switch_concurrent_ban_creator"))
         .await
         .checked("media creator should be created");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Switch Concurrent Creator Ban".to_string(),
             String::new(),
@@ -759,7 +759,7 @@ async fn test_switch_media_serializes_with_concurrent_dynamic_ancestor_ban() {
         .create(&make_user("switch_ancestor_ban_media_creator"))
         .await
         .checked("media creator should be created");
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Switch Concurrent Dynamic Ancestor Ban".to_string(),
             String::new(),
@@ -988,7 +988,7 @@ async fn test_switch_with_empty_target_clears_playback_state() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Switch Clear Room".to_string(),
             String::new(),
@@ -1058,7 +1058,7 @@ async fn test_playback_optimistic_lock_concurrent() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room("OLC Room".to_string(), String::new(), owner.id, None, None)
         .await
         .checked("test operation should succeed");
@@ -1127,7 +1127,7 @@ async fn test_rapid_sequential_seek_operations() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Rapid Seek Room".to_string(),
             String::new(),
@@ -1212,7 +1212,7 @@ async fn test_play_next_concurrent_playlist_modification() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Play Next Room".to_string(),
             String::new(),
@@ -1301,7 +1301,7 @@ async fn test_play_next_at_end_of_playlist() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Playlist End Room".to_string(),
             String::new(),
@@ -1389,7 +1389,7 @@ async fn test_play_next_with_loop_enabled() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room("Loop Room".to_string(), String::new(), owner.id, None, None)
         .await
         .checked("test operation should succeed");
@@ -1467,7 +1467,7 @@ async fn test_empty_playlist_handling() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Empty Playlist Room".to_string(),
             String::new(),
@@ -1521,7 +1521,7 @@ async fn test_concurrent_speed_changes() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Speed Concurrent Room".to_string(),
             String::new(),
@@ -1591,7 +1591,7 @@ async fn test_state_consistency_after_mixed_operations() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Mixed Ops Room".to_string(),
             String::new(),
@@ -1713,7 +1713,7 @@ async fn test_seek_success_returns_applied_true() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Seek Response Room".to_string(),
             String::new(),
@@ -1761,7 +1761,7 @@ async fn test_seek_retry_exhaustion_returns_applied_false() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Seek Retry Room".to_string(),
             String::new(),
@@ -1846,7 +1846,7 @@ async fn test_seek_response_always_contains_valid_state() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Seek State Room".to_string(),
             String::new(),
@@ -1895,7 +1895,7 @@ async fn test_seek_degraded_response_has_informative_message() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Seek Message Room".to_string(),
             String::new(),

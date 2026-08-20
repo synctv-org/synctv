@@ -6,8 +6,8 @@
 use chrono::Utc;
 use synctv_core::{
     models::{
-        MemberStatus, Playlist, PlaylistId, Room, RoomId, RoomMember, RoomStatus, User, UserId,
-        UserRole, UserStatus,
+        Playlist, PlaylistId, Room, RoomId, RoomMember, RoomStatus, User, UserId, UserRole,
+        UserStatus,
     },
     repository::{PlaylistRepository, RoomMemberRepository, RoomRepository, UserRepository},
 };
@@ -321,7 +321,6 @@ async fn test_cascade_delete_room_deletes_members_and_playlists() {
         room_id: room.id,
         user_id: member_user.id,
         role: synctv_core::models::RoomRole::Member,
-        status: MemberStatus::Active,
         added_permissions: 0,
         removed_permissions: 0,
         admin_added_permissions: 0,

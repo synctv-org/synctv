@@ -1411,54 +1411,6 @@ impl MediaRepository {
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
-    /// Get room-root media items with limit and offset (no count query).
-    pub async fn get_room_root_limit_offset(
-        &self,
-        room_id: &RoomId,
-        limit: i64,
-        offset: i64,
-    ) -> Result<Vec<Media>> {
-        let rows = sqlx::query_as!(
-            MediaRow,
-            r#"
-            SELECT id as "id: MediaId",
-                   playlist_id as "playlist_id: PlaylistId",
-                   room_id as "room_id: RoomId",
-                   creator_id as "creator_id: UserId",
-                   name,
-                   description,
-                   position,
-                   source_provider as "source_provider: ProviderTypeName",
-                   source_config as "source_config: crate::models::MediaSourceConfig",
-                   NULLIF(provider_instance_name, '') AS "provider_instance_name?",
-                   cover_file_reference_id,
-    thumbnail_file_reference_id,
-                   added_at, updated_at, version
-            FROM media
-            WHERE media.room_id = $1
-               AND media.deleted_at IS NULL
-               AND EXISTS (
-                   SELECT 1 FROM rooms r
-                   WHERE r.id = media.room_id AND r.deleted_at IS NULL
-               )
-               AND (media.creator_id IS NULL OR EXISTS (
-                   SELECT 1 FROM users u
-                   WHERE u.id = media.creator_id AND u.deleted_at IS NULL
-               ))
-               AND media.playlist_id IS NULL
-             ORDER BY position ASC
-             LIMIT $2 OFFSET $3
-            "#,
-            room_id as &RoomId,
-            limit,
-            offset,
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        Ok(rows.into_iter().map(Into::into).collect())
-    }
-
     /// Delete media from playlist
     pub async fn delete(&self, media_id: &MediaId) -> Result<bool> {
         let result = sqlx::query!(
@@ -2352,44 +2304,6 @@ impl MediaRepository {
         Ok(count)
     }
 
-    /// Count only media whose creator is still active (or media without a creator).
-    pub async fn count_by_playlist_accessible(&self, playlist_id: &PlaylistId) -> Result<i64> {
-        let count = sqlx::query_scalar!(
-            r#"
-            SELECT COUNT(*) AS "count!"
-            FROM media m
-            LEFT JOIN users u
-              ON m.creator_id = u.id
-             AND u.deleted_at IS NULL
-            WHERE m.playlist_id = $1
-              AND m.deleted_at IS NULL
-              AND (m.creator_id IS NULL OR (
-                  u.id IS NOT NULL AND NOT EXISTS (
-                      SELECT 1 FROM user_bans ub
-                      WHERE ub.user_id = u.id
-                        AND ub.revoked_at IS NULL
-                        AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
-                  )
-                  AND EXISTS (
-                      SELECT 1 FROM room_members rm
-                      WHERE rm.room_id = m.room_id AND rm.user_id = m.creator_id
-                  )
-                  AND NOT EXISTS (
-                      SELECT 1 FROM room_member_kick_cooldowns cooldown
-                      WHERE cooldown.room_id = m.room_id
-                        AND cooldown.user_id = m.creator_id
-                        AND cooldown.ends_at > CURRENT_TIMESTAMP
-                  )
-              ))
-            "#,
-            playlist_id.as_i64(),
-        )
-        .fetch_one(&self.pool)
-        .await?;
-
-        Ok(count)
-    }
-
     /// Count media items directly under the room root.
     pub async fn count_room_root(&self, room_id: &RoomId) -> Result<i64> {
         let count = sqlx::query_scalar!(
@@ -2437,57 +2351,6 @@ impl MediaRepository {
                         SELECT 1 FROM users u WHERE u.id = p.creator_id AND u.deleted_at IS NULL
                     ))
               )
-            GROUP BY m.playlist_id
-            "#,
-            &ids,
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        let mut result = std::collections::HashMap::new();
-        for row in rows {
-            result.insert(row.playlist_id, row.cnt);
-        }
-        Ok(result)
-    }
-
-    /// Batch count only media whose creator is still active (or media without a creator).
-    pub async fn count_by_playlists_batch_accessible(
-        &self,
-        playlist_ids: &[PlaylistId],
-    ) -> Result<std::collections::HashMap<PlaylistId, i64>> {
-        if playlist_ids.is_empty() {
-            return Ok(std::collections::HashMap::new());
-        }
-        let ids: Vec<i64> = playlist_ids.iter().map(PlaylistId::as_i64).collect();
-
-        let rows = sqlx::query!(
-            r#"
-            SELECT m.playlist_id AS "playlist_id!: PlaylistId", COUNT(*) AS "cnt!"
-            FROM media m
-            LEFT JOIN users u
-              ON m.creator_id = u.id
-             AND u.deleted_at IS NULL
-            WHERE m.playlist_id = ANY($1)
-              AND m.deleted_at IS NULL
-              AND (m.creator_id IS NULL OR (
-                  u.id IS NOT NULL AND NOT EXISTS (
-                      SELECT 1 FROM user_bans ub
-                      WHERE ub.user_id = u.id
-                        AND ub.revoked_at IS NULL
-                        AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
-                  )
-                  AND EXISTS (
-                      SELECT 1 FROM room_members rm
-                      WHERE rm.room_id = m.room_id AND rm.user_id = m.creator_id
-                  )
-                  AND NOT EXISTS (
-                      SELECT 1 FROM room_member_kick_cooldowns cooldown
-                      WHERE cooldown.room_id = m.room_id
-                        AND cooldown.user_id = m.creator_id
-                        AND cooldown.ends_at > CURRENT_TIMESTAMP
-                  )
-              ))
             GROUP BY m.playlist_id
             "#,
             &ids,

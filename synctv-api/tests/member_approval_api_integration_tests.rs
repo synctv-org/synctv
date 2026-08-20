@@ -254,7 +254,7 @@ async fn test_client_member_approval_api_contracts() {
         require_approval: RequireApproval(true),
         ..Default::default()
     };
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Client Approval API Room".to_string(),
             String::new(),
@@ -389,7 +389,7 @@ async fn test_admin_member_approval_api_contracts() {
         require_approval: RequireApproval(true),
         ..Default::default()
     };
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Admin Approval API Room".to_string(),
             String::new(),
@@ -503,7 +503,7 @@ async fn test_client_room_join_review_uses_request_id_not_user_id() {
         require_approval: RequireApproval(true),
         ..Default::default()
     };
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Stale Request-ID Review Room".to_string(),
             String::new(),
@@ -587,7 +587,7 @@ async fn test_admin_room_join_review_uses_request_id_not_user_id() {
         require_approval: RequireApproval(true),
         ..Default::default()
     };
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Admin Stale Request-ID Review Room".to_string(),
             String::new(),
@@ -667,7 +667,7 @@ async fn test_room_join_review_approval_rejects_globally_banned_target() {
         require_approval: RequireApproval(true),
         ..Default::default()
     };
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Banned Target Review Room".to_string(),
             String::new(),
@@ -739,7 +739,7 @@ async fn test_add_member_resolves_existing_room_join_review() {
         require_approval: RequireApproval(true),
         ..Default::default()
     };
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Add Resolves Review Room".to_string(),
             String::new(),

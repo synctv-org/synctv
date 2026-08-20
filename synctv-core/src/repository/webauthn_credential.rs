@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use webauthn_rs::prelude::Passkey;
 
-use crate::repository::required_count;
 use crate::{models::UserId, Error, Result};
 
 #[derive(Debug, Clone)]
@@ -178,11 +177,6 @@ impl WebAuthnCredentialRepository {
         Ok(())
     }
 
-    pub async fn delete_for_user(&self, user_id: &UserId, credential_id: &[u8]) -> Result<bool> {
-        self.delete_for_user_with_executor(user_id, credential_id, &self.pool)
-            .await
-    }
-
     pub async fn delete_for_user_with_executor<'e, E>(
         &self,
         user_id: &UserId,
@@ -200,23 +194,6 @@ impl WebAuthnCredentialRepository {
         .execute(executor)
         .await?;
         Ok(result.rows_affected() > 0)
-    }
-
-    pub async fn count_by_user_with_executor<'e, E>(
-        &self,
-        user_id: &UserId,
-        executor: E,
-    ) -> Result<i64>
-    where
-        E: sqlx::PgExecutor<'e>,
-    {
-        let count = sqlx::query_scalar!(
-            "SELECT COUNT(*) FROM auth_webauthn_credentials WHERE user_id = $1",
-            user_id as &UserId,
-        )
-        .fetch_one(executor)
-        .await?;
-        required_count(count, "WebAuthn credential")
     }
 
     pub async fn exists_for_user_with_executor<'e, E>(

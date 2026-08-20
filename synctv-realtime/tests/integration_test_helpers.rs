@@ -49,33 +49,9 @@ impl TestRedis {
         }
     }
 
-    /// Start a **dedicated** Redis container that is NOT shared with other tests.
-    ///
-    /// Use this for tests that terminate or destroy their Redis instance (e.g.
-    /// fail-closed tests).  The shared container must never be terminated because
-    /// other concurrent test processes depend on it.
-    pub async fn start_dedicated() -> Self {
-        let (redis_container, redis_url) =
-            synctv_core_testing::redis::start_dedicated_redis_url_with_label("cluster-dedicated")
-                .await;
-        Self::wait_until_ready(&redis_url).await;
-
-        Self {
-            redis_url,
-            key_prefix: test_redis_key_prefix("cluster-dedicated"),
-            redis_container: Some(redis_container),
-        }
-    }
-
     pub fn cleanup(mut self) {
         if let Some(redis) = self.redis_container.take() {
             redis.cleanup();
-        }
-    }
-
-    pub fn terminate_container(&mut self) {
-        if let Some(redis) = self.redis_container.take() {
-            redis.terminate();
         }
     }
 
@@ -129,44 +105,6 @@ pub async fn create_node_with_prefix(
         event_handler: None,
         parent_cancel_token: None,
     };
-    RealtimeManager::new(config)
-        .await
-        .expect("Failed to create RealtimeManager")
-}
-
-/// Helper: create a `RealtimeManager` with custom configuration
-pub async fn create_node_with_config(
-    redis_url: &str,
-    node_id: &str,
-    mut config_modifier: impl FnMut(&mut RealtimeConfig),
-) -> RealtimeManager {
-    let client = redis::Client::open(redis_url).expect("Failed to open Redis client");
-    let conn = redis_connection_manager(&client).await;
-    let key_prefix = test_redis_key_prefix("cluster-node-config");
-    let shared_runtime: Arc<dyn RedisConnectionRuntime> =
-        Arc::new(DirectRedisConnectionRuntime::new(conn.clone()));
-    let realtime_profile =
-        SharedStateProfile::for_cluster_runtime(Some(shared_runtime), &key_prefix, true);
-    let mut config = RealtimeConfig {
-        distributed_transport_factory: Some(Arc::new(
-            synctv_realtime::sync::RedisRealtimeMessageTransportFactory::new(
-                synctv_core::coordination_runtime_from_client(client),
-            ),
-        )),
-        message_runtime: build_room_message_runtime(&realtime_profile)
-            .expect("shared message runtime should initialize"),
-        distributed_enabled: true,
-        node_id: node_id.to_string(),
-        dedup_window: Duration::from_secs(10),
-        critical_channel_capacity: 1000,
-        publish_channel_capacity: 10_000,
-        key_prefix,
-        catchup_window_secs: 300,
-        stream_max_length: 10_000,
-        event_handler: None,
-        parent_cancel_token: None,
-    };
-    config_modifier(&mut config);
     RealtimeManager::new(config)
         .await
         .expect("Failed to create RealtimeManager")

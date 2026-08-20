@@ -156,6 +156,7 @@ fn resolve_management_endpoint_from_config(
         data_dir: data_dir.map(str::to_string),
         load_dotenv,
         validate: false,
+        unknown_config_policy: crate::config_loader::UnknownConfigPolicy::Warn,
         verbose,
         extensions: public_id_config_extensions(),
     })?;
@@ -229,6 +230,7 @@ fn resolve_management_auth_token(options: &AdminConnectionOptions) -> Result<Opt
         data_dir: options.data_dir.clone(),
         load_dotenv: options.load_dotenv,
         validate: false,
+        unknown_config_policy: crate::config_loader::UnknownConfigPolicy::Warn,
         verbose: options.verbose,
         extensions: public_id_config_extensions(),
     })?;

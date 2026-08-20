@@ -21,7 +21,7 @@ async fn test_initial_state_is_stopped() {
         .await
         .checked("operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Initial State Room".to_string(),
             String::new(),
@@ -56,7 +56,7 @@ async fn test_stopped_to_playing_transition() {
         .await
         .checked("operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Play Transition Room".to_string(),
             String::new(),
@@ -88,7 +88,7 @@ async fn test_playing_to_paused_transition() {
         .await
         .checked("operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Pause Transition Room".to_string(),
             String::new(),
@@ -125,7 +125,7 @@ async fn test_paused_to_playing_transition() {
         .await
         .checked("operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Resume Transition Room".to_string(),
             String::new(),
@@ -166,7 +166,7 @@ async fn test_state_transition_matrix_all_valid() {
         .await
         .checked("operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Matrix Room".to_string(),
             String::new(),
@@ -228,7 +228,7 @@ async fn test_rapid_state_transitions() {
         .await
         .checked("operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Toggle Room".to_string(),
             String::new(),

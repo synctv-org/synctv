@@ -220,7 +220,7 @@ impl AdminApiImpl {
     ) -> Result<AuthorizedAdminActor, ApiError> {
         let actor = self.require_admin_actor(admin_user_id).await?;
         if *admin_user_id == LOCAL_MANAGEMENT_ACTOR_USER_ID {
-            AuthorizedAdminActor::new_management(*admin_user_id, actor.username, actor.role)
+            AuthorizedAdminActor::new(*admin_user_id, actor.username, actor.role)
                 .map_err(ApiError::from)
         } else {
             AuthorizedAdminActor::new(*admin_user_id, actor.username, actor.role)

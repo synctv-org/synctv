@@ -23,7 +23,7 @@ async fn test_position_preserved_on_pause() {
         .await
         .checked("operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Position Pause Room".to_string(),
             String::new(),
@@ -69,7 +69,7 @@ async fn test_position_reset_on_media_switch() {
         .await
         .checked("operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Position Switch Room".to_string(),
             String::new(),
@@ -135,7 +135,7 @@ async fn test_reset_snapshots_progress_and_switch_restarts_media() {
         .await
         .checked("operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Position Reset Resume Room".to_string(),
             String::new(),

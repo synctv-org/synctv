@@ -47,7 +47,6 @@ fn make_member(room_id: RoomId, user_id: UserId, role: RoomRole) -> RoomMember {
         room_id,
         user_id,
         role,
-        status: synctv_core::models::MemberStatus::Active,
         added_permissions: 0,
         removed_permissions: 0,
         admin_added_permissions: 0,

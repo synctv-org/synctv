@@ -161,20 +161,6 @@ pub struct QnapHardwareTranscode {
     pub hd_station_support: i64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct QnapTranscodeEstimate {
-    #[serde(default, deserialize_with = "optional_i64_from_any")]
-    pub est: Option<i64>,
-    #[serde(default, deserialize_with = "optional_i64_from_any")]
-    pub decode: Option<i64>,
-    #[serde(default, deserialize_with = "optional_i64_from_any")]
-    pub encode: Option<i64>,
-    #[serde(default, rename = "availTrans")]
-    pub available_mask: u32,
-    #[serde(default, rename = "largeOutput")]
-    pub large_output_mask: u32,
-}
-
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum NumberValue {

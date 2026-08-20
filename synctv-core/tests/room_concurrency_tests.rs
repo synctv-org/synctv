@@ -192,7 +192,7 @@ async fn test_concurrent_join_respects_max_members_limit() {
             barrier_clone.wait().await;
 
             // Use add_member_with_options with max_members check enabled
-            let options = AddMemberOptions::new().with_max_members(0); // 0 = read from RoomSettings
+            let options = AddMemberOptions::default().with_max_members(0); // 0 = read from RoomSettings
             member_service_clone
                 .add_member_with_options(room_id_clone, user.id, RoomRole::Member, options)
                 .await
@@ -300,7 +300,7 @@ async fn test_concurrent_join_boundary_condition() {
 
         let handle = tokio::spawn(async move {
             barrier_clone.wait().await;
-            let options = AddMemberOptions::new().with_max_members(0);
+            let options = AddMemberOptions::default().with_max_members(0);
             member_service_clone
                 .add_member_with_options(room_id_clone, user.id, RoomRole::Member, options)
                 .await
@@ -664,7 +664,7 @@ async fn test_concurrent_join_and_leave_operations() {
 
         let handle = tokio::spawn(async move {
             barrier_clone.wait().await;
-            let options = AddMemberOptions::new().with_max_members(0);
+            let options = AddMemberOptions::default().with_max_members(0);
             member_service_clone
                 .add_member_with_options(room_id_clone, user.id, RoomRole::Member, options)
                 .await
@@ -754,7 +754,7 @@ async fn test_concurrent_joins_respect_room_capacity() {
 
         let handle = tokio::spawn(async move {
             barrier_clone.wait().await;
-            let options = AddMemberOptions::new().with_max_members(0);
+            let options = AddMemberOptions::default().with_max_members(0);
             member_service_clone
                 .add_member_with_options(room_id_clone, user.id, RoomRole::Member, options)
                 .await

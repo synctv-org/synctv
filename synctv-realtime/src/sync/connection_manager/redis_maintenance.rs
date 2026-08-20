@@ -1240,17 +1240,6 @@ impl ConnectionManager {
             .collect())
     }
 
-    /// Get the total number of active connections for a user across all replicas.
-    ///
-    /// In standalone mode this uses local in-memory state. In distributed mode it
-    /// derives the count from the Redis-backed distributed connection index.
-    pub async fn user_connection_count_distributed(
-        &self,
-        user_id: &UserId,
-    ) -> Result<usize, String> {
-        Ok(self.get_user_connections_distributed(user_id).await?.len())
-    }
-
     /// Get all connections in a room across all replicas (from Redis).
     ///
     /// Returns connection IDs from Redis, which includes connections from

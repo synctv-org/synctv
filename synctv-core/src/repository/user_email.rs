@@ -367,43 +367,6 @@ impl UserEmailRepository {
         Ok(row.map(Into::into))
     }
 
-    pub async fn get_by_email_with_executor<'e, E>(
-        &self,
-        email: &str,
-        executor: E,
-    ) -> Result<Option<UserWithEmail>>
-    where
-        E: sqlx::PgExecutor<'e>,
-    {
-        let row = sqlx::query_as!(
-            UserWithEmailRow,
-            r#"
-            SELECT u.id AS "id!: UserId",
-                   u.username AS "username!",
-                   u.signup_method AS "signup_method!: SignupMethod",
-                   u.role AS "role!: UserRole",
-                   u.avatar_file_reference_id,
-                   u.status AS "status!: UserStatus",
-                   u.is_banned AS "is_banned!",
-                   u.banned_at,
-                   u.banned_by AS "banned_by?: UserId",
-                   u.banned_reason,
-                   u.created_at AS "created_at!",
-                   u.updated_at AS "updated_at!",
-                   u.version AS "version!",
-                   u.deleted_at,
-                   aei.email
-            FROM user_account_profiles u
-            JOIN auth_email_identities aei ON aei.user_id = u.id
-            WHERE LOWER(aei.email) = LOWER($1) AND u.deleted_at IS NULL AND aei.deleted_at IS NULL
-            "#,
-            email
-        )
-        .fetch_optional(executor)
-        .await?;
-        Ok(row.map(Into::into))
-    }
-
     pub async fn email_exists(&self, email: &str) -> Result<bool> {
         self.email_exists_with_executor(email, &self.pool).await
     }

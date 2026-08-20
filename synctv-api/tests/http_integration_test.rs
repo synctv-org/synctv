@@ -143,34 +143,9 @@ mod error_responses {
     async fn test_app_error_helpers_return_public_messages() {
         let cases = [
             (
-                AppError::invalid_credentials(),
-                StatusCode::UNAUTHORIZED,
-                vec!["Invalid username or password"],
-            ),
-            (
-                AppError::session_expired(),
-                StatusCode::UNAUTHORIZED,
-                vec!["expired"],
-            ),
-            (
-                AppError::token_invalid(),
-                StatusCode::UNAUTHORIZED,
-                Vec::new(),
-            ),
-            (
                 AppError::permission_denied(),
                 StatusCode::FORBIDDEN,
                 Vec::new(),
-            ),
-            (
-                AppError::resource_not_found("Room"),
-                StatusCode::NOT_FOUND,
-                vec!["Room"],
-            ),
-            (
-                AppError::validation_failed("email", "must be valid"),
-                StatusCode::BAD_REQUEST,
-                vec!["email", "must be valid"],
             ),
             (
                 AppError::bad_request("Invalid email format"),
@@ -311,8 +286,7 @@ mod error_responses {
 
 mod error_classification {
     use axum::http::StatusCode;
-    use synctv_api::map_http_api_error as map_api_error;
-    use synctv_api::ApiError;
+    use synctv_api::{map_api_error, ApiError};
     use synctv_core::Error as CoreError;
 
     #[test]

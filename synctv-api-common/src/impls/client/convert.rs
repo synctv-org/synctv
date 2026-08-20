@@ -2224,10 +2224,6 @@ pub fn user_status_to_proto(status: synctv_core::models::UserStatus) -> i32 {
     i32::from(status)
 }
 
-pub fn member_status_to_proto(status: synctv_core::models::MemberStatus) -> i32 {
-    i32::from(status)
-}
-
 pub const fn resource_availability_to_proto(is_available: bool) -> i32 {
     if is_available {
         synctv_proto::client::ResourceAvailability::Available as i32
@@ -2613,13 +2609,6 @@ pub fn try_room_to_proto_with_availability_presence_and_cover(
         .map(|file| stored_file_reference_to_resource_cover(file, cover_access))
         .transpose()?;
     Ok(proto)
-}
-
-#[must_use]
-pub fn normalize_created_room_settings(
-    settings: Option<&synctv_core::models::RoomSettings>,
-) -> synctv_core::models::RoomSettings {
-    settings.cloned().unwrap_or_default()
 }
 
 pub fn try_media_to_proto_for_viewer_without_cover(

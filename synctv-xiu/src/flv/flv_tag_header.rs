@@ -1,12 +1,8 @@
 use crate::bytesio::bytes_writer::BytesWriter;
 
 use {
-    super::{
-        define,
-        errors::{FlvDemuxerError, FlvMuxerError},
-    },
-    super::{Marshal, Unmarshal},
-    crate::bytesio::bytes_reader::BytesReader,
+    super::{define, errors::FlvDemuxerError, Marshal, Unmarshal},
+    crate::bytesio::{bytes_errors::BytesWriteError, bytes_reader::BytesReader},
     bytes::BytesMut,
 };
 
@@ -64,8 +60,8 @@ impl Unmarshal<&mut BytesReader, Result<Self, FlvDemuxerError>> for AudioTagHead
     }
 }
 
-impl Marshal<Result<BytesMut, FlvMuxerError>> for AudioTagHeader {
-    fn marshal(&self) -> Result<BytesMut, FlvMuxerError> {
+impl Marshal<Result<BytesMut, BytesWriteError>> for AudioTagHeader {
+    fn marshal(&self) -> Result<BytesMut, BytesWriteError> {
         let mut writer = BytesWriter::default();
 
         let byte_1st =
@@ -141,8 +137,8 @@ impl Unmarshal<&mut BytesReader, Result<Self, FlvDemuxerError>> for VideoTagHead
     }
 }
 
-impl Marshal<Result<BytesMut, FlvMuxerError>> for VideoTagHeader {
-    fn marshal(&self) -> Result<BytesMut, FlvMuxerError> {
+impl Marshal<Result<BytesMut, BytesWriteError>> for VideoTagHeader {
+    fn marshal(&self) -> Result<BytesMut, BytesWriteError> {
         let mut writer = BytesWriter::default();
 
         let byte_1st = self.frame_type << 4 | self.codec_id;

@@ -288,15 +288,14 @@ pub use bilibili::{
     BilibiliCaptchaResponse, BilibiliDashManifestMode, BilibiliDashResourceRequest,
     BilibiliFavoriteFolder, BilibiliFollowedPgcPage, BilibiliFollowedPgcSeason,
     BilibiliHistoryItem, BilibiliHistoryPage, BilibiliHlsResourceRequest, BilibiliLiveArea,
-    BilibiliLiveDanmuHost, BilibiliLiveDanmuInfoRequest, BilibiliLiveDanmuInfoResponse,
     BilibiliMatchRequest, BilibiliMatchResponse, BilibiliMatchedResource, BilibiliPageInfo,
     BilibiliParseLivePageRequest, BilibiliParsePgcPageRequest, BilibiliParseVideoPageRequest,
     BilibiliPersistedQrLoginResponse, BilibiliPgcSeasonIndexItem, BilibiliPgcSeasonIndexPage,
     BilibiliPgcTimelineItem, BilibiliProvider, BilibiliQrCodeResponse, BilibiliQrLoginRequest,
     BilibiliQrLoginResponse, BilibiliQrLoginStatus, BilibiliSmsLoginRequest,
     BilibiliSmsLoginResponse, BilibiliSmsLoginTokenCodec, BilibiliSmsRequest, BilibiliSmsResponse,
-    BilibiliUserInfoRequest, BilibiliUserInfoResponse, BilibiliVideoInfo,
-    DASH_MANIFEST_METADATA_KEY, LIVE_DANMAKU_FORMAT, LIVE_DANMAKU_TRACK_NAME,
+    BilibiliUserInfoRequest, BilibiliUserInfoResponse, BilibiliVideoInfo, LIVE_DANMAKU_FORMAT,
+    LIVE_DANMAKU_TRACK_NAME,
 };
 pub use cctv::CctvProvider;
 pub use cloudreve::{

@@ -32,47 +32,6 @@ pub struct UpdateMemberWithOutboxRequest {
 }
 
 impl RoomService {
-    pub async fn set_member_role_with_outbox(
-        &self,
-        room_id: RoomId,
-        creator_id: UserId,
-        target_user_id: UserId,
-        role: RoomRole,
-        outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
-    ) -> Result<crate::models::RoomMember> {
-        validate_role_can_be_assigned(role)?;
-
-        let room = self
-            .room_repo
-            .get_by_id(&room_id)
-            .await?
-            .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
-        validate_creator_member_role_update(&room, &creator_id, &target_user_id)?;
-
-        let member = self
-            .member_repo
-            .get(&room_id, &target_user_id)
-            .await?
-            .ok_or_else(|| Error::NotFound("User is not a member of this room".to_string()))?;
-        self.execute_member_update_with_outbox(MemberUpdateExecutionRequest {
-            room_id,
-            actor_id: creator_id,
-            target_user_id,
-            current: member,
-            role: Some(role),
-            permission_update_required: false,
-            actor_permission_check: None,
-            effective_is_admin: false,
-            added_permissions: 0,
-            removed_permissions: 0,
-            admin_added_permissions: 0,
-            admin_removed_permissions: 0,
-            outbox_event_factory,
-            operation: "set_member_role_with_outbox",
-        })
-        .await
-    }
-
     pub async fn update_member_with_outbox(
         &self,
         request: UpdateMemberWithOutboxRequest,

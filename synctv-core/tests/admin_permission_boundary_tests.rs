@@ -335,7 +335,7 @@ async fn test_room_creator_permissions_vs_user_role() {
     // Regular user creates a room
     let creator = create_user(&user_repo, "room_creator_perm", UserRole::User).await;
 
-    let (room, _) = ok(
+    let room = ok(
         room_service
             .create_room(
                 "Perm Test Room".to_string(),
@@ -502,7 +502,7 @@ async fn test_admin_can_manage_room_with_banned_creator() {
     // User creates room
     let creator = create_user(&user_repo, "banned_creator", UserRole::User).await;
 
-    let (room, _) = ok(
+    let room = ok(
         room_service
             .create_room(
                 "Banned Creator Room".to_string(),

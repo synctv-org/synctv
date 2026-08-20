@@ -634,34 +634,10 @@ pub enum FileUploadSessionCreateResult {
 
 impl FileUploadSessionCreateResult {
     #[must_use]
-    pub const fn as_session(&self) -> Option<&FileUploadSession> {
-        match self {
-            Self::Session(session) => Some(session),
-            Self::Plan(_) => None,
-        }
-    }
-
-    #[must_use]
     pub fn into_session(self) -> Option<FileUploadSession> {
         match self {
             Self::Session(session) => Some(session),
             Self::Plan(_) => None,
-        }
-    }
-
-    #[must_use]
-    pub const fn as_plan(&self) -> Option<&FileUploadPlan> {
-        match self {
-            Self::Plan(plan) => Some(plan),
-            Self::Session(_) => None,
-        }
-    }
-
-    #[must_use]
-    pub fn into_plan(self) -> Option<FileUploadPlan> {
-        match self {
-            Self::Plan(plan) => Some(plan),
-            Self::Session(_) => None,
         }
     }
 }
@@ -671,8 +647,12 @@ impl std::ops::Deref for FileUploadSessionCreateResult {
     type Target = FileUploadSession;
 
     fn deref(&self) -> &Self::Target {
-        self.as_session()
-            .expect("upload session create result should contain a session")
+        match self {
+            FileUploadSessionCreateResult::Session(session) => session,
+            FileUploadSessionCreateResult::Plan(_) => {
+                panic!("upload session create result should contain a session")
+            }
+        }
     }
 }
 
@@ -751,17 +731,6 @@ pub struct GetFileObject {
     pub encoded_object_key: String,
     pub read_token: String,
     pub range: Option<FileRangeRequest>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FileObjectData {
-    pub storage_backend: String,
-    pub object_key: String,
-    pub mime_type: String,
-    pub size_bytes: i64,
-    pub content_manifest_sha256: String,
-    pub data: Vec<u8>,
-    pub range: Option<FileByteRange>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

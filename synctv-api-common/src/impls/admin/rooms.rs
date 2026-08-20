@@ -44,14 +44,12 @@ fn room_member_with_user(
         remark_name: member.remark_name.clone(),
         display_tag: member.display_tag.clone(),
         role: member.role,
-        status: member.status,
         added_permissions: member.added_permissions,
         removed_permissions: member.removed_permissions,
         admin_added_permissions: member.admin_added_permissions,
         admin_removed_permissions: member.admin_removed_permissions,
         joined_at: member.joined_at,
         is_online: presence.is_online,
-        is_active: member.status.is_active(),
     }
 }
 
@@ -385,7 +383,7 @@ impl AdminApiImpl {
         let admin_username = admin_actor.username;
         let state = self
             .room_service
-            .admin_set_room_password_as_internal(&room_id, new_password, Some(admin_user_id))
+            .admin_set_room_password(&room_id, new_password, Some(admin_user_id))
             .await
             .map_err(ApiError::from)?;
         self.publish_room_cache_invalidation(&room_id);
@@ -542,7 +540,7 @@ impl AdminApiImpl {
 
         self.log_admin_action(
             admin_user_id,
-            synctv_core::models::AuditAction::MemberStatusUpdated,
+            synctv_core::models::AuditAction::MembershipUpdated,
             synctv_core::models::AuditTargetType::Member,
             Some(target_uid.to_string()),
             AuditDetails {
@@ -604,7 +602,7 @@ impl AdminApiImpl {
 
         self.log_admin_action(
             admin_user_id,
-            synctv_core::models::AuditAction::MemberStatusUpdated,
+            synctv_core::models::AuditAction::MembershipUpdated,
             synctv_core::models::AuditTargetType::Member,
             Some(target_uid.to_string()),
             AuditDetails {
@@ -666,7 +664,7 @@ impl AdminApiImpl {
 
         self.log_admin_action(
             admin_user_id,
-            synctv_core::models::AuditAction::MemberStatusUpdated,
+            synctv_core::models::AuditAction::MembershipUpdated,
             synctv_core::models::AuditTargetType::Member,
             Some(target_uid.to_string()),
             AuditDetails {

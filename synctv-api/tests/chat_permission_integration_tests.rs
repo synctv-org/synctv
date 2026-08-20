@@ -193,7 +193,7 @@ async fn test_chat_write_endpoints_require_signed_in_user_and_chat_permission() 
         .create(&make_user("chat_write_member"))
         .await
         .unwrap();
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Chat Write Permission Room".to_string(),
             String::new(),
@@ -328,7 +328,7 @@ async fn test_chat_read_endpoints_require_view_chat_history_permission() {
         .create(&make_user("chat_read_member"))
         .await
         .unwrap();
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Chat Read Permission Room".to_string(),
             String::new(),
@@ -441,7 +441,7 @@ async fn test_chat_delete_endpoint_allows_sender_and_delete_chat_messages_permis
         .create(&make_user("chat_delete_admin"))
         .await
         .unwrap();
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Chat Delete Permission Room".to_string(),
             String::new(),
@@ -579,7 +579,7 @@ async fn test_chat_admin_delete_endpoint_writes_audit_log() {
         .create(&make_user("chat_audit_admin"))
         .await
         .unwrap();
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Chat Audit Room".to_string(),
             String::new(),

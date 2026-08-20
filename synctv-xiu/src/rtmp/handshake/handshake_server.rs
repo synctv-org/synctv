@@ -1,7 +1,7 @@
 use {
     super::{
         define, define::ServerHandshakeState, digest::DigestProcessor, errors::HandshakeError,
-        handshake_trait::THandshakeServer, utils,
+        utils,
     },
     crate::bytesio::{
         bytes_reader::BytesReader, bytes_writer::AsyncBytesWriter, bytes_writer::BytesWriter,
@@ -147,13 +147,13 @@ impl ComplexHandshakeServer {
     }
 }
 
-impl THandshakeServer for SimpleHandshakeServer {
-    fn read_c0(&mut self) -> Result<(), HandshakeError> {
+impl SimpleHandshakeServer {
+    pub fn read_c0(&mut self) -> Result<(), HandshakeError> {
         self.reader.read_u8()?;
         Ok(())
     }
 
-    fn read_c1(&mut self) -> Result<(), HandshakeError> {
+    pub fn read_c1(&mut self) -> Result<(), HandshakeError> {
         let c1_bytes = self.reader.read_bytes(define::RTMP_HANDSHAKE_SIZE)?;
         self.c1_bytes = c1_bytes.clone();
 
@@ -163,17 +163,17 @@ impl THandshakeServer for SimpleHandshakeServer {
         Ok(())
     }
 
-    fn read_c2(&mut self) -> Result<(), HandshakeError> {
+    pub fn read_c2(&mut self) -> Result<(), HandshakeError> {
         self.reader.read_bytes(define::RTMP_HANDSHAKE_SIZE)?;
         Ok(())
     }
 
-    fn write_s0(&mut self) -> Result<(), HandshakeError> {
+    pub fn write_s0(&mut self) -> Result<(), HandshakeError> {
         self.writer.write_u8(rtmp_version_u8())?;
         Ok(())
     }
 
-    fn write_s1(&mut self) -> Result<(), HandshakeError> {
+    pub fn write_s1(&mut self) -> Result<(), HandshakeError> {
         self.writer.write_u32::<BigEndian>(utils::timestamp_ms())?;
 
         let timestamp = self.c1_timestamp;
@@ -183,20 +183,20 @@ impl THandshakeServer for SimpleHandshakeServer {
         Ok(())
     }
 
-    fn write_s2(&mut self) -> Result<(), HandshakeError> {
+    pub fn write_s2(&mut self) -> Result<(), HandshakeError> {
         let data = self.c1_bytes.clone();
         self.writer.write(&data[..])?;
         Ok(())
     }
 }
 
-impl THandshakeServer for ComplexHandshakeServer {
-    fn read_c0(&mut self) -> Result<(), HandshakeError> {
+impl ComplexHandshakeServer {
+    pub fn read_c0(&mut self) -> Result<(), HandshakeError> {
         self.reader.read_u8()?;
         Ok(())
     }
 
-    fn read_c1(&mut self) -> Result<(), HandshakeError> {
+    pub fn read_c1(&mut self) -> Result<(), HandshakeError> {
         let c1_bytes = self.reader.read_bytes(define::RTMP_HANDSHAKE_SIZE)?;
 
         // C1 starts with the client timestamp used later in S2.
@@ -213,17 +213,17 @@ impl THandshakeServer for ComplexHandshakeServer {
         Ok(())
     }
 
-    fn read_c2(&mut self) -> Result<(), HandshakeError> {
+    pub fn read_c2(&mut self) -> Result<(), HandshakeError> {
         self.reader.read_bytes(define::RTMP_HANDSHAKE_SIZE)?;
         Ok(())
     }
 
-    fn write_s0(&mut self) -> Result<(), HandshakeError> {
+    pub fn write_s0(&mut self) -> Result<(), HandshakeError> {
         self.writer.write_u8(rtmp_version_u8())?;
         Ok(())
     }
 
-    fn write_s1(&mut self) -> Result<(), HandshakeError> {
+    pub fn write_s1(&mut self) -> Result<(), HandshakeError> {
         let mut writer = BytesWriter::new();
 
         writer.write_u32::<BigEndian>(utils::timestamp_ms())?;
@@ -240,7 +240,7 @@ impl THandshakeServer for ComplexHandshakeServer {
         Ok(())
     }
 
-    fn write_s2(&mut self) -> Result<(), HandshakeError> {
+    pub fn write_s2(&mut self) -> Result<(), HandshakeError> {
         let mut writer = BytesWriter::new();
 
         writer.write_u32::<BigEndian>(utils::timestamp_ms())?;
@@ -282,17 +282,6 @@ impl HandshakeServer {
             simple_handshaker: SimpleHandshakeServer::new(io.clone()),
             complex_handshaker: ComplexHandshakeServer::new(io),
             is_complex: true,
-
-            saved_data: BytesMut::new(),
-        }
-    }
-
-    #[cfg(test)]
-    pub fn new_simple_only(io: Arc<Mutex<Box<dyn TNetIO + Send + Sync>>>) -> Self {
-        Self {
-            simple_handshaker: SimpleHandshakeServer::new(io.clone()),
-            complex_handshaker: ComplexHandshakeServer::new(io),
-            is_complex: false,
 
             saved_data: BytesMut::new(),
         }
@@ -609,7 +598,8 @@ mod tests {
     #[tokio::test]
     async fn test_handshake_server_simple_mode_directly() {
         let io = make_io();
-        let mut server = HandshakeServer::new_simple_only(io);
+        let mut server = HandshakeServer::new(io);
+        server.is_complex = false;
         assert!(!server.is_complex);
 
         let c0c1 = build_c0c1();

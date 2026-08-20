@@ -15,30 +15,24 @@ pub use server_state_cluster::ServerStateGrpcService;
 pub use slice_cache::slice_cache_management_runtime_from_router_options;
 
 pub use synctv_core::service::{
-    livestream_snapshot_from_publishers, response_for_server_state_nodes as response_for_nodes,
-    validate_server_state_selection, ServerStateCluster as ClusterStatus,
-    ServerStateClusterNode as ClusterNodeStatus, ServerStateClusterRuntime,
-    ServerStateClusterStatus, ServerStateClusterTarget, ServerStateCpu as CpuStatus,
-    ServerStateCpuStatus, ServerStateDatabase as DatabaseStatus,
-    ServerStateDatabasePool as DatabasePoolStatus, ServerStateDatabaseStatus,
-    ServerStateEmail as EmailStatus, ServerStateEmailStatus, ServerStateError, ServerStateFailure,
-    ServerStateLivestream as LivestreamStatus, ServerStateLivestreamRuntime,
-    ServerStateLivestreamSnapshot, ServerStateLivestreamStatus, ServerStateMemory as MemoryStatus,
-    ServerStateMemoryStatus, ServerStateNode, ServerStateNodeStatus,
-    ServerStateRealtime as RealtimeStatus, ServerStateRealtimeMetrics, ServerStateRealtimeRuntime,
-    ServerStateRedis as RedisStatus, ServerStateRedisStatus, ServerStateRemoteClient,
-    ServerStateResponse, ServerStateResult, ServerStateScope, ServerStateSelection,
-    ServerStateService as ServerStateRuntime, ServerStateServiceDependencies,
-    ServerStateSliceCache as SliceCacheStatus, ServerStateSliceCacheRuntime,
-    ServerStateSliceCacheStatus, ServerStateSummary, ServerStateWebRtc as WebRtcStatus,
-    ServerStateWebRtcStatus, ServerStateWsTicket as WsTicketStatus, ServerStateWsTicketStatus,
-    SliceCacheConfigInfo, SliceCacheEvictExpiredNodeResult, SliceCacheEvictExpiredResponse,
-    SliceCacheManagementClusterRuntime, SliceCacheManagementError,
+    livestream_snapshot_from_publishers, validate_server_state_selection, ServerStateCluster,
+    ServerStateClusterNode, ServerStateClusterRuntime, ServerStateClusterStatus,
+    ServerStateClusterTarget, ServerStateCpu, ServerStateCpuStatus, ServerStateDatabase,
+    ServerStateDatabasePool, ServerStateDatabaseStatus, ServerStateEmail, ServerStateEmailStatus,
+    ServerStateError, ServerStateFailure, ServerStateLivestream, ServerStateLivestreamRuntime,
+    ServerStateLivestreamSnapshot, ServerStateLivestreamStatus, ServerStateMemory,
+    ServerStateMemoryStatus, ServerStateNode, ServerStateNodeStatus, ServerStateRealtime,
+    ServerStateRealtimeMetrics, ServerStateRealtimeRuntime, ServerStateRedis,
+    ServerStateRedisStatus, ServerStateRemoteClient, ServerStateResponse, ServerStateResult,
+    ServerStateScope, ServerStateSelection, ServerStateService, ServerStateServiceDependencies,
+    ServerStateSliceCache, ServerStateSliceCacheRuntime, ServerStateSliceCacheStatus,
+    ServerStateSummary, ServerStateWebRtc, ServerStateWebRtcStatus, ServerStateWsTicket,
+    ServerStateWsTicketStatus, SliceCacheConfigInfo, SliceCacheEvictExpiredNodeResult,
+    SliceCacheEvictExpiredResponse, SliceCacheManagementClusterRuntime, SliceCacheManagementError,
     SliceCacheManagementLocalRuntime, SliceCacheManagementRemoteClient, SliceCacheManagementResult,
-    SliceCacheManagementService as SliceCacheManagementRuntime,
-    SliceCacheManagementServiceDependencies, SliceCacheNodeFailure, SliceCachePurgeNodeResult,
-    SliceCachePurgeResponse, SliceCachePurgeResult, SliceCacheSelection,
-    SliceCacheStats as SliceCacheManagementStats, SliceCacheStatsNode, SliceCacheStatsResponse,
+    SliceCacheManagementService, SliceCacheManagementServiceDependencies, SliceCacheNodeFailure,
+    SliceCachePurgeNodeResult, SliceCachePurgeResponse, SliceCachePurgeResult, SliceCacheSelection,
+    SliceCacheStats, SliceCacheStatsNode, SliceCacheStatsResponse,
 };
 use synctv_realtime::sync::ConnectionRuntime;
 
@@ -68,7 +62,7 @@ impl From<ServerStateError> for AppError {
 #[must_use]
 pub fn server_state_runtime_from_router_options(
     config: &crate::app_state::RouterOptions,
-) -> ServerStateRuntime {
+) -> ServerStateService {
     let cluster_runtime = config.cluster_client.as_ref().map(|client| {
         Arc::new(ApiServerStateClusterRuntime {
             client: client.clone(),
@@ -80,7 +74,7 @@ pub fn server_state_runtime_from_router_options(
         }) as Arc<dyn ServerStateRemoteClient>
     });
 
-    ServerStateRuntime::new(ServerStateServiceDependencies {
+    ServerStateService::new(ServerStateServiceDependencies {
         runtime_params: Arc::new(config.runtime_settings.server_state.clone()),
         user_service: config.user_service.clone(),
         realtime_runtime: Arc::new(ApiServerStateRealtimeRuntime {
@@ -107,17 +101,6 @@ pub fn server_state_runtime_from_router_options(
         }),
         webrtc_status: config.webrtc_status.clone(),
     })
-}
-
-pub async fn collect_server_state(
-    runtime: &ServerStateRuntime,
-    selection: ServerStateSelection,
-) -> ServerStateResult<ServerStateResponse> {
-    runtime.collect_server_state(selection).await
-}
-
-pub async fn collect_local_server_state(runtime: &ServerStateRuntime) -> ServerStateNode {
-    runtime.collect_local_server_state().await
 }
 
 struct ApiServerStateRealtimeRuntime {
@@ -224,9 +207,9 @@ struct ApiServerStateSliceCacheRuntime {
 }
 
 impl ServerStateSliceCacheRuntime for ApiServerStateSliceCacheRuntime {
-    fn snapshot(&self) -> SliceCacheStatus {
+    fn snapshot(&self) -> ServerStateSliceCache {
         let stats = self.cache.stats();
-        SliceCacheStatus {
+        ServerStateSliceCache {
             status: if stats.engine_enabled {
                 ServerStateSliceCacheStatus::Healthy
             } else {

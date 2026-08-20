@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    models::{Media, MediaId, Playlist, PlaylistId, Room, RoomId, UserId},
+    models::{Media, Playlist, PlaylistId, Room, RoomId, UserId},
     repository::{media::MediaListItem, playlist::PlaylistListItem},
     service::RoomService,
     Error, Result,
@@ -210,17 +210,6 @@ impl RoomService {
             .collect())
     }
 
-    pub async fn playlist_availability_map(
-        &self,
-        playlists: &[Playlist],
-    ) -> Result<HashMap<PlaylistId, ClientResourceAvailability>> {
-        let mut availability = HashMap::with_capacity(playlists.len());
-        for playlist in playlists {
-            availability.insert(playlist.id, self.playlist_availability(playlist).await?);
-        }
-        Ok(availability)
-    }
-
     pub async fn count_client_playlists(
         &self,
         room_id: &RoomId,
@@ -251,17 +240,6 @@ impl RoomService {
             Err(Error::Authorization(_)) => Ok(ClientResourceAvailability::CreatorInactive),
             Err(error) => Err(error),
         }
-    }
-
-    pub async fn media_availability_map(
-        &self,
-        media: &[Media],
-    ) -> Result<HashMap<MediaId, ClientResourceAvailability>> {
-        let mut availability = HashMap::with_capacity(media.len());
-        for item in media {
-            availability.insert(item.id, self.media_availability(item).await?);
-        }
-        Ok(availability)
     }
 
     pub async fn count_client_media(

@@ -139,7 +139,10 @@ async fn test_alist_client_login_success() {
         .await;
 
     let mut client = AlistClient::new(server.uri()).unwrap();
-    let token = client.login("admin", "password123", false).await.unwrap();
+    let token = client
+        .login_with_otp("admin", "password123", false, None)
+        .await
+        .unwrap();
     assert_eq!(token, "test-jwt-token-abc123");
     assert!(client.has_token());
 }
@@ -159,7 +162,9 @@ async fn test_alist_client_login_wrong_password() {
         .await;
 
     let mut client = AlistClient::new(server.uri()).unwrap();
-    let result = client.login("admin", "wrong_password", false).await;
+    let result = client
+        .login_with_otp("admin", "wrong_password", false, None)
+        .await;
     assert!(result.is_err());
     let err_msg = result.unwrap_err().to_string();
     assert!(
@@ -515,7 +520,7 @@ async fn test_alist_client_fs_other_no_preview() {
 }
 
 #[tokio::test]
-async fn test_alist_client_get_video_transcode_uses_video_preview_method_and_accepts_null_lists() {
+async fn test_alist_client_fs_other_accepts_null_video_preview_lists() {
     let server = MockServer::start().await;
 
     Mock::given(method("POST"))
@@ -544,7 +549,7 @@ async fn test_alist_client_get_video_transcode_uses_video_preview_method_and_acc
 
     let client = AlistClient::with_token(server.uri(), "token123").unwrap();
     let resp = client
-        .get_video_transcode("/movies/video.mp4", None)
+        .fs_other("/movies/video.mp4", "video_preview", None)
         .await
         .unwrap();
     let preview = resp.video_preview_play_info.unwrap();
@@ -782,7 +787,7 @@ async fn test_alist_client_login_hashed_success() {
 
     let mut client = AlistClient::new(server.uri()).unwrap();
     let token = client
-        .login("admin", "sha256_hash_of_password", true)
+        .login_with_otp("admin", "sha256_hash_of_password", true, None)
         .await
         .unwrap();
     assert_eq!(token, "hashed-login-token-xyz");
@@ -832,7 +837,9 @@ async fn test_alist_client_login_hashed_wrong_password() {
         .await;
 
     let mut client = AlistClient::new(server.uri()).unwrap();
-    let result = client.login("admin", "wrong_hash", true).await;
+    let result = client
+        .login_with_otp("admin", "wrong_hash", true, None)
+        .await;
     assert!(result.is_err());
 }
 
@@ -955,7 +962,7 @@ async fn login_openlist_when_ready(host: &str, password: &str) -> String {
 
     while started_at.elapsed() < timeout {
         let mut client = AlistClient::new(host).unwrap();
-        match client.login("admin", password, false).await {
+        match client.login_with_otp("admin", password, false, None).await {
             Ok(token) => return token,
             Err(error) => {
                 last_error = Some(error.to_string());
@@ -1113,7 +1120,7 @@ async fn test_openlist_container_exercises_real_alist_client_api() {
     );
 
     let other_err = client
-        .get_video_transcode("/local/video.mp4", None)
+        .fs_other("/local/video.mp4", "video_preview", None)
         .await
         .unwrap_err();
     assert!(
@@ -1128,7 +1135,7 @@ async fn test_openlist_container_rejects_wrong_password() {
     let fixture = start_openlist_fixture().await;
     let mut client = AlistClient::new(&fixture.host).unwrap();
     let err = client
-        .login("admin", "wrong-password", false)
+        .login_with_otp("admin", "wrong-password", false, None)
         .await
         .unwrap_err();
     assert!(

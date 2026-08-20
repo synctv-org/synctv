@@ -197,17 +197,6 @@ pub trait HlsStorage: Send + Sync {
     async fn get_public_url(&self, app: &str, stream: &str, name: &str) -> Result<Option<String>>;
 }
 
-/// Storage backend type
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StorageBackend {
-    /// Local filesystem storage
-    File,
-    /// In-memory storage (for testing/caching)
-    Memory,
-    /// S3-compatible object storage
-    S3,
-}
-
 pub use file::FileStorage;
 pub use memory::MemoryStorage;
 #[cfg(feature = "s3")]

@@ -1,5 +1,5 @@
 use crate::{
-    models::{MemberStatus, ReviewRequestId, Room, RoomId, RoomMember, RoomRole, UserId},
+    models::{ReviewRequestId, Room, RoomId, RoomMember, RoomRole, UserId},
     Error, Result,
 };
 
@@ -20,8 +20,7 @@ impl RoomService {
         Self::ensure_room_can_admit_member_now_tx(tx, room_id, &target_user_id).await?;
         let role = Self::validate_join_request_role(requested_role)?;
 
-        let mut member = RoomMember::new(*room_id, target_user_id, role);
-        member.status = MemberStatus::Active;
+        let member = RoomMember::new(*room_id, target_user_id, role);
         let options = self.active_member_add_options(room_id).await?;
         let created = self
             .member_repo

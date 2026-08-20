@@ -746,8 +746,19 @@ async fn test_db_reload_seeds_missing_local_playback_fence() {
         "playback state should exist",
     );
     state.position = 42.0;
+    let mut connection = ok(
+        pool.acquire().await,
+        "database connection should be available",
+    );
     let state = ok(
-        playback_repo.update_with_exact_version(&state, 5).await,
+        playback_repo
+            .update_with_exact_version_executor_and_previous_progress(
+                &state,
+                5,
+                None,
+                &mut connection,
+            )
+            .await,
         "playback state should have a nonzero version",
     );
 
@@ -838,8 +849,7 @@ async fn unavailable_creator_reset_does_not_overwrite_a_newer_source() {
             )
             .await,
         "room should be created",
-    )
-    .0;
+    );
     let media_repo = MediaRepository::new(pool);
     let first_media = ok(
         media_repo

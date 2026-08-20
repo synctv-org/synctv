@@ -44,12 +44,6 @@ impl PlaybackDurationProbeService {
     }
 
     #[must_use]
-    pub const fn with_concurrency(mut self, concurrency: usize) -> Self {
-        self.concurrency = concurrency;
-        self
-    }
-
-    #[must_use]
     pub fn with_active_room_source(
         mut self,
         active_room_source: Arc<dyn ActivePlaybackRoomSource>,

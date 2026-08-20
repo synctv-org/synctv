@@ -118,7 +118,8 @@ fn make_member(role: RoomRole) -> RoomMember {
 }
 
 fn compiled_role_default(role: &RoomRole, settings: &RoomSettings) -> RoomPermissionSet {
-    EffectivePermissionCalculator::compiled_defaults().role_default(role, settings)
+    EffectivePermissionCalculator::new(RuntimePermissionDefaults::compiled())
+        .role_default(role, settings)
 }
 
 #[test]

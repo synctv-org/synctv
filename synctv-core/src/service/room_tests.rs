@@ -315,35 +315,6 @@ fn test_room_is_active_requires_open_lifecycle() {
     assert!(!closed_room.is_active());
 }
 
-#[test]
-fn test_room_member_add_and_remove_permissions() {
-    use crate::models::{RoomId, RoomMember, RoomRole, UserId};
-
-    let mut member = RoomMember::new(
-        RoomId::expect_positive(1),
-        UserId::expect_positive(1),
-        RoomRole::Member,
-    );
-    assert_eq!(member.added_permissions, 0);
-    assert_eq!(member.removed_permissions, 0);
-
-    member.add_permissions(crate::models::RoomMemberPermissionBits::USE_VOICE_CHAT);
-    assert_eq!(
-        member.added_permissions,
-        crate::models::RoomMemberPermissionBits::USE_VOICE_CHAT
-    );
-
-    member.remove_permissions(crate::models::RoomMemberPermissionBits::SEND_CHAT_MESSAGES);
-    assert_eq!(
-        member.removed_permissions,
-        crate::models::RoomMemberPermissionBits::SEND_CHAT_MESSAGES
-    );
-
-    let effective = member.effective_permissions(RoomPermissionSet::default_member());
-    assert!(effective.has(crate::models::RoomPermission::USE_VOICE_CHAT));
-    assert!(!effective.has(crate::models::RoomPermission::SEND_CHAT_MESSAGES));
-}
-
 /// Replicates the `room_creation.enabled` guard logic
 /// from `do_create_room` for unit testing without a database.
 fn check_room_creation_allowed(enabled: bool) -> crate::Result<()> {

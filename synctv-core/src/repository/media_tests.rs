@@ -29,40 +29,6 @@ fn direct_url_media_source_config(url: impl Into<String>) -> MediaSourceConfig {
     })
 }
 
-fn direct_url_playback_info(url: &str, name: &str) -> crate::models::PlaybackInfo {
-    crate::models::PlaybackInfo {
-        thumbnail: None,
-        medias: vec![crate::models::PlaybackMedia {
-            name: name.to_string(),
-            format: String::new(),
-            expire_at: None,
-            metadata: None,
-            p2p_swarm_id: None,
-            provider: crate::models::PlaybackMediaProvider::DirectUrl(
-                crate::models::PlaybackDirectUrlMedia::Direct {
-                    url: url.to_string(),
-                    headers: std::collections::HashMap::new(),
-                },
-            ),
-        }],
-        default_media_index: None,
-        subtitles: Vec::new(),
-        default_subtitle_index: None,
-        danmakus: Vec::new(),
-        default_danmaku_index: None,
-    }
-}
-
-fn direct_url_first_media_url(source_config: &MediaSourceConfig) -> &str {
-    let MediaSourceConfig::DirectUrl(config) = source_config else {
-        panic!("expected DirectUrl source_config");
-    };
-    config.medias.first().map_or_else(
-        || panic!("expected DirectUrl media resource"),
-        |media| media.url.as_str(),
-    )
-}
-
 async fn insert_test_provider_instance(pool: &PgPool, name: &str, provider: &str) {
     let now = crate::SystemClock.now();
     let instance = ProviderInstance {
@@ -162,71 +128,6 @@ fn test_push_media_list_order_by_uses_static_sort_branches() {
     assert_eq!(
         media_order_by_sql(&query),
         " ORDER BY m.position ASC, m.name ASC, m.id ASC"
-    );
-}
-
-/// Unit test: `Media::from_direct_single_mode`
-#[test]
-fn test_media_from_direct_single_mode() {
-    let playlist_id = PlaylistId::new();
-    let room_id = RoomId::new();
-    let creator_id = UserId::new();
-
-    let playback_info = direct_url_playback_info("https://example.com/video.mp4", "1080P");
-
-    let media = Media::from_direct_single_mode(
-        Some(playlist_id),
-        room_id,
-        Some(creator_id),
-        "Single Mode Video".to_string(),
-        "direct",
-        playback_info,
-        5.0,
-    )
-    .checked("direct media should build");
-
-    assert_eq!(media.name, "Single Mode Video");
-    assert!((media.position - 5.0).abs() < f64::EPSILON);
-    assert!(media.provider_instance_name.is_none());
-    assert_eq!(
-        direct_url_first_media_url(&media.source_config),
-        "https://example.com/video.mp4"
-    );
-}
-
-/// Unit test: `Media::from_direct_multimode`
-#[test]
-fn test_media_from_direct_multimode() {
-    let playlist_id = PlaylistId::new();
-    let room_id = RoomId::new();
-
-    let mut playback_infos = std::collections::HashMap::new();
-    playback_infos.insert(
-        "direct".to_string(),
-        direct_url_playback_info("https://example.com/video.mp4", "1080P"),
-    );
-    playback_infos.insert(
-        "proxied".to_string(),
-        direct_url_playback_info("https://proxy.example.com/video.mp4", "720P"),
-    );
-
-    let media = Media::from_direct_multimode(crate::models::DirectMultimodeParams {
-        playlist_id: Some(playlist_id),
-        room_id,
-        creator_id: None,
-        name: "Multimode Video".to_string(),
-        playback_infos,
-        default_mode: "direct".to_string(),
-        position: 10.0,
-    })
-    .checked("direct multimode media should build");
-
-    assert_eq!(media.name, "Multimode Video");
-    assert!((media.position - 10.0).abs() < f64::EPSILON);
-    assert!(media.provider_instance_name.is_none());
-    assert_eq!(
-        direct_url_first_media_url(&media.source_config),
-        "https://example.com/video.mp4"
     );
 }
 

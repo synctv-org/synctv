@@ -226,18 +226,6 @@ mod jwt_auth {
     }
 
     #[test]
-    fn test_validator_extract_user_id_from_bearer() {
-        let svc = test_jwt_service();
-        let validator = test_validator();
-        let user_id = UserId::expect_positive(10_000_018);
-        let token = svc.sign_access_token(&user_id, 0).unwrap();
-        let _bearer = format!("Bearer {token}");
-
-        let extracted = validator.validate_and_extract_user_id(&token).unwrap();
-        assert_eq!(extracted, user_id);
-    }
-
-    #[test]
     fn test_validator_http_bearer_header() {
         let svc = test_jwt_service();
         let validator = test_validator();
@@ -1261,8 +1249,8 @@ mod websocket_e2e {
             playback_duration_probe: None,
         };
 
-        let state = synctv_api::create_app_state_from_options(router_options)
-            .expect("test HTTP app state should build");
+        let state =
+            synctv_api::build_app_state(router_options).expect("test HTTP app state should build");
 
         let app = axum::Router::new()
             .route("/ws/rooms/{roomId}", axum::routing::get(websocket_handler))
@@ -1325,7 +1313,7 @@ mod websocket_e2e {
         user_id: &UserId,
         room_name: &str,
     ) -> String {
-        let (room, _member) = room_service
+        let room = room_service
             .create_room(room_name.to_string(), String::new(), *user_id, None, None)
             .await
             .expect("create room");

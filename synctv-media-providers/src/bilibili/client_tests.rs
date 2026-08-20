@@ -1000,12 +1000,12 @@ async fn test_wbi_state_is_isolated_per_client_instance() -> TestResult {
     assert_eq!(state_a.get_valid_wbi_key().as_deref(), Some("key-a"));
     assert_eq!(state_b.get_valid_wbi_key().as_deref(), Some("key-b"));
 
-    state_a.record_failure_for_tests();
-    state_a.record_failure_for_tests();
-    state_a.record_failure_for_tests();
+    state_a.record_failure();
+    state_a.record_failure();
+    state_a.record_failure();
 
-    assert!(state_a.has_exceeded_max_failures_for_tests());
-    assert!(!state_b.has_exceeded_max_failures_for_tests());
+    assert!(state_a.has_exceeded_max_failures());
+    assert!(!state_b.has_exceeded_max_failures());
     assert_eq!(state_a.api_call_count(), 0);
     assert_eq!(state_b.api_call_count(), 0);
     Ok(())
@@ -1028,7 +1028,7 @@ async fn test_force_wbi_refresh_reuses_key_written_while_waiting() -> TestResult
 
     let state = Arc::new(WbiState::default());
     state.set_wbi_key("old-key".to_string());
-    let refresh_guard = state.acquire_refresh_for_tests().await;
+    let refresh_guard = state.refresh.lock().await;
     let client = BilibiliClient::new_with_transport(
         test_http_client(),
         test_http_client(),
@@ -1040,7 +1040,7 @@ async fn test_force_wbi_refresh_reuses_key_written_while_waiting() -> TestResult
     let waiter_client = Arc::new(client);
     let waiter = {
         let waiter_client = waiter_client.clone();
-        tokio::spawn(async move { waiter_client.get_wbi_mixin_key_for_tests(true).await })
+        tokio::spawn(async move { waiter_client.get_wbi_mixin_key_internal(true).await })
     };
     tokio::task::yield_now().await;
 
@@ -1070,7 +1070,7 @@ async fn test_wbi_refresh_rechecks_failure_breaker_after_waiting() -> TestResult
         .await;
 
     let state = Arc::new(WbiState::default());
-    let refresh_guard = state.acquire_refresh_for_tests().await;
+    let refresh_guard = state.refresh.lock().await;
     let client = Arc::new(BilibiliClient::new_with_transport(
         test_http_client(),
         test_http_client(),
@@ -1081,13 +1081,13 @@ async fn test_wbi_refresh_rechecks_failure_breaker_after_waiting() -> TestResult
 
     let waiter = {
         let client = client.clone();
-        tokio::spawn(async move { client.get_wbi_mixin_key_for_tests(false).await })
+        tokio::spawn(async move { client.get_wbi_mixin_key_internal(false).await })
     };
     tokio::task::yield_now().await;
 
-    state.record_failure_for_tests();
-    state.record_failure_for_tests();
-    state.record_failure_for_tests();
+    state.record_failure();
+    state.record_failure();
+    state.record_failure();
     drop(refresh_guard);
 
     let err = waiter

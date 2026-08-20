@@ -1658,8 +1658,7 @@ mod tests {
                 None,
             )
             .await
-            .expect("room should be created")
-            .0;
+            .expect("room should be created");
         room_service
             .join_room(room.id, creator.id, None)
             .await

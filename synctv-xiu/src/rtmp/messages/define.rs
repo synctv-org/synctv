@@ -80,9 +80,4 @@ pub mod msg_type_id {
 
     pub const DATA_AMF3: u8 = 15;
     pub const DATA_AMF0: u8 = 18;
-
-    pub const SHARED_OBJ_AMF3: u8 = 16;
-    pub const SHARED_OBJ_AMF0: u8 = 19;
-
-    pub const AGGREGATE: u8 = 22;
 }

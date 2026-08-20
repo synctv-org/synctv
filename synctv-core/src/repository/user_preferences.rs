@@ -74,22 +74,6 @@ impl UserPreferencesRepository {
         ))
     }
 
-    pub async fn set_two_factor_enabled_with_executor<'e, E>(
-        &self,
-        user_id: &UserId,
-        enabled: bool,
-        executor: E,
-    ) -> Result<UserPreferences>
-    where
-        E: sqlx::PgExecutor<'e>,
-    {
-        let update = UserPreferencesUpdate {
-            two_factor_enabled: Some(enabled),
-            ..UserPreferencesUpdate::default()
-        };
-        self.update_with_executor(user_id, &update, executor).await
-    }
-
     pub async fn update(
         &self,
         user_id: &UserId,
@@ -287,15 +271,5 @@ impl UserPreferencesRepository {
         .await?;
 
         Ok(enabled)
-    }
-
-    pub async fn assert_can_enable_two_factor(&self, user_id: &UserId) -> Result<UserAuthFactors> {
-        let factors = self.auth_factors(user_id).await?;
-        if !factors.supports_two_factor() {
-            return Err(Error::InvalidInput(
-                "Two-factor authentication requires at least two usable verification methods: password, passkey, authenticator app, or verified email".to_string(),
-            ));
-        }
-        Ok(factors)
     }
 }

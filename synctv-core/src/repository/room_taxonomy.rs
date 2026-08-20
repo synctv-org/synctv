@@ -132,12 +132,6 @@ impl From<RoomLabelRow> for RoomLabel {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct RoomTaxonomyAssignment {
-    pub category_id: Option<RoomCategoryId>,
-    pub label_ids: Vec<RoomLabelId>,
-}
-
 #[derive(Clone)]
 pub struct RoomTaxonomyRepository {
     pools: RepoPools,
@@ -166,20 +160,6 @@ impl RoomTaxonomyRepository {
     #[must_use]
     pub fn eventually_consistent_pool(&self) -> &PgPool {
         self.pools.read()
-    }
-
-    pub async fn category_id_by_key(&self, key: &str) -> Result<Option<RoomCategoryId>> {
-        let id = sqlx::query_scalar!(
-            r#"
-            SELECT id AS "id: RoomCategoryId"
-            FROM room_categories
-            WHERE key = $1
-            "#,
-            key
-        )
-        .fetch_optional(self.pools.primary())
-        .await?;
-        Ok(id)
     }
 
     pub async fn list_categories(&self, enabled_only: bool) -> Result<Vec<RoomCategory>> {
@@ -285,30 +265,6 @@ impl RoomTaxonomyRepository {
                    created_at,
                    updated_at
             FROM room_categories
-            WHERE id = $1
-            "#,
-            id.as_i64()
-        )
-        .fetch_optional(self.pools.primary())
-        .await?;
-        Ok(row.map(Into::into))
-    }
-
-    pub async fn get_label(&self, id: RoomLabelId) -> Result<Option<RoomLabel>> {
-        let row = sqlx::query_as!(
-            RoomLabelRow,
-            r#"
-            SELECT id AS "id: RoomLabelId",
-                   key,
-                   name,
-                   description,
-                   color,
-                   category_id AS "category_id: RoomCategoryId",
-                   sort_order,
-                   is_enabled,
-                   created_at,
-                   updated_at
-            FROM room_labels
             WHERE id = $1
             "#,
             id.as_i64()
@@ -682,23 +638,5 @@ impl RoomTaxonomyRepository {
             builder.build().execute(&mut *executor).await?;
         }
         Ok(())
-    }
-
-    pub async fn labels_for_room_creation_request(
-        &self,
-        request_id: RoomId,
-    ) -> Result<Vec<RoomLabelId>> {
-        let labels = sqlx::query_scalar!(
-            r#"
-            SELECT label_id AS "label_id: RoomLabelId"
-            FROM room_creation_request_labels
-            WHERE request_id = $1
-            ORDER BY label_id ASC
-            "#,
-            request_id as RoomId
-        )
-        .fetch_all(self.pools.primary())
-        .await?;
-        Ok(labels)
     }
 }

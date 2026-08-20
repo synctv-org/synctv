@@ -19,10 +19,12 @@ use std::sync::Arc;
 use synctv_core::service::{
     AttemptTracker, BruteForceProtection, InMemoryAttemptTracker, RedisAttemptTracker,
 };
-use synctv_core_testing::constants::{brute_force, network};
 use synctv_core_testing::start_redis;
 use synctv_core_testing::{ok, TestResultExt};
 use tokio::sync::RwLock;
+
+const TIER1_THRESHOLD: u32 = 5;
+const PROXY_IP: &str = "10.0.0.1";
 
 fn redis_brute_force_protection(
     conn: Arc<RwLock<redis::aio::ConnectionManager>>,
@@ -120,7 +122,7 @@ async fn test_brute_force_below_threshold_allowed() {
     let ip = Some(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)));
 
     // Record 4 failures (below tier1 threshold)
-    for _ in 0..(brute_force::TIER1_THRESHOLD - 1) {
+    for _ in 0..(TIER1_THRESHOLD - 1) {
         protection
             .record_failure("alice", ip)
             .await
@@ -136,10 +138,10 @@ async fn test_brute_force_below_threshold_allowed() {
 #[ignore = "Requires Docker"]
 async fn test_brute_force_at_tier1_threshold_locked() {
     let protection = BruteForceProtection::in_memory("test".to_string());
-    let ip = Some(ok(network::PROXY_IP.parse(), "proxy IP should parse"));
+    let ip = Some(ok(PROXY_IP.parse(), "proxy IP should parse"));
 
     // Record exactly tier1 threshold failures
-    for _ in 0..brute_force::TIER1_THRESHOLD {
+    for _ in 0..TIER1_THRESHOLD {
         protection
             .record_failure("bob", ip)
             .await

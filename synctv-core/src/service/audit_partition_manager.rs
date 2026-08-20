@@ -139,24 +139,6 @@ impl AuditPartitionManager {
         Ok(result)
     }
 
-    /// Create a partition for a specific date
-    pub async fn create_partition(&self, date: chrono::NaiveDate) -> Result<PartitionInfo> {
-        info!("Creating audit log partition for date: {}", date);
-
-        let mut conn = acquire_unbounded_ddl_connection(&self.pool)
-            .await
-            .internal_with_err("Failed to acquire DDL connection for single partition creation")?;
-        let partition_name = Self::create_partition_detail_with_connection(&mut conn, date)
-            .await?
-            .partition_name;
-
-        Ok(PartitionInfo {
-            partition: partition_name,
-            row_count: 0,
-            size_centi_mib: 0,
-        })
-    }
-
     async fn create_partition_detail_with_connection(
         conn: &mut PoolConnection<Postgres>,
         date: chrono::NaiveDate,

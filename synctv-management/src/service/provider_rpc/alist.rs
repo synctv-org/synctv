@@ -138,7 +138,7 @@ impl ManagementServiceImpl {
             .resolve_client_actor_and_request(req.actor, req.request)
             .await?;
         let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        let response = map_api_result(
+        let response = map_classified_result(
             self.alist_api
                 .get_binds(&actor_user_id, instance_name.as_deref())
                 .await,

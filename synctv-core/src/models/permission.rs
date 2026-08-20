@@ -716,15 +716,6 @@ impl Role {
             Self::Guest => RoomGuestPermissionBits::from_permissions(permissions),
         }
     }
-
-    #[must_use]
-    pub const fn permissions_from_override_bits(&self, bits: u64) -> u64 {
-        match self {
-            Self::Creator | Self::Admin => RoomAdminPermissionBits::to_permissions(bits),
-            Self::Member => RoomMemberPermissionBits::to_permissions(bits),
-            Self::Guest => RoomGuestPermissionBits::to_permissions(bits),
-        }
-    }
 }
 
 impl FromStr for Role {

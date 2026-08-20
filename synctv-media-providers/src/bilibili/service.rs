@@ -217,19 +217,6 @@ impl BilibiliService {
             ssrf_guard: synctv_common::ssrf::SsrfGuard::strict_policy(),
         }
     }
-
-    #[must_use]
-    pub fn with_client_and_ssrf_guard(
-        client: Client,
-        ssrf_guard: synctv_common::ssrf::SsrfGuard,
-    ) -> Self {
-        Self {
-            client,
-            live_danmaku_device_cookies: Arc::new(OnceCell::new()),
-            wbi_state: Arc::new(super::client::WbiState::default()),
-            ssrf_guard,
-        }
-    }
 }
 
 fn client_from_cookies_and_state(

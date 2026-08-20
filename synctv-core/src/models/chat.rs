@@ -1,6 +1,5 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use std::str::FromStr;
 
 use super::{
@@ -265,14 +264,6 @@ impl ChatMetadata {
             Self::MemberJoined(_) | Self::PlaybackChanged(_) => None,
         }
     }
-
-    #[must_use]
-    pub fn user_mut(&mut self) -> Option<&mut ChatUserMetadata> {
-        match self {
-            Self::User(metadata) => Some(metadata),
-            Self::MemberJoined(_) | Self::PlaybackChanged(_) => None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -433,12 +424,6 @@ impl ChatMessageSelection {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SendChatRequest {
-    pub room_id: RoomId,
-    pub content: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatAttachment {
     pub id: String,
@@ -496,20 +481,6 @@ pub struct CreateChatAttachmentUploadSession {
     pub bitrate_bps: Option<i32>,
     pub parts: Vec<FileUploadManifestPart>,
     pub metadata: super::file_storage::FileMetadata,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatAttachmentUploadSession {
-    pub attachment: super::file_storage::NewStoredFile,
-    pub upload_required: bool,
-    pub ownership_proof_required: bool,
-    pub ownership_proof_nonce: Option<String>,
-    pub ownership_proof_ranges: Vec<super::file_storage::FileOwnershipProofRange>,
-    pub upload_url: Option<String>,
-    pub upload_method: Option<String>,
-    pub upload_headers: BTreeMap<String, String>,
-    pub expires_at: Option<DateTime<Utc>>,
-    pub max_size_bytes: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -617,17 +588,6 @@ pub struct DeleteChatMessage {
     pub client_operation_id: Option<String>,
     pub reason: Option<String>,
     pub expected_version: Option<i64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatReaction {
-    pub room_id: RoomId,
-    pub message_id: i64,
-    pub message_created_at: DateTime<Utc>,
-    pub user_id: UserId,
-    pub reaction_key: String,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

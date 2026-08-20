@@ -1380,11 +1380,6 @@ pub async fn create_test_pool_with_db_and_label(
     .await
 }
 
-/// Creates a `PostgreSQL` test pool with a custom database name
-pub async fn create_test_pool_with_db(db_name: &str) -> (TestContainer, PgPool) {
-    create_test_pool_with_db_and_label(db_name, db_name).await
-}
-
 pub async fn create_test_database_with_db_and_label(db_name: &str, label: &str) -> TestDatabase {
     create_test_database_with_options_and_label(
         db_name,
@@ -1393,10 +1388,6 @@ pub async fn create_test_database_with_db_and_label(db_name: &str, label: &str) 
         Duration::from_secs(30),
     )
     .await
-}
-
-pub async fn create_test_database() -> TestDatabase {
-    create_test_database_with_db_and_label("synctv_test", "database").await
 }
 
 pub async fn connect_test_pool_url(database_url: &str) -> PgPool {

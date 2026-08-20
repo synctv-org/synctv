@@ -1,7 +1,6 @@
 use crate::{
     models::{
-        AuditAction, AuditDetails, AuditTargetType, MemberStatus, Room, RoomId, RoomMember,
-        RoomRole, UserId,
+        AuditAction, AuditDetails, AuditTargetType, Room, RoomId, RoomMember, RoomRole, UserId,
     },
     Error, Result,
 };
@@ -63,7 +62,6 @@ impl RoomService {
         Self::ensure_room_can_admit_member_now_tx(tx, room_id, target_user_id).await?;
 
         let mut member = RoomMember::new(*room_id, *target_user_id, role);
-        member.status = MemberStatus::Active;
         member.remark_name = remark_name;
         member.display_tag = display_tag;
         let options = self.active_member_add_options(room_id).await?;
@@ -209,7 +207,7 @@ impl RoomService {
         self.audit_log(
             &actor_id,
             &actor_username,
-            AuditAction::MemberStatusUpdated,
+            AuditAction::MembershipUpdated,
             AuditTargetType::Member,
             Some(target_user_id.to_string()),
             AuditDetails {
@@ -228,30 +226,6 @@ impl RoomService {
         }
 
         Ok(created)
-    }
-
-    /// Administrative override: add a room member without requiring room-local membership.
-    pub async fn admin_add_member(
-        &self,
-        room_id: RoomId,
-        actor_id: UserId,
-        actor_username: &str,
-        target_user_id: UserId,
-        role: RoomRole,
-        notify: bool,
-    ) -> Result<RoomMember> {
-        self.admin_add_member_with_outbox(AdminAddMemberWithOutboxRequest {
-            room_id,
-            actor_id,
-            actor_username,
-            target_user_id,
-            role,
-            remark_name: String::new(),
-            display_tag: String::new(),
-            notify,
-            outbox_event_factory: None,
-        })
-        .await
     }
 
     pub async fn admin_add_member_with_outbox(
@@ -307,7 +281,7 @@ impl RoomService {
         self.audit_log(
             &actor_id,
             actor_username,
-            AuditAction::MemberStatusUpdated,
+            AuditAction::MembershipUpdated,
             AuditTargetType::Member,
             Some(target_user_id.to_string()),
             AuditDetails {

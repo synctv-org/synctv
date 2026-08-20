@@ -484,19 +484,6 @@ impl ClientSession {
         Ok(())
     }
 
-    pub async fn send_delete_stream(
-        &mut self,
-        transaction_id: &f64,
-        stream_id: &f64,
-    ) -> Result<(), SessionError> {
-        let mut netstream = NetStreamWriter::new(Arc::clone(&self.io));
-        netstream
-            .write_delete_stream(transaction_id, stream_id)
-            .await?;
-
-        Ok(())
-    }
-
     pub async fn send_publish(
         &mut self,
         transaction_id: &f64,

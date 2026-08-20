@@ -1,6 +1,7 @@
 use {
-    super::errors::ControlMessagesError, crate::bytesio::bytes_writer::AsyncBytesWriter,
-    crate::rtmp::messages::define::msg_type_id, byteorder::BigEndian,
+    crate::bytesio::{bytes_errors::BytesWriteError, bytes_writer::AsyncBytesWriter},
+    crate::rtmp::messages::define::msg_type_id,
+    byteorder::BigEndian,
 };
 
 pub struct ProtocolControlMessagesWriter {
@@ -17,7 +18,7 @@ impl ProtocolControlMessagesWriter {
         &mut self,
         msg_type_id: u8,
         len: u32,
-    ) -> Result<(), ControlMessagesError> {
+    ) -> Result<(), BytesWriteError> {
         //0 1 2 3 4 5 6 7
         //+-+-+-+-+-+-+-+-+
         //|fmt|  cs id  |
@@ -31,10 +32,7 @@ impl ProtocolControlMessagesWriter {
 
         Ok(())
     }
-    pub async fn write_set_chunk_size(
-        &mut self,
-        chunk_size: u32,
-    ) -> Result<(), ControlMessagesError> {
+    pub async fn write_set_chunk_size(&mut self, chunk_size: u32) -> Result<(), BytesWriteError> {
         self.write_control_message_header(msg_type_id::SET_CHUNK_SIZE, 4)?;
         self.writer
             .write_u32::<BigEndian>(chunk_size & 0x7FFF_FFFF)?; //first bit must be 0
@@ -43,21 +41,10 @@ impl ProtocolControlMessagesWriter {
         Ok(())
     }
 
-    pub async fn write_abort_message(
-        &mut self,
-        chunk_stream_id: u32,
-    ) -> Result<(), ControlMessagesError> {
-        self.write_control_message_header(msg_type_id::ABORT, 4)?;
-        self.writer.write_u32::<BigEndian>(chunk_stream_id)?;
-
-        self.writer.flush().await?;
-        Ok(())
-    }
-
     pub async fn write_acknowledgement(
         &mut self,
         sequence_number: u32,
-    ) -> Result<(), ControlMessagesError> {
+    ) -> Result<(), BytesWriteError> {
         self.write_control_message_header(msg_type_id::ACKNOWLEDGEMENT, 4)?;
         self.writer.write_u32::<BigEndian>(sequence_number)?;
 
@@ -68,7 +55,7 @@ impl ProtocolControlMessagesWriter {
     pub async fn write_window_acknowledgement_size(
         &mut self,
         window_size: u32,
-    ) -> Result<(), ControlMessagesError> {
+    ) -> Result<(), BytesWriteError> {
         self.write_control_message_header(msg_type_id::WIN_ACKNOWLEDGEMENT_SIZE, 4)?;
         self.writer.write_u32::<BigEndian>(window_size)?;
 
@@ -80,7 +67,7 @@ impl ProtocolControlMessagesWriter {
         &mut self,
         window_size: u32,
         limit_type: u8,
-    ) -> Result<(), ControlMessagesError> {
+    ) -> Result<(), BytesWriteError> {
         self.write_control_message_header(msg_type_id::SET_PEER_BANDWIDTH, 5)?;
         self.writer.write_u32::<BigEndian>(window_size)?;
         self.writer.write_u8(limit_type)?;

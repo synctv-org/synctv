@@ -10,17 +10,6 @@ use super::{
 };
 
 impl RoomService {
-    /// Approve a specific pending join request and promote it to an active membership.
-    pub async fn approve_join_request(
-        &self,
-        room_id: RoomId,
-        actor_id: UserId,
-        request_id: ReviewRequestId,
-    ) -> Result<RoomMember> {
-        self.approve_join_request_with_outbox(room_id, actor_id, request_id, None)
-            .await
-    }
-
     pub async fn approve_join_request_with_outbox(
         &self,
         room_id: RoomId,
@@ -78,26 +67,6 @@ impl RoomService {
         Ok(updated)
     }
 
-    /// Administrative override: approve a specific pending join request.
-    pub async fn admin_approve_join_request(
-        &self,
-        room_id: RoomId,
-        actor_id: UserId,
-        reviewed_by: Option<&UserId>,
-        actor_username: &str,
-        request_id: ReviewRequestId,
-    ) -> Result<RoomMember> {
-        self.admin_approve_join_request_with_outbox(
-            room_id,
-            actor_id,
-            reviewed_by,
-            actor_username,
-            request_id,
-            None,
-        )
-        .await
-    }
-
     pub async fn admin_approve_join_request_with_outbox(
         &self,
         room_id: RoomId,
@@ -132,7 +101,7 @@ impl RoomService {
         self.audit_log(
             &actor_id,
             actor_username,
-            AuditAction::MemberStatusUpdated,
+            AuditAction::MembershipUpdated,
             AuditTargetType::Member,
             Some(target_user_id.to_string()),
             AuditDetails {

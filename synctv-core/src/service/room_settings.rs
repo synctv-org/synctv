@@ -19,7 +19,6 @@
 //! - Background refresh: Refreshes before expiration
 //! - Write-through: Updates database and cache atomically
 
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::{
@@ -175,11 +174,6 @@ impl RoomSettingsService {
     /// waiting for async invalidation. Read the database and refresh L1.
     pub async fn get(&self, room_id: &RoomId) -> Result<RoomSettings> {
         Ok(self.get_with_version(room_id).await?.settings)
-    }
-
-    /// Get room settings with strong-read semantics.
-    pub async fn get_strong_with_version(&self, room_id: &RoomId) -> Result<RoomSettingsSnapshot> {
-        self.get_with_version(room_id).await
     }
 
     /// Get room settings with the current optimistic-lock version using
@@ -444,73 +438,6 @@ impl RoomSettingsService {
         .await
     }
 
-    /// Update a single setting field with optimistic locking (CAS).
-    ///
-    /// Reads current settings and version, applies the updater, then writes back
-    /// with a version check. Retries automatically on concurrent modification.
-    pub async fn update_field<F>(&self, room_id: &RoomId, updater: F) -> Result<RoomSettings>
-    where
-        F: Fn(&mut RoomSettings) + Send,
-    {
-        crate::service::optimistic_retry::retry_with_optimistic_lock(
-            crate::service::optimistic_retry::DEFAULT_MAX_RETRIES,
-            crate::service::optimistic_retry::DEFAULT_BACKOFF_BASE_MS,
-            "Settings update failed after maximum retry attempts",
-            || {
-                let updater = &updater;
-                async move {
-                    // Read current settings with version (bypass cache for freshness)
-                    let (mut settings, version) = self.repo.get_with_version(room_id).await?;
-
-                    updater(&mut settings);
-
-                    let domain = CacheDomain::RoomSettings { room_id: *room_id };
-                    let reservation = self.begin_write(room_id, version).await?;
-                    let new_version = if let Some(reservation) = &reservation {
-                        match self
-                            .repo
-                            .set_settings_with_exact_version(
-                                room_id,
-                                &settings,
-                                version,
-                                reservation.version,
-                            )
-                            .await
-                        {
-                            Ok(new_version) => {
-                                self.finalize_committed_write_best_effort(
-                                    &domain,
-                                    Some(reservation),
-                                    new_version,
-                                )
-                                .await;
-                                new_version
-                            }
-                            Err(error) => {
-                                self.abort_write(&domain, Some(reservation)).await;
-                                return Err(error);
-                            }
-                        }
-                    } else {
-                        self.repo
-                            .set_settings_with_version(room_id, &settings, version)
-                            .await?
-                    };
-
-                    let snapshot = RoomSettingsSnapshot {
-                        settings: settings.clone(),
-                        version: new_version,
-                    };
-                    self.refresh_cache_after_commit(room_id, snapshot).await;
-                    self.publish_and_notify(room_id, &settings, new_version)
-                        .await;
-                    Ok(settings)
-                }
-            },
-        )
-        .await
-    }
-
     /// Reset room settings to default
     pub async fn reset(&self, room_id: &RoomId) -> Result<RoomSettings> {
         let default_settings = RoomSettings::default();
@@ -748,26 +675,10 @@ impl RoomSettingsService {
         Ok(())
     }
 
-    /// Get cache statistics
-    #[must_use]
-    pub fn cache_stats(&self) -> CacheStats {
-        CacheStats {
-            entry_count: self.cache.entry_count(),
-            weighted_size: self.cache.weighted_size(),
-        }
-    }
-
     /// Clear all cache
     pub async fn clear_cache(&self) {
         self.cache.clear().await;
     }
-}
-
-/// Cache statistics
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CacheStats {
-    pub entry_count: u64,
-    pub weighted_size: u64,
 }
 
 #[cfg(test)]

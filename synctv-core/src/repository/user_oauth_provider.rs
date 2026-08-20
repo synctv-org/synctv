@@ -231,14 +231,6 @@ impl UserOAuthProviderRepository {
         Ok(result.rows_affected() > 0)
     }
 
-    /// Delete all `OAuth2` provider mappings for a user (all providers).
-    ///
-    /// Used during user deletion to clean up all OAuth bindings.
-    pub async fn delete_all_for_user(&self, user_id: &UserId) -> Result<u64> {
-        self.delete_all_for_user_with_executor(user_id, &self.pool)
-            .await
-    }
-
     /// Delete all `OAuth2` provider mappings for a user using a provided executor (pool or transaction).
     ///
     /// Used during user deletion to atomically clean up OAuth bindings within the same

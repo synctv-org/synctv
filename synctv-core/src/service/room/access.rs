@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use crate::{
     models::{
-        EventCursor, MemberStatus, PageParams, Room, RoomId, RoomListQuery, RoomPermission,
-        RoomRole, RoomSettings, RoomWithCount, StoredFileReference, UserId,
+        EventCursor, PageParams, Room, RoomId, RoomListQuery, RoomPermission, RoomRole,
+        RoomSettings, StoredFileReference, UserId,
     },
     repository::{
         FileStorageRepository, RoomResourceEventLog, RoomResourceEventRepository, RoomResourceKind,
@@ -272,19 +272,6 @@ impl RoomService {
         Ok((rooms, total))
     }
 
-    pub async fn list_active_unbanned_rooms_by_ids_eventually_consistent(
-        &self,
-        room_ids: &[RoomId],
-    ) -> Result<Vec<Room>> {
-        let mut rooms = self
-            .room_repo
-            .list_active_unbanned_by_ids_eventually_consistent(room_ids)
-            .await?;
-        self.hydrate_rooms_taxonomy_eventually_consistent(&mut rooms)
-            .await?;
-        Ok(rooms)
-    }
-
     pub async fn list_active_unbanned_rooms_by_ids(
         &self,
         room_ids: &[RoomId],
@@ -379,16 +366,6 @@ impl RoomService {
         Ok((rooms, total))
     }
 
-    pub async fn list_rooms_with_count(
-        &self,
-        query: &RoomListQuery,
-    ) -> Result<(Vec<RoomWithCount>, i64)> {
-        query.pagination.validate()?;
-        let (mut rooms, total) = self.room_repo.list_with_count(query).await?;
-        self.hydrate_room_with_count_items(&mut rooms).await?;
-        Ok((rooms, total))
-    }
-
     pub async fn list_rooms_by_creator(
         &self,
         creator_id: &UserId,
@@ -403,64 +380,11 @@ impl RoomService {
         Ok((rooms, total))
     }
 
-    pub async fn list_rooms_by_creator_with_count(
-        &self,
-        creator_id: &UserId,
-        pagination: PageParams,
-    ) -> Result<(Vec<RoomWithCount>, i64)> {
-        pagination.validate()?;
-        let (mut rooms, total) = self
-            .room_repo
-            .list_by_creator_with_count(creator_id, pagination)
-            .await?;
-        self.hydrate_room_with_count_items(&mut rooms).await?;
-        Ok((rooms, total))
-    }
-
-    pub async fn list_joined_rooms(
-        &self,
-        user_id: &UserId,
-        pagination: PageParams,
-    ) -> Result<(Vec<RoomId>, i64)> {
-        pagination.validate()?;
-        self.member_service
-            .list_user_rooms(user_id, pagination)
-            .await
-    }
-
-    pub async fn list_joined_rooms_with_details(
-        &self,
-        user_id: &UserId,
-        pagination: PageParams,
-    ) -> Result<(Vec<(Room, RoomRole, MemberStatus, i32)>, i64)> {
-        pagination.validate()?;
-        let (mut rooms, total) = self
-            .member_service
-            .list_user_rooms_with_details(user_id, pagination)
-            .await?;
-        self.hydrate_room_member_items(&mut rooms).await?;
-        Ok((rooms, total))
-    }
-
-    pub async fn list_joined_rooms_with_query(
-        &self,
-        user_id: &UserId,
-        query: &crate::models::MyRoomListQuery,
-    ) -> Result<(Vec<(Room, RoomRole, MemberStatus, i32)>, i64)> {
-        query.pagination.validate()?;
-        let (mut rooms, total) = self
-            .member_service
-            .list_user_rooms_with_details_query(user_id, query)
-            .await?;
-        self.hydrate_room_member_items(&mut rooms).await?;
-        Ok((rooms, total))
-    }
-
     pub async fn list_accessible_joined_rooms_with_query_eventually_consistent(
         &self,
         user_id: &UserId,
         query: &crate::models::MyRoomListQuery,
-    ) -> Result<(Vec<(Room, RoomRole, MemberStatus, i32)>, i64)> {
+    ) -> Result<(Vec<(Room, RoomRole, i32)>, i64)> {
         query.pagination.validate()?;
         let (mut rooms, total) = self
             .member_repo
@@ -471,43 +395,16 @@ impl RoomService {
         Ok((rooms, total))
     }
 
-    async fn hydrate_room_with_count_items(&self, items: &mut [RoomWithCount]) -> Result<()> {
-        let room_ids = items.iter().map(|item| item.room.id).collect::<Vec<_>>();
-        let labels = self.taxonomy_repo.labels_for_rooms(&room_ids).await?;
-        for item in items {
-            item.room.labels = labels.get(&item.room.id).cloned().unwrap_or_default();
-        }
-        Ok(())
-    }
-
-    async fn hydrate_room_member_items(
-        &self,
-        items: &mut [(Room, RoomRole, MemberStatus, i32)],
-    ) -> Result<()> {
-        let room_ids = items
-            .iter()
-            .map(|(room, _, _, _)| room.id)
-            .collect::<Vec<_>>();
-        let labels = self.taxonomy_repo.labels_for_rooms(&room_ids).await?;
-        for (room, _, _, _) in items {
-            room.labels = labels.get(&room.id).cloned().unwrap_or_default();
-        }
-        Ok(())
-    }
-
     async fn hydrate_room_member_items_eventually_consistent(
         &self,
-        items: &mut [(Room, RoomRole, MemberStatus, i32)],
+        items: &mut [(Room, RoomRole, i32)],
     ) -> Result<()> {
-        let room_ids = items
-            .iter()
-            .map(|(room, _, _, _)| room.id)
-            .collect::<Vec<_>>();
+        let room_ids = items.iter().map(|(room, _, _)| room.id).collect::<Vec<_>>();
         let labels = self
             .taxonomy_repo
             .labels_for_rooms_eventually_consistent(&room_ids)
             .await?;
-        for (room, _, _, _) in items {
+        for (room, _, _) in items {
             room.labels = labels.get(&room.id).cloned().unwrap_or_default();
         }
         Ok(())

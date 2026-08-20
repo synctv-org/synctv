@@ -570,16 +570,6 @@ impl StreamMessageHandler {
         self.connection_id.as_str()
     }
 
-    /// Invalidate the membership cache entry for a specific user in a room.
-    ///
-    /// Called when a `KickUser` or `KickUserFromRoom` admin event is received,
-    /// ensuring that the heartbeat check will re-query the database on the next
-    /// tick instead of trusting the stale cached "member" status.
-    pub fn invalidate_membership_cache(&self, room_id: &RoomId, user_id: &UserId) {
-        let cache_key = (*room_id, *user_id);
-        self.membership_cache.invalidate(&cache_key);
-    }
-
     fn public_room_id(&self) -> Result<String, String> {
         self.public_id_codec
             .encode_room_id(self.room_id)
@@ -2822,7 +2812,8 @@ impl StreamMessageHandler {
 
 impl StreamMessageHandler {
     /// Handle incoming client message with all validations
-    pub async fn handle_client_message(&self, msg: &ClientMessage) -> Result<(), String> {
+    #[cfg(test)]
+    async fn handle_client_message(&self, msg: &ClientMessage) -> Result<(), String> {
         self.handle_client_message_with_control(msg, None).await
     }
 
@@ -2976,18 +2967,6 @@ impl StreamMessageHandler {
         };
 
         self.sender.send(msg)
-    }
-
-    /// Get room ID
-    #[must_use]
-    pub const fn get_room_id(&self) -> &RoomId {
-        &self.room_id
-    }
-
-    /// Get the signed-in user ID for user principals.
-    #[must_use]
-    pub const fn get_user_id(&self) -> Option<UserId> {
-        self.principal.user_id()
     }
 }
 

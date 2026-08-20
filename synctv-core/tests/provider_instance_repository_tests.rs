@@ -6,17 +6,17 @@
 use chrono::Utc;
 use synctv_core::{
     credential_encryption::CredentialEncryption,
-    models::{ProviderInstance, ProviderType, SignupMethod},
+    models::{ProviderInstance, SignupMethod, SourceProvider},
     repository::ProviderInstanceRepository,
     Error,
 };
 use synctv_core_testing::{create_test_pool, create_test_pool_with_db_and_label, err, ok, some};
 
-fn provider_codes(providers: &[ProviderType]) -> Vec<i16> {
+fn provider_codes(providers: &[SourceProvider]) -> Vec<i16> {
     providers
         .iter()
         .copied()
-        .map(ProviderType::as_i16)
+        .map(SourceProvider::as_i16)
         .collect()
 }
 
@@ -43,7 +43,7 @@ fn make_instance(
         timeout: "10s".to_string(),
         tls: false,
         insecure_tls: false,
-        providers: vec![ProviderType::Bilibili],
+        providers: vec![SourceProvider::Bilibili],
         enabled: true,
         created_at: now,
         updated_at: now,
@@ -66,7 +66,7 @@ async fn test_plaintext_jwt_secret_is_not_a_schema_policy() {
         "10s",
         false,
         false,
-        &provider_codes(&[ProviderType::Bilibili]),
+        &provider_codes(&[SourceProvider::Bilibili]),
         true
     )
     .execute(&pool)
@@ -93,7 +93,7 @@ async fn test_plaintext_custom_ca_is_not_a_schema_policy() {
         "10s",
         false,
         false,
-        &provider_codes(&[ProviderType::Bilibili]),
+        &provider_codes(&[SourceProvider::Bilibili]),
         true
     )
     .execute(&pool)
@@ -122,7 +122,7 @@ async fn test_null_secrets_allowed_by_schema() {
         "10s",
         false,
         false,
-        &provider_codes(&[ProviderType::Bilibili]),
+        &provider_codes(&[SourceProvider::Bilibili]),
         true
     )
     .execute(&pool)
@@ -153,7 +153,7 @@ async fn test_enc_prefixed_secrets_allowed_by_schema() {
         "10s",
         false,
         false,
-        &provider_codes(&[ProviderType::Bilibili]),
+        &provider_codes(&[SourceProvider::Bilibili]),
         true
     )
     .execute(&pool)
@@ -205,7 +205,7 @@ async fn test_delete_referenced_provider_instance_is_rejected() {
             user_id,
             "Remote Folder",
             1.0_f64,
-            ProviderType::Bilibili.as_i16(),
+            SourceProvider::Bilibili.as_i16(),
             serde_json::json!({}),
             "referenced_instance"
         )

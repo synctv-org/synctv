@@ -6,31 +6,6 @@ use crate::{
 };
 
 impl UserService {
-    /// Create a user with a specific role.
-    pub async fn create_user_with_role(
-        &self,
-        username: String,
-        email: Option<String>,
-        role: Option<crate::models::UserRole>,
-    ) -> Result<User> {
-        self.create_user_with_role_and_status(username, email, role, None, None)
-            .await
-    }
-
-    pub async fn create_user_with_role_and_status(
-        &self,
-        username: String,
-        email: Option<String>,
-        role: Option<crate::models::UserRole>,
-        status: Option<crate::models::UserStatus>,
-        banned_by: Option<&UserId>,
-    ) -> Result<User> {
-        self.create_user_with_optional_direct_password(
-            username, email, None, role, status, banned_by,
-        )
-        .await
-    }
-
     pub async fn create_user_with_optional_direct_password(
         &self,
         username: String,

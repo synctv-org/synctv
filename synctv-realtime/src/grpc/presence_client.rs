@@ -5,14 +5,13 @@ use std::time::Duration;
 use futures::{stream, StreamExt};
 use moka::sync::Cache;
 use synctv_cluster::discovery::{ClusterNodeDirectory, NodeInfo};
-use synctv_core::models::{RoomId, UserId};
+use synctv_core::models::UserId;
 use tonic::transport::{Channel, Endpoint};
 use tracing::{debug, warn};
 
 use super::proto::{
     realtime_presence_service_client::RealtimePresenceServiceClient as GrpcClient,
-    GetRoomConnectionsRequest, GetRoomConnectionsResponse, GetUserOnlineStatusRequest,
-    GetUserOnlineStatusResponse, RoomConnection, UserOnlineStatus,
+    GetUserOnlineStatusRequest, GetUserOnlineStatusResponse, UserOnlineStatus,
 };
 use crate::error::{Error, Result};
 
@@ -126,11 +125,6 @@ impl RealtimePresenceClient {
         let cache_key = Self::channel_cache_key(node_id, address);
         self.channels.invalidate(&cache_key);
         debug!(node_id = %node_id, address = %address, "Invalidated cached realtime gRPC channel");
-    }
-
-    pub fn invalidate_all_channels(&self) {
-        self.channels.invalidate_all();
-        debug!("Invalidated all cached realtime gRPC channels");
     }
 
     fn attach_secret<T>(&self, request: &mut tonic::Request<T>) -> Result<()> {
@@ -281,44 +275,6 @@ impl RealtimePresenceClient {
             .map_err(|error| {
                 Error::Rpc(format!(
                     "Realtime GetUserOnlineStatus RPC failed for {address}: {error}"
-                ))
-            })
-    }
-
-    pub async fn fan_out_room_connections(
-        &self,
-        room_id: RoomId,
-    ) -> Result<FanOutResult<Vec<RoomConnection>>> {
-        let room_id = room_id.as_i64();
-        self.fan_out(
-            "RealtimePresence/GetRoomConnections",
-            |node_id, address| async move {
-                self.query_room_connections_single(&node_id, &address, room_id)
-                    .await
-            },
-            |response| response.connections,
-        )
-        .await
-    }
-
-    async fn query_room_connections_single(
-        &self,
-        node_id: &str,
-        address: &str,
-        room_id: i64,
-    ) -> Result<GetRoomConnectionsResponse> {
-        let mut request = tonic::Request::new(GetRoomConnectionsRequest { room_id });
-        self.attach_secret(&mut request)?;
-        let channel = self.get_channel(node_id, address).await?;
-        let mut client = GrpcClient::new(channel);
-
-        client
-            .get_room_connections(request)
-            .await
-            .map(tonic::Response::into_inner)
-            .map_err(|error| {
-                Error::Rpc(format!(
-                    "Realtime GetRoomConnections RPC failed for {address}: {error}"
                 ))
             })
     }

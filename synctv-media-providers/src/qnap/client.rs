@@ -6,8 +6,7 @@ use serde::de::DeserializeOwned;
 use url::Url;
 
 use super::types::{
-    QnapHardwareTranscode, QnapList, QnapLogin, QnapShare, QnapStatus, QnapTranscodeEstimate,
-    QnapTranscodeResolution,
+    QnapHardwareTranscode, QnapList, QnapLogin, QnapShare, QnapStatus, QnapTranscodeResolution,
 };
 use crate::{fetch_json, ProviderClientError, PROVIDER_USER_AGENT};
 
@@ -226,25 +225,6 @@ impl QnapClient {
         Self::json(self.request(
             "/cgi-bin/filemanager/utilRequest.cgi",
             &[("func", "hwts"), ("sid", sid)],
-        ))
-        .await
-    }
-
-    pub async fn estimate_transcode(
-        &self,
-        sid: &str,
-        path: &str,
-    ) -> Result<QnapTranscodeEstimate, ProviderClientError> {
-        let (parent, file_name) = split_file_path(path)?;
-        Self::json(self.request(
-            "/cgi-bin/filemanager/utilRequest.cgi",
-            &[
-                ("func", "est_transcode"),
-                ("subfunc", "dryrun"),
-                ("sid", sid),
-                ("path", parent),
-                ("filename", file_name),
-            ],
         ))
         .await
     }

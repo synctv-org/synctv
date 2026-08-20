@@ -514,7 +514,7 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
         .create(&make_user("api_dynamic_owner"))
         .await
         .unwrap();
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "API Dynamic Playback".to_string(),
             String::new(),
@@ -653,7 +653,7 @@ async fn test_list_playlist_items_returns_current_path_for_dynamic_playlist() {
         .create(&make_user("api_dynamic_path_owner"))
         .await
         .unwrap();
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "API Dynamic Path".to_string(),
             String::new(),
@@ -761,7 +761,7 @@ async fn test_dynamic_playlist_get_playback_uses_bound_provider_instance() {
         .create(&make_user("api_dynamic_bound_owner"))
         .await
         .unwrap();
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "API Dynamic Bound Playback".to_string(),
             String::new(),
@@ -863,7 +863,7 @@ async fn test_static_provider_playback_with_signing_key_uses_provider_store_regi
         .create(&make_user("api_playback_provider_owner"))
         .await
         .unwrap();
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "API Signed Provider Playback".to_string(),
             String::new(),
@@ -986,7 +986,7 @@ async fn test_get_playback_without_active_media_returns_idle_playback_info() {
         .create(&make_user("api_idle_playback_owner"))
         .await
         .unwrap();
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "API Idle Playback".to_string(),
             String::new(),
@@ -1078,7 +1078,7 @@ async fn test_get_playback_returns_state_when_playback_info_generation_fails() {
         .create(&make_user("api_playback_state_only"))
         .await
         .unwrap();
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "API Playback State Only".to_string(),
             String::new(),
@@ -1187,7 +1187,7 @@ async fn test_start_playback_returns_error_for_invalid_live_proxy_source_config(
         .create(&make_user("api_playback_invalid_live_proxy"))
         .await
         .unwrap();
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "API Invalid Live Proxy Playback".to_string(),
             String::new(),
@@ -1285,7 +1285,7 @@ async fn test_dynamic_playlist_list_items_uses_bound_provider_instance() {
         .create(&make_user("api_dynamic_bound_list_owner"))
         .await
         .unwrap();
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "API Dynamic Bound Browse".to_string(),
             String::new(),
@@ -1380,7 +1380,7 @@ async fn test_list_playlist_items_allows_room_root_with_empty_playlist_id() {
         .create(&make_user("api_root_items_owner"))
         .await
         .unwrap();
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "API Root Items".to_string(),
             String::new(),
@@ -1391,36 +1391,21 @@ async fn test_list_playlist_items_allows_room_root_with_empty_playlist_id() {
         .await
         .unwrap();
 
-    let root_media = synctv_core::models::Media::from_direct_single_mode(
-        None,
-        room.id,
-        Some(owner.id),
-        "Root Media".to_string(),
-        "direct",
-        synctv_core::models::PlaybackInfo {
-            thumbnail: None,
-            medias: vec![synctv_core::models::PlaybackMedia {
-                name: String::new(),
-                format: "mp4".to_string(),
-                expire_at: None,
-                metadata: None,
-                p2p_swarm_id: None,
-                provider: synctv_core::models::PlaybackMediaProvider::DirectUrl(
-                    synctv_core::models::PlaybackDirectUrlMedia::Direct {
-                        url: "https://example.com/root.mp4".to_string(),
-                        headers: std::collections::HashMap::new(),
-                    },
-                ),
-            }],
-            default_media_index: None,
-            subtitles: Vec::new(),
-            default_subtitle_index: None,
-            danmakus: Vec::new(),
-            default_danmaku_index: None,
+    let root_media = synctv_core::models::Media::from_provider_with_params(
+        synctv_core::models::FromProviderParams {
+            playlist_id: None,
+            room_id: room.id,
+            creator_id: Some(owner.id),
+            name: "Root Media".to_string(),
+            description: String::new(),
+            source_config: synctv_core_testing::direct_url_media_source_config(
+                "https://example.com/root.mp4",
+            ),
+            source_provider: synctv_core::models::SourceProvider::DirectUrl,
+            provider_instance_name: None,
+            position: 0.0,
         },
-        0.0,
-    )
-    .expect("direct media should build");
+    );
     synctv_core::repository::MediaRepository::new(pool.clone())
         .create(&root_media)
         .await

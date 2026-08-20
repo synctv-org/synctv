@@ -100,7 +100,7 @@ async fn test_strong_read_uses_l1_when_version_satisfies_fence() {
             .await,
         "owner should be created",
     );
-    let (room, _) = ok(
+    let room = ok(
         room_service
             .create_room(
                 "Room Settings Fence L1".to_string(),
@@ -176,7 +176,7 @@ async fn test_strong_read_uses_l1_with_local_version_fence() {
             .await,
         "owner should be created",
     );
-    let (room, _) = ok(
+    let room = ok(
         room_service
             .create_room(
                 "Room Settings Local Fence".to_string(),
@@ -248,7 +248,7 @@ async fn test_settings_write_uses_redis_allocated_version() {
             .await,
         "owner should be created",
     );
-    let (room, _) = ok(
+    let room = ok(
         room_service
             .create_room(
                 "Room Settings Allocator".to_string(),
@@ -338,7 +338,7 @@ async fn test_settings_reserve_repairs_stale_committed_fence() {
             .await,
         "owner should be created",
     );
-    let (room, _) = ok(
+    let room = ok(
         room_service
             .create_room(
                 "Room Settings Stale Reserve".to_string(),
@@ -406,7 +406,7 @@ async fn test_settings_write_does_not_retry_committed_update_after_l2_failure() 
             .await,
         "owner should be created",
     );
-    let (room, _) = ok(
+    let room = ok(
         room_service
             .create_room(
                 "Room Settings L2 Failure".to_string(),
@@ -462,7 +462,7 @@ async fn test_db_refresh_seeds_missing_local_version_fence() {
             .await,
         "owner should be created",
     );
-    let (room, _) = ok(
+    let room = ok(
         room_service
             .create_room(
                 "Room Settings Seed Fence".to_string(),
@@ -541,7 +541,7 @@ async fn test_delete_writes_versioned_default_settings() {
             .await,
         "owner should be created",
     );
-    let (room, _) = ok(
+    let room = ok(
         room_service
             .create_room(
                 "Room Settings Delete Default".to_string(),
@@ -857,7 +857,7 @@ async fn test_get_with_version_returns_current_snapshot_version() {
             .await,
         "owner should be created",
     );
-    let (room, _) = ok(
+    let room = ok(
         room_service
             .create_room(
                 "Room Settings Version".to_string(),
@@ -925,7 +925,7 @@ async fn test_local_fence_rejects_stale_l1_after_service_settings_change() {
             .await,
         "owner should be created",
     );
-    let (room, _) = ok(
+    let room = ok(
         room_service
             .create_room(
                 "Room Settings Strong".to_string(),

@@ -3,7 +3,7 @@ use std::net::IpAddr;
 use synctv_common::ExecutionControl;
 
 use crate::{
-    models::{User, UserId},
+    models::UserId,
     service::{
         user::{
             session_types::{AuthFactorMethod, AuthenticatedLogin},
@@ -15,19 +15,6 @@ use crate::{
 };
 
 impl UserService {
-    pub async fn start_verified_external_login_with_control(
-        &self,
-        identifier: &str,
-        client_ip: Option<IpAddr>,
-        control: Option<&ExecutionControl>,
-    ) -> Result<Option<User>> {
-        let normalized_identifier = Self::normalize_login_identifier(identifier);
-        self.brute_force
-            .check_allowed_with_control(&normalized_identifier, client_ip, control)
-            .await?;
-        self.get_by_login_identifier(&normalized_identifier).await
-    }
-
     pub(crate) async fn check_passkey_discoverable_login_allowed_with_control(
         &self,
         client_ip: Option<IpAddr>,
@@ -57,10 +44,6 @@ impl UserService {
         self.brute_force
             .record_ip_failure_with_control(client_ip, control)
             .await
-    }
-
-    pub fn normalize_external_login_identifier(identifier: &str) -> String {
-        Self::normalize_login_identifier(identifier)
     }
 
     pub async fn record_external_login_failure_with_control(

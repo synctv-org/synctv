@@ -20,14 +20,6 @@ pub struct ClusterServer {
 
 impl ClusterServer {
     #[must_use]
-    pub fn new<N>(node_registry: Arc<N>) -> Self
-    where
-        N: ClusterNodeDirectory + 'static,
-    {
-        Self::from_runtime(node_registry)
-    }
-
-    #[must_use]
     pub fn from_runtime(node_registry: Arc<dyn ClusterNodeDirectory>) -> Self {
         Self {
             node_registry,

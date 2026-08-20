@@ -75,12 +75,6 @@ impl ExecutionControl {
         }
     }
 
-    #[must_use]
-    pub fn without_deadline(mut self) -> Self {
-        self.deadline = None;
-        self
-    }
-
     pub fn cancel(&self) {
         self.cancellation.cancel();
     }

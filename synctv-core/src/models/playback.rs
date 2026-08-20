@@ -24,12 +24,6 @@ i16_enum!(PlaybackKind, "invalid playback kind", {
 });
 
 impl PlaybackKind {
-    /// Whether a newly selected source should enter at its live edge.
-    #[must_use]
-    pub const fn starts_at_live_edge(self) -> bool {
-        matches!(self, Self::Live)
-    }
-
     /// Whether the source exposes a seekable presentation timeline.
     #[must_use]
     pub const fn is_seekable(self) -> bool {
@@ -326,7 +320,6 @@ mod tests {
         assert!(!PlaybackKind::Live.accepts_position_updates());
         assert!(PlaybackKind::Regular.supports_duration());
         assert!(PlaybackKind::Regular.allows_auto_advance());
-        assert!(PlaybackKind::Live.starts_at_live_edge());
         assert!(!PlaybackKind::Live.is_seekable());
         assert!(PlaybackKind::Regular.is_seekable());
     }

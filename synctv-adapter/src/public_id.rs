@@ -229,12 +229,6 @@ impl PublicIdCodec {
         })
     }
 
-    #[cfg(test)]
-    #[must_use]
-    pub fn default_for_tests() -> Self {
-        Self::plain()
-    }
-
     pub fn encode<T>(&self, id: T) -> Result<String, String>
     where
         T: PublicIdType,
@@ -423,7 +417,7 @@ mod tests {
 
     #[test]
     fn default_codec_uses_prefixed_decimal_ids() {
-        let codec = PublicIdCodec::default_for_tests();
+        let codec = PublicIdCodec::plain();
 
         assert_eq!(
             ok(
@@ -499,7 +493,7 @@ mod tests {
 
     #[test]
     fn default_decode_requires_correct_prefix() {
-        let codec = PublicIdCodec::default_for_tests();
+        let codec = PublicIdCodec::plain();
 
         assert_eq!(
             ok(codec.decode_user_id("usr_1"), "user ID should decode"),
@@ -515,7 +509,7 @@ mod tests {
 
     #[test]
     fn default_decode_rejects_invalid_payload() {
-        let codec = PublicIdCodec::default_for_tests();
+        let codec = PublicIdCodec::plain();
 
         assert!(codec.decode_user_id("usr_").is_err());
         assert!(codec.decode_user_id("usr_0").is_err());
@@ -577,7 +571,7 @@ mod tests {
 
     #[test]
     fn generic_public_ids_are_domain_separated_by_prefix() {
-        let codec = PublicIdCodec::default_for_tests();
+        let codec = PublicIdCodec::plain();
         let review = ok(
             codec.encode_review_request_id(id::<ReviewRequestId>(1)),
             "review request ID should encode",

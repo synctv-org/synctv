@@ -1,10 +1,6 @@
 use {
-    crate::bytesio::bytes_errors::BytesReadError,
-    crate::flv::amf0::errors::Amf0ReadError,
-    crate::rtmp::{
-        protocol_control_messages::errors::ProtocolControlMessageReaderError,
-        user_control_messages::errors::EventMessagesError,
-    },
+    crate::bytesio::bytes_errors::BytesReadError, crate::flv::amf0::errors::Amf0ReadError,
+    crate::rtmp::user_control_messages::errors::EventMessagesError,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -17,8 +13,6 @@ pub enum MessageErrorValue {
     Amf0ReadError(Amf0ReadError),
     #[error("unknown RTMP message type {0}")]
     UnknownMessageType(u8),
-    #[error("protocol control message read error: {0}")]
-    ProtocolControlMessageReaderError(ProtocolControlMessageReaderError),
     #[error("user control message read error: {0}")]
     EventMessagesError(EventMessagesError),
 }
@@ -47,14 +41,6 @@ impl From<Amf0ReadError> for MessageError {
     fn from(error: Amf0ReadError) -> Self {
         Self {
             value: MessageErrorValue::Amf0ReadError(error),
-        }
-    }
-}
-
-impl From<ProtocolControlMessageReaderError> for MessageError {
-    fn from(error: ProtocolControlMessageReaderError) -> Self {
-        Self {
-            value: MessageErrorValue::ProtocolControlMessageReaderError(error),
         }
     }
 }

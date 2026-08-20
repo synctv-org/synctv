@@ -12,13 +12,6 @@ pub(crate) fn map_api_error(error: &impl ClassifiedError) -> Status {
     classified_error_to_tonic_status(error)
 }
 
-pub(crate) fn map_api_result<T, E>(result: Result<T, E>) -> Result<T, Status>
-where
-    E: ClassifiedError,
-{
-    result.map_err(|error| map_api_error(&error))
-}
-
 pub(crate) fn map_classified_result<T, E>(result: Result<T, E>) -> Result<T, Status>
 where
     E: ClassifiedError,

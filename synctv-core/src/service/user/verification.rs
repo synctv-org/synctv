@@ -222,23 +222,6 @@ impl UserService {
         Ok((access_token, refresh_token))
     }
 
-    pub async fn login_with_verified_email(
-        &self,
-        user_id: &UserId,
-        expected_email: &str,
-        brute_force_key: &str,
-        client_ip: Option<IpAddr>,
-    ) -> Result<AuthenticatedLogin> {
-        self.login_with_verified_email_with_control(
-            user_id,
-            expected_email,
-            brute_force_key,
-            client_ip,
-            None,
-        )
-        .await
-    }
-
     pub async fn login_with_verified_email_with_control(
         &self,
         user_id: &UserId,
@@ -274,30 +257,6 @@ impl UserService {
             .await?;
         tx.commit().await?;
         Ok(login)
-    }
-
-    pub async fn get_mfa_challenge(&self, session_id: &str) -> Result<MfaChallenge> {
-        let session = self
-            .mfa_session_store
-            .get(session_id)
-            .await?
-            .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
-        let user = self
-            .repository
-            .get_by_id(&session.user_id)
-            .await?
-            .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
-        Self::validate_user_access(&user)?;
-        let auth_factors = self
-            .user_preferences_repository
-            .auth_factors(&user.id)
-            .await?;
-        let available_methods = Self::available_mfa_methods(&auth_factors, session.first_factor);
-        if available_methods.is_empty() {
-            return Err(Error::Authentication("Authentication failed".to_string()));
-        }
-        let email = self.user_email_repository.get_email(&user.id).await?;
-        Self::mfa_challenge_from_session(session_id, &session, email.as_deref(), available_methods)
     }
 
     pub async fn get_mfa_session_user_for_method(

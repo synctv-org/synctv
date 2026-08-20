@@ -21,3 +21,4 @@ pub use relay::{
     PublisherControlHandle, PublisherStopOutcome, PublisherStopRequest, RegistryConnectionRuntime,
     StreamGeneration, StreamLifecycleEvent, StreamRegistryTrait, PUBLISHER_TTL_SECS,
 };
+pub use util::validate_hls_segment_name;

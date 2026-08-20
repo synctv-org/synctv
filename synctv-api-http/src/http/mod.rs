@@ -261,12 +261,11 @@ static X_FORWARDED_PROTO: LazyLock<HeaderName> =
     LazyLock::new(|| HeaderName::from_static("x-forwarded-proto"));
 
 pub use synctv_api_common::app_state::{
-    build_app_state, create_app_state_from_options, AppState, ProxyCacheLifecycleRuntime,
-    RouterOptions,
+    build_app_state, AppState, ProxyCacheLifecycleRuntime, RouterOptions,
 };
 
 pub fn create_router_from_options(options: RouterOptions) -> anyhow::Result<axum::Router> {
-    let state = create_app_state_from_options(options)?;
+    let state = build_app_state(options)?;
     create_router_from_shared_state(&state)
 }
 
@@ -279,7 +278,7 @@ pub fn create_router_from_shared_state(state: &AppState) -> anyhow::Result<axum:
 pub fn create_router_with_state_from_options(
     options: RouterOptions,
 ) -> anyhow::Result<(axum::Router, AppState)> {
-    let state = create_app_state_from_options(options)?;
+    let state = build_app_state(options)?;
     let router = create_router_from_shared_state(&state)?;
     Ok((router, state))
 }

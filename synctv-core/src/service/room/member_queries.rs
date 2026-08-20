@@ -1,7 +1,5 @@
 use crate::{
-    models::{
-        PageParams, Room, RoomId, RoomMember, RoomMemberListQuery, RoomMemberWithUser, UserId,
-    },
+    models::{Room, RoomId, RoomMember, RoomMemberListQuery, RoomMemberWithUser, UserId},
     Error, Result,
 };
 
@@ -28,17 +26,6 @@ impl RoomService {
     /// Get room members with user info.
     pub async fn get_room_members(&self, room_id: &RoomId) -> Result<Vec<RoomMemberWithUser>> {
         self.member_service.list_members(room_id).await
-    }
-
-    /// Get room members with database-level pagination.
-    pub async fn get_room_members_paginated(
-        &self,
-        room_id: &RoomId,
-        pagination: PageParams,
-    ) -> Result<(Vec<RoomMemberWithUser>, i64)> {
-        self.member_service
-            .list_members_paginated(room_id, pagination)
-            .await
     }
 
     pub async fn get_room_members_query(

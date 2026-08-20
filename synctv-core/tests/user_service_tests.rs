@@ -12,9 +12,9 @@ use sqlx::PgPool;
 use synctv_core::{
     cache::{KeyBuilder, LocalVersionFenceStore, UsernameCache, VersionFenceStore},
     models::{
-        DeletionSource, Media, MediaId, MemberStatus, NotificationType, Playlist, PlaylistId, Room,
-        RoomId, RoomMember, RoomStatus, SignupMethod, SourceProvider, User, UserId, UserRole,
-        UserStatus, OPAQUE_CIPHERSUITE_RISTRETTO255_SHA512_ARGON2ID, OPAQUE_SERVER_SETUP_VERSION,
+        DeletionSource, Media, MediaId, NotificationType, Playlist, PlaylistId, Room, RoomId,
+        RoomMember, RoomStatus, SignupMethod, SourceProvider, User, UserId, UserRole, UserStatus,
+        OPAQUE_CIPHERSUITE_RISTRETTO255_SHA512_ARGON2ID, OPAQUE_SERVER_SETUP_VERSION,
     },
     repository::{
         ChatRepository, MediaRepository, PlaylistRepository, RoomMemberRepository, RoomRepository,
@@ -878,7 +878,6 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
             room_id: foreign_room.id,
             user_id: doomed_user.id,
             role: synctv_core::models::RoomRole::Member,
-            status: MemberStatus::Active,
             added_permissions: 0,
             removed_permissions: 0,
             admin_added_permissions: 0,
@@ -2647,10 +2646,11 @@ async fn assert_refresh_token_rejects_unbound_email_identity(pool: PgPool) {
     .await
     .checked("create user with password");
     let refresh_token = match service
-        .login_with_verified_email(
+        .login_with_verified_email_with_control(
             &user.id,
             "email_refresh_binding@example.com",
             "email-refresh-binding",
+            None,
             None,
         )
         .await

@@ -145,7 +145,7 @@ async fn test_playback_state_l1_cache_hit() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "L1 Hit Room".to_string(),
             String::new(),
@@ -204,7 +204,7 @@ async fn test_playback_state_l1_miss_hits_l2() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "L2 Hit Room".to_string(),
             String::new(),
@@ -263,7 +263,7 @@ async fn test_playback_state_l2_miss_reads_from_db() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "DB Fallback Room".to_string(),
             String::new(),
@@ -324,7 +324,7 @@ async fn test_playback_state_get_state_persists_missing_row() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Persist Missing Playback Row".to_string(),
             String::new(),
@@ -389,7 +389,7 @@ async fn test_playback_state_cross_replica_consistency() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Cross Replica Room".to_string(),
             String::new(),
@@ -466,7 +466,7 @@ async fn test_playback_state_cache_invalidation_on_update() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Cache Inv Room".to_string(),
             String::new(),
@@ -522,7 +522,7 @@ async fn test_playback_get_state_bypasses_stale_l1_without_invalidation() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Strong Playback Room".to_string(),
             String::new(),
@@ -695,7 +695,7 @@ async fn test_playback_state_singleflight_prevents_thundering_herd() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "SingleFlight Room".to_string(),
             String::new(),
@@ -764,7 +764,7 @@ async fn test_playback_state_l2_fallback_when_pubsub_fails() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "L2 Fallback Room".to_string(),
             String::new(),
@@ -869,7 +869,7 @@ async fn test_playback_state_cross_replica_invalidation_clears_l2() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Invalidate L2 Playback".to_string(),
             String::new(),

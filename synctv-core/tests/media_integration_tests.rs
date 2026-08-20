@@ -5,8 +5,8 @@ use chrono::Utc;
 use sqlx::PgPool;
 use synctv_core::{
     models::{
-        DeletionSource, Media, MediaId, Playlist, PlaylistId, ProviderType, Room, RoomId,
-        RoomMember, RoomRole, RoomStatus, SourceProvider, User, UserId, UserRole, UserStatus,
+        DeletionSource, Media, MediaId, Playlist, PlaylistId, Room, RoomId, RoomMember, RoomRole,
+        RoomStatus, SourceProvider, User, UserId, UserRole, UserStatus,
     },
     repository::{
         MediaRepository, PlaylistRepository, RoomMemberRepository, RoomRepository, UserRepository,
@@ -387,7 +387,7 @@ async fn test_media_can_exist_at_room_root_without_playlist() {
         owner.id.as_i64(),
         "root-media.mp4",
         0.0,
-        ProviderType::DirectUrl.as_i16(),
+        SourceProvider::DirectUrl.as_i16(),
         synctv_core_testing::media_source_config_json(
             synctv_core_testing::direct_url_media_source_config("https://example.com/root.mp4"),
         ),

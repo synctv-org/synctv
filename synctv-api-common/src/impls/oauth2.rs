@@ -380,34 +380,6 @@ impl OAuth2ApiImpl {
         }
     }
 
-    /// Get authorization URL for `OAuth2` login flow
-    ///
-    /// Returns the URL to redirect the user to for authorization.
-    /// The frontend should redirect the browser to this URL.
-    pub async fn get_authorization_url(
-        &self,
-        provider: &str,
-        redirect_url: Option<String>,
-    ) -> Result<(String, String), ApiError> {
-        self.get_authorization_url_with_control(provider, redirect_url, None)
-            .await
-    }
-
-    pub async fn get_authorization_url_with_control(
-        &self,
-        provider: &str,
-        redirect_url: Option<String>,
-        control: Option<&ExecutionControl>,
-    ) -> Result<(String, String), ApiError> {
-        let (auth_url, state) = self
-            .oauth2_service
-            .get_authorization_url_with_control(provider, redirect_url, control)
-            .await
-            .map_err(ApiError::from)?;
-
-        Ok((auth_url, state))
-    }
-
     pub async fn get_authorization_url_response_with_control(
         &self,
         req: GetAuthorizationUrlRequest,
@@ -442,59 +414,6 @@ impl OAuth2ApiImpl {
             operation: Self::oauth2_operation_to_proto(OAuth2Operation::Login),
             nonce: prepared.oauth_state.nonce,
         })
-    }
-
-    /// Get authorization URL for binding `OAuth2` provider to existing user
-    ///
-    /// Requires authentication. The `user_id` should come from the JWT token.
-    ///
-    /// Security: Returns a generic "Authentication failed" error for both
-    /// non-existent users and disabled accounts to prevent user enumeration attacks.
-    pub async fn get_authorization_url_for_bind(
-        &self,
-        user_id: &UserId,
-        provider: &str,
-        redirect_url: Option<String>,
-    ) -> Result<(String, String), ApiError> {
-        self.get_authorization_url_for_bind_with_control(user_id, provider, redirect_url, None)
-            .await
-    }
-
-    pub async fn get_authorization_url_for_bind_with_control(
-        &self,
-        user_id: &UserId,
-        provider: &str,
-        redirect_url: Option<String>,
-        control: Option<&ExecutionControl>,
-    ) -> Result<(String, String), ApiError> {
-        // Verify user exists and is not banned/deleted
-        // Use generic error message to prevent user enumeration attacks
-        let user = self
-            .user_service
-            .get_user(user_id)
-            .await
-            .map_err(Self::map_bind_user_lookup_error)?;
-
-        if user.is_deleted() || user.status == UserStatus::Banned {
-            // Use the same generic error to prevent distinguishing between
-            // "user not found" and "user is disabled"
-            return Err(ApiError::Authentication(
-                "Authentication failed".to_string(),
-            ));
-        }
-
-        let (auth_url, state) = self
-            .oauth2_service
-            .get_authorization_url_with_user_with_control(
-                provider,
-                redirect_url,
-                Some(*user_id),
-                control,
-            )
-            .await
-            .map_err(ApiError::from)?;
-
-        Ok((auth_url, state))
     }
 
     pub async fn get_authorization_url_for_bind_response_with_control(
@@ -550,32 +469,6 @@ impl OAuth2ApiImpl {
             operation: Self::oauth2_operation_to_proto(prepared.oauth_state.operation),
             nonce: prepared.oauth_state.nonce,
         })
-    }
-
-    /// Exchange authorization code for JWT token
-    ///
-    /// Frontend calls this after receiving code and state from `OAuth2` provider redirect.
-    ///
-    /// For login flow (no `target_user_id` in state):
-    /// - If user exists: log them in
-    /// - If user doesn't exist: create new user account
-    ///
-    /// For bind flow (`target_user_id` present in state):
-    /// - Binds the `OAuth2` provider to the existing user account
-    /// - Returns empty tokens (user is already logged in)
-    ///
-    /// The `current_user_id` parameter is required for the bind flow to verify that
-    /// only the intended user (the one who initiated the bind) can complete it.
-    /// Pass `None` for login-only flows (no authentication needed).
-    pub async fn exchange_authorization_code(
-        &self,
-        code: &str,
-        state: &str,
-        current_user_id: Option<&UserId>,
-        client_ip: Option<std::net::IpAddr>,
-    ) -> Result<ExchangeCodeResult, ApiError> {
-        self.exchange_authorization_code_with_control(code, state, current_user_id, client_ip, None)
-            .await
     }
 
     pub async fn exchange_authorization_code_with_control(

@@ -1,8 +1,5 @@
 use {
-    super::{
-        bits_errors::{BitError, BitErrorValue},
-        bytes_writer::BytesWriter,
-    },
+    super::{bits_errors::BitError, bytes_writer::BytesWriter},
     bytes::BytesMut,
 };
 
@@ -10,10 +7,6 @@ pub struct BitsWriter {
     writer: BytesWriter,
     cur_byte: u8,
     cur_bit_num: u8,
-}
-
-fn usize_to_u8(value: usize) -> Result<u8, BitError> {
-    u8::try_from(value).map_err(|_| BitErrorValue::TooBig.into())
 }
 
 impl BitsWriter {
@@ -44,17 +37,6 @@ impl BitsWriter {
         Ok(())
     }
 
-    pub fn write_8bit(&mut self, b: u8) -> Result<(), BitError> {
-        if self.cur_bit_num != 0 {
-            return Err(BitError {
-                value: BitErrorValue::CannotWrite8Bit,
-            });
-        }
-
-        self.writer.write_u8(b)?;
-        Ok(())
-    }
-
     fn flush(&mut self) -> Result<(), BitError> {
         if self.cur_bit_num == 8 {
             self.writer.write_u8(self.cur_byte)?;
@@ -62,51 +44,6 @@ impl BitsWriter {
             self.cur_byte = 0;
         } else {
             tracing::trace!("cannot flush: {}", self.cur_bit_num);
-        }
-
-        Ok(())
-    }
-
-    // 0x02 4
-    pub fn write_n_bits(&mut self, data: u64, bit_num: usize) -> Result<(), BitError> {
-        if bit_num > 64 {
-            return Err(BitError {
-                value: BitErrorValue::TooBig,
-            });
-        }
-        let mut bit_num_mut = bit_num;
-        let mut data_mut = data;
-
-        //read left bits  for current byte
-        data_mut <<= 64 - bit_num;
-        self.cur_byte |=
-            u8::try_from(data_mut >> (56 + self.cur_bit_num)).map_err(|_| BitErrorValue::TooBig)?;
-
-        let cur_byte_left_bit_num = 8 - self.cur_bit_num as usize;
-        if bit_num_mut >= cur_byte_left_bit_num {
-            // the bits for current byte is full, then flush
-            data_mut <<= cur_byte_left_bit_num;
-            bit_num_mut -= cur_byte_left_bit_num;
-            self.cur_bit_num = 8;
-            self.flush()?;
-        } else {
-            // not full, only update bit num
-            self.cur_bit_num += usize_to_u8(bit_num_mut)?;
-            return Ok(());
-        }
-
-        while bit_num_mut > 0 {
-            self.cur_byte = u8::try_from(data_mut >> 56).map_err(|_| BitErrorValue::TooBig)?;
-
-            if bit_num_mut > 8 {
-                self.cur_bit_num = 8;
-                self.flush()?;
-                data_mut <<= 8;
-                bit_num_mut -= 8;
-            } else {
-                self.cur_bit_num = usize_to_u8(bit_num_mut)?;
-                break;
-            }
         }
 
         Ok(())
@@ -159,27 +96,6 @@ mod tests {
 
         bit_writer.write_bit(1).unwrap();
         bit_writer.write_bit(1).unwrap();
-
-        assert_eq!(bit_writer.cur_bit_num, 2);
-        assert_eq!(bit_writer.cur_byte, 0xC0); //0x11000000
-    }
-
-    #[test]
-    fn test_write_n_bits() {
-        let bytes_writer = BytesWriter::new();
-        let mut bit_writer = BitsWriter::new(bytes_writer);
-
-        bit_writer.write_bit(1).unwrap();
-        bit_writer.write_bit(1).unwrap();
-        bit_writer.write_bit(0).unwrap();
-
-        bit_writer.write_n_bits(0x03, 7).unwrap();
-
-        let byte = bit_writer.get_current_bytes();
-
-        //0x11000000 0x11
-
-        assert_eq!(byte.to_vec()[0], 0xC0); //0x11000000
 
         assert_eq!(bit_writer.cur_bit_num, 2);
         assert_eq!(bit_writer.cur_byte, 0xC0); //0x11000000

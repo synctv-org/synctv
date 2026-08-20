@@ -401,9 +401,7 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?
         {
-            if member.is_active {
-                candidate_ids.push(member.user_id);
-            }
+            candidate_ids.push(member.user_id);
         }
 
         let mut seen = std::collections::HashSet::new();

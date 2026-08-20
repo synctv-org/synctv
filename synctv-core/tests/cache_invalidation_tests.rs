@@ -774,7 +774,6 @@ async fn test_cache_invalidation_after_commit() {
             room_id,
             user_id,
             role: synctv_core::models::RoomRole::Creator,
-            status: synctv_core::models::MemberStatus::Active,
             added_permissions: 0,
             removed_permissions: 0,
             admin_added_permissions: 0,

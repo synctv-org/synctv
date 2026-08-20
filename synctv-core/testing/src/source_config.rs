@@ -18,16 +18,6 @@ pub fn media_source_config_json(config: MediaSourceConfig) -> serde_json::Value 
 }
 
 #[must_use]
-pub fn playlist_source_config_json(config: PlaylistSourceConfig) -> serde_json::Value {
-    match serde_json::to_value(config) {
-        Ok(value) => value,
-        Err(error) => std::panic::panic_any(format!(
-            "test playlist source_config should serialize: {error}"
-        )),
-    }
-}
-
-#[must_use]
 pub fn direct_url_media_source_config(url: impl Into<String>) -> MediaSourceConfig {
     direct_url_media_source_config_with_headers(url, HashMap::new())
 }

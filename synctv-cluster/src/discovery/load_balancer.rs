@@ -122,15 +122,7 @@ impl LoadBalancer {
         }
     }
 
-    /// Attach a health monitor to filter out unhealthy nodes
-    #[must_use]
-    pub fn with_health_monitor<H>(self, monitor: Arc<H>) -> Self
-    where
-        H: ClusterHealthRuntime + 'static,
-    {
-        self.with_health_runtime(monitor)
-    }
-
+    /// Attach a health runtime to filter out unhealthy nodes.
     #[must_use]
     pub fn with_health_runtime(mut self, monitor: Arc<dyn ClusterHealthRuntime>) -> Self {
         self.health_monitor = Some(monitor);
@@ -222,12 +214,6 @@ impl LoadBalancer {
         let nodes = self.get_healthy_nodes().await?;
         Ok(nodes.into_iter().map(|n| n.node_id).collect())
     }
-
-    /// Get count of available healthy nodes
-    pub async fn available_count(&self) -> Result<usize> {
-        let nodes = self.get_healthy_nodes().await?;
-        Ok(nodes.len())
-    }
 }
 
 #[cfg(test)]
@@ -298,7 +284,7 @@ mod tests {
         let registry = make_registry()?;
         let monitor = Arc::new(HealthMonitor::new(Arc::clone(&registry), 60));
         let _lb =
-            LoadBalancer::new(registry, LoadBalancingStrategy::Random).with_health_monitor(monitor);
+            LoadBalancer::new(registry, LoadBalancingStrategy::Random).with_health_runtime(monitor);
         Ok(())
     }
 
@@ -479,7 +465,7 @@ mod tests {
         }
 
         let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::Random)
-            .with_health_monitor(monitor);
+            .with_health_runtime(monitor);
 
         let err = lb
             .select_node_by_id("node-1")
@@ -519,17 +505,6 @@ mod tests {
 
         let available = lb.get_available_nodes().await?;
         assert_eq!(available.len(), 3);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_available_count() -> Result<()> {
-        let registry = make_registry()?;
-        register_nodes(&registry, 4).await;
-        let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::Random);
-
-        let count = lb.available_count().await?;
-        assert_eq!(count, 4);
         Ok(())
     }
 
@@ -583,7 +558,7 @@ mod tests {
         }
 
         let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::RoundRobin)
-            .with_health_monitor(Arc::clone(&monitor));
+            .with_health_runtime(monitor.clone());
 
         // Should never select node-1
         let mut selected: HashSet<String> = HashSet::new();
@@ -614,7 +589,7 @@ mod tests {
         }
 
         let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::Random)
-            .with_health_monitor(monitor);
+            .with_health_runtime(monitor);
 
         let node = lb.select_node().await;
         assert!(
@@ -638,7 +613,7 @@ mod tests {
         monitor.test_set_last_successful_refresh_at(unix_now_secs_for_test()?.saturating_sub(2));
 
         let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::Random)
-            .with_health_monitor(monitor);
+            .with_health_runtime(monitor);
 
         let err = lb
             .select_node()
@@ -658,7 +633,7 @@ mod tests {
 
         let monitor = Arc::new(HealthMonitor::new(Arc::clone(&registry), 60));
         let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::Random)
-            .with_health_monitor(monitor);
+            .with_health_runtime(monitor);
 
         let selected = lb.select_node().await?;
         assert!(
@@ -682,7 +657,7 @@ mod tests {
         }
 
         let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::RoundRobin)
-            .with_health_monitor(monitor);
+            .with_health_runtime(monitor);
 
         let mut selected: HashSet<String> = HashSet::new();
         for _ in 0..20 {

@@ -178,33 +178,6 @@ impl HealthMonitor {
         }
     }
 
-    /// Create a new health monitor with custom probe configuration.
-    ///
-    /// Creates its own independent `CancellationToken`. For integration with an
-    /// application-wide shutdown hierarchy, combine with
-    /// [`with_cancellation_token`](Self::with_cancellation_token) or call
-    /// [`set_cancellation_token`](Self::set_cancellation_token) after construction.
-    #[must_use]
-    pub fn with_probe_config<N>(
-        node_registry: Arc<N>,
-        check_interval_secs: u64,
-        probe_config: HealthProbeConfig,
-    ) -> Self
-    where
-        N: ClusterNodeDirectory + 'static,
-    {
-        Self {
-            node_registry,
-            check_interval_secs,
-            health_status: Arc::new(RwLock::new(std::collections::HashMap::new())),
-            cancel_token: CancellationToken::new(),
-            last_successful_refresh_at: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            probe_config,
-            probe_states: Arc::new(RwLock::new(std::collections::HashMap::new())),
-            join_handle: Mutex::new(None),
-        }
-    }
-
     /// Create a new health monitor that participates in an external shutdown hierarchy
     /// and uses a caller-supplied probe configuration.
     #[must_use]
@@ -647,7 +620,12 @@ mod tests {
             probe_interval_secs: 30,
             cluster_secret: String::new(),
         };
-        let monitor = HealthMonitor::with_probe_config(registry, 10, config);
+        let monitor = HealthMonitor::with_cancellation_token_and_probe_config(
+            registry,
+            10,
+            &CancellationToken::new(),
+            config,
+        );
         assert_eq!(monitor.probe_config.failure_threshold, 5);
         assert_eq!(monitor.probe_config.success_threshold, 3);
         Ok(())

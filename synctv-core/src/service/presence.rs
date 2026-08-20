@@ -203,11 +203,6 @@ impl OnlinePresenceService {
         self.event_tx.subscribe()
     }
 
-    #[must_use]
-    pub fn subscribe_room(&self, _room_id: RoomId) -> broadcast::Receiver<PresenceEvent> {
-        self.subscribe()
-    }
-
     pub async fn register_connection(
         &self,
         connection_id: String,

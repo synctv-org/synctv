@@ -10,8 +10,6 @@ pub mod error_codes {
     pub const UNSPECIFIED: i32 = 0;
 
     pub const UNAUTHENTICATED: i32 = 1000;
-    pub const TOKEN_EXPIRED: i32 = 1001;
-    pub const INVALID_CREDENTIALS: i32 = 1002;
 
     pub const NOT_FOUND: i32 = 2000;
     pub const ALREADY_EXISTS: i32 = 2001;
@@ -19,17 +17,11 @@ pub mod error_codes {
     pub const CONFLICT: i32 = 2003;
 
     pub const INVALID_ARGUMENT: i32 = 3000;
-    pub const INVALID_FORMAT: i32 = 3001;
-    pub const VALUE_TOO_SHORT: i32 = 3002;
-    pub const VALUE_TOO_LONG: i32 = 3003;
-    pub const REQUIRED_FIELD_MISSING: i32 = 3004;
 
     pub const PERMISSION_DENIED: i32 = 4000;
     pub const FORBIDDEN: i32 = 4001;
-    pub const BANNED: i32 = 4002;
 
     pub const INTERNAL_ERROR: i32 = 9000;
-    pub const DATABASE_ERROR: i32 = 9001;
     pub const SERVICE_UNAVAILABLE: i32 = 9002;
     pub const TIMEOUT: i32 = 9003;
 }

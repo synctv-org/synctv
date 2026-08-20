@@ -203,7 +203,7 @@ async fn test_concurrent_join_respects_max_members() {
         let handle = tokio::spawn(async move {
             barrier_clone.wait().await;
 
-            let options = AddMemberOptions::new().with_max_members(0);
+            let options = AddMemberOptions::default().with_max_members(0);
             member_service_clone
                 .add_member_with_options(room_id_clone, user.id, RoomRole::Member, options)
                 .await
@@ -789,7 +789,7 @@ async fn test_concurrent_leave_and_rejoin() {
 
         let handle = tokio::spawn(async move {
             barrier_clone.wait().await;
-            let options = AddMemberOptions::new().with_max_members(0);
+            let options = AddMemberOptions::default().with_max_members(0);
             member_service_clone
                 .add_member_with_options(room_id_clone, user.id, RoomRole::Member, options)
                 .await

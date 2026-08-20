@@ -309,15 +309,6 @@ impl RoomRepository {
         Ok(created.into())
     }
 
-    pub async fn active_name_exists_for_creator(
-        &self,
-        creator_id: &UserId,
-        name: &str,
-    ) -> Result<bool> {
-        Self::active_name_exists_for_creator_with_executor(creator_id, name, self.pools.primary())
-            .await
-    }
-
     pub async fn active_name_exists_for_creator_with_executor<'e, E>(
         creator_id: &UserId,
         name: &str,
@@ -1626,109 +1617,6 @@ impl RoomRepository {
         .collect();
 
         Ok((rooms, count))
-    }
-
-    /// Get rooms created by a specific user with member count (optimized)
-    pub async fn list_by_creator_with_count(
-        &self,
-        creator_id: &UserId,
-        pagination: PageParams,
-    ) -> Result<(Vec<crate::models::RoomWithCount>, i64)> {
-        let limit = pagination.limit_i64()?;
-        let offset = pagination.offset_i64()?;
-
-        let count = required_count(
-            sqlx::query_scalar!(
-                "SELECT COUNT(*) as count
-             FROM rooms
-             WHERE created_by = $1 AND deleted_at IS NULL",
-                creator_id as &UserId,
-            )
-            .fetch_one(self.pools.primary())
-            .await?,
-            "rooms by creator with count",
-        )?;
-
-        let rows = sqlx::query!(
-            r#"
-            SELECT r.id AS "id: RoomId",
-                   r.name,
-                   r.description,
-                   r.cover_file_reference_id,
-                   rc.id AS "category_id?: RoomCategoryId",
-                   rc.key AS "category_key?",
-                   rc.name AS "category_name?",
-                   rc.description AS "category_description?",
-                   rc.sort_order AS "category_sort_order?",
-                   rc.is_enabled AS "category_is_enabled?",
-                   rc.created_at AS "category_created_at?",
-                   rc.updated_at AS "category_updated_at?",
-                   r.created_by AS "created_by: UserId",
-                   r.closed_at,
-                   r.created_at,
-                   r.updated_at,
-                   r.deleted_at,
-                   r.version,
-                   r.last_activity_at,
-                   r.is_public,
-                   EXISTS (
-                       SELECT 1 FROM room_bans rb
-                       WHERE rb.room_id = r.id
-                         AND rb.revoked_at IS NULL
-                         AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)
-                   ) AS "is_banned!",
-                   COALESCE(COUNT(rm.user_id), 0)::int AS "member_count!"
-            FROM rooms r
-            LEFT JOIN room_categories rc ON rc.id = r.category_id
-            LEFT JOIN room_members rm ON r.id = rm.room_id
-            WHERE r.created_by = $1 AND r.deleted_at IS NULL
-            GROUP BY r.id, r.name, r.description, r.cover_file_reference_id, r.category_id,
-                     rc.id, rc.key, rc.name, rc.description, rc.sort_order, rc.is_enabled,
-                     rc.created_at, rc.updated_at, r.created_by,
-                     r.closed_at, r.created_at, r.updated_at, r.deleted_at, r.version,
-                     r.last_activity_at, r.is_public
-            ORDER BY r.created_at DESC
-            LIMIT $2 OFFSET $3
-            "#,
-            creator_id as &UserId,
-            limit,
-            offset
-        )
-        .fetch_all(self.pools.primary())
-        .await?;
-
-        let rooms_with_count = rows
-            .into_iter()
-            .map(|row| crate::models::RoomWithCount {
-                room: RoomRow {
-                    id: row.id,
-                    name: row.name,
-                    description: row.description,
-                    cover_file_reference_id: row.cover_file_reference_id,
-                    category_id: row.category_id,
-                    category_key: row.category_key,
-                    category_name: row.category_name,
-                    category_description: row.category_description,
-                    category_sort_order: row.category_sort_order,
-                    category_is_enabled: row.category_is_enabled,
-                    category_created_at: row.category_created_at,
-                    category_updated_at: row.category_updated_at,
-                    created_by: row.created_by,
-                    closed_at: row.closed_at,
-                    is_banned: row.is_banned,
-                    is_public: row.is_public,
-                    created_at: row.created_at,
-                    updated_at: row.updated_at,
-                    deleted_at: row.deleted_at,
-                    version: row.version,
-                    last_activity_at: row.last_activity_at,
-                }
-                .into(),
-                member_count: row.member_count,
-            })
-            .collect();
-
-        Ok((rooms_with_count, count))
     }
 
     /// Update derived room status by closing or reopening the room.

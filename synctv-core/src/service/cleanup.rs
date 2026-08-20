@@ -353,7 +353,12 @@ impl CleanupService {
         // 2b. Purge only independently deleted resources. Account- and
         // room-propagated rows remain governed by their aggregate recovery window.
         if self.config.resource_soft_delete_retention_days > 0 {
-            match self.purge_soft_deleted_resources().await {
+            match cleanup_ops::cleanup_soft_deleted_media_and_playlists(
+                &self.pool,
+                self.config.resource_soft_delete_retention_days,
+            )
+            .await
+            {
                 Ok(cleanup) => {
                     result.media_purged = cleanup.media_purged;
                     result.playlists_purged = cleanup.playlists_purged;
@@ -417,7 +422,12 @@ impl CleanupService {
 
         // 5. Delete old read notifications
         if self.config.notification_retention_days > 0 {
-            match self.delete_old_notifications().await {
+            match cleanup_ops::delete_old_read_notifications(
+                &self.pool,
+                self.config.notification_retention_days,
+            )
+            .await
+            {
                 Ok(count) => {
                     result.notifications_deleted += count;
                     if count > 0 {
@@ -467,9 +477,11 @@ impl CleanupService {
             }
         };
         if chat_message_event_retention_seconds > 0 {
-            match self
-                .cleanup_chat_message_events(chat_message_event_retention_seconds)
-                .await
+            match cleanup_ops::delete_old_chat_message_events(
+                &self.pool,
+                chat_message_event_retention_seconds,
+            )
+            .await
             {
                 Ok(count) => {
                     result.chat_message_events_deleted = count;
@@ -482,7 +494,12 @@ impl CleanupService {
         }
 
         if self.config.room_resource_event_retention_seconds > 0 {
-            match self.cleanup_room_resource_events().await {
+            match cleanup_ops::delete_old_room_resource_events(
+                &self.pool,
+                self.config.room_resource_event_retention_seconds,
+            )
+            .await
+            {
                 Ok(count) => {
                     result.room_resource_events_deleted = count;
                     if count > 0 {
@@ -495,7 +512,12 @@ impl CleanupService {
 
         // 8. Cleanup stale playback progress rows.
         if self.config.playback_progress_retention_days > 0 {
-            match self.cleanup_stale_playback_progress().await {
+            match cleanup_ops::delete_stale_playback_progress(
+                &self.pool,
+                self.config.playback_progress_retention_days,
+            )
+            .await
+            {
                 Ok(count) => {
                     result.playback_progress_deleted = count;
                     if count > 0 {
@@ -559,7 +581,13 @@ impl CleanupService {
             }
         }
 
-        match self.cleanup_realtime_outbox().await {
+        match cleanup_ops::delete_delivered_realtime_outbox(
+            &self.pool,
+            self.config.realtime_outbox_sent_retention_days,
+            self.config.realtime_outbox_dead_retention_days,
+        )
+        .await
+        {
             Ok(count) => {
                 result.realtime_outbox_deleted = count;
                 if count > 0 {
@@ -1238,16 +1266,6 @@ impl CleanupService {
         Ok(purged)
     }
 
-    async fn purge_soft_deleted_resources(
-        &self,
-    ) -> Result<cleanup_ops::SoftDeletedResourceCleanupResult> {
-        cleanup_ops::cleanup_soft_deleted_media_and_playlists(
-            &self.pool,
-            self.config.resource_soft_delete_retention_days,
-        )
-        .await
-    }
-
     async fn purge_soft_deleted_chat_messages(&self) -> Result<u64> {
         let days = i64::from(self.config.resource_soft_delete_retention_days);
         self.resource_tasks
@@ -1295,15 +1313,6 @@ impl CleanupService {
         .await
     }
 
-    /// Delete read notifications older than the retention period
-    async fn delete_old_notifications(&self) -> Result<u64> {
-        cleanup_ops::delete_old_read_notifications(
-            &self.pool,
-            self.config.notification_retention_days,
-        )
-        .await
-    }
-
     /// Delete all notifications (including unread) older than the max retention period
     ///
     /// This prevents unbounded growth from unread notifications that are never
@@ -1334,35 +1343,6 @@ impl CleanupService {
         .await
         .internal_with_err("Failed to cleanup token blacklist")?;
         Ok(deleted_count.max(0).cast_unsigned())
-    }
-
-    async fn cleanup_room_resource_events(&self) -> Result<u64> {
-        cleanup_ops::delete_old_room_resource_events(
-            &self.pool,
-            self.config.room_resource_event_retention_seconds,
-        )
-        .await
-    }
-
-    async fn cleanup_chat_message_events(&self, retention_seconds: u64) -> Result<u64> {
-        cleanup_ops::delete_old_chat_message_events(&self.pool, retention_seconds).await
-    }
-
-    async fn cleanup_realtime_outbox(&self) -> Result<u64> {
-        cleanup_ops::delete_delivered_realtime_outbox(
-            &self.pool,
-            self.config.realtime_outbox_sent_retention_days,
-            self.config.realtime_outbox_dead_retention_days,
-        )
-        .await
-    }
-
-    async fn cleanup_stale_playback_progress(&self) -> Result<u64> {
-        cleanup_ops::delete_stale_playback_progress(
-            &self.pool,
-            self.config.playback_progress_retention_days,
-        )
-        .await
     }
 
     async fn cleanup_playback_history(&self) -> Result<u64> {

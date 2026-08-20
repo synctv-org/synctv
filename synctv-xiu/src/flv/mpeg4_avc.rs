@@ -13,43 +13,6 @@ const H264_START_CODE: [u8; 4] = [0x00, 0x00, 0x00, 0x01];
 const MAX_SPS_COUNT: u8 = 16;
 const MAX_PPS_COUNT: u8 = 16;
 
-fn usize_to_u8(value: usize) -> Result<u8, Mpeg4AvcHevcError> {
-    u8::try_from(value).map_err(|_| Mpeg4AvcHevcError {
-        value: MpegErrorValue::IntegerRange {
-            value: value as u128,
-            target: "u8",
-        },
-    })
-}
-
-fn usize_to_u16(value: usize) -> Result<u16, Mpeg4AvcHevcError> {
-    u16::try_from(value).map_err(|_| Mpeg4AvcHevcError {
-        value: MpegErrorValue::IntegerRange {
-            value: value as u128,
-            target: "u16",
-        },
-    })
-}
-
-fn validate_parameter_set_count(
-    kind: &'static str,
-    declared: u8,
-    available: usize,
-) -> Result<usize, Mpeg4AvcHevcError> {
-    let declared_usize = usize::from(declared);
-    if declared_usize > available {
-        return Err(Mpeg4AvcHevcError {
-            value: MpegErrorValue::ParameterSetCountMismatch {
-                kind,
-                declared,
-                available,
-            },
-        });
-    }
-
-    Ok(declared_usize)
-}
-
 #[derive(Clone, Default)]
 pub struct Sps {
     pub data: BytesMut,
@@ -307,75 +270,6 @@ impl Mpeg4AvcProcessor {
         }
         Ok(size)
     }
-
-    pub fn write_nalu_size(
-        &mut self,
-        writer: &mut BytesWriter,
-        length: usize,
-    ) -> Result<(), Mpeg4AvcHevcError> {
-        let nalu_length = self.mpeg4_avc.nalu_length;
-        for i in 0..nalu_length {
-            let shift = (nalu_length - i - 1) * 8;
-            let num = usize_to_u8((length >> shift) & 0xFF)?;
-            writer.write_u8(num)?;
-        }
-        Ok(())
-    }
-
-    pub fn nalus_to_mpeg4avc(
-        &mut self,
-        nalus: Vec<BytesMut>,
-    ) -> Result<BytesMut, Mpeg4AvcHevcError> {
-        let mut bytes_writer = BytesWriter::new();
-
-        for nalu in nalus {
-            let length = nalu.len();
-            self.write_nalu_size(&mut bytes_writer, length)?;
-            bytes_writer.write(&nalu)?;
-        }
-
-        Ok(bytes_writer.extract_current_bytes())
-    }
-
-    pub fn decoder_configuration_record_save(&mut self) -> Result<BytesMut, Mpeg4AvcHevcError> {
-        let mut bytes_writer = BytesWriter::new();
-        let sps_count =
-            validate_parameter_set_count("SPS", self.mpeg4_avc.nb_sps, self.mpeg4_avc.sps.len())?;
-        let pps_count =
-            validate_parameter_set_count("PPS", self.mpeg4_avc.nb_pps, self.mpeg4_avc.pps.len())?;
-
-        bytes_writer.write_u8(1)?;
-        bytes_writer.write_u8(self.mpeg4_avc.profile)?;
-        bytes_writer.write_u8(self.mpeg4_avc.compatibility)?;
-        bytes_writer.write_u8(self.mpeg4_avc.level)?;
-        bytes_writer.write_u8((self.mpeg4_avc.nalu_length - 1) | 0xFC)?;
-
-        //sps
-        bytes_writer.write_u8(self.mpeg4_avc.nb_sps | 0xE0)?;
-        for sps in self.mpeg4_avc.sps.iter().take(sps_count) {
-            bytes_writer.write_u16::<BigEndian>(usize_to_u16(sps.len())?)?;
-            bytes_writer.write(&sps.data[..])?;
-        }
-
-        //pps
-        bytes_writer.write_u8(self.mpeg4_avc.nb_pps)?;
-        for pps in self.mpeg4_avc.pps.iter().take(pps_count) {
-            bytes_writer.write_u16::<BigEndian>(usize_to_u16(pps.len())?)?;
-            bytes_writer.write(&pps.data[..])?;
-        }
-
-        match self.mpeg4_avc.profile {
-            100 | 110 | 122 | 244 | 44 | 83 | 86 | 118 | 128 | 138 | 139 | 134 => {
-                bytes_writer.write_u8(0xFC | self.mpeg4_avc.chroma_format_idc)?;
-                bytes_writer.write_u8(0xF8 | self.mpeg4_avc.bit_depth_luma_minus8)?;
-                bytes_writer.write_u8(0xF8 | self.mpeg4_avc.bit_depth_chroma_minus8)?;
-                bytes_writer.write_u8(0)?;
-            }
-            _ => {}
-        }
-
-        Ok(bytes_writer.extract_current_bytes())
-    }
 }
 
 #[cfg(test)]
@@ -412,26 +306,6 @@ mod tests {
             &[0, 0, 3, 232],
             "Expected 1000 to encode as big-endian [0, 0, 3, 232]"
         );
-    }
-
-    #[test]
-    fn decoder_configuration_record_save_rejects_missing_sps() {
-        let mut processor = Mpeg4AvcProcessor::new();
-        processor.mpeg4_avc.nalu_length = 4;
-        processor.mpeg4_avc.nb_sps = 1;
-
-        let err = processor
-            .decoder_configuration_record_save()
-            .expect_err("missing SPS should return an error");
-
-        assert!(matches!(
-            err.value,
-            MpegErrorValue::ParameterSetCountMismatch {
-                kind: "SPS",
-                declared: 1,
-                available: 0
-            }
-        ));
     }
 
     #[test]

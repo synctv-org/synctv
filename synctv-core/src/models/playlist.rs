@@ -115,12 +115,6 @@ impl Playlist {
         self.source_provider.is_some()
     }
 
-    /// Check if this is a static playlist.
-    #[must_use]
-    pub const fn is_static(&self) -> bool {
-        self.source_provider.is_none()
-    }
-
     #[must_use]
     pub const fn effective_browse_access_mode(&self) -> PlaylistBrowseAccessMode {
         match self.browse_access_mode {

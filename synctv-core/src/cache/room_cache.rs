@@ -55,22 +55,11 @@ pub struct CachedRoom {
     updated_at: chrono::DateTime<chrono::Utc>,
 }
 
-pub struct CachedRoomSnapshot {
-    pub id: String,
-    pub name: String,
-    pub owner_id: String,
-    pub is_public: bool,
-    pub status: RoomStatus,
-    pub is_banned: bool,
-    pub deleted_at: Option<chrono::DateTime<chrono::Utc>>,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    pub updated_at: chrono::DateTime<chrono::Utc>,
-}
-
 impl CachedRoom {
     /// Create a new `CachedRoom` with default status (Active), not banned, not deleted.
     ///
     /// This is a convenience constructor for active, visible room snapshots.
+    #[cfg(test)]
     #[must_use]
     pub fn new(
         id: String,
@@ -92,21 +81,6 @@ impl CachedRoom {
         }
     }
 
-    #[must_use]
-    pub fn from_snapshot(snapshot: CachedRoomSnapshot) -> Self {
-        Self {
-            id: snapshot.id,
-            name: snapshot.name,
-            owner_id: snapshot.owner_id,
-            is_public: snapshot.is_public,
-            status: snapshot.status,
-            is_banned: snapshot.is_banned,
-            deleted_at: snapshot.deleted_at,
-            created_at: snapshot.created_at,
-            updated_at: snapshot.updated_at,
-        }
-    }
-
     /// Get the room ID
     #[must_use]
     pub fn id(&self) -> &str {
@@ -117,12 +91,6 @@ impl CachedRoom {
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
-    }
-
-    /// Get the owner (creator) user ID
-    #[must_use]
-    pub fn owner_id(&self) -> &str {
-        &self.owner_id
     }
 
     /// Whether the room is publicly listed
@@ -141,12 +109,6 @@ impl CachedRoom {
     #[must_use]
     pub const fn is_banned(&self) -> bool {
         self.is_banned
-    }
-
-    /// Get the soft-delete timestamp (None if not deleted)
-    #[must_use]
-    pub const fn deleted_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
-        self.deleted_at
     }
 
     /// Get the `created_at` timestamp

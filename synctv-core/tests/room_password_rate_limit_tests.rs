@@ -89,7 +89,7 @@ async fn test_room_password_verification_failure_triggers_rate_limit() {
         user_repo.create(&make_user("room_owner")).await,
         "room owner should be created",
     );
-    let (room, _member) = ok(
+    let room = ok(
         room_service
             .create_room(
                 "Protected Room".to_string(),
@@ -159,7 +159,7 @@ async fn test_room_password_rate_limit_is_per_room_per_ip() {
         "per-IP rate limit owner should be created",
     );
 
-    let (room1, _) = ok(
+    let room1 = ok(
         room_service
             .create_room(
                 "Room One".to_string(),
@@ -172,7 +172,7 @@ async fn test_room_password_rate_limit_is_per_room_per_ip() {
         "first protected room should be created",
     );
 
-    let (room2, _) = ok(
+    let room2 = ok(
         room_service
             .create_room(
                 "Room Two".to_string(),
@@ -232,7 +232,7 @@ async fn test_room_password_rate_limit_expires_after_lockout() {
         user_repo.create(&make_user("expire_owner")).await,
         "expiry test owner should be created",
     );
-    let (room, _) = ok(
+    let room = ok(
         room_service
             .create_room(
                 "Expiry Test Room".to_string(),
@@ -299,7 +299,7 @@ async fn test_successful_password_verification_resets_failure_counter() {
         user_repo.create(&make_user("reset_owner")).await,
         "reset test owner should be created",
     );
-    let (room, _) = ok(
+    let room = ok(
         room_service
             .create_room(
                 "Reset Test Room".to_string(),
@@ -370,7 +370,7 @@ async fn test_room_password_rate_limit_without_ip() {
         user_repo.create(&make_user("no_ip_owner")).await,
         "no-IP rate limit owner should be created",
     );
-    let (room, _) = ok(
+    let room = ok(
         room_service
             .create_room(
                 "No IP Room".to_string(),
@@ -430,7 +430,7 @@ async fn test_password_verification_succeeds_when_reset_fails_in_fallback_mode()
         user_repo.create(&make_user("fallback_owner")).await,
         "fallback test owner should be created",
     );
-    let (room, _) = ok(
+    let room = ok(
         room_service
             .create_room(
                 "Fallback Test Room".to_string(),

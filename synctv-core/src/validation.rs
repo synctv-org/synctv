@@ -26,8 +26,6 @@ pub const ROOM_PASSWORD_MIN: usize = 4;
 /// Maximum room password length (same cap as user password)
 pub const ROOM_PASSWORD_MAX: usize = 128;
 
-/// Minimum room name length
-pub const ROOM_NAME_MIN: usize = 1;
 /// Maximum room name length
 pub const ROOM_NAME_MAX: usize = 100;
 
@@ -518,67 +516,6 @@ impl EmailValidator {
     }
 }
 
-/// URL validator
-#[derive(Default)]
-pub struct UrlValidator {
-    allow_https_only: bool,
-    allowed_domains: Option<Vec<String>>,
-}
-
-impl UrlValidator {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    #[must_use]
-    pub const fn https_only(mut self) -> Self {
-        self.allow_https_only = true;
-        self
-    }
-
-    #[must_use]
-    pub fn with_allowed_domains(mut self, domains: Vec<String>) -> Self {
-        self.allowed_domains = Some(domains);
-        self
-    }
-
-    pub fn validate(&self, url: &str) -> ValidationResult<()> {
-        match url::Url::parse(url) {
-            Ok(parsed) => {
-                // Check HTTPS requirement
-                if self.allow_https_only && parsed.scheme() != "https" {
-                    return Err(ValidationError::Field {
-                        field: "url".to_string(),
-                        message: "must use HTTPS".to_string(),
-                    });
-                }
-
-                // Check allowed domains
-                if let Some(ref domains) = self.allowed_domains {
-                    if let Some(host) = parsed.host_str() {
-                        if !domains
-                            .iter()
-                            .any(|d| host == d.as_str() || host.ends_with(&format!(".{d}")))
-                        {
-                            return Err(ValidationError::Field {
-                                field: "url".to_string(),
-                                message: format!("domain not in allowed list: {domains:?}"),
-                            });
-                        }
-                    }
-                }
-
-                Ok(())
-            }
-            Err(_) => Err(ValidationError::Field {
-                field: "url".to_string(),
-                message: "must be a valid URL".to_string(),
-            }),
-        }
-    }
-}
-
 /// Room name validator
 pub struct RoomNameValidator {
     min_length: usize,
@@ -836,19 +773,6 @@ mod tests {
     }
 
     #[test]
-    fn test_url_validation() {
-        let validator = UrlValidator::new().https_only();
-
-        // Valid HTTPS URLs
-        assert!(validator.validate("https://example.com").is_ok());
-        assert!(validator.validate("https://example.com/path").is_ok());
-
-        // Invalid URLs
-        assert!(validator.validate("http://example.com").is_err()); // Not HTTPS
-        assert!(validator.validate("not-a-url").is_err());
-    }
-
-    #[test]
     fn test_batch_validation() {
         let mut validator = Validator::new();
 
@@ -1006,36 +930,6 @@ mod tests {
         assert!(validator.validate("user@.com").is_err());
         assert!(validator.validate("user@example").is_err()); // No TLD
         assert!(validator.validate("user@example.c").is_err()); // TLD too short
-    }
-
-    #[test]
-    fn test_url_edge_cases() {
-        let validator = UrlValidator::new();
-
-        // Both HTTP and HTTPS allowed
-        assert!(validator.validate("http://example.com").is_ok());
-        assert!(validator.validate("https://example.com").is_ok());
-
-        // HTTPS only
-        let https_only = UrlValidator::new().https_only();
-        assert!(https_only.validate("https://example.com").is_ok());
-        assert!(https_only.validate("http://example.com").is_err());
-
-        // Domain whitelist
-        let domain_validator = UrlValidator::new()
-            .with_allowed_domains(vec!["example.com".to_string(), "trusted.org".to_string()]);
-        assert!(domain_validator
-            .validate("https://example.com/path")
-            .is_ok());
-        assert!(domain_validator
-            .validate("https://sub.example.com/path")
-            .is_ok());
-        assert!(domain_validator.validate("https://other.com").is_err());
-
-        // Invalid URLs
-        assert!(validator.validate("").is_err());
-        assert!(validator.validate("not-a-url").is_err());
-        assert!(validator.validate("ftp://example.com").is_ok()); // ftp is a valid scheme
     }
 
     #[test]

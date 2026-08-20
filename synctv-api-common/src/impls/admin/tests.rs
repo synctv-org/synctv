@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use synctv_core::models::{
-    DeletionSource, FromProviderParams, MemberStatus, PlaylistId, ReviewRequestId, RoomId,
-    RoomRole, RoomStatus, UserId, UserRole, UserStatus,
+    DeletionSource, FromProviderParams, PlaylistId, ReviewRequestId, RoomId, RoomRole, RoomStatus,
+    UserId, UserRole, UserStatus,
 };
 use synctv_core::service::ProvidersManager;
 use synctv_core::{
@@ -31,29 +31,6 @@ use synctv_realtime::sync::{
     CacheTarget, ConnectionLimits, ConnectionManager, PublishRequest, RealtimeEvent,
 };
 
-fn direct_url_playback_info(url: &str, name: &str) -> synctv_core::models::PlaybackInfo {
-    synctv_core::models::PlaybackInfo {
-        thumbnail: None,
-        medias: vec![synctv_core::models::PlaybackMedia {
-            name: name.to_string(),
-            format: String::new(),
-            expire_at: None,
-            metadata: None,
-            p2p_swarm_id: None,
-            provider: synctv_core::models::PlaybackMediaProvider::DirectUrl(
-                synctv_core::models::PlaybackDirectUrlMedia::Direct {
-                    url: url.to_string(),
-                    headers: HashMap::new(),
-                },
-            ),
-        }],
-        default_media_index: None,
-        subtitles: Vec::new(),
-        default_subtitle_index: None,
-        danmakus: Vec::new(),
-        default_danmaku_index: None,
-    }
-}
 use tokio::sync::mpsc;
 
 type TestResult<T = ()> = anyhow::Result<T>;
@@ -917,8 +894,7 @@ async fn create_room_with_member(
             )
             .await,
         "room should be created",
-    )
-    .0;
+    );
 
     fixture_value(
         admin_api
@@ -964,8 +940,7 @@ async fn test_admin_add_member_publishes_permission_changed_membership_event() -
                 None,
             )
             .await,
-    )?
-    .0;
+    )?;
 
     let fanout = Arc::new(RecordingMembershipEventFanout::default());
     admin_api.membership_event_fanout = fanout.clone();
@@ -1198,17 +1173,20 @@ async fn create_room_media(
             .await,
         "compute next media position",
     );
-    let media = fixture_value(
-        synctv_core::models::Media::from_direct_single_mode(
-            None,
+    let media = synctv_core::models::Media::from_provider_with_params(
+        synctv_core::models::FromProviderParams {
+            playlist_id: None,
             room_id,
-            Some(creator_id),
-            name.to_string(),
-            "direct",
-            direct_url_playback_info("https://example.com/video.mp4", "default"),
+            creator_id: Some(creator_id),
+            name: name.to_string(),
+            description: String::new(),
+            source_config: synctv_core_testing::direct_url_media_source_config(
+                "https://example.com/video.mp4",
+            ),
+            source_provider: synctv_core::models::SourceProvider::DirectUrl,
+            provider_instance_name: None,
             position,
-        ),
-        "direct media should build",
+        },
     );
     let created = fixture_value(
         media_repo.create_with_executor(&media, &mut *tx).await,
@@ -1612,8 +1590,7 @@ async fn test_update_room_taxonomy_handles_local_management_actor_labels() -> Te
                 None,
             )
             .await,
-    )?
-    .0;
+    )?;
 
     let response = api_ok(
         admin_api
@@ -1933,14 +1910,12 @@ fn make_test_member(role: RoomRole) -> synctv_core::models::RoomMemberWithUser {
         remark_name: "Test Member".to_string(),
         display_tag: "VIP".to_string(),
         role,
-        status: MemberStatus::Active,
         added_permissions: 0,
         removed_permissions: 0,
         admin_added_permissions: 0,
         admin_removed_permissions: 0,
         joined_at: synctv_core::SystemClock.now(),
         is_online: false,
-        is_active: true,
     }
 }
 
@@ -2256,8 +2231,7 @@ async fn test_get_user_rooms_respects_related_room_query_semantics() -> TestResu
                 None,
             )
             .await,
-    )?
-    .0;
+    )?;
     let joined_room = core_ok(
         admin_api
             .room_service
@@ -2269,8 +2243,7 @@ async fn test_get_user_rooms_respects_related_room_query_semantics() -> TestResu
                 None,
             )
             .await,
-    )?
-    .0;
+    )?;
     core_ok(
         admin_api
             .room_service
@@ -3803,8 +3776,7 @@ async fn test_delete_user_deletes_owned_rooms_and_publishes_room_deleted() -> Te
                 None,
             )
             .await,
-    )?
-    .0;
+    )?;
 
     api_ok(
         admin_api
@@ -3884,8 +3856,7 @@ async fn test_standalone_admin_delete_user_deletes_owned_room_without_outbox() -
                 None,
             )
             .await,
-    )?
-    .0;
+    )?;
 
     api_ok(
         admin_api
@@ -4007,8 +3978,7 @@ async fn test_ban_user_resets_playback_for_media_created_by_target() -> TestResu
                 None,
             )
             .await,
-    )?
-    .0;
+    )?;
 
     core_ok(
         admin_api
@@ -4352,8 +4322,7 @@ async fn test_ban_user_publishes_room_owner_inactive_event_for_owned_rooms() -> 
                 None,
             )
             .await,
-    )?
-    .0;
+    )?;
 
     api_ok(
         admin_api
@@ -4420,8 +4389,7 @@ async fn test_batch_ban_users_resets_playback_for_media_created_by_target() -> T
                 None,
             )
             .await,
-    )?
-    .0;
+    )?;
 
     core_ok(
         admin_api
@@ -4506,8 +4474,7 @@ async fn test_batch_ban_users_publishes_room_owner_inactive_event_for_owned_room
                 None,
             )
             .await,
-    )?
-    .0;
+    )?;
 
     let response = api_ok(
         admin_api
@@ -4695,8 +4662,7 @@ async fn test_get_stream_info_bypasses_room_membership_requirement_for_global_ad
                 None,
             )
             .await,
-    )?
-    .0;
+    )?;
     let media = create_room_media(&pool, room.id, owner.id, "stream-media").await;
     let registry_room_id = room.id.to_string();
     let registry_media_id = media.id.to_string();
@@ -4755,8 +4721,7 @@ async fn test_kick_stream_reports_local_unpublish_enqueue_failure() -> TestResul
                 None,
             )
             .await,
-    )?
-    .0;
+    )?;
     let media = create_room_media(&pool, room.id, owner.id, "stream-media").await;
     let registry_room_id = room.id.to_string();
     let registry_media_id = media.id.to_string();
@@ -4839,8 +4804,7 @@ async fn test_kick_stream_publishes_cluster_event_for_remote_publisher() -> Test
                 None,
             )
             .await,
-    )?
-    .0;
+    )?;
     let media = create_room_media(&pool, room.id, owner.id, "remote-stream-media").await;
     let registry_room_id = room.id.to_string();
     let registry_media_id = media.id.to_string();
@@ -4922,8 +4886,7 @@ async fn test_kick_stream_reports_remote_fanout_failure() -> TestResult {
                 None,
             )
             .await,
-    )?
-    .0;
+    )?;
     let media = create_room_media(&pool, room.id, owner.id, "remote-stream-media").await;
     let registry_room_id = room.id.to_string();
     let registry_media_id = media.id.to_string();
@@ -4994,8 +4957,7 @@ async fn test_list_room_streams_bypasses_room_membership_requirement_for_global_
                 None,
             )
             .await,
-    )?
-    .0;
+    )?;
     let media = create_room_media(&pool, room.id, owner.id, "stream-media").await;
     let registry_room_id = room.id.to_string();
     let registry_media_id = media.id.to_string();
@@ -5097,8 +5059,7 @@ async fn test_create_publish_key_bypasses_room_membership_requirement_for_global
                 None,
             )
             .await,
-    )?
-    .0;
+    )?;
     let media = create_room_media(&pool, room.id, owner.id, "stream-media").await;
     let public_room_id = public_room_id(&admin_api, room.id);
     let public_media_id = public_media_id(&admin_api, media.id);
@@ -5164,8 +5125,7 @@ async fn test_create_publish_key_rejects_media_from_banned_creator() -> TestResu
                 None,
             )
             .await,
-    )?
-    .0;
+    )?;
     core_ok(
         admin_api
             .room_service
@@ -5225,8 +5185,7 @@ async fn test_start_playback_bypasses_room_membership_requirement_for_global_adm
                 None,
             )
             .await,
-    )?
-    .0;
+    )?;
     let media = create_room_media(&pool, room.id, owner.id, "playback-media").await;
 
     api_ok(
@@ -5307,8 +5266,7 @@ async fn test_stop_playback_bypasses_room_membership_requirement_for_global_admi
                 None,
             )
             .await,
-    )?
-    .0;
+    )?;
     let media = create_room_media(&pool, room.id, owner.id, "playback-media").await;
 
     core_ok(
@@ -5358,8 +5316,7 @@ async fn test_get_playback_bypasses_room_membership_requirement_for_global_admin
                 None,
             )
             .await,
-    )?
-    .0;
+    )?;
     let media = create_room_media(&pool, room.id, owner.id, "playback-media").await;
 
     core_ok(
@@ -5417,8 +5374,7 @@ async fn test_get_playback_reloads_state_after_creator_ban_on_another_instance()
                 None,
             )
             .await,
-    )?
-    .0;
+    )?;
     core_ok(
         admin_api
             .room_service
@@ -5510,8 +5466,7 @@ async fn test_start_playback_returns_error_for_invalid_provider_config_for_globa
                 None,
             )
             .await,
-    )?
-    .0;
+    )?;
 
     let media = synctv_core::models::Media::from_provider_with_params(FromProviderParams {
         playlist_id: None,
@@ -5584,8 +5539,7 @@ async fn test_get_playback_for_provider_media_signs_proxy_urls_for_global_admin(
                 None,
             )
             .await,
-    )?
-    .0;
+    )?;
     core_ok(
         admin_api
             .room_service
@@ -5778,8 +5732,7 @@ async fn test_get_playback_for_provider_media_signs_proxy_urls_for_local_managem
                 None,
             )
             .await,
-    )?
-    .0;
+    )?;
 
     let media = synctv_core::models::Media::from_provider_with_params(FromProviderParams {
         playlist_id: None,
@@ -5867,8 +5820,7 @@ async fn test_list_playlists_bypasses_room_membership_requirement_for_global_adm
                 None,
             )
             .await,
-    )?
-    .0;
+    )?;
 
     let playlist = core_ok(
         admin_api
@@ -5945,8 +5897,7 @@ async fn test_get_playlist_bypasses_room_membership_requirement_for_global_admin
                 None,
             )
             .await,
-    )?
-    .0;
+    )?;
 
     let playlist = core_ok(
         admin_api
@@ -6012,8 +5963,7 @@ async fn test_update_playlist_bypasses_room_membership_requirement_for_global_ad
                 None,
             )
             .await,
-    )?
-    .0;
+    )?;
 
     let playlist = core_ok(
         admin_api
@@ -6082,8 +6032,7 @@ async fn test_delete_playlist_bypasses_room_membership_requirement_for_global_ad
                 None,
             )
             .await,
-    )?
-    .0;
+    )?;
 
     let playlist = core_ok(
         admin_api
@@ -6163,8 +6112,7 @@ async fn test_delete_playlist_publishes_cascaded_playlist_and_media_events_for_g
                 None,
             )
             .await,
-    )?
-    .0;
+    )?;
 
     let parent_playlist = core_ok(
         admin_api
@@ -6313,8 +6261,7 @@ async fn test_list_media_bypasses_room_membership_requirement_for_global_admin()
                 None,
             )
             .await,
-    )?
-    .0;
+    )?;
 
     let media = create_room_media(&pool, room.id, owner.id, "media-a").await;
 
@@ -6372,8 +6319,7 @@ async fn test_reset_room_settings_bypasses_room_membership_for_local_management_
                 None,
             )
             .await,
-    )?
-    .0;
+    )?;
 
     let customized = synctv_core::models::RoomSettings {
         chat_enabled: synctv_core::models::room_settings::ChatEnabled(false),
@@ -6431,8 +6377,7 @@ async fn test_delete_room_bypasses_room_membership_for_local_management_actor() 
                 None,
             )
             .await,
-    )?
-    .0;
+    )?;
 
     let management_actor = LOCAL_MANAGEMENT_ACTOR_USER_ID;
     let response = api_ok(
@@ -6481,8 +6426,7 @@ async fn test_list_media_respects_search_filters_and_sort_for_static_root() -> T
                 None,
             )
             .await,
-    )?
-    .0;
+    )?;
 
     core_ok(
         admin_api
@@ -6565,8 +6509,7 @@ async fn test_edit_media_bypasses_room_membership_requirement_for_global_admin()
                 None,
             )
             .await,
-    )?
-    .0;
+    )?;
 
     let media = create_room_media(&pool, room.id, owner.id, "media-edit").await;
 
@@ -6640,8 +6583,7 @@ async fn test_local_management_actor_preserves_username_in_media_notifications()
                 None,
             )
             .await,
-    )?
-    .0;
+    )?;
 
     let media = create_room_media(&pool, room.id, owner.id, "management-media").await;
     let management_actor = LOCAL_MANAGEMENT_ACTOR_USER_ID;
@@ -6740,8 +6682,7 @@ async fn test_delete_media_bypasses_room_membership_requirement_for_global_admin
                 None,
             )
             .await,
-    )?
-    .0;
+    )?;
 
     let media = create_room_media(&pool, room.id, owner.id, "media-delete").await;
 
@@ -6791,8 +6732,7 @@ async fn test_move_media_bypasses_room_membership_requirement_for_global_admin()
                 None,
             )
             .await,
-    )?
-    .0;
+    )?;
 
     let media_a = create_room_media(&pool, room.id, owner.id, "media-move-a").await;
     let media_b = create_room_media(&pool, room.id, owner.id, "media-move-b").await;

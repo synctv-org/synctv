@@ -38,7 +38,6 @@ serde_json.workspace = true
 
 # Caching
 moka.workspace = true
-lru.workspace = true
 dashmap.workspace = true
 async_singleflight.workspace = true
 
@@ -65,11 +64,9 @@ opendal-http-transport-reqwest.workspace = true
 thiserror.workspace = true
 bytes.workspace = true
 parking_lot.workspace = true
-paste.workspace = true
 url.workspace = true
 percent-encoding.workspace = true
 regex.workspace = true
-ipnet.workspace = true
 
 # HTTP Client
 reqwest.workspace = true
@@ -80,12 +77,10 @@ webpki-roots.workspace = true
 rustls.workspace = true
 
 # Resilience
-tower.workspace = true
 governor.workspace = true
 nonzero_ext.workspace = true
 backon.workspace = true
 failsafe.workspace = true
-futures-util.workspace = true
 
 # Time
 chrono.workspace = true
@@ -104,7 +99,6 @@ handlebars.workspace = true
 
 # Misc
 base64.workspace = true
-hostname.workspace = true
 lz4_flex.workspace = true
 zstd.workspace = true
 image.workspace = true
@@ -151,7 +145,6 @@ tls-native-roots = [
 workspace = true
 
 [dev-dependencies]
-mockall.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 criterion.workspace = true
 rand.workspace = true

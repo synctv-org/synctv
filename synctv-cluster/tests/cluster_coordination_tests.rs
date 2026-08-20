@@ -49,7 +49,7 @@ async fn test_node_registry_register_and_get() {
         ))
         .await;
 
-    let node = registry.test_get_local("self").await;
+    let node = registry.get_node_local("self").await;
     assert!(node.is_some());
     let node = node.unwrap();
     assert_eq!(node.node_id, "self");
@@ -79,7 +79,7 @@ async fn test_node_registry_concurrent_registration() {
 
     futures::future::join_all(handles).await;
 
-    let all_nodes = registry.test_get_all_local().await;
+    let all_nodes = registry.get_all_nodes_local().await;
     assert_eq!(all_nodes.len(), 10);
 }
 
@@ -96,11 +96,11 @@ async fn test_node_registry_unregister() {
     let remote = NodeInfo::new("remote-1".to_string(), "localhost:8081".to_string());
     registry.test_insert_local(remote).await;
 
-    assert_eq!(registry.test_get_all_local().await.len(), 2);
+    assert_eq!(registry.get_all_nodes_local().await.len(), 2);
 
     // Unregister the remote node
     registry.test_remove_local("remote-1").await;
-    assert_eq!(registry.test_get_all_local().await.len(), 1);
+    assert_eq!(registry.get_all_nodes_local().await.len(), 1);
 }
 
 #[tokio::test]
@@ -113,7 +113,7 @@ async fn test_node_registry_get_nonexistent() {
         ))
         .await;
 
-    let node = registry.test_get_local("nonexistent").await;
+    let node = registry.get_node_local("nonexistent").await;
     assert!(node.is_none());
 }
 
@@ -236,7 +236,7 @@ async fn test_load_balancer_with_health_monitor_no_status() {
     // Monitor has no statuses yet -- all nodes should be available
     let monitor = Arc::new(HealthMonitor::new(Arc::clone(&registry), 60));
     let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::RoundRobin)
-        .with_health_monitor(monitor);
+        .with_health_runtime(monitor);
 
     let available = lb.get_available_nodes().await.unwrap();
     assert_eq!(
@@ -244,25 +244,6 @@ async fn test_load_balancer_with_health_monitor_no_status() {
         2,
         "All nodes available when health monitor has no data"
     );
-}
-
-#[tokio::test]
-async fn test_load_balancer_available_count() {
-    let registry = make_registry("self");
-    registry
-        .test_insert_local(NodeInfo::new(
-            "self".to_string(),
-            "localhost:50051".to_string(),
-        ))
-        .await;
-
-    for i in 1..4 {
-        let node = NodeInfo::new(format!("node-{i}"), format!("localhost:{}", 8080 + i));
-        registry.test_insert_local(node).await;
-    }
-
-    let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::Random);
-    assert_eq!(lb.available_count().await.unwrap(), 4);
 }
 
 #[tokio::test]

@@ -1,7 +1,6 @@
 pub mod errors;
 
 use errors::RtmpUrlParseError;
-use errors::RtmpUrlParseErrorValue;
 
 #[derive(Debug, Clone, Default)]
 pub struct RtmpUrlParser {
@@ -29,34 +28,29 @@ impl RtmpUrlParser {
             let remove_header_left = &self.url[idx + 7..];
             let url_parts: Vec<&str> = remove_header_left.split('/').collect();
             if url_parts.len() != 3 {
-                return Err(RtmpUrlParseError {
-                    value: RtmpUrlParseErrorValue::Notvalid,
-                });
+                return Err(RtmpUrlParseError);
             }
 
             self.host_with_port = url_parts[0].to_string();
             self.app_name = url_parts[1].to_string();
             self.stream_name_with_query = url_parts[2].to_string();
 
-            self.parse_host_with_port()?;
+            self.parse_host_with_port();
             (self.stream_name, self.query) =
                 Self::parse_stream_name_with_query(&self.stream_name_with_query);
         } else {
-            return Err(RtmpUrlParseError {
-                value: RtmpUrlParseErrorValue::Notvalid,
-            });
+            return Err(RtmpUrlParseError);
         }
 
         Ok(())
     }
 
-    pub fn parse_host_with_port(&mut self) -> Result<(), RtmpUrlParseError> {
+    fn parse_host_with_port(&mut self) {
         let data: Vec<&str> = self.host_with_port.split(':').collect();
         self.host = data[0].to_string();
         if data.len() > 1 {
             self.port = Some(data[1].to_string());
         }
-        Ok(())
     }
     #[must_use]
     pub fn parse_stream_name_with_query(stream_name_with_query: &str) -> (String, Option<String>) {

@@ -12,8 +12,9 @@ use synctv_xiu::rtmp::cache::metadata::MetaData;
 /// Helper to create metadata bytes from AMF0 values
 fn create_metadata_bytes(values: &[Amf0ValueType]) -> BytesMut {
     let mut writer = Amf0Writer::new();
-    let values = values.to_vec();
-    writer.write_anys(&values).unwrap();
+    for value in values {
+        writer.write_any(value).unwrap();
+    }
     writer.extract_current_bytes()
 }
 

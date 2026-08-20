@@ -13,9 +13,9 @@ use synctv_core::service::ClientResourceAvailability;
 
 use super::convert::{
     apply_room_settings_patch_from_proto, chat_message_selection_from_proto_values,
-    chat_metadata_from_proto, file_metadata_from_proto, member_status_to_proto,
-    provider_target_from_proto, room_role_to_proto, room_settings_from_proto,
-    room_settings_to_proto, try_members_to_proto, try_playback_state_to_proto,
+    chat_metadata_from_proto, file_metadata_from_proto, provider_target_from_proto,
+    room_role_to_proto, room_settings_from_proto, room_settings_to_proto, try_members_to_proto,
+    try_playback_state_to_proto,
 };
 use super::media::{
     complete_upload_response_fields, complete_upload_session_request,
@@ -24,7 +24,7 @@ use super::media::{
     room_cover_upload_create_result_to_proto, uploaded_parts_response_fields,
     PrepareDeleteEntriesOutboxFanout,
 };
-use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
+use super::{ClientApiImpl, RoomActor};
 
 mod support;
 use support::*;
@@ -761,9 +761,9 @@ impl ClientApiImpl {
 
         // Batch-fetch room settings for full permission calculation.
         let room_ids: Vec<synctv_core::models::RoomId> =
-            rooms.iter().map(|(room, _, _, _)| room.id).collect();
+            rooms.iter().map(|(room, _, _)| room.id).collect();
         let room_models: Vec<synctv_core::models::Room> =
-            rooms.iter().map(|(room, _, _, _)| room.clone()).collect();
+            rooms.iter().map(|(room, _, _)| room.clone()).collect();
         let (room_settings_map, presence_stats, availability_map, creator_views, favorite_room_ids) =
             tokio::try_join!(
                 async {
@@ -804,7 +804,7 @@ impl ClientApiImpl {
             })
             .collect::<Vec<_>>();
         let room_list = stream::iter(rooms_with_creators)
-            .map(|((room, role, _status, member_count), creator)| {
+            .map(|((room, role, member_count), creator)| {
                 let room_settings_map = &room_settings_map;
                 let presence_by_room = &presence_by_room;
                 let availability_map = &availability_map;
@@ -955,12 +955,11 @@ impl ClientApiImpl {
         let category_id = parse_optional_room_category_id(&req.category_id, &self.public_id_codec)?;
         let label_ids = parse_room_label_ids(&req.label_ids, &self.public_id_codec)?;
 
-        let response_settings =
-            crate::impls::client::convert::normalize_created_room_settings(settings.as_ref());
+        let response_settings = settings.clone().unwrap_or_default();
         let prepared_outbox_fanout = self
             .room_lifecycle_fanout
             .prepare_room_created_outbox_fanout(uid);
-        let (room, _member) = self
+        let room = self
             .room_service
             .create_room_with_taxonomy_outbox(
                 synctv_core::service::CreateRoomWithTaxonomyRequest {
@@ -1100,14 +1099,6 @@ impl ClientApiImpl {
             playback_state: Some(playback_state),
             favorited,
         })
-    }
-
-    pub async fn get_room_as_guest(
-        &self,
-        access: &GuestRoomAccess,
-    ) -> Result<synctv_proto::client::GetRoomResponse, ApiError> {
-        self.get_room_for_actor(&RoomActor::Guest(access.clone()))
-            .await
     }
 
     async fn room_response_after_room_update(
@@ -1276,16 +1267,6 @@ impl ClientApiImpl {
         self.room_response_after_room_update(&room, user_id).await
     }
 
-    pub async fn join_room(
-        &self,
-        user_id: &UserId,
-        room_id: &str,
-        req: synctv_proto::client::JoinRoomRequest,
-        client_ip: Option<&str>,
-    ) -> Result<synctv_proto::client::JoinRoomResponse, ApiError> {
-        Box::pin(self.join_room_with_control(user_id, room_id, req, client_ip, None)).await
-    }
-
     pub async fn join_room_with_control(
         &self,
         user_id: &UserId,
@@ -1352,7 +1333,7 @@ impl ClientApiImpl {
                 target_presence.is_online,
                 target_presence.connection_count,
             );
-        let (_room, member, members) = self
+        let (_room, members) = self
             .room_service
             .join_room_with_outbox(
                 rid,
@@ -1393,7 +1374,6 @@ impl ClientApiImpl {
             ),
             members: proto_members,
             playback_state: Some(playback_state),
-            membership_status: member_status_to_proto(member.status),
             requires_approval,
         })
     }
@@ -1459,7 +1439,7 @@ impl ClientApiImpl {
                     .as_ref()
                     .map_or(0, |presence| presence.connection_count),
             );
-        let (room, member, members) = Box::pin(
+        let (room, members) = Box::pin(
             self.room_service
                 .finish_room_opaque_password_login_with_outbox(
                     expected_room_id.as_ref(),
@@ -1499,7 +1479,6 @@ impl ClientApiImpl {
             ),
             members: proto_members,
             playback_state: Some(playback_state),
-            membership_status: member_status_to_proto(member.status),
             requires_approval,
         })
     }
@@ -1917,14 +1896,6 @@ impl ClientApiImpl {
             settings: Some(room_settings_to_proto(&settings)),
             version,
         })
-    }
-
-    pub async fn get_room_settings_as_guest(
-        &self,
-        access: &GuestRoomAccess,
-    ) -> Result<synctv_proto::client::GetRoomSettingsResponse, ApiError> {
-        self.get_room_settings_for_actor(&RoomActor::Guest(access.clone()))
-            .await
     }
 
     /// Reset room settings to defaults
@@ -2730,15 +2701,6 @@ impl ClientApiImpl {
         self.chat_event_dispatcher.dispatch_pin(event);
     }
 
-    pub async fn get_chat_history_as_guest(
-        &self,
-        access: &GuestRoomAccess,
-        req: synctv_proto::client::GetChatHistoryRequest,
-    ) -> Result<synctv_proto::client::GetChatHistoryResponse, ApiError> {
-        self.get_chat_history_for_actor(&RoomActor::Guest(access.clone()), req)
-            .await
-    }
-
     pub async fn get_chat_history_for_actor(
         &self,
         actor: &RoomActor,
@@ -3056,7 +3018,7 @@ mod tests {
         let owner = create_user(&pool, "favorite_requires_owner").await?;
         let outsider = create_user(&pool, "favorite_requires_outsider").await?;
         let api = test_client_api(pool, user_service);
-        let (room, _) = api_ok(
+        let room = api_ok(
             api.room_service
                 .create_room(
                     "Favorite membership room".to_string(),
@@ -3093,7 +3055,7 @@ mod tests {
             std::sync::Arc::new(synctv_core_testing::create_test_user_service(pool.clone()));
         let owner = create_user(&pool, "favorite_update_owner").await?;
         let api = test_client_api(pool, user_service);
-        let (room, _) = api_ok(
+        let room = api_ok(
             api.room_service
                 .create_room(
                     "Favorite update response room".to_string(),
@@ -3129,7 +3091,7 @@ mod tests {
         let owner = create_user(&pool, "favorite_leave_owner").await?;
         let member = create_user(&pool, "favorite_leave_member").await?;
         let api = test_client_api(pool, user_service);
-        let (room, _) = api_ok(
+        let room = api_ok(
             api.room_service
                 .create_room(
                     "Favorite leave room".to_string(),
@@ -3206,7 +3168,7 @@ mod tests {
         let member = create_user(&pool, "banned_room_visible_member").await?;
         let outsider = create_user(&pool, "banned_room_visible_outsider").await?;
         let api = test_client_api(pool, user_service);
-        let (room, _) = api_ok(
+        let room = api_ok(
             api.room_service
                 .create_room(
                     "Banned room remains visible".to_string(),
@@ -3317,7 +3279,7 @@ mod tests {
         let owner = create_user(&pool, "banned_creator_visible_owner").await?;
         let member = create_user(&pool, "banned_creator_visible_member").await?;
         let api = test_client_api(pool, user_service);
-        let (room, _) = api_ok(
+        let room = api_ok(
             api.room_service
                 .create_room(
                     "Banned creator room remains visible".to_string(),

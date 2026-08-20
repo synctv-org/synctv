@@ -409,20 +409,6 @@ impl User {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CreateUserRequest {
-    pub username: String,
-    pub email: Option<String>, // Optional email
-    pub password: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UpdateUserRequest {
-    pub username: Option<String>,
-    pub email: Option<Option<String>>, // Option<Option<String>>: Some(None) means set to NULL, None means don't update
-    pub password: Option<String>,
-}
-
 sort_field_enum! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "snake_case")]

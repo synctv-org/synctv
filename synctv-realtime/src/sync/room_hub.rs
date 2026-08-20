@@ -604,16 +604,6 @@ impl RoomMessageHub {
         self.ttl_refresh_cancel.lock().is_cancelled()
     }
 
-    /// Set the TTL for Redis subscription keys (crash-safety mechanism).
-    ///
-    /// If a node crashes without properly unsubscribing, stale keys will expire
-    /// after this duration. Should be set to at least `heartbeat_timeout * 2`.
-    #[must_use]
-    pub const fn with_redis_key_ttl_secs(mut self, ttl_secs: i64) -> Self {
-        self.redis_key_ttl_secs = ttl_secs;
-        self
-    }
-
     /// Subscribe to room lifecycle events (room activated / deactivated).
     /// Used by the Redis Pub/Sub subscriber task.
     #[must_use]

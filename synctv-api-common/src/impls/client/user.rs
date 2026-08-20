@@ -70,12 +70,6 @@ fn masked_email_for_sensitive_challenge(
     Ok(String::new())
 }
 
-pub fn token_auth_context_from_claims(
-    claims: &synctv_core::service::Claims,
-) -> Option<TokenAuthContext> {
-    claims.auth_context()
-}
-
 fn sensitive_challenge_to_proto(
     challenge: SensitiveVerificationChallenge,
 ) -> Result<synctv_proto::client::SensitiveOperationVerificationChallenge, ApiError> {
@@ -752,9 +746,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::Authentication("Authentication failed".to_string()))?;
-        email_api
-            .check_email_address_rate_limit(&email, None)
-            .await?;
+        email_api.check_email_rate_limit(&email, None).await?;
         email_api
             .enqueue_tokenized_email_with_control(
                 &email,

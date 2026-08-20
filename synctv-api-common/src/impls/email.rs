@@ -136,7 +136,7 @@ impl EmailApiImpl {
         email.trim().to_ascii_lowercase()
     }
 
-    async fn check_email_rate_limit(
+    pub(crate) async fn check_email_rate_limit(
         &self,
         email: &str,
         control: Option<&ExecutionControl>,
@@ -189,14 +189,6 @@ impl EmailApiImpl {
             .check_generate_token_rate_limit_with_control(user_id, token_type, control)
             .await
             .map_err(ApiError::from)
-    }
-
-    pub async fn check_email_address_rate_limit(
-        &self,
-        email: &str,
-        control: Option<&ExecutionControl>,
-    ) -> Result<(), ApiError> {
-        self.check_email_rate_limit(email, control).await
     }
 
     #[must_use]
@@ -258,7 +250,8 @@ impl EmailApiImpl {
 
     /// Request a password reset email.
     /// Returns generic message regardless of whether user exists (anti-enumeration).
-    pub async fn request_password_reset(
+    #[cfg(test)]
+    async fn request_password_reset(
         &self,
         email: &str,
     ) -> Result<RequestPasswordResetResult, ApiError> {
@@ -317,7 +310,8 @@ impl EmailApiImpl {
     }
 
     /// Request an email login code.
-    pub async fn request_email_login(
+    #[cfg(test)]
+    async fn request_email_login(
         &self,
         user_id: &synctv_core::models::UserId,
         email: &str,
@@ -400,18 +394,6 @@ impl EmailApiImpl {
         })
     }
 
-    /// Start a password reset by consuming the email token and creating an
-    /// OPAQUE registration session for the replacement password.
-    pub async fn start_opaque_password_reset(
-        &self,
-        email: &str,
-        token: &str,
-        registration_request: bytes::Bytes,
-    ) -> Result<StartOpaquePasswordResetResult, ApiError> {
-        self.start_opaque_password_reset_with_control(email, token, registration_request, None)
-            .await
-    }
-
     pub async fn start_opaque_password_reset_with_control(
         &self,
         email: &str,
@@ -486,15 +468,6 @@ impl EmailApiImpl {
         })
     }
 
-    pub async fn finish_opaque_password_reset(
-        &self,
-        session_id: &str,
-        registration_upload: bytes::Bytes,
-    ) -> Result<ConfirmPasswordResetResult, ApiError> {
-        self.finish_opaque_password_reset_with_control(session_id, registration_upload, None)
-            .await
-    }
-
     pub async fn finish_opaque_password_reset_with_control(
         &self,
         session_id: &str,
@@ -537,7 +510,8 @@ impl EmailApiImpl {
     }
 
     /// Confirm an email login token and issue an authenticated session.
-    pub async fn confirm_email_login(
+    #[cfg(test)]
+    async fn confirm_email_login(
         &self,
         user_id: &synctv_core::models::UserId,
         email: &str,

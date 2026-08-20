@@ -373,26 +373,6 @@ impl NextcloudClient {
         std::collections::HashMap::from([("Authorization".to_string(), format!("Basic {token}"))])
     }
 
-    pub async fn file_range(
-        &self,
-        username: &str,
-        app_password: &str,
-        path: &str,
-        range: Option<&str>,
-    ) -> Result<Response, ProviderClientError> {
-        let mut request = self.authenticated(
-            Method::GET,
-            &Self::dav_file_path(username, path),
-            username,
-            app_password,
-        );
-        if let Some(range) = range {
-            request = request.header(reqwest::header::RANGE, range);
-        }
-        let response = request.send().await?;
-        check_response(response).await
-    }
-
     pub async fn preview(
         &self,
         username: &str,

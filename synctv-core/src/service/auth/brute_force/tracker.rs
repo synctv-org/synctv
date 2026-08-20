@@ -165,15 +165,6 @@ impl RedisAttemptTracker {
     }
 
     #[must_use]
-    pub fn new_fail_closed(
-        conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
-        max_capacity: u64,
-        ttl_secs: u64,
-    ) -> Self {
-        Self::from_runtime_fail_closed(crate::shared_runtime(conn), max_capacity, ttl_secs)
-    }
-
-    #[must_use]
     pub fn from_runtime_fail_closed(
         conn: Arc<dyn RedisConnectionRuntime>,
         max_capacity: u64,

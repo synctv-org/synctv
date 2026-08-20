@@ -21,8 +21,7 @@ pub(crate) use common::{
     validate_client_actor_user,
 };
 pub(crate) use errors::{
-    map_api_error, map_api_result, map_classified_result, map_core_error,
-    map_management_user_lookup_error,
+    map_api_error, map_classified_result, map_core_error, map_management_user_lookup_error,
 };
 pub(crate) use response::{
     created_media_to_client_proto, created_playlist_to_client_proto, created_room_to_client_proto,

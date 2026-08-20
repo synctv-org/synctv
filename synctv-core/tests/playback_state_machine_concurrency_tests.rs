@@ -21,7 +21,7 @@ async fn test_concurrent_play_pause_operations() {
         .await
         .checked("operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Concurrent Room".to_string(),
             String::new(),
@@ -85,7 +85,7 @@ async fn test_version_increments_on_state_change() {
         .await
         .checked("operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Version Room".to_string(),
             String::new(),

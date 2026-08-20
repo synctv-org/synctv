@@ -542,11 +542,6 @@ pub fn core_chat_attachment_to_proto(
 pub struct ProtoCodec;
 
 impl ProtoCodec {
-    /// Encode `ClientMessage` to binary
-    pub fn encode_client_message(msg: &ClientMessage) -> Result<Vec<u8>, String> {
-        Ok(msg.encode_to_vec())
-    }
-
     /// Decode `ClientMessage` from binary
     pub fn decode_client_message(data: &[u8]) -> Result<ClientMessage, String> {
         ClientMessage::decode(data).map_err(|e| format!("Failed to decode message: {e}"))

@@ -424,21 +424,6 @@ impl ReviewRepository {
         Ok(ReviewPage { rows, total })
     }
 
-    pub async fn reject_user_registration(
-        &self,
-        request_id: UserId,
-        reviewed_by: Option<UserId>,
-        reason: &str,
-    ) -> Result<u64> {
-        Self::reject_user_registration_with_executor(
-            self.pools.primary(),
-            request_id,
-            reviewed_by,
-            reason,
-        )
-        .await
-    }
-
     pub async fn approve_user_registration_with_executor<'e, E>(
         executor: E,
         request_id: UserId,

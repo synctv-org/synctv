@@ -20,13 +20,6 @@ pub struct ClusterClient {
 }
 
 impl ClusterClient {
-    pub fn new<N>(node_registry: Arc<N>, config: ClusterClientConfig) -> Self
-    where
-        N: ClusterNodeDirectory + 'static,
-    {
-        Self::from_runtime(node_registry, config)
-    }
-
     pub const fn from_runtime(
         node_registry: Arc<dyn ClusterNodeDirectory>,
         config: ClusterClientConfig,
@@ -37,20 +30,16 @@ impl ClusterClient {
         }
     }
 
-    async fn find_routable_node(&self, target_node_id: &str) -> Result<NodeInfo> {
-        let (nodes, _view_mode) = self.node_registry.get_routable_nodes().await?;
-        nodes
-            .into_iter()
-            .find(|node| node.node_id == target_node_id)
-            .ok_or_else(|| Error::Rpc(format!("cluster node '{target_node_id}' is not routable")))
-    }
-
     /// Resolve a routable cluster node by ID.
     ///
     /// This keeps cluster's responsibility limited to topology discovery. Callers
     /// use the returned `cluster_address` to invoke their own internal gRPC services.
     pub async fn resolve_routable_node(&self, target_node_id: &str) -> Result<NodeInfo> {
-        self.find_routable_node(target_node_id).await
+        let (nodes, _view_mode) = self.node_registry.get_routable_nodes().await?;
+        nodes
+            .into_iter()
+            .find(|node| node.node_id == target_node_id)
+            .ok_or_else(|| Error::Rpc(format!("cluster node '{target_node_id}' is not routable")))
     }
 
     /// Return all routable remote nodes, excluding this client node.

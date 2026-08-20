@@ -51,12 +51,6 @@ impl OAuth2Authorization {
     pub fn without_pkce(auth_url: String) -> Self {
         Self::new(auth_url, String::new())
     }
-
-    #[must_use]
-    pub fn with_nonce(mut self, nonce: String) -> Self {
-        self.nonce = Some(nonce);
-        self
-    }
 }
 
 /// `OAuth2` provider trait
@@ -163,13 +157,6 @@ impl ProviderRegistry {
         registry.insert(provider_type.to_string(), factory);
     }
 
-    /// Get a registered factory function by type.
-    #[must_use]
-    pub fn get_factory(&self, provider_type: &str) -> Option<OAuth2ProviderFactory> {
-        let registry = self.factories.read();
-        registry.get(provider_type).cloned()
-    }
-
     /// Create a provider instance with configuration.
     ///
     /// Looks up the factory function in the registry and calls it.
@@ -178,9 +165,14 @@ impl ProviderRegistry {
         provider_type: &str,
         config: &OAuth2ProviderPrivateConfig,
     ) -> Result<Box<dyn Provider>, Error> {
-        let factory = self.get_factory(provider_type).ok_or_else(|| {
-            Error::InvalidInput(format!("Unknown provider type: {provider_type}"))
-        })?;
+        let factory = self
+            .factories
+            .read()
+            .get(provider_type)
+            .cloned()
+            .ok_or_else(|| {
+                Error::InvalidInput(format!("Unknown provider type: {provider_type}"))
+            })?;
         factory(config)
     }
 }

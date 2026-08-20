@@ -15,7 +15,7 @@ use synctv_realtime::sync::{
 };
 use tokio::sync::{broadcast, mpsc};
 
-use crate::impls::{AdminApiRuntime, AdminReadServices, ClientApiRuntime, RequestExecutor};
+use crate::impls::{AdminReadServices, ClientApiRuntime, RequestExecutor};
 use crate::realtime_fanout::ChannelRealtimeFanoutService;
 use synctv_realtime::fanout::{RealtimeEventService, RealtimeFanoutService, RealtimeMetrics};
 
@@ -97,18 +97,6 @@ pub fn client_api_runtime() -> ClientApiRuntime {
         Arc::new(local_request_executor()),
         proxy_signing_key(b"test-client-api-runtime-signing-key-32-bytes"),
         media_swarm_signing_key(b"test-client-api-media-swarm-signing-key-32-bytes"),
-    )
-}
-
-#[allow(dead_code)]
-pub fn admin_api_runtime() -> AdminApiRuntime {
-    AdminApiRuntime::local_disabled(
-        Arc::new(local_request_executor()),
-        proxy_signing_key(b"test-admin-api-runtime-signing-key-32-bytes!"),
-        media_swarm_signing_key(b"test-admin-api-media-swarm-signing-key-32-bytes!"),
-        Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(
-            "test:admin:",
-        )),
     )
 }
 

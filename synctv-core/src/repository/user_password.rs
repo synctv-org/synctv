@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 
 use crate::{
-    models::{OpaquePasswordRecord, SignupMethod, User, UserId, UserRole, UserStatus},
+    models::{OpaquePasswordRecord, User, UserId},
     Error, Result,
 };
 
@@ -46,114 +46,6 @@ pub struct PasswordCredentialState {
     pub user_id: UserId,
     pub changed_at: DateTime<Utc>,
     pub version: i32,
-}
-
-#[derive(Debug, Clone)]
-pub struct UserWithPasswordCredential {
-    pub user: User,
-    pub credential_state: PasswordCredentialState,
-    pub opaque: Option<StoredOpaquePasswordCredential>,
-}
-
-#[derive(sqlx::FromRow)]
-struct UserWithPasswordCredentialRow {
-    id: UserId,
-    username: String,
-    signup_method: SignupMethod,
-    role: UserRole,
-    avatar_file_reference_id: Option<i64>,
-    status: UserStatus,
-    is_banned: bool,
-    banned_at: Option<DateTime<Utc>>,
-    banned_by: Option<UserId>,
-    banned_reason: Option<String>,
-    created_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
-    user_version: i32,
-    deleted_at: Option<DateTime<Utc>>,
-    changed_at: Option<DateTime<Utc>>,
-    credential_version: Option<i32>,
-    opaque_record: Option<Vec<u8>>,
-    opaque_credential_identifier: Option<Vec<u8>>,
-    opaque_ciphersuite: Option<String>,
-    opaque_server_setup_version: Option<i32>,
-}
-
-impl UserWithPasswordCredentialRow {
-    fn to_user(&self) -> User {
-        User {
-            id: self.id,
-            username: self.username.clone(),
-            role: self.role,
-            avatar_file_reference_id: self.avatar_file_reference_id,
-            status: self.status,
-            is_banned: self.is_banned,
-            banned_at: self.banned_at,
-            banned_by: self.banned_by,
-            banned_reason: self.banned_reason.clone(),
-            signup_method: self.signup_method,
-            created_at: self.created_at,
-            updated_at: self.updated_at,
-            version: self.user_version,
-            deleted_at: self.deleted_at,
-        }
-    }
-}
-
-impl TryFrom<UserWithPasswordCredentialRow> for UserWithPasswordCredential {
-    type Error = Error;
-
-    fn try_from(row: UserWithPasswordCredentialRow) -> Result<Self> {
-        let user = row.to_user();
-        let user_id = row.id;
-        let user_created_at = row.created_at;
-        let credential_state = match (row.changed_at, row.credential_version) {
-            (Some(changed_at), Some(version)) => PasswordCredentialState {
-                user_id,
-                changed_at,
-                version,
-            },
-            (None, None) => PasswordCredentialState {
-                user_id,
-                changed_at: user_created_at,
-                version: 0,
-            },
-            _ => {
-                return Err(Error::Internal(
-                    "Incomplete password credential state".to_string(),
-                ));
-            }
-        };
-        let opaque = match (
-            row.opaque_record,
-            row.opaque_credential_identifier,
-            row.opaque_ciphersuite,
-            row.opaque_server_setup_version,
-        ) {
-            (Some(record), Some(credential_identifier), Some(ciphersuite), Some(version)) => {
-                Some(StoredOpaquePasswordCredential {
-                    record: OpaquePasswordRecord {
-                        record,
-                        credential_identifier,
-                        ciphersuite,
-                        server_setup_version: version,
-                    },
-                })
-            }
-            (None, None, None, None) => None,
-            _ => {
-                return Err(Error::Internal(
-                    "Incomplete OPAQUE password credential material".to_string(),
-                ));
-            }
-        };
-
-        Ok(Self {
-            user,
-            credential_state,
-            opaque,
-        })
-    }
 }
 
 impl<'a> PasswordCredentialMaterial<'a> {
@@ -239,85 +131,6 @@ impl UserPasswordRepository {
         Ok(row.map(Into::into))
     }
 
-    pub async fn get_by_username_with_credential(
-        &self,
-        username: &str,
-    ) -> Result<Option<UserWithPasswordCredential>> {
-        let row = sqlx::query_as!(
-            UserWithPasswordCredentialRow,
-            r#"
-            SELECT u.id AS "id!: UserId",
-                   u.username AS "username!",
-                   u.signup_method AS "signup_method!: SignupMethod",
-                   u.role AS "role!: UserRole",
-                   u.avatar_file_reference_id,
-                   u.status AS "status!: UserStatus",
-                   u.is_banned AS "is_banned!",
-                   u.banned_at,
-                   u.banned_by AS "banned_by?: UserId",
-                   u.banned_reason,
-                   u.created_at AS "created_at!",
-                   u.updated_at AS "updated_at!",
-                   u.version AS "user_version!",
-                   u.deleted_at,
-                   apc.changed_at,
-                   apc.version AS credential_version,
-                   apc.opaque_record,
-                   apc.opaque_credential_identifier,
-                   apc.opaque_ciphersuite,
-                   apc.opaque_server_setup_version
-            FROM user_account_profiles u
-            LEFT JOIN auth_password_credentials apc ON apc.user_id = u.id
-            WHERE LOWER(u.username) = LOWER($1) AND u.deleted_at IS NULL
-            "#,
-            username
-        )
-        .fetch_optional(&self.pool)
-        .await?;
-
-        row.map(TryInto::try_into).transpose()
-    }
-
-    pub async fn get_by_email_with_credential(
-        &self,
-        email: &str,
-    ) -> Result<Option<UserWithPasswordCredential>> {
-        let row = sqlx::query_as!(
-            UserWithPasswordCredentialRow,
-            r#"
-            SELECT u.id AS "id!: UserId",
-                   u.username AS "username!",
-                   u.signup_method AS "signup_method!: SignupMethod",
-                   u.role AS "role!: UserRole",
-                   u.avatar_file_reference_id,
-                   u.status AS "status!: UserStatus",
-                   u.is_banned AS "is_banned!",
-                   u.banned_at,
-                   u.banned_by AS "banned_by?: UserId",
-                   u.banned_reason,
-                   u.created_at AS "created_at!",
-                   u.updated_at AS "updated_at!",
-                   u.version AS "user_version!",
-                   u.deleted_at,
-                   apc.changed_at,
-                   apc.version AS credential_version,
-                   apc.opaque_record,
-                   apc.opaque_credential_identifier,
-                   apc.opaque_ciphersuite,
-                   apc.opaque_server_setup_version
-            FROM user_account_profiles u
-            LEFT JOIN auth_password_credentials apc ON apc.user_id = u.id
-            JOIN auth_email_identities aei ON aei.user_id = u.id
-            WHERE LOWER(aei.email) = LOWER($1) AND u.deleted_at IS NULL AND aei.deleted_at IS NULL
-            "#,
-            email
-        )
-        .fetch_optional(&self.pool)
-        .await?;
-
-        row.map(TryInto::try_into).transpose()
-    }
-
     pub async fn get_opaque_credential(
         &self,
         user_id: &UserId,
@@ -372,10 +185,6 @@ impl UserPasswordRepository {
         .fetch_one(&self.pool)
         .await
         .map_err(Error::Database)
-    }
-
-    pub async fn has_credential(&self, user_id: &UserId) -> Result<bool> {
-        self.has_opaque_credential(user_id).await
     }
 
     pub async fn get_state(&self, user_id: &UserId) -> Result<PasswordCredentialState> {

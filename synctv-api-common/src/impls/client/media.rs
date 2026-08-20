@@ -34,7 +34,7 @@ use super::convert::{
     file_metadata_from_proto, media_source_config_to_proto, optional_proto_source_provider_to_core,
     optional_provider_target_to_proto, playlist_source_config_to_proto, provider_target_from_proto,
 };
-use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
+use super::{ClientApiImpl, RoomActor};
 use crate::media_fanout::{MediaFanoutService, PreparedMediaRemovedFanout};
 use crate::playback_fanout::{PlaybackFanoutService, PreparedPlaybackStateFanout};
 use crate::playlist_fanout::{PlaylistFanoutService, PreparedPlaylistDeletedFanout};
@@ -503,20 +503,6 @@ pub fn file_upload_plan_to_proto(plan: FileUploadPlan) -> synctv_proto::client::
     }
 }
 
-pub fn proto_complete_upload_parts(
-    parts: Vec<synctv_proto::client::CompleteFileUploadPart>,
-) -> Vec<CompleteFileUploadPart> {
-    parts
-        .into_iter()
-        .map(|part| CompleteFileUploadPart {
-            part_number: part.part_number,
-            etag: part.etag,
-            size_bytes: part.size_bytes,
-            checksum_sha256: optional_trimmed_string(&part.checksum_sha256),
-        })
-        .collect()
-}
-
 pub fn complete_upload_session_request(
     file_id: &str,
     encoded_object_key: String,
@@ -531,7 +517,15 @@ pub fn complete_upload_session_request(
         upload_token: token,
         upload_id,
         ownership_proof: optional_trimmed_string(ownership_proof),
-        parts: proto_complete_upload_parts(parts),
+        parts: parts
+            .into_iter()
+            .map(|part| CompleteFileUploadPart {
+                part_number: part.part_number,
+                etag: part.etag,
+                size_bytes: part.size_bytes,
+                checksum_sha256: optional_trimmed_string(&part.checksum_sha256),
+            })
+            .collect(),
     }
 }
 
@@ -650,21 +644,15 @@ pub fn file_upload_reference_to_proto(
     Ok(synctv_proto::client::FileUploadReference { id: reference.id })
 }
 
-pub fn file_upload_reference_to_core(
-    reference: synctv_proto::client::FileUploadReference,
-) -> synctv_core::models::SubmittedFileReference {
-    synctv_core::models::SubmittedFileReference {
-        id: reference.id,
-        kind: synctv_core::models::SubmittedFileReferenceKind::Upload,
-    }
-}
-
 pub fn required_file_upload_reference(
     reference: Option<synctv_proto::client::FileUploadReference>,
     field: &'static str,
 ) -> Result<synctv_core::models::SubmittedFileReference, ApiError> {
     reference
-        .map(file_upload_reference_to_core)
+        .map(|reference| synctv_core::models::SubmittedFileReference {
+            id: reference.id,
+            kind: synctv_core::models::SubmittedFileReferenceKind::Upload,
+        })
         .ok_or_else(|| ApiError::InvalidInput(format!("{field} is required")))
 }
 
@@ -2294,16 +2282,6 @@ impl ClientApiImpl {
         self.list_playlist_items_for_actor(&actor, req).await
     }
 
-    pub async fn list_playlist_items_as_guest(
-        &self,
-        access: &GuestRoomAccess,
-        req: synctv_proto::client::ListPlaylistItemsRequest,
-    ) -> Result<synctv_proto::client::ListPlaylistItemsResponse, ApiError> {
-        crate::impls::validate_proto_request(&req)?;
-        self.list_playlist_items_for_actor(&RoomActor::Guest(access.clone()), req)
-            .await
-    }
-
     pub async fn list_playlist_items_for_actor(
         &self,
         actor: &RoomActor,
@@ -2857,15 +2835,6 @@ impl ClientApiImpl {
     ) -> Result<synctv_proto::client::Media, ApiError> {
         let actor = self.room_actor_for_user(user_id, room_id).await?;
         self.get_media_for_actor(&actor, media_id).await
-    }
-
-    pub async fn get_media_as_guest(
-        &self,
-        access: &GuestRoomAccess,
-        media_id: &str,
-    ) -> Result<synctv_proto::client::Media, ApiError> {
-        self.get_media_for_actor(&RoomActor::Guest(access.clone()), media_id)
-            .await
     }
 
     pub async fn get_media_for_actor(

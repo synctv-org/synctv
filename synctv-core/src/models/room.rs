@@ -5,7 +5,6 @@ use std::str::FromStr;
 
 use super::id::{RoomCategoryId, RoomId, RoomLabelId, UserId};
 use super::query::SortDirection;
-use super::RoomSettings;
 use crate::Error;
 
 fn default_last_activity_at() -> DateTime<Utc> {
@@ -333,33 +332,6 @@ impl Room {
         self.is_banned = false;
         self.updated_at = crate::SystemClock.now();
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CreateRoomRequest {
-    pub name: String,
-    /// Room description (max 500 characters)
-    #[serde(default)]
-    pub description: String,
-    pub password: Option<String>,
-    pub settings: Option<RoomSettings>,
-    pub category_id: Option<RoomCategoryId>,
-    #[serde(default)]
-    pub label_ids: Vec<RoomLabelId>,
-    #[serde(default = "default_enabled")]
-    pub is_public: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UpdateRoomRequest {
-    pub name: Option<String>,
-    /// Room description (max 500 characters)
-    pub description: Option<String>,
-    pub closed: Option<bool>,
-    pub settings: Option<RoomSettings>,
-    pub category_id: Option<RoomCategoryId>,
-    pub label_ids: Option<Vec<RoomLabelId>>,
-    pub is_public: Option<bool>,
 }
 
 sort_field_enum! {

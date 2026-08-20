@@ -274,11 +274,6 @@ impl SegmentManager {
         self.config.final_playlist_grace
     }
 
-    #[must_use]
-    pub fn ended_segment_grace(&self) -> Duration {
-        self.config.ended_segment_grace
-    }
-
     fn generation_cleanup_delay(&self) -> Duration {
         self.config
             .final_playlist_grace

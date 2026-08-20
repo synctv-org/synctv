@@ -3454,7 +3454,7 @@ mod tests {
             config.security.provider_session_encryption_key.as_bytes(),
         )
         .expect("test provider API impls should build");
-        let http_state = synctv_api::create_app_state_from_options(synctv_api::RouterOptions {
+        let http_state = synctv_api::build_app_state(synctv_api::RouterOptions {
             runtime_settings: api_config.clone(),
             user_service,
             read_pool: None,

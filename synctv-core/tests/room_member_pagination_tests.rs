@@ -8,8 +8,8 @@
 use chrono::Utc;
 use synctv_core::{
     models::{
-        PageParams, Room, RoomId, RoomMember, RoomRole, RoomStatus, User, UserId, UserRole,
-        UserStatus,
+        PageParams, Room, RoomId, RoomMember, RoomMemberListQuery, RoomRole, RoomStatus, User,
+        UserId, UserRole, UserStatus,
     },
     repository::{RoomMemberRepository, RoomRepository, UserRepository},
 };
@@ -62,11 +62,18 @@ fn make_member(room_id: RoomId, user_id: UserId, role: RoomRole) -> RoomMember {
     RoomMember::new(room_id, user_id, role)
 }
 
-/// Test that list_by_room_paginated returns the correct page of members
+fn member_query(pagination: PageParams) -> RoomMemberListQuery {
+    RoomMemberListQuery {
+        pagination,
+        ..Default::default()
+    }
+}
+
+/// Test that list_by_room_query returns the correct page of members
 /// and the total count without loading all members into memory.
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_list_by_room_paginated_first_page() {
+async fn test_list_by_room_query_first_page() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
@@ -106,7 +113,7 @@ async fn test_list_by_room_paginated_first_page() {
     // Request first page with page_size=10
     let pagination = PageParams::new(Some(1), Some(10));
     let (members, total) = member_repo
-        .list_by_room_paginated(&room.id, pagination)
+        .list_by_room_query(&room.id, &member_query(pagination))
         .await
         .checked("test operation should succeed");
 
@@ -119,7 +126,7 @@ async fn test_list_by_room_paginated_first_page() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_list_by_room_paginated_second_page() {
+async fn test_list_by_room_query_second_page() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
@@ -155,7 +162,7 @@ async fn test_list_by_room_paginated_second_page() {
     // Request second page with page_size=10
     let pagination = PageParams::new(Some(2), Some(10));
     let (members, total) = member_repo
-        .list_by_room_paginated(&room.id, pagination)
+        .list_by_room_query(&room.id, &member_query(pagination))
         .await
         .checked("test operation should succeed");
 
@@ -165,7 +172,7 @@ async fn test_list_by_room_paginated_second_page() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_list_by_room_paginated_last_page_partial() {
+async fn test_list_by_room_query_last_page_partial() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
@@ -201,7 +208,7 @@ async fn test_list_by_room_paginated_last_page_partial() {
     // Total = 26, with page_size=10: page 3 should have 6 remaining members
     let pagination = PageParams::new(Some(3), Some(10));
     let (members, total) = member_repo
-        .list_by_room_paginated(&room.id, pagination)
+        .list_by_room_query(&room.id, &member_query(pagination))
         .await
         .checked("test operation should succeed");
 
@@ -215,7 +222,7 @@ async fn test_list_by_room_paginated_last_page_partial() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_list_by_room_paginated_empty_page() {
+async fn test_list_by_room_query_empty_page() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
@@ -239,7 +246,7 @@ async fn test_list_by_room_paginated_empty_page() {
     // preserving the total number of matching members.
     let pagination = PageParams::new(Some(2), Some(10));
     let (members, total) = member_repo
-        .list_by_room_paginated(&room.id, pagination)
+        .list_by_room_query(&room.id, &member_query(pagination))
         .await
         .checked("test operation should succeed");
 
@@ -249,7 +256,7 @@ async fn test_list_by_room_paginated_empty_page() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_list_by_room_paginated_no_overlap_between_pages() {
+async fn test_list_by_room_query_no_overlap_between_pages() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
@@ -289,19 +296,19 @@ async fn test_list_by_room_paginated_no_overlap_between_pages() {
     let page4 = PageParams::new(Some(4), Some(10));
 
     let (members1, _) = member_repo
-        .list_by_room_paginated(&room.id, page1)
+        .list_by_room_query(&room.id, &member_query(page1))
         .await
         .checked("test operation should succeed");
     let (members2, _) = member_repo
-        .list_by_room_paginated(&room.id, page2)
+        .list_by_room_query(&room.id, &member_query(page2))
         .await
         .checked("test operation should succeed");
     let (members3, _) = member_repo
-        .list_by_room_paginated(&room.id, page3)
+        .list_by_room_query(&room.id, &member_query(page3))
         .await
         .checked("test operation should succeed");
     let (members4, _) = member_repo
-        .list_by_room_paginated(&room.id, page4)
+        .list_by_room_query(&room.id, &member_query(page4))
         .await
         .checked("test operation should succeed");
 
@@ -335,7 +342,7 @@ async fn test_list_by_room_paginated_no_overlap_between_pages() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_list_by_room_paginated_large_member_count() {
+async fn test_list_by_room_query_large_member_count() {
     // This test specifically verifies that pagination works efficiently
     // with a large number of members without loading all into memory
     let (_container, pool) = create_test_pool().await;
@@ -370,28 +377,28 @@ async fn test_list_by_room_paginated_large_member_count() {
     }
 
     let (p1, total1) = member_repo
-        .list_by_room_paginated(&room.id, PageParams::new(Some(1), Some(50)))
+        .list_by_room_query(&room.id, &member_query(PageParams::new(Some(1), Some(50))))
         .await
         .checked("test operation should succeed");
     assert_eq!(total1, 151);
     assert_eq!(p1.len(), 50);
 
     let (p2, total2) = member_repo
-        .list_by_room_paginated(&room.id, PageParams::new(Some(2), Some(50)))
+        .list_by_room_query(&room.id, &member_query(PageParams::new(Some(2), Some(50))))
         .await
         .checked("test operation should succeed");
     assert_eq!(total2, 151);
     assert_eq!(p2.len(), 50);
 
     let (p3, total3) = member_repo
-        .list_by_room_paginated(&room.id, PageParams::new(Some(3), Some(50)))
+        .list_by_room_query(&room.id, &member_query(PageParams::new(Some(3), Some(50))))
         .await
         .checked("test operation should succeed");
     assert_eq!(total3, 151);
     assert_eq!(p3.len(), 50);
 
     let (p4, total4) = member_repo
-        .list_by_room_paginated(&room.id, PageParams::new(Some(4), Some(50)))
+        .list_by_room_query(&room.id, &member_query(PageParams::new(Some(4), Some(50))))
         .await
         .checked("test operation should succeed");
     assert_eq!(total4, 151);
@@ -400,7 +407,7 @@ async fn test_list_by_room_paginated_large_member_count() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_list_by_room_paginated_excludes_left_members() {
+async fn test_list_by_room_query_excludes_left_members() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
@@ -458,7 +465,7 @@ async fn test_list_by_room_paginated_excludes_left_members() {
 
     // Paginated query should only return active members (1 creator + 5 active = 6)
     let (members, total) = member_repo
-        .list_by_room_paginated(&room.id, PageParams::new(Some(1), Some(20)))
+        .list_by_room_query(&room.id, &member_query(PageParams::new(Some(1), Some(20))))
         .await
         .checked("test operation should succeed");
 
@@ -478,7 +485,7 @@ async fn test_list_by_room_paginated_excludes_left_members() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_list_by_room_paginated_counts_active_only_after_removals() {
+async fn test_list_by_room_query_counts_active_only_after_removals() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
@@ -534,7 +541,7 @@ async fn test_list_by_room_paginated_counts_active_only_after_removals() {
 
     // Paginated query should only return active members (1 creator + 5 active = 6)
     let (_members, total) = member_repo
-        .list_by_room_paginated(&room.id, PageParams::new(Some(1), Some(20)))
+        .list_by_room_query(&room.id, &member_query(PageParams::new(Some(1), Some(20))))
         .await
         .checked("test operation should succeed");
 
@@ -543,7 +550,7 @@ async fn test_list_by_room_paginated_counts_active_only_after_removals() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_list_by_room_paginated_empty_room() {
+async fn test_list_by_room_query_empty_room() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
@@ -559,7 +566,7 @@ async fn test_list_by_room_paginated_empty_room() {
         .checked("test operation should succeed");
 
     let (members, total) = member_repo
-        .list_by_room_paginated(&room.id, PageParams::new(Some(1), Some(20)))
+        .list_by_room_query(&room.id, &member_query(PageParams::new(Some(1), Some(20))))
         .await
         .checked("test operation should succeed");
 

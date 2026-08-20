@@ -47,7 +47,6 @@ use crate::service::RemoteProviderManager;
 
 use super::upstream_transport::bilibili as bilibili_upstream;
 
-pub const DASH_MANIFEST_METADATA_KEY: &str = "bilibili_dash_manifests";
 pub const LIVE_DANMAKU_FORMAT: &str = "synctv-bilibili-live";
 pub const LIVE_DANMAKU_TRACK_NAME: &str = "Bilibili Live Danmaku";
 const SMS_LOGIN_SESSION_TTL_SECONDS: i64 = 10 * 60;
@@ -464,26 +463,6 @@ pub struct BilibiliUserInfoResponse {
     pub is_vip: bool,
 }
 
-#[derive(Debug, Clone)]
-pub struct BilibiliLiveDanmuInfoRequest {
-    pub room_id: u64,
-    pub cookies: HashMap<String, String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct BilibiliLiveDanmuHost {
-    pub host: String,
-    pub port: u32,
-    pub wss_port: u32,
-    pub ws_port: u32,
-}
-
-#[derive(Debug, Clone)]
-pub struct BilibiliLiveDanmuInfoResponse {
-    pub token: String,
-    pub host_list: Vec<BilibiliLiveDanmuHost>,
-}
-
 fn bilibili_match_request(req: BilibiliMatchRequest) -> bilibili_upstream::MatchReq {
     bilibili_upstream::MatchReq { url: req.url }
 }
@@ -546,15 +525,6 @@ fn bilibili_sms_login_request(req: BilibiliSmsLoginRequest) -> bilibili_upstream
 fn bilibili_user_info_request(req: BilibiliUserInfoRequest) -> bilibili_upstream::UserInfoReq {
     bilibili_upstream::UserInfoReq {
         cookies: req.cookies,
-    }
-}
-
-fn bilibili_live_danmu_info_request(
-    req: BilibiliLiveDanmuInfoRequest,
-) -> bilibili_upstream::GetLiveDanmuInfoReq {
-    bilibili_upstream::GetLiveDanmuInfoReq {
-        cookies: req.cookies,
-        room_id: req.room_id,
     }
 }
 
@@ -1479,35 +1449,6 @@ impl BilibiliProvider {
             username: resp.username,
             face: resp.face,
             is_vip: resp.is_vip,
-        })
-    }
-
-    /// Get live danmaku server info for the WebSocket connection
-    pub async fn get_live_danmu_info_with_context(
-        &self,
-        req: BilibiliLiveDanmuInfoRequest,
-        instance_name: Option<&str>,
-        request_context: Option<&super::ExecutionControl>,
-    ) -> Result<BilibiliLiveDanmuInfoResponse, ProviderError> {
-        let client = self
-            .get_client_with_context(instance_name, request_context)
-            .await?;
-        let resp = client
-            .get_live_danmu_info(bilibili_live_danmu_info_request(req))
-            .await
-            .map_err(ProviderError::from)?;
-        Ok(BilibiliLiveDanmuInfoResponse {
-            token: resp.token,
-            host_list: resp
-                .host_list
-                .into_iter()
-                .map(|host| BilibiliLiveDanmuHost {
-                    host: host.host,
-                    port: host.port,
-                    wss_port: host.wss_port,
-                    ws_port: host.ws_port,
-                })
-                .collect(),
         })
     }
 

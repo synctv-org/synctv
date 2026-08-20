@@ -1023,16 +1023,11 @@ impl ProviderInstanceRepository {
         self.decrypt_instance_rows(rows)
     }
 
-    /// Get all enabled provider instances (sensitive fields decrypted)
-    pub async fn get_all_enabled(&self) -> Result<Vec<ProviderInstance>> {
-        self.get_all_enabled_from_primary().await
-    }
-
     /// Get all enabled provider instances from the primary database.
     ///
     /// These rows contain connection-building inputs and secrets. Reading them
     /// from a lagging replica can cache stale enabled credentials.
-    pub async fn get_all_enabled_from_primary(&self) -> Result<Vec<ProviderInstance>> {
+    pub async fn get_all_enabled(&self) -> Result<Vec<ProviderInstance>> {
         let rows = sqlx::query_as!(
             ProviderInstanceRow,
             r"
@@ -1107,16 +1102,8 @@ impl ProviderInstanceRepository {
         Ok((self.decrypt_instance_rows(rows)?, total))
     }
 
-    /// Get instances that support a specific provider type (sensitive fields decrypted)
-    pub async fn find_by_provider(&self, provider: &str) -> Result<Vec<ProviderInstance>> {
-        self.find_by_provider_from_primary(provider).await
-    }
-
     /// Get enabled instances that support a provider type from the primary database.
-    pub async fn find_by_provider_from_primary(
-        &self,
-        provider: &str,
-    ) -> Result<Vec<ProviderInstance>> {
+    pub async fn find_by_provider(&self, provider: &str) -> Result<Vec<ProviderInstance>> {
         let rows = sqlx::query_as!(
             ProviderInstanceRow,
             r"
@@ -1699,24 +1686,6 @@ impl UserProviderCredentialRepository {
         }
 
         Ok(())
-    }
-
-    /// Get all expired credentials (for cleanup jobs, decrypted)
-    pub async fn get_expired(&self) -> Result<Vec<UserProviderCredential>> {
-        let rows = sqlx::query_as!(
-            UserProviderCredentialRow,
-            r#"
-            SELECT id, user_id as "user_id: UserId", provider, server_id,
-                   provider_instance_name, credential_data as "credential_data!: StoredProviderCredential",
-                   expires_at, created_at, updated_at
-            FROM user_media_provider_credentials
-            WHERE expires_at IS NOT NULL AND expires_at <= NOW()
-            "#,
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        self.decrypt_credential_rows(rows)
     }
 
     /// Delete all expired credentials

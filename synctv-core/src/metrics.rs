@@ -4,8 +4,8 @@
 //! All metrics are automatically exposed via the /metrics endpoint for Prometheus scraping.
 
 use prometheus::{
-    core::Collector, CounterVec, Encoder, Gauge, GaugeVec, HistogramOpts, HistogramVec, IntCounter,
-    IntCounterVec, IntGauge, IntGaugeVec, Opts, Registry, TextEncoder,
+    core::Collector, CounterVec, Encoder, GaugeVec, HistogramOpts, HistogramVec, IntCounter,
+    IntCounterVec, IntGauge, Opts, Registry, TextEncoder,
 };
 
 /// Global metrics registry.
@@ -47,11 +47,6 @@ fn int_gauge(name: &str, help: &str) -> IntGauge {
     register_metric(metric, name)
 }
 
-fn gauge(name: &str, help: &str) -> Gauge {
-    let metric = Gauge::new(name, help).unwrap_or_else(|error| abort_invalid_metric(name, &error));
-    register_metric(metric, name)
-}
-
 fn counter_vec(name: &str, help: &str, labels: &[&str]) -> CounterVec {
     let metric = CounterVec::new(Opts::new(name, help), labels)
         .unwrap_or_else(|error| abort_invalid_metric(name, &error));
@@ -66,12 +61,6 @@ fn int_counter_vec(name: &str, help: &str, labels: &[&str]) -> IntCounterVec {
 
 fn gauge_vec(name: &str, help: &str, labels: &[&str]) -> GaugeVec {
     let metric = GaugeVec::new(Opts::new(name, help), labels)
-        .unwrap_or_else(|error| abort_invalid_metric(name, &error));
-    register_metric(metric, name)
-}
-
-fn int_gauge_vec(name: &str, help: &str, labels: &[&str]) -> IntGaugeVec {
-    let metric = IntGaugeVec::new(Opts::new(name, help), labels)
         .unwrap_or_else(|error| abort_invalid_metric(name, &error));
     register_metric(metric, name)
 }
@@ -113,16 +102,6 @@ pub mod http {
             )
         });
 
-    /// HTTP error rate counter, labeled by method, path, and error type.
-    pub static HTTP_ERROR_RATE: std::sync::LazyLock<IntCounterVec> =
-        std::sync::LazyLock::new(|| {
-            int_counter_vec(
-                "http_error_rate_total",
-                "Total HTTP errors by type",
-                &["method", "path", "error_type"],
-            )
-        });
-
     /// Number of in-flight HTTP requests.
     pub static HTTP_REQUESTS_IN_FLIGHT: std::sync::LazyLock<IntGauge> =
         std::sync::LazyLock::new(|| {
@@ -151,16 +130,6 @@ pub mod http {
             )
         });
 
-    /// Total WebSocket messages processed, labeled by direction (inbound/outbound) and type (text/binary/ping/pong).
-    pub static WEBSOCKET_MESSAGES_TOTAL: std::sync::LazyLock<IntCounterVec> =
-        std::sync::LazyLock::new(|| {
-            int_counter_vec(
-                "websocket_messages_total",
-                "Total number of WebSocket messages processed",
-                &["direction", "type"],
-            )
-        });
-
     /// Total WebSocket errors, labeled by error type.
     pub static WEBSOCKET_ERRORS_TOTAL: std::sync::LazyLock<IntCounterVec> =
         std::sync::LazyLock::new(|| {
@@ -168,21 +137,6 @@ pub mod http {
                 "websocket_errors_total",
                 "Total number of WebSocket errors",
                 &["error_type"],
-            )
-        });
-
-    /// WebSocket connection duration in seconds (how long each connection was alive).
-    pub static WEBSOCKET_CONNECTION_DURATION_SECONDS: std::sync::LazyLock<HistogramVec> =
-        std::sync::LazyLock::new(|| {
-            histogram_vec(
-                HistogramOpts::new(
-                    "websocket_connection_duration_seconds",
-                    "WebSocket connection duration in seconds",
-                )
-                .buckets(vec![
-                    1.0, 5.0, 15.0, 30.0, 60.0, 300.0, 900.0, 1800.0, 3600.0, 7200.0,
-                ]),
-                &[],
             )
         });
 }
@@ -209,16 +163,6 @@ pub mod application {
             int_gauge(
                 "webrtc_peers_active",
                 "Number of active WebRTC peer connections",
-            )
-        });
-
-    /// Total playlist items added.
-    pub static PLAYLIST_ITEMS_TOTAL: std::sync::LazyLock<IntCounterVec> =
-        std::sync::LazyLock::new(|| {
-            int_counter_vec(
-                "playlist_items_total",
-                "Total number of playlist items added",
-                &[],
             )
         });
 
@@ -324,40 +268,6 @@ pub mod cache {
         )
     });
 
-    /// Cache fill duration histogram (time taken to load from DB and populate cache)
-    pub static CACHE_FILL_DURATION: std::sync::LazyLock<HistogramVec> =
-        std::sync::LazyLock::new(|| {
-            histogram_vec(
-                HistogramOpts::new(
-                    "cache_fill_duration_seconds",
-                    "Time taken to fill cache from database",
-                ),
-                &["cache_type"],
-            )
-        });
-
-    /// `SingleFlight` merge counter (how many concurrent requests were deduplicated)
-    pub static SINGLEFLIGHT_MERGES: std::sync::LazyLock<CounterVec> =
-        std::sync::LazyLock::new(|| {
-            counter_vec(
-                "cache_singleflight_merges_total",
-                "Total number of requests merged by SingleFlight",
-                &["cache_type"],
-            )
-        });
-
-    /// Cross-replica cache invalidation duration histogram
-    pub static INVALIDATION_LATENCY: std::sync::LazyLock<HistogramVec> =
-        std::sync::LazyLock::new(|| {
-            histogram_vec(
-                HistogramOpts::new(
-                    "cache_invalidation_latency_seconds",
-                    "Time taken for cross-replica cache invalidation",
-                ),
-                &["cache_type"],
-            )
-        });
-
     /// Total cache invalidations, labeled by cache type.
     pub static CACHE_INVALIDATIONS: std::sync::LazyLock<CounterVec> =
         std::sync::LazyLock::new(|| {
@@ -458,31 +368,6 @@ pub mod cache {
 pub mod database {
     use super::*;
 
-    /// Query duration histogram with optimized buckets for P50/P95/P99.
-    pub static DB_QUERY_DURATION: std::sync::LazyLock<HistogramVec> =
-        std::sync::LazyLock::new(|| {
-            histogram_vec(
-                HistogramOpts::new(
-                    "db_query_duration_seconds",
-                    "Database query duration in seconds (P50/P95/P99)",
-                )
-                .buckets(vec![
-                    0.001, 0.002, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0,
-                ]),
-                &["operation", "table"],
-            )
-        });
-
-    /// Total database operations, labeled by operation, table, and result.
-    pub static DB_OPERATIONS_TOTAL: std::sync::LazyLock<IntCounterVec> =
-        std::sync::LazyLock::new(|| {
-            int_counter_vec(
-                "db_operations_total",
-                "Total database operations",
-                &["operation", "table", "result"],
-            )
-        });
-
     /// Active connections gauge
     pub static DB_CONNECTIONS_ACTIVE: std::sync::LazyLock<IntGauge> =
         std::sync::LazyLock::new(|| {
@@ -492,15 +377,6 @@ pub mod database {
             )
         });
 
-    /// Query error counter
-    pub static DB_QUERY_ERRORS: std::sync::LazyLock<CounterVec> = std::sync::LazyLock::new(|| {
-        counter_vec(
-            "db_query_errors_total",
-            "Total number of database query errors",
-            &["operation", "error_type"],
-        )
-    });
-
     /// Pool utilization percentage (0.0 to 1.0)
     pub static DB_POOL_UTILIZATION: std::sync::LazyLock<GaugeVec> =
         std::sync::LazyLock::new(|| {
@@ -508,37 +384,6 @@ pub mod database {
                 "db_pool_utilization_ratio",
                 "Database connection pool utilization ratio (active/max)",
                 &["pool"],
-            )
-        });
-
-    /// Connections waiting for a connection from the pool
-    pub static DB_CONNECTIONS_WAITING: std::sync::LazyLock<IntGauge> =
-        std::sync::LazyLock::new(|| {
-            int_gauge(
-                "db_connections_waiting",
-                "Number of connections waiting for a connection from the pool",
-            )
-        });
-
-    /// Connection acquire duration histogram
-    pub static DB_CONNECTION_ACQUIRE_DURATION: std::sync::LazyLock<HistogramVec> =
-        std::sync::LazyLock::new(|| {
-            histogram_vec(
-                HistogramOpts::new(
-                    "db_connection_acquire_duration_seconds",
-                    "Time taken to acquire a connection from the pool",
-                ),
-                &["pool"],
-            )
-        });
-
-    /// Transaction rollback counter
-    pub static DB_TRANSACTION_ROLLBACKS: std::sync::LazyLock<CounterVec> =
-        std::sync::LazyLock::new(|| {
-            counter_vec(
-                "db_transaction_rollbacks_total",
-                "Total number of database transaction rollbacks",
-                &["reason"],
             )
         });
 
@@ -585,60 +430,6 @@ pub mod remote_transport {
                 &["service", "method", "status"],
             )
         });
-
-    /// Active remote transport streams gauge.
-    pub static REMOTE_TRANSPORT_ACTIVE_STREAMS: std::sync::LazyLock<IntGauge> =
-        std::sync::LazyLock::new(|| {
-            int_gauge(
-                "grpc_active_streams",
-                "Current number of active remote transport streams",
-            )
-        });
-}
-
-/// Redis operations
-pub mod redis {
-    use super::*;
-
-    /// Total Redis operation errors, labeled by operation type.
-    pub static REDIS_ERRORS: std::sync::LazyLock<IntCounterVec> = std::sync::LazyLock::new(|| {
-        int_counter_vec(
-            "redis_errors_total",
-            "Total Redis operation errors",
-            &["operation"],
-        )
-    });
-
-    /// Redis operation duration in seconds, labeled by operation type.
-    /// Buckets optimized for P50/P95/P99 calculation.
-    pub static REDIS_OPERATION_DURATION: std::sync::LazyLock<HistogramVec> =
-        std::sync::LazyLock::new(|| {
-            histogram_vec(
-                HistogramOpts::new(
-                    "redis_operation_duration_seconds",
-                    "Redis operation duration in seconds (P50/P95/P99)",
-                )
-                .buckets(vec![
-                    0.001, 0.002, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5,
-                ]),
-                &["operation"],
-            )
-        });
-
-    /// Total Redis operations, labeled by operation and result (success/error).
-    pub static REDIS_OPERATIONS_TOTAL: std::sync::LazyLock<IntCounterVec> =
-        std::sync::LazyLock::new(|| {
-            int_counter_vec(
-                "redis_operations_total",
-                "Total Redis operations",
-                &["operation", "result"],
-            )
-        });
-
-    /// Redis connection pool size.
-    pub static REDIS_POOL_SIZE: std::sync::LazyLock<IntGaugeVec> = std::sync::LazyLock::new(|| {
-        int_gauge_vec("redis_pool_size", "Redis connection pool size", &["pool"])
-    });
 }
 
 /// Cluster operations
@@ -702,14 +493,6 @@ pub mod cluster {
             )
         });
 
-    /// Node health status (1 = healthy, 0 = unhealthy).
-    pub static NODE_HEALTH_STATUS: std::sync::LazyLock<IntGauge> = std::sync::LazyLock::new(|| {
-        int_gauge(
-            "synctv_cluster_node_health_status",
-            "Node health status (1 = healthy, 0 = unhealthy)",
-        )
-    });
-
     /// Leader election state (1 = leader, 0 = follower).
     pub static LEADER_ELECTION_STATE: std::sync::LazyLock<IntGauge> =
         std::sync::LazyLock::new(|| {
@@ -762,82 +545,6 @@ pub mod cluster {
             int_gauge(
                 "synctv_cluster_leader_election_mode",
                 "Leader election mode (0=standalone, 1=redis, 2=k8s_lease)",
-            )
-        });
-
-    /// Redis pub/sub connection health (1 = connected, 0 = disconnected).
-    pub static REDIS_PUBSUB_HEALTH: std::sync::LazyLock<IntGauge> =
-        std::sync::LazyLock::new(|| {
-            int_gauge(
-                "synctv_cluster_redis_pubsub_health",
-                "Redis pub/sub connection health (1 = connected, 0 = disconnected)",
-            )
-        });
-
-    /// Total number of cluster members.
-    pub static CLUSTER_MEMBER_COUNT: std::sync::LazyLock<IntGauge> =
-        std::sync::LazyLock::new(|| {
-            int_gauge(
-                "synctv_cluster_member_count",
-                "Total number of cluster members",
-            )
-        });
-
-    /// Leader election duration in seconds.
-    pub static LEADER_ELECTION_DURATION: std::sync::LazyLock<HistogramVec> =
-        std::sync::LazyLock::new(|| {
-            histogram_vec(
-                HistogramOpts::new(
-                    "synctv_cluster_leader_election_duration_seconds",
-                    "Leader election duration in seconds",
-                ),
-                &["result"],
-            )
-        });
-
-    /// Redis pub/sub message publish latency in seconds.
-    pub static REDIS_PUBSUB_PUBLISH_LATENCY: std::sync::LazyLock<HistogramVec> =
-        std::sync::LazyLock::new(|| {
-            histogram_vec(
-                HistogramOpts::new(
-                    "synctv_cluster_redis_pubsub_publish_latency_seconds",
-                    "Redis pub/sub message publish latency in seconds",
-                )
-                .buckets(vec![0.0005, 0.001, 0.002, 0.005, 0.01, 0.025, 0.05, 0.1]),
-                &["channel"],
-            )
-        });
-
-    /// Node-to-node message latency in seconds (end-to-end).
-    pub static NODE_MESSAGE_LATENCY: std::sync::LazyLock<HistogramVec> =
-        std::sync::LazyLock::new(|| {
-            histogram_vec(
-                HistogramOpts::new(
-                    "synctv_cluster_node_message_latency_seconds",
-                    "Node-to-node message latency in seconds",
-                )
-                .buckets(vec![0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5]),
-                &["event_type"],
-            )
-        });
-
-    /// Total cluster synchronization errors, labeled by error type.
-    pub static CLUSTER_SYNC_ERRORS: std::sync::LazyLock<IntCounterVec> =
-        std::sync::LazyLock::new(|| {
-            int_counter_vec(
-                "synctv_cluster_sync_errors_total",
-                "Total cluster synchronization errors",
-                &["error_type"],
-            )
-        });
-
-    /// This node's last successful heartbeat timestamp (Unix timestamp).
-    /// Reports only this node's own heartbeat (no per-node_id label to avoid unbounded cardinality).
-    pub static NODE_LAST_HEARTBEAT: std::sync::LazyLock<prometheus::Gauge> =
-        std::sync::LazyLock::new(|| {
-            gauge(
-                "synctv_cluster_node_last_heartbeat_timestamp",
-                "This node's last successful heartbeat timestamp (Unix)",
             )
         });
 
@@ -974,26 +681,6 @@ pub mod logging {
 pub mod rate_limit {
     use super::*;
 
-    /// Total rate limit checks, labeled by backend ("redis" or "memory") and category.
-    pub static RATE_LIMIT_CHECKS_TOTAL: std::sync::LazyLock<CounterVec> =
-        std::sync::LazyLock::new(|| {
-            counter_vec(
-                "rate_limit_checks_total",
-                "Total number of rate limit checks",
-                &["backend", "category"],
-            )
-        });
-
-    /// Total rate limit rejections (429s), labeled by backend and category.
-    pub static RATE_LIMIT_REJECTIONS_TOTAL: std::sync::LazyLock<CounterVec> =
-        std::sync::LazyLock::new(|| {
-            counter_vec(
-                "rate_limit_rejections_total",
-                "Total number of rate limit rejections (429)",
-                &["backend", "category"],
-            )
-        });
-
     /// Redis errors that triggered fallback to in-memory rate limiting.
     pub static RATE_LIMIT_REDIS_FALLBACKS_TOTAL: std::sync::LazyLock<CounterVec> =
         std::sync::LazyLock::new(|| {
@@ -1087,70 +774,12 @@ pub mod livestream {
             )
         });
 
-    /// Total bytes transferred for livestream, labeled by direction (in/out).
-    pub static LIVESTREAM_BYTES_TOTAL: std::sync::LazyLock<CounterVec> =
-        std::sync::LazyLock::new(|| {
-            counter_vec(
-                "livestream_bytes_total",
-                "Total bytes transferred for livestream",
-                &["direction"],
-            )
-        });
-
-    /// Livestream duration in seconds (how long each stream session lasted).
-    pub static LIVESTREAM_STREAM_DURATION_SECONDS: std::sync::LazyLock<HistogramVec> =
-        std::sync::LazyLock::new(|| {
-            histogram_vec(
-                HistogramOpts::new(
-                    "livestream_stream_duration_seconds",
-                    "Livestream session duration in seconds",
-                ),
-                &["stream_type"],
-            )
-        });
-
-    /// Total stream pull errors, labeled by error type.
-    pub static LIVESTREAM_PULL_ERRORS_TOTAL: std::sync::LazyLock<CounterVec> =
-        std::sync::LazyLock::new(|| {
-            counter_vec(
-                "livestream_pull_errors_total",
-                "Total number of livestream pull errors",
-                &["error_type"],
-            )
-        });
-
     /// Total relay frames dropped due to backpressure.
     pub static LIVESTREAM_RELAY_FRAME_DROPS: std::sync::LazyLock<IntCounter> =
         std::sync::LazyLock::new(|| {
             int_counter(
                 "livestream_relay_frame_drops_total",
                 "Total relay frames dropped due to backpressure",
-            )
-        });
-
-    /// Number of cached GOPs across all active streams.
-    pub static GOP_CACHE_SIZE: std::sync::LazyLock<IntGauge> = std::sync::LazyLock::new(|| {
-        int_gauge(
-            "gop_cache_size",
-            "Number of cached GOPs across all active streams",
-        )
-    });
-
-    /// Total number of GOPs evicted due to memory limits since process start.
-    pub static GOP_CACHE_DROPS_TOTAL: std::sync::LazyLock<IntCounter> =
-        std::sync::LazyLock::new(|| {
-            int_counter(
-                "gop_cache_drops_total",
-                "Total number of GOPs evicted due to memory limits",
-            )
-        });
-
-    /// Current memory usage in bytes of the GOP cache across all active streams.
-    pub static GOP_CACHE_MEMORY_BYTES: std::sync::LazyLock<IntGauge> =
-        std::sync::LazyLock::new(|| {
-            int_gauge(
-                "gop_cache_memory_bytes",
-                "Current memory usage in bytes of the GOP cache across all active streams",
             )
         });
 
@@ -1163,116 +792,6 @@ pub mod livestream {
             )
         });
 }
-
-/// Helper macro to record HTTP request metrics
-#[macro_export]
-macro_rules! record_http_request {
-    ($method:expr, $path:expr, $status:expr, $duration:expr) => {
-        let status_str = $status.to_string();
-        let method_str = $method.to_string();
-
-        $crate::metrics::http::HTTP_REQUEST_DURATION_SECONDS
-            .with_label_values(&[&method_str, $path])
-            .observe($duration.as_secs_f64());
-
-        $crate::metrics::http::HTTP_REQUESTS_TOTAL
-            .with_label_values(&[&method_str, $path, &status_str])
-            .inc();
-    };
-}
-
-/// Helper macro to record cache metrics
-#[macro_export]
-macro_rules! record_cache_hit {
-    ($cache_type:expr, $level:expr) => {
-        $crate::metrics::cache::CACHE_HITS
-            .with_label_values(&[$cache_type, $level])
-            .inc();
-    };
-}
-
-#[macro_export]
-macro_rules! record_cache_miss {
-    ($cache_type:expr, $level:expr) => {
-        $crate::metrics::cache::CACHE_MISSES
-            .with_label_values(&[$cache_type, $level])
-            .inc();
-    };
-}
-
-/// Helper macro to record database query metrics
-#[macro_export]
-macro_rules! record_db_query {
-    ($operation:expr, $table:expr, $duration:expr, $error:expr) => {
-        $crate::metrics::database::DB_QUERY_DURATION
-            .with_label_values(&[$operation, $table])
-            .observe($duration.as_secs_f64());
-
-        if let Err(e) = $error {
-            let error_type = if e.to_string().contains("timeout") {
-                "timeout"
-            } else if e.to_string().contains("connection") {
-                "connection"
-            } else {
-                "other"
-            };
-            $crate::metrics::database::DB_QUERY_ERRORS
-                .with_label_values(&[$operation, error_type])
-                .inc();
-        }
-    };
-}
-
-/// Hot path metrics
-pub mod hot_paths {
-    use super::*;
-
-    /// API endpoint latency for hot paths, optimized for P50/P95/P99.
-    pub static API_HOT_PATH_LATENCY: std::sync::LazyLock<HistogramVec> =
-        std::sync::LazyLock::new(|| {
-            histogram_vec(
-                HistogramOpts::new(
-                    "api_hot_path_latency_seconds",
-                    "API hot path latency in seconds (P50/P95/P99)",
-                )
-                .buckets(vec![
-                    0.001, 0.002, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0,
-                ]),
-                &["endpoint", "method"],
-            )
-        });
-
-    /// Database query latency for hot paths.
-    pub static DB_HOT_PATH_LATENCY: std::sync::LazyLock<HistogramVec> =
-        std::sync::LazyLock::new(|| {
-            histogram_vec(
-                HistogramOpts::new(
-                    "db_hot_path_latency_seconds",
-                    "Database hot path query latency in seconds (P50/P95/P99)",
-                )
-                .buckets(vec![
-                    0.0005, 0.001, 0.002, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5,
-                ]),
-                &["query_name", "table"],
-            )
-        });
-
-    /// Redis operation latency for hot paths.
-    pub static REDIS_HOT_PATH_LATENCY: std::sync::LazyLock<HistogramVec> =
-        std::sync::LazyLock::new(|| {
-            histogram_vec(
-                HistogramOpts::new(
-                    "redis_hot_path_latency_seconds",
-                    "Redis hot path operation latency in seconds (P50/P95/P99)",
-                )
-                .buckets(vec![0.0005, 0.001, 0.002, 0.005, 0.01, 0.025, 0.05, 0.1]),
-                &["operation", "key_pattern"],
-            )
-        });
-}
-
-/// Tracing and observability.
-pub mod tracing_spans {}
 
 /// Expose metrics in Prometheus format
 pub fn gather_metrics() -> String {
@@ -1307,22 +826,13 @@ mod tests {
         http::WEBSOCKET_CONNECTIONS_TOTAL
             .with_label_values(&["success"])
             .inc();
-        http::WEBSOCKET_MESSAGES_TOTAL
-            .with_label_values(&["inbound", "binary"])
-            .inc();
         http::WEBSOCKET_ERRORS_TOTAL
             .with_label_values(&["_test"])
             .inc();
-        http::WEBSOCKET_CONNECTION_DURATION_SECONDS
-            .with_label_values(&[] as &[&str])
-            .observe(1.0);
         application::ROOMS_ACTIVE.set(0);
         application::USERS_ONLINE.set(0);
         application::STREAMS_ACTIVE.set(0);
         application::WEBRTC_PEERS_ACTIVE.set(0);
-        application::PLAYLIST_ITEMS_TOTAL
-            .with_label_values(&[] as &[&str])
-            .inc();
         application::CHAT_MESSAGES_TOTAL
             .with_label_values(&[] as &[&str])
             .inc();
@@ -1351,18 +861,6 @@ mod tests {
             .observe(0.0);
         livestream::LIVESTREAM_ACTIVE_PUBLISHERS.set(0);
         livestream::LIVESTREAM_ACTIVE_VIEWERS.set(0);
-        livestream::LIVESTREAM_BYTES_TOTAL
-            .with_label_values(&["in"])
-            .inc_by(0.0);
-        livestream::LIVESTREAM_STREAM_DURATION_SECONDS
-            .with_label_values(&["_test"])
-            .observe(0.0);
-        livestream::LIVESTREAM_PULL_ERRORS_TOTAL
-            .with_label_values(&["_test"])
-            .inc();
-        livestream::GOP_CACHE_SIZE.set(0);
-        livestream::GOP_CACHE_DROPS_TOTAL.inc();
-        livestream::GOP_CACHE_MEMORY_BYTES.set(0);
         logging::sync_dropped_lines(&[("_test".to_string(), 0)]);
 
         let output = gather_metrics();
@@ -1377,16 +875,8 @@ mod tests {
             "Missing websocket_connections_total"
         );
         assert!(
-            output.contains("websocket_messages_total"),
-            "Missing websocket_messages_total"
-        );
-        assert!(
             output.contains("websocket_errors_total"),
             "Missing websocket_errors_total"
-        );
-        assert!(
-            output.contains("websocket_connection_duration_seconds"),
-            "Missing websocket_connection_duration_seconds"
         );
         assert!(
             output.contains("logging_dropped_lines_total"),
@@ -1398,10 +888,6 @@ mod tests {
         assert!(
             output.contains("webrtc_peers_active"),
             "Missing webrtc_peers_active"
-        );
-        assert!(
-            output.contains("playlist_items_total"),
-            "Missing playlist_items_total"
         );
         assert!(
             output.contains("chat_messages_total"),
@@ -1443,28 +929,6 @@ mod tests {
             output.contains("livestream_active_viewers"),
             "Missing livestream_active_viewers"
         );
-        assert!(
-            output.contains("livestream_bytes_total"),
-            "Missing livestream_bytes_total"
-        );
-        assert!(
-            output.contains("livestream_stream_duration_seconds"),
-            "Missing livestream_stream_duration_seconds"
-        );
-        assert!(
-            output.contains("livestream_pull_errors_total"),
-            "Missing livestream_pull_errors_total"
-        );
-        assert!(output.contains("gop_cache_size"), "Missing gop_cache_size");
-        assert!(
-            output.contains("gop_cache_drops_total"),
-            "Missing gop_cache_drops_total"
-        );
-        assert!(
-            output.contains("gop_cache_memory_bytes"),
-            "Missing gop_cache_memory_bytes"
-        );
-
         // Database metrics
         assert!(
             output.contains("db_connections_active"),

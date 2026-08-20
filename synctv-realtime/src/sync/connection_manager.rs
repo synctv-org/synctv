@@ -857,58 +857,10 @@ impl ConnectionManager {
         }
     }
 
-    /// Check if a user can accept a new connection (without registering)
-    ///
-    /// This is used to enforce per-user connection limits BEFORE WebSocket upgrade,
-    /// preventing users from exceeding their connection limit.
-    ///
-    /// Returns Ok(()) if the user can accept a connection, or Err with reason if at limit.
-    pub fn can_accept_user_connection(&self, user_id: &UserId) -> Result<(), String> {
-        let actor_key = Self::user_actor_key(user_id);
-        self.can_accept_actor_connection(&actor_key)
-    }
-
-    fn can_accept_actor_connection(&self, actor_key: &str) -> Result<(), String> {
-        let actor_entry = self.actor_connections.get(actor_key);
-        let current_count = actor_entry
-            .as_ref()
-            .map_or(0, |connections| connections.len());
-
-        if current_count >= self.limits.max_per_user {
-            return Err(format!(
-                "Actor at capacity ({} connections, max: {})",
-                current_count, self.limits.max_per_user
-            ));
-        }
-
-        Ok(())
-    }
-
-    /// Check if a room can accept a new connection (without registering)
-    ///
-    /// This is used to enforce connection limits BEFORE WebSocket upgrade,
-    /// preventing unauthorized connections from being upgraded.
-    ///
-    /// Returns Ok(()) if the room can accept a connection, or Err with reason if at capacity.
-    pub fn can_accept_room_connection(&self, room_id: &RoomId) -> Result<(), String> {
-        // Check local room connection limit
-        let room_entry = self.room_connections.get(room_id);
-        let current_count = room_entry.as_ref().map_or(0, |v| v.len());
-
-        if current_count >= self.limits.max_per_room {
-            return Err(format!(
-                "Room at capacity ({} connections, max: {})",
-                current_count, self.limits.max_per_room
-            ));
-        }
-
-        Ok(())
-    }
-
     /// Atomically reserve a room connection slot BEFORE WebSocket upgrade.
     ///
-    /// This prevents the TOCTOU race where `can_accept_room_connection` succeeds
-    /// for N concurrent requests that all pass the check before any registers.
+    /// This prevents concurrent requests from passing the capacity check before
+    /// any of them registers.
     /// The reservation counter is checked alongside the actual connection count.
     ///
     /// The caller MUST call `release_room_reservation` after `join_room` completes

@@ -34,16 +34,6 @@ impl PlaylistService {
             .await
     }
 
-    pub async fn admin_move_playlist(
-        &self,
-        room_id: RoomId,
-        actor_user_id: UserId,
-        request: MovePlaylistRequest,
-    ) -> Result<Playlist> {
-        self.admin_move_playlist_with_outbox(room_id, actor_user_id, request, None)
-            .await
-    }
-
     pub async fn admin_move_playlist_with_outbox(
         &self,
         room_id: RoomId,

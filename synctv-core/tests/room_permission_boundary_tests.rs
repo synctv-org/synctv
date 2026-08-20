@@ -479,7 +479,7 @@ async fn test_kick_cooldown_isolated_to_single_room() {
             room_b.id,
             kicked_user.id,
             RoomRole::Member,
-            AddMemberOptions::new(),
+            AddMemberOptions::default(),
         )
         .await;
 

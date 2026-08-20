@@ -1,6 +1,5 @@
 use {
     crate::bytesio::bytes_errors::BytesReadError,
-    crate::flv::amf0::errors::Amf0WriteError,
     crate::flv::errors::{FlvDemuxerError, Mpeg4AvcHevcError, MpegAacError},
     crate::h264::errors::H264Error,
     crate::rtmp::chunk::errors::PackError,
@@ -72,30 +71,6 @@ impl From<PackError> for CacheError {
     fn from(error: PackError) -> Self {
         Self {
             value: CacheErrorValue::PackError(error),
-        }
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum MetadataErrorValue {
-    #[error("metadata tag parse error")]
-    DemuxerError(FlvDemuxerError),
-    #[error("pack error")]
-    PackError(PackError),
-    #[error("amf write error")]
-    Amf0WriteError(Amf0WriteError),
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("{value}")]
-pub struct MetadataError {
-    pub value: MetadataErrorValue,
-}
-
-impl From<Amf0WriteError> for MetadataError {
-    fn from(error: Amf0WriteError) -> Self {
-        Self {
-            value: MetadataErrorValue::Amf0WriteError(error),
         }
     }
 }

@@ -2444,7 +2444,7 @@ where
         )
         .await;
 
-        let (room, _) = room_service
+        let room = room_service
             .create_room(
                 format!("Fixture Room {node_id}"),
                 "test".to_string(),
@@ -3035,7 +3035,7 @@ async fn test_observe_chat_events_replays_single_event_after_sequence() {
         "chat-replay-owner@test.invalid",
     )
     .await;
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Chat Replay Room".to_string(),
             String::new(),
@@ -3148,7 +3148,7 @@ async fn test_observe_chat_events_replays_events_after_sequence() {
         "chat-replay-seq-owner@test.invalid",
     )
     .await;
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Chat Replay Sequence Room".to_string(),
             String::new(),
@@ -4746,7 +4746,7 @@ async fn test_observed_playback_refreshes_when_current_playlist_is_updated() {
     let updated_playlist = handler
         .room_service
         .playlist_service()
-        .set_playlist(
+        .set_playlist_with_outbox(
             handler.room_id,
             handler.test_user_id(),
             synctv_core::service::SetPlaylistRequest {
@@ -4757,6 +4757,7 @@ async fn test_observed_playback_refreshes_when_current_playlist_is_updated() {
                 provider_instance_name: None,
                 browse_access_mode: None,
             },
+            None,
         )
         .await
         .checked("editing current playback playlist should succeed");
@@ -7930,13 +7931,12 @@ fn test_cached_membership_from_member_none() {
 
 #[test]
 fn test_cached_membership_from_member_active() {
-    use synctv_core::models::{MemberStatus, RoomMember, RoomRole};
+    use synctv_core::models::{RoomMember, RoomRole};
 
     let member = RoomMember {
         room_id: room_id(),
         user_id: user_id(),
         role: RoomRole::Member,
-        status: MemberStatus::Active,
         added_permissions: 0,
         removed_permissions: 0,
         admin_added_permissions: 0,
@@ -9533,7 +9533,7 @@ async fn test_pre_join_after_registration_rejects_closed_room_on_final_revalidat
     let user_service = room_service.user_service().clone();
     let owner = register_test_user(&user_service, "room-owner", "owner@test.invalid").await;
     let member = register_test_user(&user_service, "room-member", "member@test.invalid").await;
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Realtime Room".to_string(),
             "test".to_string(),
@@ -9617,7 +9617,7 @@ async fn test_pre_join_after_registration_rejects_room_with_inactive_creator() {
         "member-inactive-owner@test.invalid",
     )
     .await;
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Realtime Room Inactive Owner".to_string(),
             "test".to_string(),
@@ -9700,7 +9700,7 @@ async fn test_pre_join_after_registration_rejects_banned_user_on_final_revalidat
         "member-user-ban@test.invalid",
     )
     .await;
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Realtime User Ban".to_string(),
             "test".to_string(),
@@ -9785,7 +9785,7 @@ async fn test_pre_join_after_registration_rolls_back_when_room_event_subscriptio
         "member-sub-fail@test.invalid",
     )
     .await;
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Realtime Room Subscription Fail".to_string(),
             "test".to_string(),
@@ -10128,7 +10128,7 @@ async fn test_resource_watch_prepare_enforces_room_connection_limit_and_releases
         "watch-limit-owner@test.invalid",
     )
     .await;
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Watch Limit Room".to_string(),
             "watch-limit".to_string(),
@@ -10230,7 +10230,7 @@ async fn test_resource_watch_prepare_rejects_missing_observe_resource_before_sub
         "watch-missing-resource-owner@test.invalid",
     )
     .await;
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Watch Missing Resource Room".to_string(),
             "watch-missing-resource".to_string(),
@@ -10307,7 +10307,7 @@ async fn test_resource_watch_chat_events_requires_view_chat_history_permission()
         "watch-chat-perm-owner@test.invalid",
     )
     .await;
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Watch Chat Permission Room".to_string(),
             "watch-chat-permission".to_string(),

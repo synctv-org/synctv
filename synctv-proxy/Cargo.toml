@@ -32,7 +32,6 @@ futures.workspace = true
 url.workspace = true
 percent-encoding.workspace = true
 anyhow.workspace = true
-thiserror.workspace = true
 tokio = { workspace = true, features = ["time"] }
 tracing.workspace = true
 synctv-common = { workspace = true, default-features = false }
@@ -47,7 +46,6 @@ serde.workspace = true
 quick-xml.workspace = true
 tempfile.workspace = true
 tokio-util.workspace = true
-rand.workspace = true
 rayon.workspace = true
 tonic.workspace = true
 tonic-prost.workspace = true
@@ -63,4 +61,3 @@ tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"
 reqwest.workspace = true
 http-body-util.workspace = true
 axum.workspace = true
-tower.workspace = true

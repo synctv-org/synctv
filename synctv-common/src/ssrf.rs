@@ -190,7 +190,6 @@ struct SsrfPolicy {
     allow_private_network_targets: bool,
     default_denied_ip_ranges: Vec<IpNet>,
     host_allowlist_denied_ip_ranges: Vec<IpNet>,
-    extra_denied_ip_ranges: Vec<IpNet>,
     extra_allowed_ip_ranges: Vec<IpNet>,
     denied_hosts: HashSet<String>,
     allowed_hosts: HashSet<String>,
@@ -254,10 +253,6 @@ impl SsrfPolicy {
             return true;
         }
 
-        if contains_ip(&self.extra_denied_ip_ranges, ip) {
-            return false;
-        }
-
         if !self.allow_private_network_targets && contains_ip(&self.default_denied_ip_ranges, ip) {
             return false;
         }
@@ -268,10 +263,6 @@ impl SsrfPolicy {
     fn is_ip_allowed_for_host(&self, host: &str, ip: &IpAddr) -> bool {
         if self.is_ip_allowed(ip) {
             return true;
-        }
-
-        if contains_ip(&self.extra_denied_ip_ranges, ip) {
-            return false;
         }
 
         self.allowed_hosts.contains(&normalize_host(host))
@@ -492,40 +483,18 @@ impl SsrfGuard {
 /// Starts with strict SSRF defaults and allows adding extra denied/allowed
 /// ranges and hosts.
 pub struct SsrfGuardBuilder {
-    extra_denied_ip_ranges: Vec<IpNet>,
-    extra_denied_hosts: Vec<String>,
     extra_allowed_ip_ranges: Vec<IpNet>,
     extra_allowed_hosts: Vec<String>,
     allow_private_network_targets: bool,
-    allow_http: bool,
-    allow_https: bool,
 }
 
 impl SsrfGuardBuilder {
     const fn new() -> Self {
         Self {
-            extra_denied_ip_ranges: Vec::new(),
-            extra_denied_hosts: Vec::new(),
             extra_allowed_ip_ranges: Vec::new(),
             extra_allowed_hosts: Vec::new(),
             allow_private_network_targets: false,
-            allow_http: true,
-            allow_https: true,
         }
-    }
-
-    /// Add an extra IP range to deny (beyond defaults).
-    #[must_use]
-    pub fn extra_denied_ip_range(mut self, range: IpNet) -> Self {
-        self.extra_denied_ip_ranges.push(range);
-        self
-    }
-
-    /// Add an extra hostname to deny (beyond defaults).
-    #[must_use]
-    pub fn extra_denied_host(mut self, host: String) -> Self {
-        self.extra_denied_hosts.push(host);
-        self
     }
 
     /// Add an IP range to explicitly allow (overrides deny rules).
@@ -550,20 +519,6 @@ impl SsrfGuardBuilder {
         self
     }
 
-    /// Set whether HTTP is allowed (default: true).
-    #[must_use]
-    pub const fn allow_http(mut self, allow: bool) -> Self {
-        self.allow_http = allow;
-        self
-    }
-
-    /// Set whether HTTPS is allowed (default: true).
-    #[must_use]
-    pub const fn allow_https(mut self, allow: bool) -> Self {
-        self.allow_https = allow;
-        self
-    }
-
     /// Build the [`SsrfGuard`] with configured policy.
     #[must_use]
     pub fn build(self) -> SsrfGuard {
@@ -584,20 +539,15 @@ impl SsrfGuardBuilder {
             self.allow_private_network_targets || !self.extra_allowed_ip_ranges.is_empty();
         let mut builder = HttpAcl::builder();
         let extra_allowed_ip_ranges = self.extra_allowed_ip_ranges;
-        let extra_denied_ip_ranges = self.extra_denied_ip_ranges;
         let allowed_hosts = self
             .extra_allowed_hosts
             .into_iter()
             .map(|host| normalize_host(&host))
             .collect::<HashSet<_>>();
-        let mut denied_hosts = DEFAULT_DENIED_HOSTS
+        let denied_hosts = DEFAULT_DENIED_HOSTS
             .iter()
             .map(|host| normalize_host(host))
             .collect::<HashSet<_>>();
-
-        for host in self.extra_denied_hosts {
-            denied_hosts.insert(normalize_host(&host));
-        }
 
         // Apply default denied ranges
         for range_str in DEFAULT_EXTRA_DENIED_RANGES {
@@ -610,13 +560,6 @@ impl SsrfGuardBuilder {
             builder = valid_acl_config(builder.add_denied_host(host.clone()), "valid hostname")?;
         }
 
-        // Apply extra denied ranges to the underlying ACL where they cannot
-        // conflict with explicit allow ranges. The guard's own policy below is
-        // authoritative for IP decisions.
-        for range in &extra_denied_ip_ranges {
-            builder = valid_acl_config(builder.add_denied_ip_range(*range), "valid IP range")?;
-        }
-
         // Apply extra allowed hosts
         for host in &allowed_hosts {
             builder = valid_acl_config(builder.add_allowed_host(host.clone()), "valid hostname")?;
@@ -626,8 +569,8 @@ impl SsrfGuardBuilder {
             .non_global_ip_ranges(allow_non_global_ip_ranges)
             .ip_acl_default(true)
             .host_acl_default(true)
-            .http(self.allow_http)
-            .https(self.allow_https)
+            .http(true)
+            .https(true)
             .try_build();
         let acl = valid_acl_config(acl, "SSRF ACL configuration is valid")?;
 
@@ -639,7 +582,6 @@ impl SsrfGuardBuilder {
             allow_private_network_targets: self.allow_private_network_targets,
             default_denied_ip_ranges,
             host_allowlist_denied_ip_ranges: parse_ranges(HOST_ALLOWLIST_DENIED_RANGES)?,
-            extra_denied_ip_ranges,
             extra_allowed_ip_ranges,
             denied_hosts,
             allowed_hosts,
@@ -683,7 +625,6 @@ impl SsrfGuard {
             allow_private_network_targets: false,
             default_denied_ip_ranges: Vec::new(),
             host_allowlist_denied_ip_ranges: Vec::new(),
-            extra_denied_ip_ranges: Vec::new(),
             extra_allowed_ip_ranges: Vec::new(),
             denied_hosts: HashSet::new(),
             allowed_hosts: HashSet::new(),
@@ -1093,57 +1034,5 @@ mod tests {
 
         let result = resolver.resolve(parse_test_dns_name("example.com")?).await;
         assert_resolution_blocked(result, "example.com")
-    }
-
-    // Builder tests
-
-    #[test]
-    fn test_builder_extra_denied_ip_range() -> TestResult {
-        // Use a global IP range (Cloudflare's 104.16.0.0/12) to test custom deny rules.
-        // Non-global ranges like 203.0.113.0/24 are already blocked by default.
-        let guard = SsrfGuard::builder()
-            .extra_denied_ip_range(parse_test_cidr("104.16.0.0/12")?)
-            .build();
-        // Custom denied range is blocked
-        assert!(guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(104, 16, 0, 1))));
-        // Default blocks still apply
-        assert!(guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::LOCALHOST)));
-        // Public IPs outside the denied range still allowed
-        assert!(!guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
-        Ok(())
-    }
-
-    #[test]
-    fn test_builder_extra_denied_host() {
-        let guard = SsrfGuard::builder()
-            .extra_denied_host("evil.internal".to_string())
-            .build();
-        assert!(guard.is_host_blocked("evil.internal"));
-        // Default blocks still apply
-        assert!(guard.is_host_blocked("localhost"));
-        // Public hosts still allowed
-        assert!(!guard.is_host_blocked("example.com"));
-    }
-
-    #[test]
-    fn test_builder_disallow_http() -> TestResult {
-        let guard = SsrfGuard::builder().allow_http(false).build();
-        let acl = acl_for_test(&guard)?;
-        // HTTP should be disallowed
-        assert!(acl.is_scheme_allowed("http").is_denied());
-        // HTTPS should still be allowed
-        assert!(acl.is_scheme_allowed("https").is_allowed());
-        Ok(())
-    }
-
-    #[test]
-    fn test_builder_disallow_https() -> TestResult {
-        let guard = SsrfGuard::builder().allow_https(false).build();
-        let acl = acl_for_test(&guard)?;
-        // HTTPS should be disallowed
-        assert!(acl.is_scheme_allowed("https").is_denied());
-        // HTTP should still be allowed
-        assert!(acl.is_scheme_allowed("http").is_allowed());
-        Ok(())
     }
 }

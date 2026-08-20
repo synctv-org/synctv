@@ -121,27 +121,6 @@ impl StatisticsStream {
             total_send_bytes: 0,
         }
     }
-
-    fn get_publisher(&self) -> Self {
-        let mut statistic_stream = self.clone();
-        statistic_stream.subscribers.clear();
-        statistic_stream
-    }
-
-    fn get_subscriber(&self, uuid: Uuid) -> Self {
-        let mut statistic_stream = self.clone();
-        statistic_stream.subscribers.retain(|&id, _| uuid == id);
-        statistic_stream
-    }
-
-    #[must_use]
-    pub fn query_by_uuid(&self, uuid: Uuid) -> Self {
-        if uuid == self.publisher.id {
-            self.get_publisher()
-        } else {
-            self.get_subscriber(uuid)
-        }
-    }
 }
 
 pub struct StatisticsCalculate {

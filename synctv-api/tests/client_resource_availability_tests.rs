@@ -191,7 +191,7 @@ async fn create_client_api_fixture() -> ClientApiFixture {
         .create(&make_user("availability_creator"))
         .await
         .unwrap();
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Availability Room".to_string(),
             String::new(),
@@ -272,7 +272,7 @@ async fn single_room_discovery_uses_primary_while_feed_uses_read_pool() {
         .create(&make_user("primary_discovery_owner"))
         .await
         .unwrap();
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Primary Discovery Room".to_string(),
             String::new(),

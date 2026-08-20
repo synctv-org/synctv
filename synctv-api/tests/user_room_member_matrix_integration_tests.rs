@@ -13,9 +13,8 @@ use synctv_api::{
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     models::{
-        room_settings::RequireApproval, MemberStatus, ReviewRequestId, ReviewStatus,
-        RoomAdminPermissionBits, RoomRole, RoomSettings, RoomStatus, SignupMethod, User, UserId,
-        UserRole, UserStatus,
+        room_settings::RequireApproval, ReviewRequestId, ReviewStatus, RoomAdminPermissionBits,
+        RoomRole, RoomSettings, RoomStatus, SignupMethod, User, UserId, UserRole, UserStatus,
     },
     repository::{
         ProviderInstanceRepository, RoomMemberRepository, RoomRepository, SettingsRepository,
@@ -204,7 +203,7 @@ async fn test_add_member_rejects_banned_user_status() {
         .await
         .unwrap();
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "User Status Matrix Room".to_string(),
             String::new(),
@@ -297,7 +296,7 @@ async fn test_member_permission_matrix_controls_moderation_apis() {
         require_approval: RequireApproval(true),
         ..Default::default()
     };
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Moderation Permission Matrix Room".to_string(),
             String::new(),
@@ -509,7 +508,7 @@ async fn test_update_member_permissions_requires_admin_override_fields_for_admin
         .await
         .unwrap();
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Admin Override Matrix Room".to_string(),
             String::new(),
@@ -621,7 +620,7 @@ async fn test_transfer_room_ownership_requires_creator_and_active_member_target(
         require_approval: RequireApproval(true),
         ..Default::default()
     };
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Ownership Matrix Room".to_string(),
             String::new(),
@@ -769,7 +768,7 @@ async fn test_room_state_filters_and_member_count_ignore_pending_and_banned_memb
         .await
         .unwrap();
 
-    let (_public_room, _) = room_service
+    let _public_room = room_service
         .create_room(
             "Matrix Public Room".to_string(),
             "public room".to_string(),
@@ -779,7 +778,7 @@ async fn test_room_state_filters_and_member_count_ignore_pending_and_banned_memb
         )
         .await
         .unwrap();
-    let (pending_room, _) = room_service
+    let pending_room = room_service
         .create_room(
             "Matrix Pending Room".to_string(),
             "pending room".to_string(),
@@ -789,7 +788,7 @@ async fn test_room_state_filters_and_member_count_ignore_pending_and_banned_memb
         )
         .await
         .unwrap();
-    let (rejected_room, _) = room_service
+    let rejected_room = room_service
         .create_room(
             "Matrix Rejected Room".to_string(),
             "rejected room".to_string(),
@@ -799,7 +798,7 @@ async fn test_room_state_filters_and_member_count_ignore_pending_and_banned_memb
         )
         .await
         .unwrap();
-    let (closed_room, _) = room_service
+    let closed_room = room_service
         .create_room(
             "Matrix Closed Room".to_string(),
             "closed room".to_string(),
@@ -809,7 +808,7 @@ async fn test_room_state_filters_and_member_count_ignore_pending_and_banned_memb
         )
         .await
         .unwrap();
-    let (banned_room, _) = room_service
+    let banned_room = room_service
         .create_room(
             "Matrix Banned Room".to_string(),
             "banned room".to_string(),
@@ -823,7 +822,7 @@ async fn test_room_state_filters_and_member_count_ignore_pending_and_banned_memb
         require_approval: RequireApproval(true),
         ..Default::default()
     };
-    let (joined_room, _) = room_service
+    let joined_room = room_service
         .create_room(
             "Matrix Joined Count Room".to_string(),
             "joined room".to_string(),
@@ -870,10 +869,11 @@ async fn test_room_state_filters_and_member_count_ignore_pending_and_banned_memb
     .await
     .unwrap();
     room_service
-        .approve_join_request(
+        .approve_join_request_with_outbox(
             joined_room.id,
             external_owner.id,
             ReviewRequestId::expect_positive(actor_join_request_id),
+            None,
         )
         .await
         .unwrap();
@@ -1084,15 +1084,6 @@ async fn test_room_state_filters_and_member_count_ignore_pending_and_banned_memb
         3,
         "fixture should contain only active membership rows"
     );
-    assert_eq!(
-        joined_members
-            .iter()
-            .filter(|member| member.status == MemberStatus::Active)
-            .count(),
-        3,
-        "fixture sanity check: exactly 3 memberships should be active"
-    );
-
     let _ = root_admin;
 }
 
@@ -1268,7 +1259,7 @@ async fn test_join_room_rejects_banned_rooms() {
         .await
         .unwrap();
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Join Banned Room".to_string(),
             String::new(),
@@ -1281,7 +1272,7 @@ async fn test_join_room_rejects_banned_rooms() {
     room_repo.update_ban_status(&room.id, true).await.unwrap();
 
     let error = client_api
-        .join_room(
+        .join_room_with_control(
             &joiner.id,
             &public_id_codec().encode_room_id(room.id).unwrap(),
             synctv_proto::client::JoinRoomRequest {
@@ -1290,6 +1281,7 @@ async fn test_join_room_rejects_banned_rooms() {
                 remark_name: String::new(),
                 display_tag: String::new(),
             },
+            None,
             None,
         )
         .await

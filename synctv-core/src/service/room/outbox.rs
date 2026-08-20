@@ -214,7 +214,7 @@ impl RoomService {
             removed_permissions,
             admin_added_permissions,
             admin_removed_permissions,
-        ) = if let Some(member) = member.filter(|member| member.is_active()) {
+        ) = if let Some(member) = member {
             (
                 self.permission_service
                     .effective_member_permissions(member, &room_settings),

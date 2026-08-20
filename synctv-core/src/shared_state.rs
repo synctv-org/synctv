@@ -88,11 +88,6 @@ impl SharedStateProfile {
     }
 
     #[must_use]
-    pub const fn shared_state_required(&self) -> bool {
-        matches!(self.state_mode, SharedStateMode::SharedRequired)
-    }
-
-    #[must_use]
     pub fn key_prefix(&self) -> &str {
         &self.key_prefix
     }

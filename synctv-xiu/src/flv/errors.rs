@@ -5,49 +5,6 @@ use {
 };
 
 #[derive(Debug, thiserror::Error)]
-pub enum TagParseErrorValue {
-    #[error("bytes read error")]
-    BytesReadError(BytesReadError),
-    #[error("tag data length error")]
-    TagDataLength,
-    #[error("unknown tag type")]
-    UnknownTagType,
-}
-#[derive(Debug, thiserror::Error)]
-#[error("{value}")]
-pub struct TagParseError {
-    pub value: TagParseErrorValue,
-}
-
-impl From<BytesReadError> for TagParseError {
-    fn from(error: BytesReadError) -> Self {
-        Self {
-            value: TagParseErrorValue::BytesReadError(error),
-        }
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("{value}")]
-pub struct FlvMuxerError {
-    pub value: MuxerErrorValue,
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum MuxerErrorValue {
-    #[error("bytes write error")]
-    BytesWriteError(BytesWriteError),
-}
-
-impl From<BytesWriteError> for FlvMuxerError {
-    fn from(error: BytesWriteError) -> Self {
-        Self {
-            value: MuxerErrorValue::BytesWriteError(error),
-        }
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
 #[error("{value}")]
 pub struct FlvDemuxerError {
     pub value: DemuxerErrorValue,
@@ -123,12 +80,6 @@ pub enum MpegErrorValue {
     NotSupportedSamplingFrequency,
     #[error("SPS/PPS count {count} exceeds maximum allowed {max}")]
     SpsPpsCountExceeded { count: u8, max: u8 },
-    #[error("{kind} count {declared} exceeds available parameter sets {available}")]
-    ParameterSetCountMismatch {
-        kind: &'static str,
-        declared: u8,
-        available: usize,
-    },
 }
 #[derive(Debug, thiserror::Error)]
 #[error("{value}")]
@@ -188,15 +139,4 @@ impl From<BitError> for MpegAacError {
             value: MpegErrorValue::BitError(error),
         }
     }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum BitVecErrorValue {
-    #[error("not enough bits left")]
-    NotEnoughBits,
-}
-#[derive(Debug, thiserror::Error)]
-#[error("{value}")]
-pub struct BitVecError {
-    pub value: BitVecErrorValue,
 }

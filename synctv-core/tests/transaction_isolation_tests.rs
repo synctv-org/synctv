@@ -10,8 +10,7 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use synctv_core::{
     models::{
-        MemberStatus, Room, RoomId, RoomMember, RoomRole, RoomStatus, SignupMethod, User, UserId,
-        UserStatus,
+        Room, RoomId, RoomMember, RoomRole, RoomStatus, SignupMethod, User, UserId, UserStatus,
     },
     repository::{RoomMemberRepository, RoomRepository},
 };
@@ -109,7 +108,6 @@ fn make_member(room_id: RoomId, user_id: UserId) -> RoomMember {
         room_id,
         user_id,
         role: RoomRole::Member,
-        status: MemberStatus::Active,
         added_permissions: 0,
         removed_permissions: 0,
         admin_added_permissions: 0,

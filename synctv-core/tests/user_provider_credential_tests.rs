@@ -8,8 +8,8 @@ use chrono::{Duration, Utc};
 use synctv_core::{
     credential_encryption::CredentialEncryption,
     models::{
-        ProviderCredential, ProviderInstance, ProviderType, SignupMethod, SourceProvider,
-        SynologyApiBinding, User, UserId, UserProviderCredential,
+        ProviderCredential, ProviderInstance, SignupMethod, SourceProvider, SynologyApiBinding,
+        User, UserId, UserProviderCredential,
     },
     provider::{AlistProvider, BilibiliProvider},
     repository::{ProviderInstanceRepository, UserProviderCredentialRepository, UserRepository},
@@ -28,7 +28,7 @@ fn bilibili_server_id() -> String {
     BilibiliProvider::credential_server_id()
 }
 
-fn provider_code(provider: ProviderType) -> i16 {
+fn provider_code(provider: SourceProvider) -> i16 {
     provider.as_i16()
 }
 
@@ -1175,7 +1175,7 @@ async fn test_upsert_by_user_provider_server_replaces_existing_credential_atomic
     let count: i64 = sqlx::query_scalar!(
         r#"SELECT COUNT(*) AS "count!" FROM user_media_provider_credentials WHERE user_id = $1 AND provider = $2 AND server_id = $3"#,
         user.id.as_i64(),
-        provider_code(ProviderType::Bilibili),
+        provider_code(SourceProvider::Bilibili),
         &server_id
     )
     .fetch_one(&pool)

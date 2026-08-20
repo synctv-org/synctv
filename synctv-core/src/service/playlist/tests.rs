@@ -90,7 +90,7 @@ impl MediaProvider for CredentialOwnerCheckProvider {
         source_config: SourceConfig<'_>,
     ) -> std::result::Result<(), ProviderError> {
         CREDENTIAL_OWNER_VALIDATION_CALLS.fetch_add(1, Ordering::Relaxed);
-        if !source_config.is_dynamic_playlist() {
+        if !matches!(source_config, SourceConfig::DynamicPlaylist(_)) {
             return Err(ProviderError::Internal(
                 "test provider validates dynamic playlist sources only".to_string(),
             ));

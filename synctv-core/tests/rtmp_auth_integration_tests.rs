@@ -19,8 +19,8 @@ use std::sync::Arc;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     models::{
-        MediaId, MemberStatus, Room, RoomId, RoomMember, RoomRole, RoomSettings, RoomStatus,
-        SignupMethod, User, UserId, UserRole, UserStatus,
+        MediaId, Room, RoomId, RoomMember, RoomRole, RoomSettings, RoomStatus, SignupMethod, User,
+        UserId, UserRole, UserStatus,
     },
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository, UserRepository},
     service::{
@@ -147,7 +147,6 @@ async fn create_test_room(pool: &sqlx::PgPool, creator_id: UserId, name: &str) -
         room_id: room.id,
         user_id: creator_id,
         role: RoomRole::Creator,
-        status: MemberStatus::Active,
         added_permissions: 0,
         removed_permissions: 0,
         admin_added_permissions: 0,

@@ -193,12 +193,6 @@ pub fn validate_playback_speed(speed: f64) -> InputValidationResult<f64> {
     Ok(speed)
 }
 
-pub fn validate_websocket_connect_request(
-    request: &synctv_proto::client::WebSocketConnectRequest,
-) -> Result<(), crate::impls::ApiError> {
-    crate::impls::validate_proto_request(request)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1442,7 +1442,10 @@ impl AdminRuntime for ManagementAdminRuntime {
         command: SendTestEmailCommand,
     ) -> Result<admin_proto::SendTestEmailResponse, RuntimeError> {
         self.inner
-            .send_test_email(admin_proto::SendTestEmailRequest { to: command.to })
+            .send_test_email_with_control(
+                admin_proto::SendTestEmailRequest { to: command.to },
+                None,
+            )
             .await
             .map_err(|error| map_runtime_error(&error))
     }

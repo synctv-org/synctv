@@ -260,20 +260,6 @@ impl AlistClient {
         .await
     }
 
-    /// Login to Alist server
-    ///
-    /// Returns authentication token on success.
-    /// When `hashed` is true, uses the `/api/auth/login/hash` endpoint
-    /// which accepts a pre-hashed password.
-    pub async fn login(
-        &mut self,
-        username: &str,
-        password: &str,
-        hashed: bool,
-    ) -> Result<String, AlistError> {
-        self.login_with_otp(username, password, hashed, None).await
-    }
-
     /// Login to Alist server with an optional TOTP/2FA code.
     ///
     /// Returns authentication token on success.
@@ -413,25 +399,6 @@ impl AlistClient {
         let headers = self.build_headers(&HashMap::new())?;
 
         self.get_json(&url, &headers, "me").await
-    }
-
-    /// Get video transcoding/preview information
-    ///
-    /// This is a convenience wrapper around `fs_other` specifically for video transcoding.
-    /// It handles the common case of requesting video preview information.
-    ///
-    /// # Arguments
-    /// * `path` - Video file path
-    /// * `password` - Optional password for protected directories
-    ///
-    /// # Returns
-    /// Transcoding information including available quality levels and playback URLs
-    pub async fn get_video_transcode(
-        &self,
-        path: &str,
-        password: Option<&str>,
-    ) -> Result<HttpFsOtherResp, AlistError> {
-        self.fs_other(path, "video_preview", password).await
     }
 
     /// Search files and directories

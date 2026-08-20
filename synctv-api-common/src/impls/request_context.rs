@@ -18,16 +18,6 @@ pub enum TransportProtocol {
     Grpc,
 }
 
-impl TransportProtocol {
-    #[must_use]
-    pub const fn key_segment(self) -> &'static str {
-        match self {
-            Self::Http => "http",
-            Self::Grpc => "grpc",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EndpointRateLimitCategory {
     Auth,
@@ -260,11 +250,6 @@ impl ApiRequestContext {
     }
 
     #[must_use]
-    pub fn from_metadata_ref(metadata: &RequestMetadata) -> Self {
-        Self::from_metadata(metadata.clone())
-    }
-
-    #[must_use]
     pub const fn metadata(&self) -> &RequestMetadata {
         &self.metadata
     }
@@ -324,11 +309,6 @@ impl ApiRequestContext {
     pub fn child_execution_control(&self) -> ExecutionControl {
         self.control().child()
     }
-
-    #[must_use]
-    pub fn child_cancellation_control(&self) -> ExecutionControl {
-        self.control().child().without_deadline()
-    }
 }
 
 #[derive(Clone)]
@@ -358,13 +338,6 @@ impl AuthenticationAttempt {
             Self::Missing => Ok(None),
             Self::Authenticated(authenticated) => Ok(Some(*authenticated)),
             Self::Failed(err) => Err(err),
-        }
-    }
-
-    fn into_optional_if_valid(self) -> Option<AuthenticatedToken> {
-        match self {
-            Self::Authenticated(authenticated) => Some(*authenticated),
-            Self::Missing | Self::Failed(_) => None,
         }
     }
 
@@ -398,38 +371,6 @@ impl RequestExecutor {
     #[must_use]
     pub fn jwt_validator(&self) -> &Arc<JwtValidator> {
         &self.jwt_validator
-    }
-
-    pub async fn authenticate_required(
-        &self,
-        metadata: &RequestMetadata,
-    ) -> Result<AuthenticatedToken, ApiError> {
-        let authorization = metadata.authorization.as_deref().ok_or_else(|| {
-            ApiError::Authentication(synctv_common::messages::AUTHENTICATION_REQUIRED.to_string())
-        })?;
-        self.authenticate_authorization(authorization).await
-    }
-
-    pub async fn authenticate_optional(
-        &self,
-        metadata: &RequestMetadata,
-    ) -> Result<Option<AuthenticatedToken>, ApiError> {
-        let Some(authorization) = metadata.authorization.as_deref() else {
-            return Ok(None);
-        };
-        self.authenticate_authorization(authorization)
-            .await
-            .map(Some)
-    }
-
-    pub async fn authenticate_optional_if_valid(
-        &self,
-        metadata: &RequestMetadata,
-    ) -> Result<Option<AuthenticatedToken>, ApiError> {
-        Ok(self
-            .authenticate_for_request(metadata)
-            .await?
-            .into_optional_if_valid())
     }
 
     async fn authenticate_for_request(
@@ -487,7 +428,7 @@ impl RequestExecutor {
 
     #[must_use]
     pub fn prepare_context(&self, metadata: &RequestMetadata) -> ApiRequestContext {
-        ApiRequestContext::from_metadata_ref(metadata)
+        ApiRequestContext::from_metadata(metadata.clone())
     }
 
     pub fn execute_public<'a, T, F, Fut>(
@@ -553,22 +494,6 @@ impl RequestExecutor {
         })
     }
 
-    pub fn execute_optional_user<'a, T, F, Fut>(
-        &'a self,
-        metadata: &'a RequestMetadata,
-        category: EndpointRateLimitCategory,
-        operation: F,
-    ) -> BoxFuture<'a, Result<T, ApiError>>
-    where
-        T: Send + 'a,
-        F: FnOnce(Option<AuthenticatedToken>) -> Fut + Send + 'a,
-        Fut: Future<Output = Result<T, ApiError>> + Send + 'a,
-    {
-        self.execute_optional_user_with_context(metadata, category, move |_, authenticated| {
-            operation(authenticated)
-        })
-    }
-
     pub fn execute_optional_user_with_context<'a, T, F, Fut>(
         &'a self,
         metadata: &'a RequestMetadata,
@@ -616,79 +541,6 @@ impl RequestExecutor {
         Fut: Future<Output = Result<T, ApiError>> + Send + 'a,
     {
         self.execute_optional_user_with_context(
-            metadata,
-            category,
-            move |request_context, authenticated| {
-                operation(request_context.child_execution_control(), authenticated)
-            },
-        )
-    }
-
-    pub fn execute_optional_user_if_valid<'a, T, F, Fut>(
-        &'a self,
-        metadata: &'a RequestMetadata,
-        category: EndpointRateLimitCategory,
-        operation: F,
-    ) -> BoxFuture<'a, Result<T, ApiError>>
-    where
-        T: Send + 'a,
-        F: FnOnce(Option<AuthenticatedToken>) -> Fut + Send + 'a,
-        Fut: Future<Output = Result<T, ApiError>> + Send + 'a,
-    {
-        self.execute_optional_user_if_valid_with_context(
-            metadata,
-            category,
-            move |_, authenticated| operation(authenticated),
-        )
-    }
-
-    pub fn execute_optional_user_if_valid_with_context<'a, T, F, Fut>(
-        &'a self,
-        metadata: &'a RequestMetadata,
-        category: EndpointRateLimitCategory,
-        operation: F,
-    ) -> BoxFuture<'a, Result<T, ApiError>>
-    where
-        T: Send + 'a,
-        F: FnOnce(ApiRequestContext, Option<AuthenticatedToken>) -> Fut + Send + 'a,
-        Fut: Future<Output = Result<T, ApiError>> + Send + 'a,
-    {
-        let request_context = self.prepare_context(metadata);
-        let request_control = request_context.child_execution_control();
-        async move {
-            request_context.check_active()?;
-            request_control
-                .run(async move {
-                    let authentication = self.authenticate_for_request(metadata).await?;
-                    self.enforce_rate_limit(
-                        metadata,
-                        category,
-                        authentication.rate_limit_identity(),
-                        Some(request_context.control()),
-                    )
-                    .await?;
-                    let authenticated = authentication.into_optional_if_valid();
-                    request_context.check_active()?;
-                    operation(request_context, authenticated).await
-                })
-                .await
-                .map_err(|err| ApiError::Timeout(err.to_string()))?
-        }
-        .boxed()
-    }
-
-    pub fn execute_optional_user_if_valid_with_control<'a, T, F, Fut>(
-        &'a self,
-        metadata: &'a RequestMetadata,
-        category: EndpointRateLimitCategory,
-        operation: F,
-    ) -> BoxFuture<'a, Result<T, ApiError>>
-    where
-        T: Send + 'a,
-        F: FnOnce(ExecutionControl, Option<AuthenticatedToken>) -> Fut + Send + 'a,
-        Fut: Future<Output = Result<T, ApiError>> + Send + 'a,
-    {
-        self.execute_optional_user_if_valid_with_context(
             metadata,
             category,
             move |request_context, authenticated| {

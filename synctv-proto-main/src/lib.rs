@@ -25,12 +25,6 @@ pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!(concat!(
     "/descriptor.bin"
 ));
 
-pub fn validate<M: prost_reflect::ReflectMessage>(
-    message: &M,
-) -> Result<(), prost_protovalidate::Error> {
-    prost_protovalidate::validate(message)
-}
-
 // Common shared types (enums, RoomMember)
 #[allow(clippy::pedantic)]
 pub mod google {

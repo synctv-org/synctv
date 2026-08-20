@@ -738,10 +738,6 @@ impl HlsStreamingApi {
         }
     }
 
-    pub fn validate_segment_name(segment_name: &str) -> Result<()> {
-        crate::util::validate_hls_segment_name(segment_name)
-    }
-
     /// Resolve the active generation used by an HLS master playlist.
     ///
     /// For live_proxy media, the external source is lazily pulled even when the

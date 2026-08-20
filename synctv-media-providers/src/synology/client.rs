@@ -9,7 +9,7 @@ use super::types::{
     SynologyFileList, SynologyHomeVideoList, SynologyLibraryList, SynologyLogin, SynologyMovieList,
     SynologySearchTask, SynologyStreamFile, SynologyStreamProfile, SynologyStreamSession,
     SynologySubtitle, SynologyTvRecordingList, SynologyTvShowList, SynologyVideoItemKind,
-    SynologyVideoMetadata, SynologyWatchStatusInfo,
+    SynologyVideoMetadata,
 };
 use crate::{fetch_json, ProviderClientError, PROVIDER_USER_AGENT};
 
@@ -455,18 +455,6 @@ impl SynologyClient {
             .await
     }
 
-    pub async fn watch_status(
-        &self,
-        api: &SynologyApiInfo,
-        sid: &str,
-        file_id: i64,
-    ) -> Result<SynologyWatchStatusInfo, ProviderClientError> {
-        let mut form = api_form("SYNO.VideoStation.WatchStatus", api, "getinfo", Some(sid));
-        form.insert("id", file_id.to_string());
-        self.envelope(self.form_request(&api.path, &form), "watch status")
-            .await
-    }
-
     pub async fn set_watch_position(
         &self,
         api: &SynologyApiInfo,
@@ -520,19 +508,6 @@ impl SynologyClient {
         }
         form.insert(format, serde_json::Value::Object(options).to_string());
         self.envelope(self.form_request(&api.path, &form), "stream open")
-            .await
-    }
-
-    pub async fn open_legacy_raw_stream(
-        &self,
-        api: &SynologyApiInfo,
-        sid: &str,
-        file_id: i64,
-    ) -> Result<SynologyStreamSession, ProviderClientError> {
-        let mut form = api_form("SYNO.VideoStation.Streaming", api, "open", Some(sid));
-        form.insert("id", file_id.to_string());
-        form.insert("accept_format", "raw".to_string());
-        self.envelope(self.form_request(&api.path, &form), "legacy stream open")
             .await
     }
 
@@ -607,22 +582,6 @@ impl SynologyClient {
             params.push(("poster_mtime", poster_mtime));
         }
         self.resource_url(api, "SYNO.VideoStation.Poster", "getimage", sid, &params)
-    }
-
-    pub fn backdrop_url(
-        &self,
-        api: &SynologyApiInfo,
-        sid: &str,
-        mapper_id: i64,
-    ) -> Result<String, ProviderClientError> {
-        let mapper_id = mapper_id.to_string();
-        self.resource_url(
-            api,
-            "SYNO.VideoStation.Backdrop",
-            "get",
-            sid,
-            &[("mapper_id", &mapper_id)],
-        )
     }
 
     fn resource_url(

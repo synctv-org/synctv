@@ -196,27 +196,6 @@ pub struct OAuth2UserInfo {
     pub avatar: Option<String>,
 }
 
-/// `OAuth2` authorization URL response
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OAuth2AuthUrlResponse {
-    pub url: String,
-    pub state: String,
-}
-
-/// `OAuth2` callback request
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OAuth2CallbackRequest {
-    pub code: String,
-    pub state: String,
-}
-
-/// `OAuth2` callback response
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OAuth2CallbackResponse {
-    pub token: Option<String>,    // JWT token if login
-    pub redirect: Option<String>, // Redirect URL
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

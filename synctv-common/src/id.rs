@@ -13,15 +13,10 @@ pub fn generate(size: usize) -> String {
     nanoid!(size, &BASE62_ALPHABET)
 }
 
-#[must_use]
-pub fn generate_default() -> String {
-    generate(DEFAULT_LENGTH)
-}
-
 #[macro_export]
 macro_rules! snanoid {
     () => {
-        $crate::id::generate_default()
+        $crate::id::generate($crate::id::DEFAULT_LENGTH)
     };
     ($size:expr) => {
         $crate::id::generate($size)

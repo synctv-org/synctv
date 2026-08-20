@@ -78,18 +78,6 @@ impl Mpeg4Aac {
             ..Default::default()
         })
     }
-    // 11 90
-    // 00010 0011 0010 000
-    // 2   3  2
-    //https://wiki.multimedia.cx/index.php?title=MPEG-4_Audio#Audio_Specific_Config
-    pub fn gen_audio_specific_config(&self) -> Result<BytesMut, MpegAacError> {
-        let mut writer = BytesWriter::default();
-        writer.write_u8(self.object_type << 3 | (self.sampling_frequency_index >> 1))?;
-        writer.write_u8(
-            (self.sampling_frequency_index & 0x01) << 7 | (self.channel_configuration << 3),
-        )?;
-        Ok(writer.extract_current_bytes())
-    }
 }
 
 pub struct Mpeg4AacProcessor {

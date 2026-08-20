@@ -6,10 +6,7 @@
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
-use crate::{
-    models::{MediaId, PlaylistId, RealtimeEvent, RoomId, RoomRole, RoomSettings, UserId},
-    Result,
-};
+use crate::models::{MediaId, PlaylistId, RealtimeEvent, RoomId, RoomRole, RoomSettings, UserId};
 
 /// Guest kick reasons
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -155,12 +152,6 @@ pub struct PermissionChangedNotification<'a> {
 }
 
 impl RoomEvent {
-    /// Convert `RoomEvent` to JSON string
-    pub fn to_json(&self) -> Result<String> {
-        serde_json::to_string(self)
-            .map_err(|e| crate::Error::Internal(format!("Failed to serialize event: {e}")))
-    }
-
     /// Get event type name
     #[must_use]
     pub const fn event_type(&self) -> &'static str {
@@ -471,34 +462,6 @@ impl NotificationService {
         self.broadcast_to_room(room_id, &event)
     }
 
-    /// Notify room members that a live stream started
-    pub fn notify_stream_started(
-        &self,
-        room_id: &RoomId,
-        media_id: &MediaId,
-        user_id: &UserId,
-    ) -> usize {
-        let event = RoomEvent::StreamStarted {
-            media_id: *media_id,
-            user_id: *user_id,
-        };
-        self.broadcast_to_room(room_id, &event)
-    }
-
-    /// Notify room members that a live stream stopped
-    pub fn notify_stream_stopped(
-        &self,
-        room_id: &RoomId,
-        media_id: &MediaId,
-        user_id: &UserId,
-    ) -> usize {
-        let event = RoomEvent::StreamStopped {
-            media_id: *media_id,
-            user_id: *user_id,
-        };
-        self.broadcast_to_room(room_id, &event)
-    }
-
     /// Kick all guests from a room
     ///
     /// This sends a `GuestKicked` event to all guest connections in the room.
@@ -701,7 +664,7 @@ mod tests {
         ];
 
         for event in events {
-            let json = ok(event.to_json(), "room event should serialize");
+            let json = ok(serde_json::to_string(&event), "room event should serialize");
             assert!(!json.is_empty());
         }
     }

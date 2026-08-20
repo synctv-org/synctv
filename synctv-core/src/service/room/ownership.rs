@@ -194,12 +194,6 @@ impl RoomService {
                 )
             })?;
 
-        if !new_owner_member.status.is_active() {
-            return Err(Error::InvalidInput(
-                "New room owner must already be an active member of this room".to_string(),
-            ));
-        }
-
         let current_owner_member = self
             .member_repo
             .get(&room_id, &current_owner_id)

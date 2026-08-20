@@ -712,11 +712,12 @@ impl OidcProvider {
             ));
         }
         let (auth_url, _csrf_token) = request.url();
-        let authorization = match pkce_verifier {
+        let mut authorization = match pkce_verifier {
             Some(pkce_verifier) => OAuth2Authorization::new(auth_url.to_string(), pkce_verifier),
             None => OAuth2Authorization::without_pkce(auth_url.to_string()),
         };
-        Ok(authorization.with_nonce(nonce))
+        authorization.nonce = Some(nonce);
+        Ok(authorization)
     }
 
     async fn fetch_jwks(&self, jwks_uri: &str) -> Result<JwkSet, Error> {

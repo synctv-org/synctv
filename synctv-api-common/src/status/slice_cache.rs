@@ -13,9 +13,8 @@ use synctv_core::service::{
     ServerStateClusterTarget, SliceCacheConfigInfo, SliceCacheEvictExpiredNodeResult,
     SliceCacheManagementClusterRuntime, SliceCacheManagementError,
     SliceCacheManagementLocalRuntime, SliceCacheManagementRemoteClient, SliceCacheManagementResult,
-    SliceCacheManagementService as SliceCacheManagementRuntime,
-    SliceCacheManagementServiceDependencies, SliceCachePurgeNodeResult, SliceCachePurgeResult,
-    SliceCacheStats as SliceCacheManagementStats, SliceCacheStatsNode,
+    SliceCacheManagementService, SliceCacheManagementServiceDependencies,
+    SliceCachePurgeNodeResult, SliceCachePurgeResult, SliceCacheStats, SliceCacheStatsNode,
 };
 
 const SLICE_CACHE_REMOTE_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -43,7 +42,7 @@ impl From<SliceCacheManagementError> for AppError {
 #[must_use]
 pub fn slice_cache_management_runtime_from_router_options(
     config: &crate::app_state::RouterOptions,
-) -> SliceCacheManagementRuntime {
+) -> SliceCacheManagementService {
     let cluster_runtime = config.cluster_client.as_ref().map(|client| {
         Arc::new(ApiServerStateClusterRuntime {
             client: client.clone(),
@@ -55,7 +54,7 @@ pub fn slice_cache_management_runtime_from_router_options(
         }) as Arc<dyn SliceCacheManagementRemoteClient>
     });
 
-    SliceCacheManagementRuntime::new(SliceCacheManagementServiceDependencies {
+    SliceCacheManagementService::new(SliceCacheManagementServiceDependencies {
         node_id: config.event_service.node_id().to_string(),
         local_runtime: Arc::new(ApiSliceCacheManagementLocalRuntime {
             cache: config.proxy_slice_cache.clone(),
@@ -97,7 +96,7 @@ struct ApiSliceCacheManagementLocalRuntime {
 
 #[async_trait]
 impl SliceCacheManagementLocalRuntime for ApiSliceCacheManagementLocalRuntime {
-    fn stats(&self) -> SliceCacheManagementStats {
+    fn stats(&self) -> SliceCacheStats {
         slice_cache_stats_from_proxy(self.cache.stats())
     }
 
@@ -252,8 +251,8 @@ fn proxy_evict_expired_to_api(
 
 fn slice_cache_stats_from_proxy(
     stats: synctv_proxy::slice_cache::SliceCacheStats,
-) -> SliceCacheManagementStats {
-    SliceCacheManagementStats {
+) -> SliceCacheStats {
+    SliceCacheStats {
         config: SliceCacheConfigInfo {
             engine_enabled: stats.engine_enabled,
             backend: stats.backend,

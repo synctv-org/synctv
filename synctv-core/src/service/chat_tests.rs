@@ -528,10 +528,22 @@ async fn send_test_chat_text(
 ) -> ChatMessage {
     ok(
         service
-            .send_message(room_id, user_id, content.to_string())
+            .send_message_event(SendChatMessage {
+                room_id,
+                user_id,
+                client_message_id: None,
+                content: content.to_string(),
+                message_type: ChatMessageType::User,
+                reply_to_message_id: None,
+                metadata: None,
+                attachments: Vec::new(),
+                mentions: Vec::new(),
+            })
             .await,
         "chat message should send",
     )
+    .message
+    .message
 }
 
 fn test_chat_search_query(
@@ -584,7 +596,7 @@ async fn chat_search_filters_by_user_and_paginates_matches() {
         ),
         "room service should build",
     );
-    let (room, _) = ok(
+    let room = ok(
         room_service
             .create_room(
                 "Chat Search Room".to_string(),
@@ -1057,7 +1069,7 @@ async fn database_file_storage_roundtrips_uploaded_object() {
         ),
         "room service should build",
     );
-    let (_room, _) = ok(
+    let _room = ok(
         room_service
             .create_room(
                 "Database Image Room".to_string(),
@@ -1255,7 +1267,7 @@ async fn database_file_storage_rejects_checksum_mismatch() {
         ),
         "room service should build",
     );
-    let (_room, _) = ok(
+    let _room = ok(
         room_service
             .create_room(
                 "Database Image Checksum Room".to_string(),
@@ -1782,7 +1794,7 @@ async fn metadata_only_attachment_token_is_stripped_before_persistence() {
         ),
         "room service should build",
     );
-    let (room, _) = ok(
+    let room = ok(
         room_service
             .create_room(
                 "Attachment Token Strip Room".to_string(),
@@ -1907,7 +1919,7 @@ async fn attachment_message_does_not_require_inline_content_reference() {
         ),
         "room service should build",
     );
-    let (room, _) = ok(
+    let room = ok(
         room_service
             .create_room(
                 "Attachment Inline Free Room".to_string(),
@@ -1991,7 +2003,7 @@ async fn visible_chat_attachment_can_be_reused_without_uploading_bytes() {
         ),
         "room service should build",
     );
-    let (room, _) = ok(
+    let room = ok(
         room_service
             .create_room(
                 "Attachment Reuse Room".to_string(),
@@ -2142,7 +2154,7 @@ async fn chat_attachment_reuse_token_requires_source_room_visibility() {
         ),
         "room service should build",
     );
-    let (source_room, _) = ok(
+    let source_room = ok(
         room_service
             .create_room(
                 "Attachment Reuse Source".to_string(),
@@ -2160,7 +2172,7 @@ async fn chat_attachment_reuse_token_requires_source_room_visibility() {
             .await,
         "member should join source room",
     );
-    let (target_room, _) = ok(
+    let target_room = ok(
         room_service
             .create_room(
                 "Attachment Reuse Target".to_string(),
@@ -2306,7 +2318,7 @@ async fn chat_mentions_must_point_to_inline_at_token() {
         ),
         "room service should build",
     );
-    let (room, _) = ok(
+    let room = ok(
         room_service
             .create_room(
                 "Mention Inline Required Room".to_string(),
@@ -2407,7 +2419,7 @@ async fn custom_file_storage_can_normalize_attachment_metadata() {
         ),
         "room service should build",
     );
-    let (room, _) = ok(
+    let room = ok(
         room_service
             .create_room(
                 "Attachment Storage Room".to_string(),
@@ -2499,7 +2511,7 @@ async fn deleting_attachment_message_releases_attachment_objects() {
         ),
         "room service should build",
     );
-    let (room, _) = ok(
+    let room = ok(
         room_service
             .create_room(
                 "Delete Attachment Room".to_string(),
@@ -2612,7 +2624,7 @@ async fn cleanup_all_rooms_releases_attachment_objects() {
         ),
         "room service should build",
     );
-    let (room, _) = ok(
+    let room = ok(
         room_service
             .create_room(
                 "Cleanup Attachment Room".to_string(),
@@ -2710,7 +2722,7 @@ async fn concurrent_idempotent_send_returns_existing_created_event() {
         ),
         "room service should build",
     );
-    let (room, _) = ok(
+    let room = ok(
         room_service
             .create_room(
                 "Idempotent Send Room".to_string(),
@@ -2835,7 +2847,7 @@ async fn concurrent_same_edit_returns_existing_edit_event() {
         ),
         "room service should build",
     );
-    let (room, _) = ok(
+    let room = ok(
         room_service
             .create_room(
                 "Concurrent Edit Room".to_string(),
@@ -2960,7 +2972,7 @@ async fn concurrent_same_delete_returns_existing_delete_event() {
         ),
         "room service should build",
     );
-    let (room, _) = ok(
+    let room = ok(
         room_service
             .create_room(
                 "Concurrent Delete Room".to_string(),
@@ -3096,7 +3108,7 @@ async fn chat_reactions_update_history_and_emit_reaction_events() {
         ),
         "room service should build",
     );
-    let (room, _) = ok(
+    let room = ok(
         room_service
             .create_room(
                 "Reaction Room".to_string(),
@@ -3331,7 +3343,7 @@ async fn pinned_chat_messages_list_and_emit_state_events() {
         ),
         "room service should build",
     );
-    let (room, _) = ok(
+    let room = ok(
         room_service
             .create_room(
                 "Pinned Chat Room".to_string(),
@@ -3594,7 +3606,7 @@ async fn pinning_chat_message_respects_runtime_room_pin_limit() {
         ),
         "room service should build",
     );
-    let (room, _) = ok(
+    let room = ok(
         room_service
             .create_room(
                 "Pinned Chat Limit Room".to_string(),
@@ -3727,7 +3739,7 @@ async fn read_state_tracks_unread_count_and_stays_monotonic() {
         ),
         "room service should build",
     );
-    let (room, _) = ok(
+    let room = ok(
         room_service
             .create_room(
                 "Read State Room".to_string(),
@@ -3917,7 +3929,7 @@ async fn message_context_returns_messages_around_anchor_in_chronological_order()
         ),
         "room service should build",
     );
-    let (room, _) = ok(
+    let room = ok(
         room_service
             .create_room(
                 "Context Room".to_string(),
@@ -3953,7 +3965,7 @@ async fn message_context_returns_messages_around_anchor_in_chronological_order()
 
     let context = ok(
         service
-            .get_message_context(&room.id, messages[2].id, 2, 2, false)
+            .get_message_context_for_viewer(&room.id, messages[2].id, 2, 2, false, None)
             .await,
         "context should load",
     );
@@ -4009,7 +4021,7 @@ async fn chat_text_validation_rejects_whitespace_send_and_edit() {
         ),
         "room service should build",
     );
-    let (room, _) = ok(
+    let room = ok(
         room_service
             .create_room(
                 "Text Validation Room".to_string(),

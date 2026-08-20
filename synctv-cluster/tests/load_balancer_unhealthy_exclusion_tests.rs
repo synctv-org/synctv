@@ -41,7 +41,7 @@ async fn test_only_healthy_node_selected() {
     }
 
     let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::Random)
-        .with_health_monitor(Arc::clone(&monitor));
+        .with_health_runtime(monitor.clone());
 
     // Select 10 times - should always get node-c
     for i in 0..10 {
@@ -68,7 +68,7 @@ async fn test_all_unhealthy_returns_error() {
     }
 
     let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::Random)
-        .with_health_monitor(monitor);
+        .with_health_runtime(monitor);
 
     let selected = lb.select_node().await;
     assert!(
@@ -92,7 +92,7 @@ async fn test_degraded_nodes_selectable() {
     }
 
     let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::RoundRobin)
-        .with_health_monitor(monitor);
+        .with_health_runtime(monitor);
 
     let mut selected_ids = HashSet::new();
     for _ in 0..20 {
@@ -122,7 +122,7 @@ async fn test_round_robin_cycles_through_healthy() {
     }
 
     let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::RoundRobin)
-        .with_health_monitor(monitor);
+        .with_health_runtime(monitor);
 
     let mut seen_b = false;
     let mut seen_c = false;
@@ -169,7 +169,7 @@ async fn test_unknown_health_treated_as_healthy() {
     }
 
     let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::Random)
-        .with_health_monitor(monitor);
+        .with_health_runtime(monitor);
 
     let mut selected_ids = HashSet::new();
     for _ in 0..30 {
@@ -200,7 +200,7 @@ async fn test_select_node_by_id_respects_health_filtering() {
     }
 
     let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::Random)
-        .with_health_monitor(Arc::clone(&monitor));
+        .with_health_runtime(monitor.clone());
 
     let healthy = lb
         .select_node_by_id("node-a")

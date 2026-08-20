@@ -172,6 +172,7 @@ impl GlobalConfigArgs {
                 .map(|path| path.display().to_string()),
             load_dotenv: !self.no_dotenv,
             validate,
+            unknown_config_policy: crate::config_loader::UnknownConfigPolicy::Warn,
             verbose: self.verbose > 0,
             extensions: public_id_config_extensions(),
         }

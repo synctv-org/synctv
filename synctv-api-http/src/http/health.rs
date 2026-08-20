@@ -21,6 +21,7 @@ use tracing::warn;
 use crate::http::AppState;
 use synctv_api_common::observability::metrics;
 use synctv_api_common::webrtc_status;
+use synctv_core::service::{email_health, ws_ticket_backend_is_safe_for_mode, ws_ticket_health};
 use synctv_proto::client::{HealthDetails, HealthResponse, MemoryHealth};
 
 /// Timeout for individual health check probes (DB, Redis).
@@ -139,7 +140,7 @@ pub async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse
     let ws_ticket_status = {
         let svc = &state.ws_ticket_service;
         let is_cluster_mode = state.runtime_settings.cluster_runtime_enabled();
-        let health = check_ws_ticket_health(svc.as_ref());
+        let health = ws_ticket_health(svc.as_ref());
         if ws_ticket_backend_is_safe_for_mode(svc.as_ref(), is_cluster_mode) {
             Some(health)
         } else {
@@ -158,10 +159,7 @@ pub async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse
     };
 
     // Check email service (if configured) - validates SMTP config is present
-    let email_status = state
-        .email_service
-        .as_ref()
-        .map(|svc| check_email_health(svc));
+    let email_status = state.email_service.as_ref().map(|svc| email_health(svc));
 
     // Check livestream infrastructure (if configured)
     let livestream_status = state
@@ -319,31 +317,6 @@ pub(crate) async fn check_redis_health_from_conn(
             ))
         }
     }
-}
-
-/// Check WebSocket ticket service health
-///
-/// Reports whether the service supports cross-node ticket validation.
-pub(crate) fn check_ws_ticket_health(
-    svc: &dyn synctv_core::service::WebSocketTicketService,
-) -> String {
-    synctv_core::service::ws_ticket_health(svc)
-}
-
-pub(crate) fn ws_ticket_backend_is_safe_for_mode(
-    svc: &dyn synctv_core::service::WebSocketTicketService,
-    cluster_mode: bool,
-) -> bool {
-    synctv_core::service::ws_ticket_backend_is_safe_for_mode(svc, cluster_mode)
-}
-
-/// Check email service health
-///
-/// Validates that the email service has SMTP configuration. The service is
-/// considered healthy if it is configured with valid SMTP settings; if no
-/// config is provided the service is present but unconfigured (informational).
-pub(crate) fn check_email_health(svc: &synctv_core::service::EmailService) -> String {
-    synctv_core::service::email_health(svc)
 }
 
 /// Memory usage threshold percentage for marking the node as unhealthy.
@@ -885,11 +858,11 @@ mod tests {
             "distributed mode should accept any store that advertises cluster capability"
         );
         assert!(
-            check_ws_ticket_health(&shared_tickets).contains("cross-node capable"),
+            ws_ticket_health(&shared_tickets).contains("cross-node capable"),
             "health helper should expose capability rather than backend implementation"
         );
         assert!(
-            check_ws_ticket_health(&memory_tickets).contains("single-node"),
+            ws_ticket_health(&memory_tickets).contains("single-node"),
             "health helper should expose capability rather than backend implementation"
         );
     }
@@ -911,7 +884,7 @@ mod tests {
     fn test_email_health_reports_configuration_only() -> TestResult {
         let unconfigured =
             synctv_core::service::EmailService::new(Arc::new(TestEmailConfigProvider(None)))?;
-        assert_eq!(check_email_health(&unconfigured), "not configured");
+        assert_eq!(email_health(&unconfigured), "not configured");
 
         let configured = synctv_core::service::EmailService::new(Arc::new(
             TestEmailConfigProvider(Some(synctv_core::service::EmailConfig {
@@ -927,7 +900,7 @@ mod tests {
                 use_tls: true,
             })),
         ))?;
-        assert_eq!(check_email_health(&configured), "configured");
+        assert_eq!(email_health(&configured), "configured");
         Ok(())
     }
 

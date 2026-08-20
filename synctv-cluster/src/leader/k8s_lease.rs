@@ -865,12 +865,6 @@ impl K8sLeaderElector {
         }
     }
 
-    /// Returns the number of consecutive leadership losses.
-    /// Useful for monitoring and health checks.
-    pub fn consecutive_losses(&self) -> u64 {
-        self.consecutive_losses.load(Ordering::Relaxed)
-    }
-
     /// Returns the number of consecutive election failures.
     /// Useful for health check endpoints.
     pub fn consecutive_failures(&self) -> u64 {

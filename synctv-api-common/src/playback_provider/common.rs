@@ -1347,7 +1347,7 @@ fn normalize_hls_segment_name(
         .filter(|name| !name.is_empty())
         .ok_or_else(|| ApiError::InvalidInput("Invalid segment name".to_string()))?;
 
-    if let Err(error) = synctv_livestream::HlsStreamingApi::validate_segment_name(normalized) {
+    if let Err(error) = synctv_livestream::validate_hls_segment_name(normalized) {
         tracing::warn!(
             segment = %normalized,
             error = %error,

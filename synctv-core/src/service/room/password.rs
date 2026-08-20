@@ -4,7 +4,7 @@ use std::time::Duration as StdDuration;
 use synctv_common::ExecutionControl;
 
 use crate::{
-    models::{OpaquePasswordRecord, Room, RoomId, RoomMember, UserId},
+    models::{OpaquePasswordRecord, Room, RoomId, UserId},
     repository::room_password::RoomPasswordCredentialState,
     service::optimistic_retry,
     Error, Result,
@@ -114,7 +114,7 @@ impl RoomService {
         credential_finalization: bytes::Bytes,
         client_ip: Option<IpAddr>,
         outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
-    ) -> Result<(Room, RoomMember, Vec<crate::models::RoomMemberWithUser>)> {
+    ) -> Result<(Room, Vec<crate::models::RoomMemberWithUser>)> {
         let Some(session) = self
             .opaque_password_login_session_store
             .consume(session_id)

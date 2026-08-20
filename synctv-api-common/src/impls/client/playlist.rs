@@ -15,7 +15,7 @@ use super::media::{
     proto_file_range_request, proto_file_upload_range, proto_upload_manifest_parts,
     required_file_upload_reference, uploaded_parts_response_fields,
 };
-use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
+use super::{ClientApiImpl, RoomActor};
 use crate::impls::ApiError;
 
 const DEFAULT_PLAYLIST_PAGE_SIZE: i32 = 50;
@@ -615,15 +615,6 @@ impl ClientApiImpl {
         self.get_playlist_for_actor(&actor, playlist_id).await
     }
 
-    pub async fn get_playlist_as_guest(
-        &self,
-        access: &GuestRoomAccess,
-        playlist_id: &str,
-    ) -> Result<synctv_proto::client::GetPlaylistResponse, ApiError> {
-        self.get_playlist_for_actor(&RoomActor::Guest(access.clone()), playlist_id)
-            .await
-    }
-
     pub async fn get_playlist_for_actor(
         &self,
         actor: &RoomActor,
@@ -688,15 +679,6 @@ impl ClientApiImpl {
     ) -> Result<synctv_proto::client::ListPlaylistsResponse, ApiError> {
         let actor = self.room_actor_for_user(user_id, room_id).await?;
         self.list_playlists_for_actor(&actor, req).await
-    }
-
-    pub async fn list_playlists_as_guest(
-        &self,
-        access: &GuestRoomAccess,
-        req: synctv_proto::client::ListPlaylistsRequest,
-    ) -> Result<synctv_proto::client::ListPlaylistsResponse, ApiError> {
-        self.list_playlists_for_actor(&RoomActor::Guest(access.clone()), req)
-            .await
     }
 
     pub async fn list_playlists_for_actor(

@@ -1,6 +1,5 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::str::FromStr;
 
 use super::id::{RoomId, UserId};
 use super::permission::{
@@ -10,65 +9,8 @@ use super::permission::{
 use super::query::SortDirection;
 use super::room::RoomStatus;
 
-/// Current room membership state.
-///
-/// `room_members` is active-only: if a row exists, the user is currently a
-/// member. Leave, kick, and user purge physically delete rows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum MemberStatus {
-    #[default]
-    Active,
-}
-
-impl MemberStatus {
-    #[must_use]
-    pub const fn as_str(&self) -> &'static str {
-        "active"
-    }
-
-    #[must_use]
-    pub const fn is_active(&self) -> bool {
-        true
-    }
-}
-
-impl FromStr for MemberStatus {
-    type Err = String;
-
-    fn from_str(raw: &str) -> Result<Self, Self::Err> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "active" => Ok(Self::Active),
-            other => Err(format!("Unknown member status: {other}")),
-        }
-    }
-}
-
-impl std::fmt::Display for MemberStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl From<MemberStatus> for i32 {
-    fn from(_: MemberStatus) -> Self {
-        1
-    }
-}
-
-impl TryFrom<i32> for MemberStatus {
-    type Error = String;
-
-    fn try_from(value: i32) -> Result<Self, Self::Error> {
-        match value {
-            1 => Ok(Self::Active),
-            _ => Err(format!("Unknown member status: {value}")),
-        }
-    }
-}
-
 /// Repository-level options for admitting a user into a room membership row.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct AddMemberOptions {
     /// Check if room is active
     pub check_room_active: bool,
@@ -83,18 +25,6 @@ pub struct AddMemberOptions {
 }
 
 impl AddMemberOptions {
-    /// Create default options (all checks enabled, no max limit)
-    #[must_use]
-    pub const fn new() -> Self {
-        Self {
-            check_room_active: true,
-            check_duplicate: true,
-            check_max_members: false,
-            max_members: 0,
-            invalidate_cache: true,
-        }
-    }
-
     /// Set max members limit (enables the check)
     #[must_use]
     pub const fn with_max_members(mut self, max: u64) -> Self {
@@ -102,33 +32,17 @@ impl AddMemberOptions {
         self.check_max_members = true;
         self
     }
+}
 
-    /// Skip max members check
-    #[must_use]
-    pub const fn skip_max_members_check(mut self) -> Self {
-        self.check_max_members = false;
-        self
-    }
-
-    /// Skip room active check
-    #[must_use]
-    pub const fn skip_active_check(mut self) -> Self {
-        self.check_room_active = false;
-        self
-    }
-
-    /// Skip duplicate membership check
-    #[must_use]
-    pub const fn skip_duplicate_check(mut self) -> Self {
-        self.check_duplicate = false;
-        self
-    }
-
-    /// Skip cache invalidation
-    #[must_use]
-    pub const fn skip_cache_invalidation(mut self) -> Self {
-        self.invalidate_cache = false;
-        self
+impl Default for AddMemberOptions {
+    fn default() -> Self {
+        Self {
+            check_room_active: true,
+            check_duplicate: true,
+            check_max_members: false,
+            max_members: 0,
+            invalidate_cache: true,
+        }
     }
 }
 
@@ -234,8 +148,6 @@ pub struct RoomMember {
     pub room_id: RoomId,
     pub user_id: UserId,
     pub role: RoomRole,
-    #[serde(skip)]
-    pub status: MemberStatus,
     pub added_permissions: u64,
     pub removed_permissions: u64,
     pub admin_added_permissions: u64,
@@ -253,7 +165,6 @@ impl RoomMember {
             room_id,
             user_id,
             role,
-            status: MemberStatus::Active,
             added_permissions: 0,
             removed_permissions: 0,
             admin_added_permissions: 0,
@@ -263,16 +174,6 @@ impl RoomMember {
             joined_at: crate::SystemClock.now(),
             version: 0,
         }
-    }
-
-    #[must_use]
-    pub const fn is_active(&self) -> bool {
-        true
-    }
-
-    #[must_use]
-    pub const fn status(&self) -> MemberStatus {
-        MemberStatus::Active
     }
 
     #[must_use]
@@ -311,21 +212,6 @@ impl RoomMember {
     ) -> bool {
         self.effective_permissions(role_default).has(permission)
     }
-
-    pub const fn add_permissions(&mut self, permissions: u64) {
-        self.added_permissions |= permissions;
-    }
-
-    pub const fn remove_permissions(&mut self, permissions: u64) {
-        self.removed_permissions |= permissions;
-    }
-
-    pub const fn reset_to_role_default(&mut self) {
-        self.added_permissions = 0;
-        self.removed_permissions = 0;
-        self.admin_added_permissions = 0;
-        self.admin_removed_permissions = 0;
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -334,7 +220,6 @@ pub struct RoomMemberWithUser {
     pub user_id: UserId,
     pub username: String,
     pub role: RoomRole,
-    pub status: MemberStatus,
     pub added_permissions: u64,
     pub removed_permissions: u64,
     pub admin_added_permissions: u64,
@@ -343,7 +228,6 @@ pub struct RoomMemberWithUser {
     pub display_tag: String,
     pub joined_at: DateTime<Utc>,
     pub is_online: bool,
-    pub is_active: bool,
 }
 
 impl RoomMemberWithUser {
@@ -353,7 +237,6 @@ impl RoomMemberWithUser {
             room_id: self.room_id,
             user_id: self.user_id,
             role: self.role,
-            status: self.status,
             added_permissions: self.added_permissions,
             removed_permissions: self.removed_permissions,
             admin_added_permissions: self.admin_added_permissions,
@@ -431,19 +314,6 @@ mod tests {
         let default = RoomPermissionSet::default_guest();
         let result = member.effective_permissions(default);
         assert!(result.has(crate::models::RoomPermission::USE_VOICE_CHAT));
-    }
-
-    #[test]
-    fn member_status_i32_conversions_reject_unknown_input() {
-        assert_eq!(i32::from(MemberStatus::Active), 1);
-        assert!(MemberStatus::try_from(0).is_err());
-        assert!(MemberStatus::try_from(2).is_err());
-    }
-
-    #[test]
-    fn test_member_is_active() {
-        let member = test_member(RoomRole::Member);
-        assert!(member.is_active());
     }
 
     #[test]

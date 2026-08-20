@@ -48,7 +48,7 @@ impl CacheManager {
     /// messages to the appropriate cache:
     /// - `InvalidationMessage::User { user_id }` -> `user_cache.invalidate_by_id()`
     /// - `InvalidationMessage::Room { room_id }` -> `room_cache.invalidate_by_id()`
-    /// - `InvalidationMessage::All` -> `clear_all_l1()`
+    /// - `InvalidationMessage::All` -> clear every L1 cache
     ///
     /// Permission-related messages are ignored here (handled by `PermissionService`).
     pub fn start_invalidation_listener(
@@ -186,19 +186,6 @@ impl CacheManager {
                 }
             }
         })
-    }
-
-    /// Clear all L1 caches (memory only)
-    ///
-    /// Useful for testing or manual cache clearing.
-    /// Note: L2 (Redis) caches are not cleared.
-    pub fn clear_all_l1(&self) {
-        self.user_cache.clear_l1();
-        self.room_cache.clear_l1();
-        if let Some(ref uc) = self.username_cache {
-            uc.clear_memory();
-        }
-        tracing::debug!("All L1 caches cleared");
     }
 }
 

@@ -626,7 +626,7 @@ async fn test_concurrent_room_ban_with_members_joining() {
 
         let handle = tokio::spawn(async move {
             bc.wait().await;
-            let options = AddMemberOptions::new().with_max_members(0);
+            let options = AddMemberOptions::default().with_max_members(0);
             ms.add_member_with_options(rid, user.id, RoomRole::Member, options)
                 .await
         });

@@ -127,18 +127,6 @@ pub struct StaticDiscovery {
 }
 
 impl StaticDiscovery {
-    /// Create a new StaticDiscovery
-    pub fn new<N>(
-        config: StaticDiscoveryConfig,
-        node_registry: Arc<N>,
-        cancel_token: CancellationToken,
-    ) -> Self
-    where
-        N: ClusterNodeDirectory + 'static,
-    {
-        Self::from_runtime(config, node_registry, cancel_token)
-    }
-
     pub fn from_runtime(
         config: StaticDiscoveryConfig,
         node_registry: Arc<dyn ClusterNodeDirectory>,

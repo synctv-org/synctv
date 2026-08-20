@@ -300,15 +300,4 @@ impl RoomSettingsRepository {
             row.ok_or(Error::OptimisticLockConflict)
         }
     }
-
-    pub async fn delete_all(&self, room_id: &RoomId) -> Result<()> {
-        sqlx::query!(
-            "DELETE FROM room_settings WHERE room_id = $1",
-            room_id as &RoomId,
-        )
-        .execute(self.pools.primary())
-        .await?;
-
-        Ok(())
-    }
 }

@@ -112,7 +112,7 @@ fn build_allowed_cors_response(origin: &str) -> Response {
 /// Core CORS preflight logic shared between all preflight handlers.
 ///
 /// Returns the appropriate response based on the CORS configuration and origin.
-fn handle_cors_preflight(origin: Option<&str>, config: &CorsConfig) -> Response {
+pub fn handle_cors_preflight(origin: Option<&str>, config: &CorsConfig) -> Response {
     if config.wildcard {
         return build_wildcard_cors_response();
     }
@@ -184,33 +184,6 @@ impl CorsConfig {
         }
         self.allowed_origins.iter().any(|o| o == origin)
     }
-
-    /// Check if wildcard mode is enabled.
-    #[cfg(test)]
-    #[must_use]
-    pub const fn is_wildcard(&self) -> bool {
-        self.wildcard
-    }
-}
-
-/// Preflight handler with explicit CORS origin validation.
-///
-/// Returns 403 Forbidden if the origin is not in the allowed list,
-/// otherwise returns proper CORS headers echoing the origin back.
-///
-/// # Arguments
-///
-/// * `origin` - The Origin header value from the request.
-/// * `config` - The CORS configuration.
-///
-/// # Security
-///
-/// - Origins not in the allowed list receive 403 Forbidden.
-/// - When the allowed list is empty, all origins are rejected (secure default).
-/// - The `Vary: Origin` header is included for proper caching.
-#[must_use]
-pub fn proxy_options_preflight_with_cors(origin: Option<&str>, config: &CorsConfig) -> Response {
-    handle_cors_preflight(origin, config)
 }
 
 #[cfg(test)]

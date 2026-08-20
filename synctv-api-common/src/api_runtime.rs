@@ -349,8 +349,8 @@ pub struct SharedApiRuntime {
     pub proxy_signing_key: Arc<ProxySigningKey>,
     pub media_swarm_signing_key: Arc<MediaSwarmSigningKey>,
     pub webrtc_status: synctv_core::service::WebRtcRuntimeStatus,
-    pub server_state_runtime: Arc<crate::status::ServerStateRuntime>,
-    pub slice_cache_management_runtime: Arc<crate::status::SliceCacheManagementRuntime>,
+    pub server_state_runtime: Arc<crate::status::ServerStateService>,
+    pub slice_cache_management_runtime: Arc<crate::status::SliceCacheManagementService>,
 }
 
 #[cfg(test)]

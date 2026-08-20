@@ -1,6 +1,5 @@
 //! Service factory helpers for tests
 
-use crate::constants;
 use opaque_ke::argon2::Argon2 as OpaqueArgon2Ksf;
 use opaque_ke::rand::rngs::OsRng;
 use opaque_ke::{
@@ -18,6 +17,10 @@ use synctv_core::service::{
     RuntimeSettingsStore, SettingsService, TokenBlacklistStore, UserService,
     UserServiceDependencies, UserServiceRuntimeOptions,
 };
+
+const TOKEN_BLACKLIST_CAPACITY: u64 = 10_000;
+const TOKEN_BLACKLIST_SHORT_TTL_SECS: u64 = 3_600;
+const TOKEN_BLACKLIST_LONG_TTL_SECS: u64 = 86_400;
 
 #[derive(Clone)]
 struct FailingRedisRuntime;
@@ -263,9 +266,9 @@ pub fn create_test_brute_force_protection_service() -> Arc<dyn BruteForceProtect
 
 fn create_test_token_blacklist_store() -> InMemoryTokenBlacklistStore {
     InMemoryTokenBlacklistStore::new(
-        constants::token_blacklist::CAPACITY as u64,
-        constants::token_blacklist::SHORT_TTL_SECS,
-        constants::token_blacklist::LONG_TTL_SECS,
+        TOKEN_BLACKLIST_CAPACITY,
+        TOKEN_BLACKLIST_SHORT_TTL_SECS,
+        TOKEN_BLACKLIST_LONG_TTL_SECS,
     )
 }
 

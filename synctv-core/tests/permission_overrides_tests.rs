@@ -35,7 +35,7 @@ async fn test_allow_override_role_default() {
         ),
         ..RoomSettings::default()
     };
-    let (room, _) = ok(
+    let room = ok(
         room_service
             .create_room(
                 "Allow Override Room".to_string(),
@@ -101,7 +101,7 @@ async fn test_deny_override_role_default() {
         "deny override member should be created",
     );
 
-    let (room, _) = ok(
+    let room = ok(
         room_service
             .create_room(
                 "Deny Override Room".to_string(),

@@ -155,7 +155,7 @@ impl RoomService {
         self.audit_log(
             &actor_id,
             &actor_username,
-            AuditAction::MemberStatusUpdated,
+            AuditAction::MembershipUpdated,
             AuditTargetType::Member,
             Some(target_user_id.to_string()),
             AuditDetails {
@@ -175,28 +175,6 @@ impl RoomService {
             .await;
 
         Ok(target_user_id)
-    }
-
-    /// Administrative override: reject a specific pending join request without banning the user.
-    pub async fn admin_reject_join_request(
-        &self,
-        room_id: RoomId,
-        actor_id: UserId,
-        reviewed_by: Option<&UserId>,
-        actor_username: &str,
-        request_id: ReviewRequestId,
-        reason: Option<&str>,
-    ) -> Result<UserId> {
-        self.admin_reject_join_request_with_outbox(AdminRejectJoinRequestWithOutbox {
-            room_id,
-            actor_id,
-            reviewed_by,
-            actor_username,
-            request_id,
-            reason,
-            outbox_event_factory: None,
-        })
-        .await
     }
 
     pub async fn admin_reject_join_request_with_outbox(
@@ -234,7 +212,7 @@ impl RoomService {
         self.audit_log(
             &actor_id,
             actor_username,
-            AuditAction::MemberStatusUpdated,
+            AuditAction::MembershipUpdated,
             AuditTargetType::Member,
             Some(target_user_id.to_string()),
             AuditDetails {

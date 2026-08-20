@@ -9,5 +9,4 @@ pub use types::{
     SynologySearchTask, SynologyStreamProfile, SynologyStreamSession, SynologySubtitle,
     SynologyTvRecording, SynologyTvRecordingList, SynologyTvShow, SynologyTvShowList,
     SynologyVideoAdditional, SynologyVideoFile, SynologyVideoItemKind, SynologyVideoMetadata,
-    SynologyWatchStatus, SynologyWatchStatusInfo,
 };

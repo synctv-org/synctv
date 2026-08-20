@@ -318,9 +318,7 @@ impl UserService for ClientServiceImpl {
                     client_api
                         .start_sensitive_operation_verification(
                             &authenticated.user_id(),
-                            synctv_api_common::impls::client::token_auth_context_from_claims(
-                                &authenticated.claims,
-                            ),
+                            authenticated.claims.auth_context(),
                             req,
                         )
                         .await

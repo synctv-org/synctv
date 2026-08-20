@@ -61,11 +61,6 @@ impl OAuth2Service {
         }
     }
 
-    pub async fn get_user_providers(&self, user_id: &UserId) -> Result<Vec<OAuth2Provider>> {
-        let mappings = self.repository()?.find_by_user(user_id).await?;
-        Ok(mappings.into_iter().map(|m| m.provider).collect())
-    }
-
     pub async fn get_user_provider_mappings(
         &self,
         user_id: &UserId,
@@ -117,9 +112,5 @@ impl OAuth2Service {
         self.repository()?
             .delete_by_user_and_provider(user_id, provider)
             .await
-    }
-
-    pub async fn delete_all_for_user(&self, user_id: &UserId) -> Result<u64> {
-        self.repository()?.delete_all_for_user(user_id).await
     }
 }

@@ -1,12 +1,9 @@
-use chrono::{DateTime, Utc};
-
 use crate::{
     models::{
-        ChatMessage, ChatMessageType, Media, MediaId, PageParams, RoomId, RoomPermission,
-        RoomPlaybackState, UserId,
+        ChatMessage, Media, MediaId, PageParams, RoomId, RoomPermission, RoomPlaybackState, UserId,
     },
     service::RoomService,
-    Error, Result,
+    Result,
 };
 
 impl RoomService {
@@ -88,27 +85,6 @@ impl RoomService {
         self.playback_service.get_state(room_id).await
     }
 
-    pub async fn get_chat_history_cursor(
-        &self,
-        room_id: &RoomId,
-        cursor: Option<(DateTime<Utc>, i64)>,
-        limit: i32,
-    ) -> Result<(Vec<ChatMessage>, Option<(DateTime<Utc>, i64)>)> {
-        let cursor =
-            cursor.map(|(created_at, id)| crate::models::ChatHistoryCursor { created_at, id });
-        let (messages, next) = self
-            .chat_repo
-            .list_by_room_cursor(room_id, cursor, limit, true)
-            .await?;
-        Ok((
-            messages
-                .into_iter()
-                .map(|message| message.message)
-                .collect(),
-            next.map(|cursor| (cursor.created_at, cursor.id)),
-        ))
-    }
-
     pub async fn get_chat_message_from_primary(
         &self,
         room_id: &RoomId,
@@ -117,44 +93,6 @@ impl RoomService {
         self.chat_repo
             .get_by_room_and_id_from_primary(room_id, message_id)
             .await
-    }
-
-    pub async fn save_chat_message(
-        &self,
-        room_id: RoomId,
-        user_id: UserId,
-        content: String,
-    ) -> Result<ChatMessage> {
-        if content.is_empty() {
-            return Err(Error::InvalidInput(
-                "Chat message cannot be empty".to_string(),
-            ));
-        }
-        if content.chars().count() > 2000 {
-            return Err(Error::InvalidInput(
-                "Chat message cannot exceed 2000 characters".to_string(),
-            ));
-        }
-
-        let message = ChatMessage {
-            id: 0,
-            room_id,
-            user_id: Some(user_id),
-            client_message_id: None,
-            content,
-            message_type: ChatMessageType::User,
-            status: crate::models::ChatMessageStatus::Active,
-            version: 1,
-            reply_to_message_id: None,
-            reply_to_message_created_at: None,
-            metadata: None,
-            edited_at: None,
-            deleted_at: None,
-            deleted_by: None,
-            delete_reason: None,
-            created_at: crate::SystemClock.now(),
-        };
-        self.chat_repo.create(&message).await
     }
 
     pub async fn check_permission(

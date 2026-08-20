@@ -89,11 +89,6 @@ impl BytesWriter {
         Ok(())
     }
 
-    pub fn write_u64<T: ByteOrder>(&mut self, bytes: u64) -> Result<(), BytesWriteError> {
-        self.bytes.write_u64::<T>(bytes)?;
-        Ok(())
-    }
-
     pub fn write(&mut self, buf: &[u8]) -> Result<(), BytesWriteError> {
         self.bytes.write_all(buf)?;
         Ok(())
@@ -156,10 +151,6 @@ impl BytesWriter {
         let mut rv_data = BytesMut::new();
         rv_data.extend_from_slice(&self.bytes[..]);
         rv_data
-    }
-
-    pub fn pop_bytes(&mut self, size: usize) {
-        self.bytes.truncate(self.bytes.len().saturating_sub(size));
     }
 
     #[must_use]

@@ -15,7 +15,7 @@ use super::convert::{
     room_presence_stats_to_proto, try_members_to_proto, try_room_member_to_proto_with_permissions,
 };
 use super::media::{prepare_delete_entries_outbox_fanout, PrepareDeleteEntriesOutboxFanout};
-use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
+use super::{ClientApiImpl, RoomActor};
 
 pub fn compute_room_members_response_version(
     response: &synctv_proto::client::GetRoomMembersResponse,
@@ -246,15 +246,6 @@ impl ClientApiImpl {
         self.get_room_members_for_actor(&actor, req).await
     }
 
-    pub async fn get_room_members_as_guest(
-        &self,
-        access: &GuestRoomAccess,
-        req: synctv_proto::client::GetRoomMembersRequest,
-    ) -> Result<synctv_proto::client::GetRoomMembersResponse, ApiError> {
-        self.get_room_members_for_actor(&RoomActor::Guest(access.clone()), req)
-            .await
-    }
-
     pub async fn get_room_members_for_actor(
         &self,
         actor: &RoomActor,
@@ -402,14 +393,12 @@ impl ClientApiImpl {
             remark_name: member.remark_name.clone(),
             display_tag: member.display_tag.clone(),
             role: member.role,
-            status: member.status,
             added_permissions: member.added_permissions,
             removed_permissions: member.removed_permissions,
             admin_added_permissions: member.admin_added_permissions,
             admin_removed_permissions: member.admin_removed_permissions,
             joined_at: member.joined_at,
             is_online: target_presence.is_online,
-            is_active: member.status.is_active(),
         };
         let room_settings = self
             .room_service
@@ -479,14 +468,12 @@ impl ClientApiImpl {
             remark_name: member.remark_name.clone(),
             display_tag: member.display_tag.clone(),
             role: member.role,
-            status: member.status,
             added_permissions: member.added_permissions,
             removed_permissions: member.removed_permissions,
             admin_added_permissions: member.admin_added_permissions,
             admin_removed_permissions: member.admin_removed_permissions,
             joined_at: member.joined_at,
             is_online: target_presence.is_online,
-            is_active: member.status.is_active(),
         };
         let room_settings = self
             .room_service
@@ -688,14 +675,12 @@ impl ClientApiImpl {
             remark_name: member.remark_name.clone(),
             display_tag: member.display_tag.clone(),
             role: member.role,
-            status: member.status,
             added_permissions: member.added_permissions,
             removed_permissions: member.removed_permissions,
             admin_added_permissions: member.admin_added_permissions,
             admin_removed_permissions: member.admin_removed_permissions,
             joined_at: member.joined_at,
             is_online: target_presence.is_online,
-            is_active: true,
         };
 
         // Fetch room settings for proper three-layer permission calculation
@@ -765,14 +750,12 @@ impl ClientApiImpl {
             remark_name: member.remark_name.clone(),
             display_tag: member.display_tag.clone(),
             role: member.role,
-            status: member.status,
             added_permissions: member.added_permissions,
             removed_permissions: member.removed_permissions,
             admin_added_permissions: member.admin_added_permissions,
             admin_removed_permissions: member.admin_removed_permissions,
             joined_at: member.joined_at,
             is_online: target_presence.is_online,
-            is_active: true,
         };
         let room_settings = self
             .room_service
@@ -840,14 +823,12 @@ impl ClientApiImpl {
             remark_name: member.remark_name.clone(),
             display_tag: member.display_tag.clone(),
             role: member.role,
-            status: member.status,
             added_permissions: member.added_permissions,
             removed_permissions: member.removed_permissions,
             admin_added_permissions: member.admin_added_permissions,
             admin_removed_permissions: member.admin_removed_permissions,
             joined_at: member.joined_at,
             is_online: target_presence.is_online,
-            is_active: true,
         };
         let room_settings = self
             .room_service

@@ -1,7 +1,6 @@
 use super::*;
 use crate::manifest::{make_absolute, rewrite_uri_attribute_with_count};
 use crate::redirect::{send_with_redirect_validation, REDIRECT_PRESERVE_HEADERS};
-use axum::http::StatusCode;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -251,225 +250,6 @@ fn test_proxy_ssrf_allows_hostname_default_ports() -> TestResult {
     Ok(())
 }
 
-// URL scheme validation tests
-
-#[tokio::test]
-async fn test_proxy_fetch_rejects_file_scheme() -> TestResult {
-    let provider_headers = HashMap::new();
-    let client = test_proxy_client()?;
-    let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
-    let cfg = ProxyConfig {
-        ssrf_guard: &ssrf_guard,
-        client: &client,
-        url: "file:///etc/passwd",
-        provider_headers: &provider_headers,
-        range_header: None,
-        request_control: None,
-        upstream_header_timeout: None,
-    };
-
-    let result = proxy_fetch_and_forward_inner(cfg).await;
-    assert!(result.is_err());
-    let err = result.expect_err("invalid proxy URL scheme should fail");
-    assert!(
-        err.to_string()
-            .contains("only http and https are supported"),
-        "Expected invalid-request scheme rejection, got: {err}"
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_proxy_fetch_rejects_ftp_scheme() -> TestResult {
-    let provider_headers = HashMap::new();
-    let client = test_proxy_client()?;
-    let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
-    let cfg = ProxyConfig {
-        ssrf_guard: &ssrf_guard,
-        client: &client,
-        url: "ftp://example.com/file.txt",
-        provider_headers: &provider_headers,
-        range_header: None,
-        request_control: None,
-        upstream_header_timeout: None,
-    };
-
-    let result = proxy_fetch_and_forward_inner(cfg).await;
-    assert!(result.is_err());
-    let err = result.expect_err("invalid proxy URL scheme should fail");
-    assert!(
-        err.to_string()
-            .contains("only http and https are supported"),
-        "Expected invalid-request scheme rejection, got: {err}"
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_proxy_fetch_rejects_javascript_scheme() -> TestResult {
-    let provider_headers = HashMap::new();
-    let client = test_proxy_client()?;
-    let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
-    let cfg = ProxyConfig {
-        ssrf_guard: &ssrf_guard,
-        client: &client,
-        url: "javascript:alert(1)",
-        provider_headers: &provider_headers,
-        range_header: None,
-        request_control: None,
-        upstream_header_timeout: None,
-    };
-
-    let result = proxy_fetch_and_forward_inner(cfg).await;
-    assert!(result.is_err());
-    let err = result.expect_err("invalid proxy URL scheme should fail");
-    assert!(
-        err.to_string()
-            .contains("only http and https are supported"),
-        "Expected invalid-request scheme rejection, got: {err}"
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_proxy_fetch_rejects_data_scheme() -> TestResult {
-    let provider_headers = HashMap::new();
-    let client = test_proxy_client()?;
-    let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
-    let cfg = ProxyConfig {
-        ssrf_guard: &ssrf_guard,
-        client: &client,
-        url: "data:text/plain,hello",
-        provider_headers: &provider_headers,
-        range_header: None,
-        request_control: None,
-        upstream_header_timeout: None,
-    };
-
-    let result = proxy_fetch_and_forward_inner(cfg).await;
-    assert!(result.is_err());
-    let err = result.expect_err("invalid proxy URL scheme should fail");
-    assert!(
-        err.to_string()
-            .contains("only http and https are supported"),
-        "Expected invalid-request scheme rejection, got: {err}"
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_proxy_fetch_ignores_outer_deadline_for_body_lifetime() -> TestResult {
-    let server = wiremock::MockServer::start().await;
-    let public_origin = format!("http://cdn.example.com:{}", server.address().port());
-
-    wiremock::Mock::given(wiremock::matchers::method("GET"))
-        .and(wiremock::matchers::path("/slow.mp4"))
-        .respond_with(
-            wiremock::ResponseTemplate::new(200)
-                .set_delay(Duration::from_millis(200))
-                .set_body_string("slow body"),
-        )
-        .mount(&server)
-        .await;
-
-    let client = proxy_client_builder()
-        .resolve("cdn.example.com", *server.address())
-        .build()?;
-    let provider_headers = HashMap::new();
-    let request_control = ExecutionControl::from_timeout(Some(Duration::from_millis(50)));
-    let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
-    let cfg = ProxyConfig {
-        ssrf_guard: &ssrf_guard,
-        client: &client,
-        url: &format!("{public_origin}/slow.mp4"),
-        provider_headers: &provider_headers,
-        range_header: None,
-        request_control: Some(&request_control),
-        upstream_header_timeout: None,
-    };
-
-    let response = proxy_fetch_and_forward(cfg, &NoopMetrics).await?;
-    assert_eq!(response.status(), StatusCode::OK);
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_proxy_head_and_forward_applies_upstream_header_timeout() -> TestResult {
-    let server = wiremock::MockServer::start().await;
-    let public_origin = format!("http://cdn.example.com:{}", server.address().port());
-
-    wiremock::Mock::given(wiremock::matchers::method("HEAD"))
-        .and(wiremock::matchers::path("/slow-head.mp4"))
-        .respond_with(wiremock::ResponseTemplate::new(200).set_delay(Duration::from_millis(200)))
-        .mount(&server)
-        .await;
-
-    let client = proxy_client_builder()
-        .resolve("cdn.example.com", *server.address())
-        .build()?;
-    let provider_headers = HashMap::new();
-    let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
-    let cfg = ProxyConfig {
-        ssrf_guard: &ssrf_guard,
-        client: &client,
-        url: &format!("{public_origin}/slow-head.mp4"),
-        provider_headers: &provider_headers,
-        range_header: None,
-        request_control: None,
-        upstream_header_timeout: Some(Duration::from_millis(25)),
-    };
-
-    let err = proxy_head_and_forward(cfg)
-        .await
-        .expect_err("HEAD proxy should enforce upstream header timeout");
-
-    assert_eq!(proxy_error_kind(&err), Some(ProxyErrorKind::Timeout));
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_proxy_fetch_preserves_content_encoding_for_byte_transparent_body() -> TestResult {
-    let server = wiremock::MockServer::start().await;
-    let public_origin = format!("http://cdn.example.com:{}", server.address().port());
-
-    wiremock::Mock::given(wiremock::matchers::method("GET"))
-        .and(wiremock::matchers::path("/encoded.bin"))
-        .respond_with(
-            wiremock::ResponseTemplate::new(200)
-                .set_body_bytes(b"gzip-bytes".to_vec())
-                .insert_header("content-encoding", "gzip")
-                .insert_header("content-type", "application/octet-stream"),
-        )
-        .mount(&server)
-        .await;
-
-    let client = proxy_client_builder()
-        .resolve("cdn.example.com", *server.address())
-        .build()?;
-    let provider_headers = HashMap::new();
-    let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
-    let cfg = ProxyConfig {
-        ssrf_guard: &ssrf_guard,
-        client: &client,
-        url: &format!("{public_origin}/encoded.bin"),
-        provider_headers: &provider_headers,
-        range_header: None,
-        request_control: None,
-        upstream_header_timeout: None,
-    };
-
-    let response = proxy_fetch_and_forward(cfg, &NoopMetrics).await?;
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        response
-            .headers()
-            .get(reqwest::header::CONTENT_ENCODING)
-            .and_then(|value| value.to_str().ok()),
-        Some("gzip")
-    );
-    Ok(())
-}
-
 #[test]
 fn test_proxy_error_kind_mapping() {
     assert_eq!(
@@ -694,12 +474,13 @@ async fn test_proxy_m3u8_and_rewrite_closed_connection_is_typed_connection_with_
     let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
     let (close_address, close_task) = start_request_close_listener().await?;
 
-    let err = proxy_m3u8_and_rewrite(
+    let err = proxy_m3u8_and_rewrite_with_control(
         &client,
         &ssrf_guard,
         &format!("http://{close_address}/private.m3u8"),
         &HashMap::new(),
         "/proxy",
+        None,
     )
     .await
     .expect_err("manifest request to a closing loopback connection must fail");

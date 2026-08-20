@@ -24,7 +24,6 @@ use synctv_xiu::rtmp::handshake::{
     errors::{HandshakeError, HandshakeErrorValue},
     handshake_client::SimpleHandshakeClient,
     handshake_server::{ComplexHandshakeServer, HandshakeServer, SimpleHandshakeServer},
-    handshake_trait::THandshakeServer,
 };
 
 use async_trait::async_trait;

@@ -6,9 +6,8 @@
 use crate::{
     cache::CacheInvalidationRuntime,
     models::{
-        AddMemberOptions, AuditAction, AuditDetails, AuditTargetType, MemberStatus,
-        MyRoomListQuery, PageParams, Room, RoomId, RoomMember, RoomMemberWithUser, RoomRole,
-        UserId,
+        AddMemberOptions, AuditAction, AuditDetails, AuditTargetType, PageParams, RoomId,
+        RoomMember, RoomMemberWithUser, RoomRole, UserId,
     },
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository, UserRepository},
     service::audit::{AuditEventParams, AuditService},
@@ -211,19 +210,6 @@ impl MemberService {
         }
     }
 
-    /// Add a user as a member to a room (with default options)
-    ///
-    /// This is a convenience method that uses default options.
-    pub async fn add_member(
-        &self,
-        room_id: RoomId,
-        user_id: UserId,
-        role: RoomRole,
-    ) -> Result<RoomMember> {
-        self.add_member_with_options(room_id, user_id, role, AddMemberOptions::new())
-            .await
-    }
-
     /// Add a user as a member to a room with custom options
     ///
     /// This method uses a database transaction to perform all checks and the insert atomically.
@@ -332,26 +318,6 @@ impl MemberService {
         self.member_repo.list_by_room(room_id).await
     }
 
-    /// Get members of a room with database-level pagination
-    ///
-    /// Returns the requested page and the total matching member count.
-    ///
-    /// # Performance
-    ///
-    /// This method should be used instead of `list_members` + in-memory pagination
-    /// when dealing with rooms that may have many members. It only loads the
-    /// requested page from the database.
-    pub async fn list_members_paginated(
-        &self,
-        room_id: &RoomId,
-        pagination: PageParams,
-    ) -> Result<(Vec<RoomMemberWithUser>, i64)> {
-        pagination.validate()?;
-        self.member_repo
-            .list_by_room_paginated(room_id, pagination)
-            .await
-    }
-
     pub async fn list_members_query(
         &self,
         room_id: &RoomId,
@@ -401,30 +367,6 @@ impl MemberService {
     ) -> Result<(Vec<RoomId>, i64)> {
         pagination.validate()?;
         self.member_repo.list_by_user(user_id, pagination).await
-    }
-
-    /// List all rooms a user is a member of with full details
-    pub async fn list_user_rooms_with_details(
-        &self,
-        user_id: &UserId,
-        pagination: PageParams,
-    ) -> Result<(Vec<(Room, RoomRole, MemberStatus, i32)>, i64)> {
-        pagination.validate()?;
-        self.member_repo
-            .list_by_user_with_details(user_id, pagination)
-            .await
-    }
-
-    /// List all rooms a user is related to through membership with query semantics.
-    pub async fn list_user_rooms_with_details_query(
-        &self,
-        user_id: &UserId,
-        query: &MyRoomListQuery,
-    ) -> Result<(Vec<(Room, RoomRole, MemberStatus, i32)>, i64)> {
-        query.pagination.validate()?;
-        self.member_repo
-            .list_by_user_with_query(user_id, query)
-            .await
     }
 
     /// Set member role (member/admin/creator)
@@ -543,25 +485,6 @@ impl MemberService {
         .await;
 
         Ok(updated_member)
-    }
-
-    /// List all members including inactive (left) (admin view)
-    pub async fn list_members_all(
-        &self,
-        room_id: &RoomId,
-        admin_id: UserId,
-    ) -> Result<Vec<RoomMemberWithUser>> {
-        // Check admin permission without cache - security-critical operation
-        self.permission_service
-            .check_permission_no_cache(
-                &room_id.clone(),
-                &admin_id,
-                crate::models::RoomPermission::REMOVE_MEMBERS,
-            )
-            .await?;
-
-        // Get all current member rows.
-        self.member_repo.list_by_room_all(room_id).await
     }
 }
 

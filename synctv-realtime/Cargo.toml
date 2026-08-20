@@ -56,9 +56,7 @@ chrono.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 parking_lot.workspace = true
-rand.workspace = true
 tracing.workspace = true
-subtle.workspace = true
 
 [lints]
 workspace = true
@@ -68,11 +66,9 @@ tonic-prost-build.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
-mockall.workspace = true
 synctv-core = { workspace = true, default-features = false, features = ["test-support"] }
 synctv-cluster = { workspace = true, default-features = false, features = ["test-support"] }
 synctv-core-testing.workspace = true
-tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 
 [[bench]]

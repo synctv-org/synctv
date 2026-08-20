@@ -62,34 +62,6 @@ impl NetStreamWriter {
 
         self.write_chunk(NETSTREAM_MESSAGE_STREAM_ID).await
     }
-    pub async fn write_delete_stream(
-        &mut self,
-        transaction_id: &f64,
-        stream_id: &f64,
-    ) -> Result<(), NetStreamError> {
-        self.amf0_writer
-            .write_string(&String::from("deleteStream"))?;
-        self.amf0_writer.write_number(transaction_id)?;
-        self.amf0_writer.write_null()?;
-        self.amf0_writer.write_number(stream_id)?;
-
-        self.write_chunk(NETSTREAM_MESSAGE_STREAM_ID).await
-    }
-
-    pub async fn write_close_stream(
-        &mut self,
-        transaction_id: &f64,
-        stream_id: &f64,
-    ) -> Result<(), NetStreamError> {
-        self.amf0_writer
-            .write_string(&String::from("closeStream"))?;
-        self.amf0_writer.write_number(transaction_id)?;
-        self.amf0_writer.write_null()?;
-        self.amf0_writer.write_number(stream_id)?;
-
-        self.write_chunk(0).await
-    }
-
     pub async fn write_release_stream(
         &mut self,
         transaction_id: &f64,

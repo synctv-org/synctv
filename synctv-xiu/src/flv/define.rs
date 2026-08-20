@@ -44,14 +44,12 @@ pub const fn u8_2_avc_codec_id(codec_id: u8) -> AvcCodecId {
 pub mod tag_type {
     pub const AUDIO: u8 = 8;
     pub const VIDEO: u8 = 9;
-    pub const SCRIPT_DATA_AMF: u8 = 18;
 }
 
 pub mod h264_nal_type {
     pub const H264_NAL_IDR: u8 = 5;
     pub const H264_NAL_SPS: u8 = 7;
     pub const H264_NAL_PPS: u8 = 8;
-    pub const H264_NAL_AUD: u8 = 9;
 }
 
 /// HEVC (H.265) NAL unit types according to ITU-T H.265
@@ -69,8 +67,6 @@ pub mod hevc_nal_type {
     pub const HEVC_NAL_SPS: u8 = 33;
     /// Picture Parameter Set (PPS)
     pub const HEVC_NAL_PPS: u8 = 34;
-    /// Access Unit Delimiter (AUD)
-    pub const HEVC_NAL_AUD: u8 = 35;
 }
 #[derive(Debug, Clone, Serialize, Default)]
 pub enum AacProfile {

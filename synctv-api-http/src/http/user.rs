@@ -611,9 +611,7 @@ pub async fn start_sensitive_operation_verification(
                 client_api
                     .start_sensitive_operation_verification(
                         &auth.user_id(),
-                        synctv_api_common::impls::client::token_auth_context_from_claims(
-                            &auth.claims,
-                        ),
+                        auth.claims.auth_context(),
                         req,
                     )
                     .await

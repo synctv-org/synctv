@@ -19,7 +19,7 @@ async fn test_speed_change_preserves_position() {
         .await
         .checked("operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Speed Position Room".to_string(),
             String::new(),
@@ -62,7 +62,7 @@ async fn test_speed_change_while_paused() {
         .await
         .checked("operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Speed Paused Room".to_string(),
             String::new(),
@@ -95,7 +95,7 @@ async fn test_reset_returns_to_initial_state() {
         .await
         .checked("operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "Reset Room".to_string(),
             String::new(),

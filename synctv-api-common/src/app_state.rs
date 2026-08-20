@@ -212,11 +212,6 @@ impl AppState {
     }
 }
 
-/// Create shared `AppState` once so multiple transports can reuse the same impl instances.
-pub fn create_app_state_from_options(options: RouterOptions) -> anyhow::Result<AppState> {
-    build_app_state(options)
-}
-
 /// Build `AppState` from `RouterOptions`, creating the shared API implementation layers.
 pub fn build_app_state(options: RouterOptions) -> anyhow::Result<AppState> {
     let shared_api_runtime = Arc::new(build_shared_api_runtime(&options)?);

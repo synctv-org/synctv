@@ -120,7 +120,7 @@ async fn test_repo_update_with_matching_version_succeeds() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "OL Repo Match Room".to_string(),
             String::new(),
@@ -174,7 +174,7 @@ async fn test_repo_update_with_stale_version_fails() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "OL Repo Stale Room".to_string(),
             String::new(),
@@ -243,7 +243,7 @@ async fn test_repo_version_increments_sequentially() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "OL Repo Seq Room".to_string(),
             String::new(),
@@ -296,7 +296,7 @@ async fn test_concurrent_seek_with_retry() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "OL Seek Retry Room".to_string(),
             String::new(),
@@ -381,7 +381,7 @@ async fn test_retry_handles_version_conflicts() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "OL Retry Room".to_string(),
             String::new(),
@@ -447,7 +447,7 @@ async fn test_retry_exhaustion_returns_degraded_response() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "OL Exhaust Room".to_string(),
             String::new(),
@@ -538,7 +538,7 @@ async fn test_concurrent_mixed_operations() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "OL Mixed Room".to_string(),
             String::new(),
@@ -701,7 +701,7 @@ async fn test_high_contention_operations_remain_consistent() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "OL Stress Room".to_string(),
             String::new(),
@@ -801,7 +801,7 @@ async fn test_version_handles_large_values() {
         .await
         .checked("test operation should succeed");
 
-    let (room, _) = room_service
+    let room = room_service
         .create_room(
             "OL Large Ver Room".to_string(),
             String::new(),

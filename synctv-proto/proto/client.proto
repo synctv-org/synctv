@@ -1441,7 +1441,6 @@ message JoinRoomResponse {
   Room room = 1;
   PlaybackState playback_state = 2;
   repeated synctv.common.RoomMember members = 3;
-  synctv.common.MemberStatus membership_status = 4;
   bool requires_approval = 5;
 }
 

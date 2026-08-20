@@ -57,24 +57,6 @@ impl DatabaseFileStorageService {
     }
 
     #[must_use]
-    pub fn new_with_compression(
-        storage_backend: impl Into<String>,
-        repository: Arc<FileStorageRepository>,
-        upload_token_secret: impl Into<String>,
-        compression: FileBlobCompression,
-    ) -> Self {
-        Self::new_with_compression_config(
-            storage_backend,
-            repository,
-            upload_token_secret,
-            DatabaseFileStorageCompressionConfig {
-                algorithm: compression,
-                ..Default::default()
-            },
-        )
-    }
-
-    #[must_use]
     pub fn new_with_compression_config(
         storage_backend: impl Into<String>,
         repository: Arc<FileStorageRepository>,

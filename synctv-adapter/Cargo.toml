@@ -12,7 +12,6 @@ workspace = true
 axum.workspace = true
 http.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 synctv-common = { workspace = true, default-features = false }
 synctv-core = { workspace = true, default-features = false }
 synctv-proto = { workspace = true, default-features = false, features = ["main"] }

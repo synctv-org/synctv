@@ -964,7 +964,7 @@ fn cluster_node_id(event_service: &Arc<dyn RealtimeEventService>) -> String {
 fn build_fallback_http_app_state(
     deps: FallbackHttpAppStateDeps,
 ) -> anyhow::Result<Arc<synctv_api_common::AppState>> {
-    Ok(Arc::new(synctv_api_common::create_app_state_from_options(
+    Ok(Arc::new(synctv_api_common::build_app_state(
         synctv_api_common::RouterOptions {
             runtime_settings: deps.runtime_settings,
             user_service: deps.user_service,
@@ -3428,7 +3428,7 @@ mod tests {
             .jwt_service
             .sign_access_token(&owner.id, 0)
             .map_err(|error| test_error(error.to_string()))?;
-        let (room, _) = room_service
+        let room = room_service
             .create_room(
                 "gRPC Chat Watch Room".to_string(),
                 String::new(),

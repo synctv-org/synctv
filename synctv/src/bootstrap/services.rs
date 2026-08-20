@@ -275,7 +275,6 @@ pub enum FileStorageBackendOptions {
 #[derive(Clone, Debug)]
 pub struct FileStorageOptions {
     pub upload_token_secret: String,
-    pub default_backend: String,
     pub chat_attachments_backend: String,
     pub user_avatars_backend: String,
     pub media_covers_backend: String,
@@ -288,49 +287,12 @@ impl Default for FileStorageOptions {
     fn default() -> Self {
         Self {
             upload_token_secret: String::new(),
-            default_backend: "disabled".to_string(),
-            chat_attachments_backend: String::new(),
-            user_avatars_backend: String::new(),
-            media_covers_backend: String::new(),
-            room_covers_backend: String::new(),
-            playlist_covers_backend: String::new(),
+            chat_attachments_backend: "disabled".to_string(),
+            user_avatars_backend: "disabled".to_string(),
+            media_covers_backend: "disabled".to_string(),
+            room_covers_backend: "disabled".to_string(),
+            playlist_covers_backend: "disabled".to_string(),
             backends: HashMap::new(),
-        }
-    }
-}
-
-impl FileStorageOptions {
-    #[must_use]
-    pub fn backend_for_chat_attachments(&self) -> &str {
-        self.selected_backend_or_default(&self.chat_attachments_backend)
-    }
-
-    #[must_use]
-    pub fn backend_for_user_avatars(&self) -> &str {
-        self.selected_backend_or_default(&self.user_avatars_backend)
-    }
-
-    #[must_use]
-    pub fn backend_for_media_covers(&self) -> &str {
-        self.selected_backend_or_default(&self.media_covers_backend)
-    }
-
-    #[must_use]
-    pub fn backend_for_room_covers(&self) -> &str {
-        self.selected_backend_or_default(&self.room_covers_backend)
-    }
-
-    #[must_use]
-    pub fn backend_for_playlist_covers(&self) -> &str {
-        self.selected_backend_or_default(&self.playlist_covers_backend)
-    }
-
-    fn selected_backend_or_default<'a>(&'a self, selected: &'a str) -> &'a str {
-        let selected = selected.trim();
-        if selected.is_empty() {
-            self.default_backend.trim()
-        } else {
-            selected
         }
     }
 }
@@ -1018,42 +980,22 @@ pub async fn init_services_with_options(
     let file_storage_registry = FileStorageBackendRegistry::new(file_storage_backends);
     let user_avatar_file_storage: Arc<dyn FileStorageService> = Arc::new(
         file_storage_registry
-            .routed(
-                service_options
-                    .file_storage
-                    .backend_for_user_avatars()
-                    .to_string(),
-            )
+            .routed(service_options.file_storage.user_avatars_backend.clone())
             .map_err(|error| anyhow::anyhow!("failed to route user avatar storage: {error}"))?,
     );
     let media_cover_file_storage: Arc<dyn FileStorageService> = Arc::new(
         file_storage_registry
-            .routed(
-                service_options
-                    .file_storage
-                    .backend_for_media_covers()
-                    .to_string(),
-            )
+            .routed(service_options.file_storage.media_covers_backend.clone())
             .map_err(|error| anyhow::anyhow!("failed to route media cover storage: {error}"))?,
     );
     let room_cover_file_storage: Arc<dyn FileStorageService> = Arc::new(
         file_storage_registry
-            .routed(
-                service_options
-                    .file_storage
-                    .backend_for_room_covers()
-                    .to_string(),
-            )
+            .routed(service_options.file_storage.room_covers_backend.clone())
             .map_err(|error| anyhow::anyhow!("failed to route room cover storage: {error}"))?,
     );
     let playlist_cover_file_storage: Arc<dyn FileStorageService> = Arc::new(
         file_storage_registry
-            .routed(
-                service_options
-                    .file_storage
-                    .backend_for_playlist_covers()
-                    .to_string(),
-            )
+            .routed(service_options.file_storage.playlist_covers_backend.clone())
             .map_err(|error| anyhow::anyhow!("failed to route playlist cover storage: {error}"))?,
     );
 
@@ -1219,8 +1161,8 @@ pub async fn init_services_with_options(
         .routed(
             service_options
                 .file_storage
-                .backend_for_chat_attachments()
-                .to_string(),
+                .chat_attachments_backend
+                .clone(),
         )
         .map_err(|error| anyhow::anyhow!("failed to route chat attachment storage: {error}"))?;
     let chat_service = ChatService::new(

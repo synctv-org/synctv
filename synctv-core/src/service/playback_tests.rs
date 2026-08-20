@@ -812,6 +812,112 @@ async fn test_db_reload_seeds_missing_local_playback_fence() {
     );
 }
 
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn unavailable_creator_reset_does_not_overwrite_a_newer_source() {
+    let (_container, pool) = synctv_core_testing::create_test_pool().await;
+    let user_repo = crate::repository::UserRepository::new(pool.clone());
+    let owner = ok(
+        user_repo
+            .create(&make_user("stale_creator_reset_owner"))
+            .await,
+        "owner should be created",
+    );
+    let room_service = ok(
+        crate::service::RoomService::new_for_tests(pool.clone(), make_user_service(&pool)),
+        "room service should build",
+    );
+    let room = ok(
+        room_service
+            .create_room(
+                "Stale Creator Reset".to_string(),
+                String::new(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+        "room should be created",
+    )
+    .0;
+    let media_repo = MediaRepository::new(pool);
+    let first_media = ok(
+        media_repo
+            .create(&crate::models::Media::from_provider_with_params(
+                crate::models::FromProviderParams {
+                    playlist_id: None,
+                    room_id: room.id,
+                    creator_id: Some(owner.id),
+                    name: "first source".to_string(),
+                    description: String::new(),
+                    source_provider: crate::models::SourceProvider::DirectUrl,
+                    source_config: crate::models::MediaSourceConfig::DirectUrl(
+                        crate::models::DirectUrlMediaSourceConfig::single(
+                            "https://example.com/first.mp4".to_string(),
+                            std::collections::HashMap::new(),
+                        ),
+                    ),
+                    provider_instance_name: None,
+                    position: 0.0,
+                },
+            ))
+            .await,
+        "first media should be created",
+    );
+    let second_media = ok(
+        media_repo
+            .create(&crate::models::Media::from_provider_with_params(
+                crate::models::FromProviderParams {
+                    playlist_id: None,
+                    room_id: room.id,
+                    creator_id: Some(owner.id),
+                    name: "second source".to_string(),
+                    description: String::new(),
+                    source_provider: crate::models::SourceProvider::DirectUrl,
+                    source_config: crate::models::MediaSourceConfig::DirectUrl(
+                        crate::models::DirectUrlMediaSourceConfig::single(
+                            "https://example.com/second.mp4".to_string(),
+                            std::collections::HashMap::new(),
+                        ),
+                    ),
+                    provider_instance_name: None,
+                    position: 1.0,
+                },
+            ))
+            .await,
+        "second media should be created",
+    );
+    let playback = room_service.playback_service();
+    let stale_state = ok(
+        playback
+            .switch(room.id, owner.id, Some(first_media.id), None, None)
+            .await,
+        "first source should start",
+    );
+    let newer_state = ok(
+        playback
+            .switch(room.id, owner.id, Some(second_media.id), None, None)
+            .await,
+        "second source should start",
+    );
+
+    let error = err(
+        playback
+            .stop_playback_for_unavailable_creator(&stale_state, "media", None)
+            .await,
+        "a reset based on stale state must conflict",
+    );
+    assert!(matches!(error, Error::OptimisticLockConflict));
+
+    let current = ok(
+        playback.get_state(&room.id).await,
+        "current playback state should remain readable",
+    );
+    assert_eq!(current.playing_media_id, Some(second_media.id));
+    assert_eq!(current.version, newer_state.version);
+    assert!(current.is_playing);
+}
+
 /// Tests for optimistic lock retry mechanism
 mod optimistic_retry_tests {
     use super::*;

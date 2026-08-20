@@ -1543,7 +1543,11 @@ impl PlaybackService {
                         Ok(()) => {}
                         Err(Error::Authorization(_)) => {
                             return self
-                                .stop_playback_for_unavailable_creator(room_id, "playlist")
+                                .stop_playback_for_unavailable_creator(
+                                    &state,
+                                    "playlist",
+                                    outbox_event_factory.as_ref(),
+                                )
                                 .await;
                         }
                         Err(error) => return Err(error),
@@ -1577,7 +1581,11 @@ impl PlaybackService {
                             Ok(()) => {}
                             Err(Error::Authorization(_)) => {
                                 return self
-                                    .stop_playback_for_unavailable_creator(room_id, "media")
+                                    .stop_playback_for_unavailable_creator(
+                                        &state,
+                                        "media",
+                                        outbox_event_factory.as_ref(),
+                                    )
                                     .await;
                             }
                             Err(error) => return Err(error),
@@ -1686,7 +1694,7 @@ impl PlaybackService {
                             &ended_state,
                             observed_version,
                             Some(ended_position),
-                            None,
+                            outbox_event_factory.as_ref(),
                         )
                         .await?;
                     self.write_playback_cache(&saved_state).await;
@@ -1727,7 +1735,11 @@ impl PlaybackService {
                             Ok(()) => {}
                             Err(Error::Authorization(_)) => {
                                 return self
-                                    .stop_playback_for_unavailable_creator(room_id, "media")
+                                    .stop_playback_for_unavailable_creator(
+                                        &previous_state,
+                                        "media",
+                                        outbox_event_factory.as_ref(),
+                                    )
                                     .await;
                             }
                             Err(error) => return Err(error),
@@ -1765,7 +1777,11 @@ impl PlaybackService {
                             Ok(()) => {}
                             Err(Error::Authorization(_)) => {
                                 return self
-                                    .stop_playback_for_unavailable_creator(room_id, "playlist")
+                                    .stop_playback_for_unavailable_creator(
+                                        &previous_state,
+                                        "playlist",
+                                        outbox_event_factory.as_ref(),
+                                    )
                                     .await;
                             }
                             Err(error) => return Err(error),
@@ -2795,28 +2811,46 @@ impl PlaybackService {
 
     async fn stop_playback_for_unavailable_creator(
         &self,
-        room_id: &RoomId,
+        state: &RoomPlaybackState,
         resource_kind: &'static str,
+        outbox_event_factory: Option<&RealtimeOutboxPlaybackStateEventFactory>,
     ) -> Result<Option<RoomPlaybackState>> {
         tracing::warn!(
-            room_id = %room_id,
+            room_id = %state.room_id,
             resource_kind,
             "Stopping playback because the target creator is not active"
         );
 
-        let state = self
-            .update_state(*room_id, |state| {
-                state.playing_media_id = None;
-                state.playing_playlist_id = None;
-                state.target = None;
-                state.position = 0.0;
-                state.speed = 1.0;
-                state.is_playing = false;
-                state.updated_at = self.clock.now();
-            })
-            .await?;
+        let previous_state = state.clone();
+        let observed_version = state.version;
+        let mut reset_state = state.clone();
+        reset_state.playing_media_id = None;
+        reset_state.playing_playlist_id = None;
+        reset_state.target = None;
+        reset_state.position = 0.0;
+        reset_state.speed = 1.0;
+        reset_state.is_playing = false;
+        reset_state.updated_at = self.clock.now();
+        let previous_progress_position =
+            previous_progress_position_for_source_transition(&previous_state, &reset_state);
 
-        Ok(Some(state))
+        let saved_state = self
+            .persist_playback_state_update_with_previous_progress(
+                &reset_state,
+                observed_version,
+                previous_progress_position,
+                outbox_event_factory,
+            )
+            .await?;
+        self.write_playback_cache(&saved_state).await;
+        self.broadcast_invalidation(
+            &saved_state.room_id,
+            &saved_state,
+            "unavailable_creator_reset",
+        )
+        .await;
+
+        Ok(Some(saved_state))
     }
 
     /// Get current playback speed

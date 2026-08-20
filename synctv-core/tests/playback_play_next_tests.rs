@@ -678,6 +678,63 @@ async fn test_sequential_advance_to_next() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_sequential_end_rolls_back_when_outbox_creation_fails() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(&pool);
+    let owner = user_repo
+        .create(&make_user("seq_end_outbox_owner"))
+        .await
+        .checked("test operation should succeed");
+    let (room, _) = room_service
+        .create_room(
+            "Sequential End Outbox".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .checked("test operation should succeed");
+    let media = insert_root_media(&pool, &room.id, "only_item", 0).await;
+    let playback = room_service.playback_service();
+    let original = playback
+        .switch(room.id, owner.id, Some(media.id), None, None)
+        .await
+        .checked("test operation should succeed");
+    let failing_outbox_factory: synctv_core::service::RealtimeOutboxPlaybackStateEventFactory =
+        Arc::new(|_| {
+            Err(synctv_core::Error::Internal(
+                "injected playback outbox failure".to_string(),
+            ))
+        });
+
+    let error = playback
+        .play_next_for_user(
+            &room.id,
+            owner.id,
+            &make_settings_with_mode(PlayMode::Sequential),
+            Some(failing_outbox_factory),
+        )
+        .await
+        .failed("outbox failure must abort the playlist-ended update");
+    assert!(matches!(
+        error,
+        synctv_core::Error::Internal(ref message)
+            if message == "injected playback outbox failure"
+    ));
+
+    let current = playback
+        .get_state(&room.id)
+        .await
+        .checked("playback state should remain readable after rollback");
+    assert_eq!(current.playing_media_id, Some(media.id));
+    assert_eq!(current.version, original.version);
+    assert!(current.is_playing);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_sequential_advance_preserves_static_playlist_context() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -1934,6 +1991,35 @@ async fn test_play_next_stops_when_next_media_creator_becomes_inactive() {
         .checked("test operation should succeed");
 
     let settings = make_settings_with_mode(PlayMode::Sequential);
+    let failing_outbox_factory: synctv_core::service::RealtimeOutboxPlaybackStateEventFactory =
+        Arc::new(|_| {
+            Err(synctv_core::Error::Internal(
+                "injected playback outbox failure".to_string(),
+            ))
+        });
+    let error = room_service
+        .playback_service()
+        .play_next_for_user(
+            &room.id,
+            room_owner.id,
+            &settings,
+            Some(failing_outbox_factory),
+        )
+        .await
+        .failed("outbox failure must abort the unavailable-creator reset");
+    assert!(matches!(
+        error,
+        synctv_core::Error::Internal(ref message)
+            if message == "injected playback outbox failure"
+    ));
+    let unchanged = room_service
+        .playback_service()
+        .get_state(&room.id)
+        .await
+        .checked("playback state should remain readable after rollback");
+    assert_eq!(unchanged.playing_media_id, Some(media1.id));
+    assert!(unchanged.is_playing);
+
     let state = room_service
         .playback_service()
         .play_next(&room.id, &settings)

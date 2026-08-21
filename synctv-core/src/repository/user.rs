@@ -238,7 +238,7 @@ impl UserRepository {
             .await?;
 
         let mut list_builder = QueryBuilder::<Postgres>::new(
-            r#"
+            r"
             SELECT p.id,
                    p.username,
                    p.signup_method,
@@ -257,7 +257,7 @@ impl UserRepository {
             FROM user_blocks ub
             JOIN user_account_profiles p ON p.id = ub.blocked_user_id
             WHERE ub.blocker_user_id =
-            "#,
+            ",
         );
         list_builder.push_bind(blocker_user_id);
         list_builder.push(" AND p.deleted_at IS NULL");

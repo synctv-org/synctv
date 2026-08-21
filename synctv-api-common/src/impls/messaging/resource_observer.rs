@@ -1565,11 +1565,11 @@ impl MediaResourceHub {
                 .collect::<HashSet<_>>()
                 .into_iter()
                 .collect::<Vec<_>>();
-            blocked_chat_viewers = match observers
+            blocked_chat_viewers = if let Some(chat_service) = observers
                 .iter()
                 .find_map(|observer| observer.chat_service.as_ref())
             {
-                Some(chat_service) => match chat_service
+                match chat_service
                     .blocking_viewer_ids(&viewer_ids, &chat_author_id)
                     .await
                 {
@@ -1583,15 +1583,14 @@ impl MediaResourceHub {
                         );
                         viewer_ids.into_iter().collect()
                     }
-                },
-                None => {
-                    tracing::warn!(
-                        room_id = %self.room_id,
-                        user_id = %chat_author_id,
-                        "Chat service unavailable while resolving block visibility; suppressing the event"
-                    );
-                    viewer_ids.into_iter().collect()
                 }
+            } else {
+                tracing::warn!(
+                    room_id = %self.room_id,
+                    user_id = %chat_author_id,
+                    "Chat service unavailable while resolving block visibility; suppressing the event"
+                );
+                viewer_ids.into_iter().collect()
             };
         }
         let mut refresh_plan = HashMap::<

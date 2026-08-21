@@ -41,7 +41,8 @@ These limits apply to the current release.
 
 | Topic | Current boundary |
 | --- | --- |
-| 2FA | Local 2FA uses password, passkey, verified email; OAuth2 is not a local factor |
+| 2FA | Local factors include password, passkey, TOTP, and verified email; TOTP recovery codes do not count as a separate factor; OAuth2 bypasses local 2FA for the OAuth2 login path |
+| TOTP | Uses fixed SHA-1, six-digit codes, and a 30-second period; clients render QR codes from the server-provided `otpauth_uri`; rotating `security.totp_encryption_key` requires ciphertext migration or user re-enrollment |
 | JWT revocation | Strong revocation depends on Redis token blacklist and token lifetime |
 | OPAQUE secret | Long-term binding to password records; not for routine rotation |
 | Provider encryption | Depends on credential encryption key; losing it affects decryption |

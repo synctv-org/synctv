@@ -198,14 +198,65 @@ Client flow:
 4. If `required=true`, store the short-lived `mfa.session_id` and present `available_methods`.
 5. If `MFA_METHOD_EMAIL` is available, call `RequestMfaEmailCode` when the user chooses email.
 6. If `MFA_METHOD_WEBAUTHN` is available, call `StartMfaPasskey` for WebAuthn options, then `FinishMfaPasskey`.
-7. After the second factor succeeds, the final response returns usable tokens.
+7. If `MFA_METHOD_TOTP` is available, call `VerifyMfaTotp` with `mfa_session_id` and the six-digit code.
+8. If `MFA_METHOD_RECOVERY_CODE` is available, call `VerifyMfaRecoveryCode`. Tell the user that a successful request consumes that code.
+9. After the second factor succeeds, the final response returns usable tokens.
 </Steps>
 
-`GetUserPreferences` returns `auth_factors`, which lets clients show whether the current user has password, WebAuthn, or verified email factors. Enabling 2FA requires at least two local factors. Password is a first factor completed through OPAQUE or direct password login. OAuth2 does not count as a local 2FA factor.
+`GetUserPreferences` returns `auth_factors`, which lets clients show whether the current user has password, WebAuthn, TOTP, or verified email factors. `totp_recovery_codes_remaining` reports the remaining recovery-code count. Enabling 2FA requires at least two local factors; TOTP and its recovery codes count as one. Password is a first factor completed through OPAQUE or direct password login. OAuth2 does not count as a local 2FA factor.
 
 <Aside type="note">
-OPAQUE is the public client local password login protocol. When a password first factor triggers MFA, clients should complete the challenge with an available non-password method such as email or WebAuthn.
+OPAQUE is the public client local password login protocol. When a password first factor triggers MFA, clients should complete the challenge with an available non-password method such as email, WebAuthn, or TOTP.
 </Aside>
+
+## TOTP and Recovery Codes
+
+TOTP uses SHA-1, six-digit codes, and a 30-second period. The server returns a complete `otpauth_uri`; render the QR code from this URI instead of rebuilding the issuer, account name, or algorithm parameters in the client.
+
+Enrollment flow:
+
+<Steps>
+1. Call `StartSensitiveOperationVerification`, complete the methods in `available_methods`, and obtain the one-time `verification_id`.
+2. Call `StartTotpSetup`. The response contains `setup_id`, `secret`, `otpauth_uri`, and `expires_at`.
+3. Render a QR code from `otpauth_uri` and provide `secret` for manual entry.
+4. After the user enters an authenticator code, call `FinishTotpSetup` before `expires_at`.
+5. Show the 10 returned `recovery_codes` and require the user to save and confirm them. The server does not return that plaintext set again.
+6. To enable 2FA, obtain a new `verification_id` and call `SetTwoFactorEnabled`. TOTP enrollment and 2FA enablement are separate sensitive operations.
+</Steps>
+
+HTTP and gRPC endpoint mapping:
+
+| Operation | HTTP | gRPC |
+| --- | --- | --- |
+| Start sensitive-operation verification | `POST /api/user/sensitive-verification/start` | `StartSensitiveOperationVerification` |
+| Complete one sensitive-operation method | `POST /api/user/sensitive-verification/finish` | `FinishSensitiveOperationVerification` |
+| Start enrollment | `POST /api/user/totp/setup/start` | `StartTotpSetup` |
+| Confirm enrollment | `POST /api/user/totp/setup/finish` | `FinishTotpSetup` |
+| Enable or disable 2FA | `PUT /api/user/two-factor` | `SetTwoFactorEnabled` |
+| Complete MFA with TOTP | `POST /api/auth/mfa/totp/verify` | `VerifyMfaTotp` |
+| Complete MFA with a recovery code | `POST /api/auth/mfa/recovery-code/verify` | `VerifyMfaRecoveryCode` |
+| Regenerate recovery codes | `POST /api/user/totp/recovery-codes/regenerate` | `RegenerateTotpRecoveryCodes` |
+| Delete TOTP | `DELETE /api/user/totp` | `DeleteTotp` |
+
+HTTP login verification example:
+
+```bash
+curl -sS http://localhost:8080/api/auth/mfa/totp/verify \
+  -H 'Content-Type: application/json' \
+  -d '{"mfaSessionId":"<mfa-session-id>","code":"123456"}'
+```
+
+A recovery-code request uses the same MFA session:
+
+```bash
+curl -sS http://localhost:8080/api/auth/mfa/recovery-code/verify \
+  -H 'Content-Type: application/json' \
+  -d '{"mfaSessionId":"<mfa-session-id>","recoveryCode":"ABCD-EFGH-JKLM"}'
+```
+
+Regenerating recovery codes invalidates the old set. Deleting TOTP also requires a new sensitive-operation verification. If removal would leave one local method, use one `verification_id` to disable 2FA and another `verification_id` to delete TOTP.
+
+The server rejects an accepted 30-second time step after its first use. If the user uses a code for login, wait for the authenticator to generate the next code before starting a TOTP-protected sensitive operation.
 
 ## Email Codes
 

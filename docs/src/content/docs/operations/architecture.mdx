@@ -44,7 +44,7 @@ PostgreSQL 是持久业务数据源。Redis 是共享短期状态和集群协调
 ## 主要组件
 
 - **API 与实时协作**： HTTP REST、公开 gRPC、WebSocket 和房间实时事件共享同一套业务服务与权限模型。
-- **身份认证**： 本地密码、OPAQUE、passkey/WebAuthn、邮箱验证码、OAuth2、用户级 2FA 和 JWT token 共同构成登录层。
+- **身份认证**： 本地密码、OPAQUE、passkey/WebAuthn、TOTP 与恢复码、邮箱验证码、OAuth2、用户级 2FA 和 JWT token 共同构成登录层。
 - **媒体能力**： Provider 负责解析外部媒体，proxy 负责可控转发，slice cache 只缓存 Range slice，不做 full-body cache。
 - **横向扩展**： 多节点通过 Redis、节点发现、leader election 和事务型 outbox 同步实时事件与后台任务边界。
 

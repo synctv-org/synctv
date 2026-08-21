@@ -320,6 +320,14 @@ impl IceServerList {
     pub fn new() -> Self {
         Self(Vec::new())
     }
+
+    #[must_use]
+    pub fn public_stun_defaults() -> Self {
+        Self(vec![
+            ConfiguredIceServer::new(vec!["stun:stun.cloudflare.com:3478".to_string()]),
+            ConfiguredIceServer::new(vec!["stun:stun.l.google.com:19302".to_string()]),
+        ])
+    }
 }
 
 impl Default for IceServerList {

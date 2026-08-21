@@ -568,7 +568,7 @@ alerting:
               |  HTTP API:  8080     |
               |  gRPC:      8080     |
               |  RTMP:      1935     |
-              |  STUN:      3478/udp |
+              |  STUN:      3478/udp | (optional)
               +----+----------+------+
                    ^          ^
                    |          |

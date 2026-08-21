@@ -35,9 +35,14 @@ fn test_room_password_policy_parse_and_display() {
 }
 
 #[test]
-fn test_external_ice_server_list_defaults_empty_and_accepts_custom_servers() {
+fn test_external_ice_server_list_supports_public_defaults_and_custom_servers() {
     let list = IceServerList::new();
     assert!(list.0.is_empty());
+
+    let defaults = IceServerList::public_stun_defaults();
+    assert_eq!(defaults.0.len(), 2);
+    assert_eq!(defaults.0[0].urls, ["stun:stun.cloudflare.com:3478"]);
+    assert_eq!(defaults.0[1].urls, ["stun:stun.l.google.com:19302"]);
 
     let custom = IceServerList(vec![
         ConfiguredIceServer::new(vec!["stun:custom1.example.com:19302".to_string()]),

@@ -47,7 +47,6 @@ services:
     ports:
       - "8080:8080"
       - "1935:1935"
-      - "3478:3478/udp"
     depends_on:
       postgres:
         condition: service_healthy

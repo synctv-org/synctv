@@ -50,7 +50,7 @@ impl Default for Config {
             server: ServerConfig::default(),
             webrtc: WebRTCConfig {
                 mode: WebRTCMode::PeerToPeer,
-                enable_builtin_stun: true,
+                enable_builtin_stun: false,
                 stun_port: 3478,
                 stun_host: "0.0.0.0".to_string(),
                 stun_external_addr: String::new(),

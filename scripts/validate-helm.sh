@@ -570,6 +570,7 @@ assert_pdb_field_absent "$tmp_dir/pdb-legacy-min-available.yaml" maxUnavailable
 
 if helm template synctv "$chart_dir" \
   --namespace "$namespace" \
+  --set config.webrtc.enableBuiltinStun=true \
   --set stunService.enabled=true \
   --set config.webrtc.stunExternalAddr=203.0.113.10:3478 \
   >"$tmp_dir/clusterip-stun.yaml" 2>"$tmp_dir/clusterip-stun.err"; then
@@ -578,6 +579,7 @@ fi
 
 helm template synctv "$chart_dir" \
   --namespace "$namespace" \
+  --set config.webrtc.enableBuiltinStun=true \
   --set stunService.enabled=true \
   --set stunService.type=LoadBalancer \
   --set config.webrtc.stunExternalAddr=203.0.113.10:3478 \

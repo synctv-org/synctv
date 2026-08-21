@@ -321,7 +321,7 @@ setting!(
     ExternalIceServersSetting,
     IceServerList,
     "webrtc.external_ice_servers",
-    IceServerList::new()
+    IceServerList::public_stun_defaults()
 );
 setting!(
     MaxVoiceParticipantsPerRoomSetting,
@@ -1466,6 +1466,27 @@ mod tests {
         );
         setting.key = key.to_string();
         setting
+    }
+
+    #[test]
+    fn test_runtime_settings_default_to_public_stun_servers() {
+        let store = RuntimeSettingsStore::new_for_tests();
+        let settings = ok(store.runtime_settings(), "runtime settings should load");
+
+        assert_eq!(
+            settings.webrtc.external_ice_servers,
+            IceServerList::public_stun_defaults()
+        );
+
+        ok(
+            store
+                .webrtc
+                .external_ice_servers
+                .set_for_test(&IceServerList::new()),
+            "external ICE servers should update",
+        );
+        let settings = ok(store.runtime_settings(), "runtime settings should reload");
+        assert!(settings.webrtc.external_ice_servers.0.is_empty());
     }
 
     #[test]

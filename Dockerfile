@@ -110,8 +110,7 @@ RUN command -v synctv && synctv --version
 # 50051: dedicated cluster gRPC
 # 9090: internal Prometheus metrics listener
 # 1935: RTMP (livestream)
-# 3478/udp: STUN (WebRTC)
-EXPOSE 8080 8081 50051 9090 1935 3478/udp
+EXPOSE 8080 8081 50051 9090 1935
 
 # Health check against the HTTP health endpoint
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \

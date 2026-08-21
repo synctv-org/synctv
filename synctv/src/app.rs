@@ -2101,10 +2101,7 @@ mod tests {
             chat: crate::app_config::ChatConfig::default(),
             webauthn: WebAuthnConfig::default(),
             media_providers: MediaProvidersConfig::default(),
-            webrtc: WebRTCConfig {
-                stun_external_addr: "203.0.113.1:3478".to_string(),
-                ..WebRTCConfig::default()
-            },
+            webrtc: WebRTCConfig::default(),
             connection_limits: ConnectionLimitsConfig::default(),
             bootstrap: BootstrapConfig {
                 create_root_user: false,

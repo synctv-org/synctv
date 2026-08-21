@@ -16,7 +16,7 @@ use crate::{
         ChatPlaybackChangedMetadata, ChatPlaybackMetadata, MediaId, PlayMode, PlaybackChangeReason,
         PlaybackHistoryEntry, PlaybackHistoryPage, PlaybackKind, PlaybackSourceIdentity,
         PlaybackSourceMetadata, PlaylistId, ProviderTarget, RealtimeEvent, RoomId,
-        RoomPlaybackState, RoomSettings, SourceProvider, TwitchTargetKind, UserId,
+        RoomPlaybackState, RoomSettings, SortDirection, SourceProvider, TwitchTargetKind, UserId,
     },
     repository::{
         chat::InsertChatMessageEvent,
@@ -1138,12 +1138,195 @@ impl PlaybackService {
     pub async fn list_playback_history(
         &self,
         room_id: &RoomId,
-        before_entry_id: Option<i64>,
+        cursor_entry_id: Option<i64>,
         limit: i32,
+        sort_direction: SortDirection,
     ) -> Result<PlaybackHistoryPage> {
         self.history_repo
-            .list(room_id, before_entry_id, limit)
+            .list(room_id, cursor_entry_id, limit, sort_direction)
             .await
+    }
+
+    async fn finish_playback_history_mutation(
+        &self,
+        room_id: &RoomId,
+        mut tx: sqlx::Transaction<'_, sqlx::Postgres>,
+        playback_state: Option<RoomPlaybackState>,
+        deleted_count: u64,
+        outbox_event_factory: Option<&RealtimeOutboxPlaybackStateEventFactory>,
+        context: &'static str,
+    ) -> Result<u64> {
+        if deleted_count == 0 {
+            tx.commit().await?;
+            return Ok(0);
+        }
+
+        let mut state = playback_state.ok_or_else(|| {
+            Error::Internal("Playback history exists without playback state".to_string())
+        })?;
+        let reservation = match self
+            .begin_playback_write_from_db_version(room_id, state.version)
+            .await
+        {
+            Ok(reservation) => reservation,
+            Err(error) => {
+                if let Err(rollback_error) = tx.rollback().await {
+                    tracing::warn!(
+                        room_id = %room_id,
+                        error = %rollback_error,
+                        "Failed to roll back playback history mutation"
+                    );
+                }
+                return Err(error);
+            }
+        };
+        let new_version = reservation
+            .as_ref()
+            .map_or(state.version + 1, |reservation| reservation.version);
+        state.position = state.computed_position_at(self.clock.now());
+
+        let result = async {
+            let state = self
+                .playback_repo
+                .update_with_exact_version_executor_and_previous_progress(
+                    &state,
+                    new_version,
+                    None,
+                    &mut tx,
+                )
+                .await?;
+            self.insert_playback_outbox_tx(&mut tx, &state, outbox_event_factory)
+                .await?;
+            Ok(state)
+        }
+        .await;
+        let state = match result {
+            Ok(state) => state,
+            Err(error) => {
+                if let Err(rollback_error) = tx.rollback().await {
+                    tracing::warn!(
+                        room_id = %room_id,
+                        error = %rollback_error,
+                        "Failed to roll back playback history mutation"
+                    );
+                }
+                self.abort_playback_write(room_id, reservation.as_ref())
+                    .await;
+                return Err(error);
+            }
+        };
+        if let Err(error) = tx.commit().await {
+            self.abort_playback_write(room_id, reservation.as_ref())
+                .await;
+            return Err(error.into());
+        }
+
+        self.finalize_committed_playback_write_best_effort(
+            room_id,
+            reservation.as_ref(),
+            state.version,
+            context,
+        )
+        .await;
+
+        self.write_playback_cache(&state).await;
+        self.broadcast_invalidation(room_id, &state, context).await;
+        Ok(deleted_count)
+    }
+
+    pub async fn delete_playback_history_entry_for_user(
+        &self,
+        room_id: &RoomId,
+        user_id: UserId,
+        entry_id: i64,
+        outbox_event_factory: Option<RealtimeOutboxPlaybackStateEventFactory>,
+    ) -> Result<bool> {
+        if entry_id <= 0 {
+            return Err(Error::InvalidInput(
+                "entry_id must be a positive integer".to_string(),
+            ));
+        }
+        self.permission_service
+            .check_permission(
+                room_id,
+                &user_id,
+                crate::models::RoomPermission::MANAGE_ROOM_SETTINGS,
+            )
+            .await?;
+
+        crate::service::optimistic_retry::retry_with_optimistic_lock(
+            Self::MAX_RETRIES,
+            Self::BACKOFF_BASE_MS,
+            "delete playback history entry failed after maximum retry attempts",
+            || {
+                let outbox_event_factory = outbox_event_factory.clone();
+                async move {
+                    let mut tx = self.playback_repo.pool().begin().await?;
+                    let playback_state = self
+                        .playback_repo
+                        .get_for_update_with_executor(room_id, &mut tx)
+                        .await?;
+                    let deleted = self
+                        .history_repo
+                        .delete_entry_on_conn(room_id, entry_id, &mut tx)
+                        .await?;
+                    let deleted_count = self
+                        .finish_playback_history_mutation(
+                            room_id,
+                            tx,
+                            playback_state,
+                            u64::from(deleted),
+                            outbox_event_factory.as_ref(),
+                            "delete_playback_history_entry",
+                        )
+                        .await?;
+                    Ok(deleted_count != 0)
+                }
+            },
+        )
+        .await
+    }
+
+    pub async fn clear_playback_history_for_user(
+        &self,
+        room_id: &RoomId,
+        user_id: UserId,
+        outbox_event_factory: Option<RealtimeOutboxPlaybackStateEventFactory>,
+    ) -> Result<u64> {
+        self.permission_service
+            .check_permission(
+                room_id,
+                &user_id,
+                crate::models::RoomPermission::MANAGE_ROOM_SETTINGS,
+            )
+            .await?;
+
+        crate::service::optimistic_retry::retry_with_optimistic_lock(
+            Self::MAX_RETRIES,
+            Self::BACKOFF_BASE_MS,
+            "clear playback history failed after maximum retry attempts",
+            || {
+                let outbox_event_factory = outbox_event_factory.clone();
+                async move {
+                    let mut tx = self.playback_repo.pool().begin().await?;
+                    let playback_state = self
+                        .playback_repo
+                        .get_for_update_with_executor(room_id, &mut tx)
+                        .await?;
+                    let deleted_count = self.history_repo.clear_on_conn(room_id, &mut tx).await?;
+                    self.finish_playback_history_mutation(
+                        room_id,
+                        tx,
+                        playback_state,
+                        deleted_count,
+                        outbox_event_factory.as_ref(),
+                        "clear_playback_history",
+                    )
+                    .await
+                }
+            },
+        )
+        .await
     }
 
     /// Play/pause playback

@@ -227,6 +227,8 @@ service RoomService {
   rpc PlayPrevious(PlayPreviousRequest) returns (PlaybackState);
   rpc ListPlaybackHistory(ListPlaybackHistoryRequest) returns (ListPlaybackHistoryResponse);
   rpc PlayHistoryEntry(PlayHistoryEntryRequest) returns (PlaybackState);
+  rpc DeletePlaybackHistoryEntry(DeletePlaybackHistoryEntryRequest) returns (DeletePlaybackHistoryEntryResponse);
+  rpc ClearPlaybackHistory(ClearPlaybackHistoryRequest) returns (ClearPlaybackHistoryResponse);
   rpc GetPlayback(GetPlaybackRequest) returns (GetPlaybackResponse); // Get current playback state and info
   rpc UpdatePlaybackState(UpdatePlaybackStateRequest) returns (PlaybackState); // Patch current playback state
 }
@@ -2206,19 +2208,41 @@ message PlaybackHistoryEntry {
 }
 
 message ListPlaybackHistoryRequest {
+  option (buf.validate.message).cel = {
+    id: "list_playback_history.single_cursor"
+    message: "before_entry_id and cursor_entry_id cannot both be set"
+    expression: "!(has(this.before_entry_id) && has(this.cursor_entry_id))"
+  };
   optional string before_entry_id = 1 [(buf.validate.field).string = {min_len: 4 max_len: 64 pattern: "^ph_[A-Za-z0-9]+$"}];
   int32 limit = 2 [(buf.validate.field).int32 = {gte: 0 lte: 100}];
+  optional string cursor_entry_id = 3 [(buf.validate.field).string = {min_len: 4 max_len: 64 pattern: "^ph_[A-Za-z0-9]+$"}];
+  SortDirection sort_direction = 4 [(buf.validate.field).enum.defined_only = true];
 }
 
 message ListPlaybackHistoryResponse {
   repeated PlaybackHistoryEntry entries = 1;
   string history_cursor_id = 2;
   string next_before_entry_id = 3;
+  string next_cursor_entry_id = 4;
 }
 
 message PlayHistoryEntryRequest {
   string entry_id = 1 [(buf.validate.field).string = {min_len: 4 max_len: 64 pattern: "^ph_[A-Za-z0-9]+$"}];
   optional string client_operation_id = 2 [(buf.validate.field).string = {uuid: true}];
+}
+
+message DeletePlaybackHistoryEntryRequest {
+  string entry_id = 1 [(buf.validate.field).string = {min_len: 4 max_len: 64 pattern: "^ph_[A-Za-z0-9]+$"}];
+}
+
+message DeletePlaybackHistoryEntryResponse {
+  bool deleted = 1;
+}
+
+message ClearPlaybackHistoryRequest {}
+
+message ClearPlaybackHistoryResponse {
+  uint64 deleted_count = 1;
 }
 
 // Realtime API: update the current playback source. Empty media_id, playlist_id, and target clears playback.

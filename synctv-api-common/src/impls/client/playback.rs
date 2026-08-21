@@ -993,21 +993,30 @@ impl ClientApiImpl {
         )
         .await?;
         let rid = actor.room_id();
-        let before_entry_id = req
-            .before_entry_id
+        let cursor_entry_id = req
+            .cursor_entry_id
             .as_deref()
+            .or(req.before_entry_id.as_deref())
             .map(|id| self.public_id_codec.decode_playback_history_entry_id(id))
             .transpose()
             .map_err(|_| {
-                ApiError::InvalidInput("Invalid playback history before_entry_id".into())
+                ApiError::InvalidInput("Invalid playback history cursor_entry_id".into())
             })?;
+        let sort_direction = match synctv_proto::client::SortDirection::try_from(req.sort_direction)
+            .unwrap_or_default()
+        {
+            synctv_proto::client::SortDirection::Asc => synctv_core::models::SortDirection::Asc,
+            synctv_proto::client::SortDirection::Unspecified
+            | synctv_proto::client::SortDirection::Desc => synctv_core::models::SortDirection::Desc,
+        };
         let page = self
             .room_service
             .playback_service()
             .list_playback_history(
                 &rid,
-                before_entry_id,
+                cursor_entry_id,
                 if req.limit == 0 { 50 } else { req.limit },
+                sort_direction,
             )
             .await
             .map_err(ApiError::from)?;
@@ -1047,6 +1056,59 @@ impl ClientApiImpl {
             .await;
         self.room_service.touch_room_activity(rid).await;
         self.playback_state_with_operation(&state, client_operation_id.as_deref())
+    }
+
+    pub async fn delete_playback_history_entry(
+        &self,
+        user_id: &UserId,
+        room_id: &str,
+        req: synctv_proto::client::DeletePlaybackHistoryEntryRequest,
+    ) -> Result<synctv_proto::client::DeletePlaybackHistoryEntryResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let rid = self.parse_room_id(room_id)?;
+        let entry_id = self
+            .public_id_codec
+            .decode_playback_history_entry_id(&req.entry_id)
+            .map_err(|_| ApiError::InvalidInput("Invalid playback history entry_id".into()))?;
+        let prepared_fanout = self.prepare_playback_state_changed(*user_id, None).await?;
+        let deleted = self
+            .room_service
+            .playback_service()
+            .delete_playback_history_entry_for_user(
+                &rid,
+                *user_id,
+                entry_id,
+                Some(prepared_fanout.outbox_factory()),
+            )
+            .await
+            .map_err(ApiError::from)?;
+        prepared_fanout.publish_after_outbox_commit();
+        if deleted {
+            self.room_service.touch_room_activity(rid).await;
+        }
+        Ok(synctv_proto::client::DeletePlaybackHistoryEntryResponse { deleted })
+    }
+
+    pub async fn clear_playback_history(
+        &self,
+        user_id: &UserId,
+        room_id: &str,
+        req: synctv_proto::client::ClearPlaybackHistoryRequest,
+    ) -> Result<synctv_proto::client::ClearPlaybackHistoryResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let rid = self.parse_room_id(room_id)?;
+        let prepared_fanout = self.prepare_playback_state_changed(*user_id, None).await?;
+        let deleted_count = self
+            .room_service
+            .playback_service()
+            .clear_playback_history_for_user(&rid, *user_id, Some(prepared_fanout.outbox_factory()))
+            .await
+            .map_err(ApiError::from)?;
+        prepared_fanout.publish_after_outbox_commit();
+        if deleted_count != 0 {
+            self.room_service.touch_room_activity(rid).await;
+        }
+        Ok(synctv_proto::client::ClearPlaybackHistoryResponse { deleted_count })
     }
 
     /// Get current playback state and complete playback information

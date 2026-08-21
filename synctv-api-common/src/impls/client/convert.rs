@@ -3034,7 +3034,13 @@ pub fn playback_history_page_to_proto(
             .map_err(|error| proto_encode_error("playback history entry", &error))?
             .unwrap_or_default(),
         next_before_entry_id: page
-            .next_before_entry_id
+            .next_cursor_entry_id
+            .map(|id| public_id_codec.encode_playback_history_entry_id(id))
+            .transpose()
+            .map_err(|error| proto_encode_error("playback history entry", &error))?
+            .unwrap_or_default(),
+        next_cursor_entry_id: page
+            .next_cursor_entry_id
             .map(|id| public_id_codec.encode_playback_history_entry_id(id))
             .transpose()
             .map_err(|error| proto_encode_error("playback history entry", &error))?

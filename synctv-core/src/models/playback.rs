@@ -106,7 +106,7 @@ pub struct PlaybackHistoryEntry {
 pub struct PlaybackHistoryPage {
     pub entries: Vec<PlaybackHistoryEntry>,
     pub history_cursor_id: Option<i64>,
-    pub next_before_entry_id: Option<i64>,
+    pub next_cursor_entry_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

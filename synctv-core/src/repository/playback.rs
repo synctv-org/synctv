@@ -480,6 +480,37 @@ impl RoomPlaybackStateRepository {
         Ok(result)
     }
 
+    pub async fn get_for_update_with_executor(
+        &self,
+        room_id: &RoomId,
+        conn: &mut PgConnection,
+    ) -> Result<Option<RoomPlaybackState>> {
+        let state = sqlx::query_as!(
+            RoomPlaybackState,
+            r#"SELECT state.room_id AS "room_id!: RoomId",
+                      state.playing_media_id AS "playing_media_id?: MediaId",
+                      state.playing_playlist_id AS "playing_playlist_id?: PlaylistId",
+                      state.target AS "target?: crate::models::ProviderTarget",
+                      state.current_progress_id,
+                      state.history_cursor_id,
+                      COALESCE(progress."position", 0.0) AS "position!",
+                      state.speed AS "speed!",
+                      state.is_playing AS "is_playing!",
+                      state.playback_generation AS "playback_generation!",
+                      state.updated_at AS "updated_at!",
+                      state.version AS "version!"
+               FROM room_playback_state state
+               LEFT JOIN room_playback_progress progress
+                 ON progress.id = state.current_progress_id
+               WHERE state.room_id = $1
+               FOR UPDATE OF state"#,
+            room_id as &RoomId,
+        )
+        .fetch_optional(&mut *conn)
+        .await?;
+        Ok(state)
+    }
+
     /// Run `update_with_exact_version_on_conn` inside a dedicated transaction,
     /// committing on success and rolling back on error.
     async fn update_in_tx(

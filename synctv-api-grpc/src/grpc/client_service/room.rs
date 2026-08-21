@@ -712,6 +712,20 @@ impl RoomService for ClientServiceImpl {
         playback::play_history_entry(self, request).await
     }
 
+    async fn delete_playback_history_entry(
+        &self,
+        request: Request<DeletePlaybackHistoryEntryRequest>,
+    ) -> Result<Response<DeletePlaybackHistoryEntryResponse>, Status> {
+        playback::delete_playback_history_entry(self, request).await
+    }
+
+    async fn clear_playback_history(
+        &self,
+        request: Request<ClearPlaybackHistoryRequest>,
+    ) -> Result<Response<ClearPlaybackHistoryResponse>, Status> {
+        playback::clear_playback_history(self, request).await
+    }
+
     async fn get_playback(
         &self,
         request: Request<GetPlaybackRequest>,

@@ -4,7 +4,7 @@ use sqlx::{PgConnection, PgPool};
 use crate::{
     models::{
         try_hash_playback_target, MediaId, PlaybackHistoryEntry, PlaybackHistoryPage, PlaylistId,
-        ProviderTarget, RoomId, UserId,
+        ProviderTarget, RoomId, SortDirection, UserId,
     },
     Error, Result,
 };
@@ -82,13 +82,45 @@ impl PlaybackHistoryRepository {
     pub async fn list(
         &self,
         room_id: &RoomId,
-        before_entry_id: Option<i64>,
+        cursor_entry_id: Option<i64>,
         limit: i32,
+        sort_direction: SortDirection,
     ) -> Result<PlaybackHistoryPage> {
         let limit = limit.clamp(1, 100);
-        let rows = sqlx::query_as!(
-            PlaybackHistoryRow,
-            r#"SELECT history.id AS "id!", history.room_id AS "room_id!: RoomId", history.sequence AS "sequence!",
+        let rows = match sort_direction {
+            SortDirection::Asc => {
+                sqlx::query_as!(
+                    PlaybackHistoryRow,
+                    r#"SELECT history.id AS "id!", history.room_id AS "room_id!: RoomId", history.sequence AS "sequence!",
+                      history.media_id AS "media_id?: MediaId", history.playlist_id AS "playlist_id?: PlaylistId",
+                      history.target AS "target?: crate::models::ProviderTarget",
+                      history.position_seconds, history.selected_by_user_id AS "selected_by_user_id?: UserId",
+                      history.media_name,
+                      history.playlist_name,
+                      COALESCE(media.source_provider, playlist.source_provider) AS "source_provider?: crate::models::SourceProvider",
+                      COALESCE(media.provider_instance_name, playlist.provider_instance_name)
+                          AS "provider_instance_name?",
+                      history.created_at, history.updated_at
+               FROM room_playback_history history
+               LEFT JOIN media
+                 ON media.id = history.media_id AND media.room_id = history.room_id
+               LEFT JOIN playlists playlist
+                 ON playlist.id = history.playlist_id AND playlist.room_id = history.room_id
+               WHERE history.room_id = $1
+                 AND ($2::bigint IS NULL OR history.id > $2)
+               ORDER BY history.sequence ASC, history.id ASC
+               LIMIT $3"#,
+                    room_id.as_i64(),
+                    cursor_entry_id,
+                    i64::from(limit) + 1,
+                )
+                .fetch_all(&self.pool)
+                .await?
+            }
+            SortDirection::Desc => {
+                sqlx::query_as!(
+                    PlaybackHistoryRow,
+                    r#"SELECT history.id AS "id!", history.room_id AS "room_id!: RoomId", history.sequence AS "sequence!",
                       history.media_id AS "media_id?: MediaId", history.playlist_id AS "playlist_id?: PlaylistId",
                       history.target AS "target?: crate::models::ProviderTarget",
                       history.position_seconds, history.selected_by_user_id AS "selected_by_user_id?: UserId",
@@ -105,14 +137,16 @@ impl PlaybackHistoryRepository {
                  ON playlist.id = history.playlist_id AND playlist.room_id = history.room_id
                WHERE history.room_id = $1
                  AND ($2::bigint IS NULL OR history.id < $2)
-               ORDER BY history.sequence DESC
+               ORDER BY history.sequence DESC, history.id DESC
                LIMIT $3"#,
-            room_id.as_i64(),
-            before_entry_id,
-            i64::from(limit) + 1,
-        )
-        .fetch_all(&self.pool)
-        .await?;
+                    room_id.as_i64(),
+                    cursor_entry_id,
+                    i64::from(limit) + 1,
+                )
+                .fetch_all(&self.pool)
+                .await?
+            }
+        };
         let limit = usize::try_from(limit).map_err(|error| {
             Error::Internal(format!(
                 "validated playback history limit is invalid: {error}"
@@ -132,11 +166,11 @@ impl PlaybackHistoryRepository {
         .fetch_optional(&self.pool)
         .await?
         .flatten();
-        let next_before_entry_id = has_more.then(|| entries.last().expect("non-empty page").id);
+        let next_cursor_entry_id = has_more.then(|| entries.last().expect("non-empty page").id);
         Ok(PlaybackHistoryPage {
             entries,
             history_cursor_id,
-            next_before_entry_id,
+            next_cursor_entry_id,
         })
     }
 
@@ -374,6 +408,34 @@ impl PlaybackHistoryRepository {
         .execute(&mut *conn)
         .await?;
         Ok(())
+    }
+
+    pub async fn delete_entry_on_conn(
+        &self,
+        room_id: &RoomId,
+        entry_id: i64,
+        conn: &mut PgConnection,
+    ) -> Result<bool> {
+        let deleted_id = sqlx::query_scalar!(
+            r#"DELETE FROM room_playback_history
+               WHERE room_id = $1 AND id = $2
+               RETURNING id AS "id!""#,
+            room_id.as_i64(),
+            entry_id,
+        )
+        .fetch_optional(&mut *conn)
+        .await?;
+        Ok(deleted_id.is_some())
+    }
+
+    pub async fn clear_on_conn(&self, room_id: &RoomId, conn: &mut PgConnection) -> Result<u64> {
+        let result = sqlx::query!(
+            "DELETE FROM room_playback_history WHERE room_id = $1",
+            room_id.as_i64(),
+        )
+        .execute(&mut *conn)
+        .await?;
+        Ok(result.rows_affected())
     }
 
     pub async fn cleanup(&self, retention_days: u32, max_entries_per_room: i64) -> Result<u64> {

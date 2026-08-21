@@ -146,6 +146,54 @@ pub(super) async fn play_history_entry(
     Ok(Response::new(response))
 }
 
+pub(super) async fn delete_playback_history_entry(
+    service: &ClientServiceImpl,
+    request: Request<DeletePlaybackHistoryEntryRequest>,
+) -> Result<Response<DeletePlaybackHistoryEntryResponse>, Status> {
+    let (metadata, room_id) = service.room_request_context(&request)?;
+    let req = request.into_inner();
+    let client_api = service.client_api.clone();
+    let response = service
+        .client_api
+        .clone()
+        .execute_user_endpoint(
+            &metadata,
+            EndpointRateLimitCategory::Media,
+            move |authenticated| async move {
+                client_api
+                    .delete_playback_history_entry(&authenticated.user_id(), &room_id, req)
+                    .await
+            },
+        )
+        .await
+        .map_err(map_api_error)?;
+    Ok(Response::new(response))
+}
+
+pub(super) async fn clear_playback_history(
+    service: &ClientServiceImpl,
+    request: Request<ClearPlaybackHistoryRequest>,
+) -> Result<Response<ClearPlaybackHistoryResponse>, Status> {
+    let (metadata, room_id) = service.room_request_context(&request)?;
+    let req = request.into_inner();
+    let client_api = service.client_api.clone();
+    let response = service
+        .client_api
+        .clone()
+        .execute_user_endpoint(
+            &metadata,
+            EndpointRateLimitCategory::Media,
+            move |authenticated| async move {
+                client_api
+                    .clear_playback_history(&authenticated.user_id(), &room_id, req)
+                    .await
+            },
+        )
+        .await
+        .map_err(map_api_error)?;
+    Ok(Response::new(response))
+}
+
 pub(super) async fn get_playback(
     service: &ClientServiceImpl,
     request: Request<GetPlaybackRequest>,

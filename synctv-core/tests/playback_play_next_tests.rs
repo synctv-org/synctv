@@ -18,8 +18,8 @@ use synctv_core::{
     models::{
         room::AutoPlaySettings, room_settings::AutoPlay, Media, MediaId, PlayMode,
         PlaybackAlistMedia, PlaybackMedia, PlaybackMediaProvider, Playlist, PlaylistId,
-        ProviderInstance, ProviderTarget, RoomAdminPermissionBits, RoomId, RoomRole, RoomSettings,
-        SourceProvider, User, UserId, UserRole, UserStatus,
+        ProviderInstance, ProviderTarget, RoomAdminPermissionBits, RoomId, RoomMember, RoomRole,
+        RoomSettings, SortDirection, SourceProvider, User, UserId, UserRole, UserStatus,
     },
     provider::{
         DynamicListQuery, DynamicListResult, DynamicPagination, DynamicPlaylistItem,
@@ -28,7 +28,7 @@ use synctv_core::{
     },
     repository::{
         MediaRepository, PlaybackHistoryRepository, ProviderInstanceRepository,
-        UserProviderCredentialRepository, UserRepository,
+        RoomMemberRepository, UserProviderCredentialRepository, UserRepository,
     },
     service::{
         BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, RoomService,
@@ -774,7 +774,7 @@ async fn test_sequential_advance_preserves_static_playlist_context() {
     assert!(advanced.target.is_none());
 
     let history = playback
-        .list_playback_history(&room.id, None, 10)
+        .list_playback_history(&room.id, None, 10, SortDirection::Desc)
         .await
         .checked("history should be listed");
     assert_eq!(history.entries.len(), 2);
@@ -793,6 +793,179 @@ async fn test_sequential_advance_preserves_static_playlist_context() {
         Some(SourceProvider::DirectUrl)
     );
     assert_eq!(latest_entry.provider_instance_name, None);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_playback_history_sort_delete_and_clear() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(&pool);
+    let owner = user_repo
+        .create(&make_user("history_management_owner"))
+        .await
+        .checked("test operation should succeed");
+    let member = user_repo
+        .create(&make_user("history_management_member"))
+        .await
+        .checked("test operation should succeed");
+    let room = room_service
+        .create_room(
+            "History Management".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .checked("test operation should succeed");
+    let media = [
+        insert_root_media(&pool, &room.id, "history_management_a", 0).await,
+        insert_root_media(&pool, &room.id, "history_management_b", 1).await,
+        insert_root_media(&pool, &room.id, "history_management_c", 2).await,
+    ];
+    let playback = room_service.playback_service();
+    for item in &media {
+        playback
+            .switch(room.id, owner.id, Some(item.id), None, None)
+            .await
+            .checked("history item should be recorded");
+    }
+    RoomMemberRepository::new(pool.clone())
+        .add(&RoomMember::new(room.id, member.id, RoomRole::Member))
+        .await
+        .checked("room member should be added");
+
+    let newest = playback
+        .list_playback_history(&room.id, None, 2, SortDirection::Desc)
+        .await
+        .checked("newest history page should be listed");
+    assert_eq!(
+        newest
+            .entries
+            .iter()
+            .filter_map(|entry| entry.media_id)
+            .collect::<Vec<_>>(),
+        vec![media[2].id, media[1].id]
+    );
+    let newest_cursor = newest
+        .next_cursor_entry_id
+        .checked("newest page should have a cursor");
+    let newest_tail = playback
+        .list_playback_history(&room.id, Some(newest_cursor), 2, SortDirection::Desc)
+        .await
+        .checked("newest history tail should be listed");
+    assert_eq!(newest_tail.entries[0].media_id, Some(media[0].id));
+
+    let oldest = playback
+        .list_playback_history(&room.id, None, 2, SortDirection::Asc)
+        .await
+        .checked("oldest history page should be listed");
+    assert_eq!(
+        oldest
+            .entries
+            .iter()
+            .filter_map(|entry| entry.media_id)
+            .collect::<Vec<_>>(),
+        vec![media[0].id, media[1].id]
+    );
+    let oldest_cursor = oldest
+        .next_cursor_entry_id
+        .checked("oldest page should have a cursor");
+    let oldest_tail = playback
+        .list_playback_history(&room.id, Some(oldest_cursor), 2, SortDirection::Asc)
+        .await
+        .checked("oldest history tail should be listed");
+    assert_eq!(oldest_tail.entries[0].media_id, Some(media[2].id));
+
+    assert!(
+        playback
+            .delete_playback_history_entry_for_user(
+                &room.id,
+                member.id,
+                oldest.entries[1].id,
+                None,
+            )
+            .await
+            .is_err(),
+        "member without room settings permission must not delete history"
+    );
+    assert!(
+        playback
+            .clear_playback_history_for_user(&room.id, member.id, None)
+            .await
+            .is_err(),
+        "member without room settings permission must not clear history"
+    );
+    let after_denied_mutations = playback
+        .list_playback_history(&room.id, None, 10, SortDirection::Desc)
+        .await
+        .checked("history should remain readable after denied mutations");
+    assert_eq!(after_denied_mutations.entries.len(), media.len());
+
+    tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+    let before_delete = playback
+        .get_state(&room.id)
+        .await
+        .checked("playback state should be readable");
+    let position_before_delete = before_delete.computed_position();
+    assert!(playback
+        .delete_playback_history_entry_for_user(&room.id, owner.id, oldest.entries[1].id, None,)
+        .await
+        .checked("history entry should be deleted"));
+    let after_delete = playback
+        .get_state(&room.id)
+        .await
+        .checked("playback state should be readable after deletion");
+    assert_eq!(after_delete.version, before_delete.version + 1);
+    assert_eq!(after_delete.playing_media_id, Some(media[2].id));
+    assert!(
+        after_delete.computed_position() >= position_before_delete - 0.1,
+        "deleting history must not move active playback backwards"
+    );
+    assert!(!playback
+        .delete_playback_history_entry_for_user(&room.id, owner.id, oldest.entries[1].id, None,)
+        .await
+        .checked("repeated history deletion should be idempotent"));
+
+    assert!(playback
+        .delete_playback_history_entry_for_user(&room.id, owner.id, newest.entries[0].id, None,)
+        .await
+        .checked("current history entry should be deleted"));
+    let after_current_delete = playback
+        .get_state(&room.id)
+        .await
+        .checked("playback state should survive current history deletion");
+    assert_eq!(after_current_delete.version, after_delete.version + 1);
+    assert_eq!(after_current_delete.playing_media_id, Some(media[2].id));
+    assert!(after_current_delete.history_cursor_id.is_none());
+
+    tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+    let before_clear = playback
+        .get_state(&room.id)
+        .await
+        .checked("playback state should be readable before clearing history");
+    let position_before_clear = before_clear.computed_position();
+    let deleted_count = playback
+        .clear_playback_history_for_user(&room.id, owner.id, None)
+        .await
+        .checked("remaining history should be cleared");
+    assert_eq!(deleted_count, 1);
+    let after_clear = playback
+        .get_state(&room.id)
+        .await
+        .checked("playback state should survive clearing history");
+    assert_eq!(after_clear.version, before_clear.version + 1);
+    assert_eq!(after_clear.playing_media_id, Some(media[2].id));
+    assert!(
+        after_clear.computed_position() >= position_before_clear - 0.1,
+        "clearing history must not move active playback backwards"
+    );
+    let empty = playback
+        .list_playback_history(&room.id, None, 10, SortDirection::Desc)
+        .await
+        .checked("cleared history should be listed");
+    assert!(empty.entries.is_empty());
 }
 
 #[tokio::test]
@@ -843,7 +1016,7 @@ async fn test_auto_advance_after_previous_uses_recorded_forward_history() {
         .checked("B should return to A");
     assert_eq!(previous.position, 0.0);
     let history = playback
-        .list_playback_history(&room.id, None, 10)
+        .list_playback_history(&room.id, None, 10, SortDirection::Desc)
         .await
         .checked("history should be listed");
     assert_eq!(history.entries.len(), 2);
@@ -1015,7 +1188,7 @@ async fn test_playback_history_cleanup_preserves_cursor_and_adjacent_navigation(
         .checked("history cleanup should succeed");
     assert_eq!(deleted, 2);
     let history = playback
-        .list_playback_history(&room.id, None, 10)
+        .list_playback_history(&room.id, None, 10, SortDirection::Desc)
         .await
         .checked("retained history should be listed");
     assert_eq!(history.entries.len(), 2);
@@ -1049,7 +1222,7 @@ async fn test_playback_history_cleanup_preserves_cursor_and_adjacent_navigation(
         .checked("count-based history cleanup should succeed");
     assert_eq!(deleted, 1);
     let retained = playback
-        .list_playback_history(&room.id, None, 10)
+        .list_playback_history(&room.id, None, 10, SortDirection::Desc)
         .await
         .checked("count-limited history should be listed");
     assert_eq!(retained.entries.len(), 2);
@@ -1126,7 +1299,7 @@ async fn test_deleted_media_and_playlist_cascade_playback_history() {
         .checked("playlist deletion should succeed");
 
     let history = playback
-        .list_playback_history(&room.id, None, 20)
+        .list_playback_history(&room.id, None, 20, SortDirection::Desc)
         .await
         .checked("history should be listed");
     assert!(history
@@ -1197,7 +1370,7 @@ async fn test_history_view_permission_cannot_change_playback() {
         .await
         .checked("second history entry should be recorded");
     let history = playback
-        .list_playback_history(&room.id, None, 10)
+        .list_playback_history(&room.id, None, 10, SortDirection::Desc)
         .await
         .checked("history should be listed");
     let entry_id = history

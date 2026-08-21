@@ -13,6 +13,7 @@ fn test_room_list_order_clause_supports_name_ascending() {
         sort_direction: crate::models::SortDirection::Asc,
         pagination: PageParams::default(),
         creator_id: None,
+        excluded_creator_ids: Vec::new(),
         category_id: None,
         label_ids: Vec::new(),
     };
@@ -31,6 +32,7 @@ fn test_room_list_order_clause_supports_last_activity_nulls_last() {
         sort_direction: crate::models::SortDirection::Desc,
         pagination: PageParams::default(),
         creator_id: None,
+        excluded_creator_ids: Vec::new(),
         category_id: None,
         label_ids: Vec::new(),
     };
@@ -657,6 +659,57 @@ async fn test_list_rooms_with_filters() {
         .await
         .checked("operation should succeed");
     assert!(rooms.iter().all(|r| r.name.contains("Active")));
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_list_rooms_excludes_blocked_creators_before_pagination() {
+    use crate::repository::user::UserRepository;
+    use crate::test_helpers::{RoomFixture, UserFixture};
+
+    let (_postgres, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+    let visible_owner = user_repo
+        .create(&UserFixture::new().with_username("visible_owner").build())
+        .await
+        .checked("visible owner should be created");
+    let blocked_owner = user_repo
+        .create(&UserFixture::new().with_username("blocked_owner").build())
+        .await
+        .checked("blocked owner should be created");
+
+    for (name, owner_id) in [
+        ("Visible discovery room", visible_owner.id),
+        ("Blocked discovery room", blocked_owner.id),
+    ] {
+        room_repo
+            .create(
+                &RoomFixture::new()
+                    .with_name(name)
+                    .with_owner(owner_id)
+                    .build(),
+            )
+            .await
+            .checked("room should be created");
+    }
+
+    let query = RoomListQuery {
+        pagination: PageParams::new(Some(1), Some(1)),
+        search: Some("discovery room".to_string()),
+        excluded_creator_ids: vec![blocked_owner.id],
+        sort_by: crate::models::RoomListSortBy::Name,
+        sort_direction: crate::models::SortDirection::Asc,
+        ..Default::default()
+    };
+    let (rooms, total) = room_repo
+        .list(&query)
+        .await
+        .checked("rooms should be filtered");
+
+    assert_eq!(total, 1);
+    assert_eq!(rooms.len(), 1);
+    assert_eq!(rooms[0].created_by, visible_owner.id);
 }
 
 /// Integration test: room member_count counts current member rows.

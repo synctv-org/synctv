@@ -2581,6 +2581,7 @@ pub fn try_room_to_proto_with_availability_and_presence(
             .map(|label| room_label_to_proto(label, public_id_codec))
             .collect::<Result<Vec<_>, _>>()?,
         is_public: Some(room.is_public),
+        creator_blocked: false,
     })
 }
 

@@ -5783,6 +5783,7 @@ fn render_human_output_uses_room_and_member_enums_by_context() {
             category: None,
             labels: Vec::new(),
             is_public: Some(true),
+            creator_blocked: false,
         }),
         playback_state: None,
         requires_approval: false,

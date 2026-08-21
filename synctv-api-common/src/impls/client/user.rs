@@ -418,6 +418,98 @@ impl ClientApiImpl {
         self.user_to_proto_with_avatar(&user).await
     }
 
+    pub async fn block_user(
+        &self,
+        user_id: &UserId,
+        req: synctv_proto::client::BlockUserRequest,
+    ) -> Result<synctv_proto::client::BlockUserResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let blocked_user_id =
+            crate::impls::proto_validated_user_id(req.user_id, &self.public_id_codec)?;
+        let blocked_at = self
+            .user_service
+            .block_user(user_id, &blocked_user_id)
+            .await
+            .map_err(ApiError::from)?;
+        let blocked_user = self
+            .user_service
+            .get_user(&blocked_user_id)
+            .await
+            .map_err(ApiError::from)?;
+        let public_user = self
+            .user_public_view_with_loaded_avatar(&blocked_user)
+            .await?;
+
+        Ok(synctv_proto::client::BlockUserResponse {
+            blocked_user: Some(synctv_proto::client::BlockedUser {
+                user: Some(public_user),
+                blocked_at: blocked_at.timestamp(),
+            }),
+        })
+    }
+
+    pub async fn unblock_user(
+        &self,
+        user_id: &UserId,
+        req: synctv_proto::client::UnblockUserRequest,
+    ) -> Result<synctv_proto::client::UnblockUserResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let blocked_user_id =
+            crate::impls::proto_validated_user_id(req.user_id, &self.public_id_codec)?;
+        self.user_service
+            .unblock_user(user_id, &blocked_user_id)
+            .await
+            .map_err(ApiError::from)?;
+        Ok(synctv_proto::client::UnblockUserResponse { success: true })
+    }
+
+    pub async fn list_blocked_users(
+        &self,
+        user_id: &UserId,
+        req: synctv_proto::client::ListBlockedUsersRequest,
+    ) -> Result<synctv_proto::client::ListBlockedUsersResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let page = if req.page > 0 {
+            req.page.cast_unsigned()
+        } else {
+            1
+        };
+        let page_size = if req.page_size > 0 {
+            req.page_size.cast_unsigned().min(100)
+        } else {
+            50
+        };
+        let pagination = PageParams::new(Some(page), Some(page_size));
+        let search = (!req.search.is_empty()).then_some(req.search);
+        let (blocked_users, total) = self
+            .user_service
+            .list_blocked_users(user_id, pagination, search.as_deref())
+            .await
+            .map_err(ApiError::from)?;
+        let users = blocked_users
+            .iter()
+            .map(|blocked| blocked.user.clone())
+            .collect::<Vec<_>>();
+        let public_users = self
+            .batch_user_public_views_with_loaded_avatars(&users)
+            .await?;
+        let users = blocked_users
+            .into_iter()
+            .zip(public_users)
+            .map(|(blocked, user)| synctv_proto::client::BlockedUser {
+                user: Some(user),
+                blocked_at: blocked.blocked_at.timestamp(),
+            })
+            .collect();
+
+        Ok(synctv_proto::client::ListBlockedUsersResponse {
+            users,
+            total: i32::try_from(total).map_err(|_| {
+                ApiError::Internal("blocked user total exceeds i32::MAX".to_string())
+            })?,
+        })
+    }
+
     pub async fn get_user_preferences(
         &self,
         user_id: &UserId,

@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT EXISTS (\n                SELECT 1\n                FROM user_blocks\n                WHERE blocker_user_id = $1 AND blocked_user_id = $2\n            ) AS \"is_blocking!\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "is_blocking!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "f8ebc75fcd508e0378a2ed629ff7a90ce40bc53dd7d45622f31c00682f225a2f"
+}

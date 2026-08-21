@@ -12,17 +12,19 @@ use super::{middleware::RequestMetadata, validation::ProtoQuery, AppResult, AppS
 use synctv_api_common::impls::EndpointRateLimitCategory;
 use synctv_proto::client::User;
 use synctv_proto::client::{
-    CloseAccountRequest, CloseAccountResponse, DeletePasskeyRequest, DeletePasskeyResponse,
-    DeleteTotpRequest, DeleteTotpResponse, DiscoverRoomsRequest, DiscoverRoomsResponse,
-    FavoriteRoomRequest, FavoriteRoomResponse, FinishPasskeyBindRequest,
-    FinishSensitiveOperationVerificationRequest, FinishTotpSetupRequest, GetRoomDiscoveryRequest,
+    BlockUserRequest, BlockUserResponse, CloseAccountRequest, CloseAccountResponse,
+    DeletePasskeyRequest, DeletePasskeyResponse, DeleteTotpRequest, DeleteTotpResponse,
+    DiscoverRoomsRequest, DiscoverRoomsResponse, FavoriteRoomRequest, FavoriteRoomResponse,
+    FinishPasskeyBindRequest, FinishSensitiveOperationVerificationRequest, FinishTotpSetupRequest,
+    GetRoomDiscoveryRequest, ListBlockedUsersRequest, ListBlockedUsersResponse,
     ListFavoriteRoomsRequest, ListFavoriteRoomsResponse, ListMyRoomsResponse, ListPasskeysResponse,
     PasskeyCredential, RequestSensitiveOperationEmailCodeRequest,
     RequestSensitiveOperationEmailCodeResponse, RoomDiscoveryItem, RoomPathRequest,
     SensitiveOperationVerificationOutcome, StartPasskeyBindRequest, StartPasskeyBindResponse,
     StartSensitiveOperationPasskeyRequest, StartSensitiveOperationPasskeyResponse,
     StartSensitiveOperationVerificationRequest, StartTotpSetupRequest, StartTotpSetupResponse,
-    TotpRecoveryCodesResponse, UnfavoriteRoomRequest, UnfavoriteRoomResponse,
+    TotpRecoveryCodesResponse, UnblockUserRequest, UnblockUserResponse, UnfavoriteRoomRequest,
+    UnfavoriteRoomResponse,
 };
 use synctv_proto::client::{
     CompleteUserAvatarUploadSessionRequest, CompleteUserAvatarUploadSessionResponse,
@@ -94,6 +96,12 @@ pub struct PasskeyCredentialPath {
     pub credential_id: String,
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockedUserPath {
+    pub user_id: String,
+}
+
 /// Get current user info
 #[cfg_attr(
     feature = "openapi",
@@ -128,6 +136,102 @@ pub async fn get_me(
         .await
         .map_err(super::error::map_api_error)?;
 
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/user/blocks",
+        tag = "User",
+        request_body = BlockUserRequest,
+        responses((status = 200, description = "User blocked", body = BlockUserResponse)),
+        security(("bearer_auth" = []))
+    )
+)]
+pub async fn block_user(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Json(req): Json<BlockUserRequest>,
+) -> AppResult<Json<BlockUserResponse>> {
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
+    let response = executor
+        .execute_user_endpoint(
+            &request_meta.0,
+            EndpointRateLimitCategory::Write,
+            |auth| async move { client_api.block_user(&auth.user_id(), req).await },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        delete,
+        path = "/api/user/blocks/{userId}",
+        tag = "User",
+        params(("userId" = String, Path, description = "Public user ID")),
+        responses((status = 200, description = "User unblocked", body = UnblockUserResponse)),
+        security(("bearer_auth" = []))
+    )
+)]
+pub async fn unblock_user(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<BlockedUserPath>,
+) -> AppResult<Json<UnblockUserResponse>> {
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
+    let response = executor
+        .execute_user_endpoint(
+            &request_meta.0,
+            EndpointRateLimitCategory::Write,
+            |auth| async move {
+                client_api
+                    .unblock_user(
+                        &auth.user_id(),
+                        UnblockUserRequest {
+                            user_id: path.user_id,
+                        },
+                    )
+                    .await
+            },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/user/blocks",
+        tag = "User",
+        params(ListBlockedUsersRequest),
+        responses((status = 200, description = "Blocked users", body = ListBlockedUsersResponse)),
+        security(("bearer_auth" = []))
+    )
+)]
+pub async fn list_blocked_users(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    ProtoQuery(req): ProtoQuery<ListBlockedUsersRequest>,
+) -> AppResult<Json<ListBlockedUsersResponse>> {
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
+    let response = executor
+        .execute_user_endpoint(
+            &request_meta.0,
+            EndpointRateLimitCategory::Read,
+            |auth| async move { client_api.list_blocked_users(&auth.user_id(), req).await },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
     Ok(Json(response))
 }
 

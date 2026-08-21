@@ -299,6 +299,12 @@ pub struct User {
     pub deleted_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Clone)]
+pub struct BlockedUser {
+    pub user: User,
+    pub blocked_at: DateTime<Utc>,
+}
+
 /// Administrative metadata for the account deletion and recovery lifecycle.
 ///
 /// Authentication and normal user lookups only need [`User`]. Keeping this

@@ -1525,6 +1525,20 @@ impl ChatService {
         Ok(username)
     }
 
+    pub async fn blocked_user_ids(&self, viewer_user_id: &UserId) -> Result<Vec<UserId>> {
+        self.chat_repository.blocked_user_ids(viewer_user_id).await
+    }
+
+    pub async fn blocking_viewer_ids(
+        &self,
+        viewer_user_ids: &[UserId],
+        blocked_user_id: &UserId,
+    ) -> Result<Vec<UserId>> {
+        self.chat_repository
+            .blocking_viewer_ids(viewer_user_ids, blocked_user_id)
+            .await
+    }
+
     async fn ensure_reply_target_visible(
         &self,
         room_id: &RoomId,

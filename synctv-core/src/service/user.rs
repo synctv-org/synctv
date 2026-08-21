@@ -157,6 +157,7 @@ impl std::fmt::Debug for UserService {
 }
 
 mod avatar;
+mod blocking;
 mod constructor;
 mod deletion;
 pub use deletion::{

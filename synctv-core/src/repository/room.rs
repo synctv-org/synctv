@@ -760,6 +760,19 @@ impl RoomRepository {
             builder.push("r.created_by = ").push_bind(creator_id);
         }
 
+        if !query.excluded_creator_ids.is_empty() {
+            let creator_ids = query
+                .excluded_creator_ids
+                .iter()
+                .map(UserId::as_i64)
+                .collect::<Vec<_>>();
+            Self::push_where_prefix(builder, has_condition);
+            builder
+                .push("r.created_by <> ALL(")
+                .push_bind(creator_ids)
+                .push("::bigint[])");
+        }
+
         if let Some(category_id) = query.category_id {
             Self::push_where_prefix(builder, has_condition);
             builder.push("r.category_id = ").push_bind(category_id);

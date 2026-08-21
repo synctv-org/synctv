@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT COUNT(*) AS \"count!\"\n            FROM chat_message_events e\n            JOIN chat_messages m\n              ON m.room_id = e.room_id\n             AND m.id = e.message_id\n             AND m.created_at = e.message_created_at\n            WHERE e.room_id = $1\n              AND e.sequence > $2\n              AND e.event_type = $3\n              AND m.status <> $4\n              AND m.deletion_source IS DISTINCT FROM $6\n              AND (m.user_id IS NULL OR m.user_id <> $5)\n              AND NOT EXISTS (\n                    SELECT 1 FROM user_blocks ub\n                    WHERE ub.blocker_user_id = $5 AND ub.blocked_user_id = m.user_id\n                  )\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Text",
+        "Int2",
+        "Int8",
+        "Int2"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "8a8b021567a21b203a9b1bd33e54f1cdb89c313b94909ade8f69f168011c05e7"
+}

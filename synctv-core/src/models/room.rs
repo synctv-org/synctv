@@ -363,6 +363,8 @@ pub struct RoomListQuery {
     pub is_public: Option<bool>,
     /// Filter by creator
     pub creator_id: Option<super::UserId>,
+    #[serde(default)]
+    pub excluded_creator_ids: Vec<super::UserId>,
     pub category_id: Option<RoomCategoryId>,
     #[serde(default)]
     pub label_ids: Vec<RoomLabelId>,
@@ -381,6 +383,7 @@ impl Default for RoomListQuery {
             is_banned: Some(false),
             is_public: None,
             creator_id: None,
+            excluded_creator_ids: Vec::new(),
             category_id: None,
             label_ids: Vec::new(),
             sort_by: RoomListSortBy::CreatedAt,

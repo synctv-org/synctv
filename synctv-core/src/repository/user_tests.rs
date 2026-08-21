@@ -222,3 +222,79 @@ async fn test_soft_delete_user() {
         .checked("operation should succeed")
         .is_none());
 }
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_user_blocking_is_personal_idempotent_and_searchable() {
+    let (_postgres, pool) = create_test_pool().await;
+    let repo = UserRepository::new(pool.clone());
+    let blocker = repo
+        .create(&User::new("blocker".into(), SignupMethod::Email))
+        .await
+        .checked("blocker should be created");
+    let blocked_alpha = repo
+        .create(&User::new("blocked_alpha".into(), SignupMethod::Email))
+        .await
+        .checked("first blocked user should be created");
+    let blocked_beta = repo
+        .create(&User::new("blocked_beta".into(), SignupMethod::Email))
+        .await
+        .checked("second blocked user should be created");
+
+    let first_blocked_at = repo
+        .block_user(&blocker.id, &blocked_alpha.id)
+        .await
+        .checked("user should be blocked");
+    let repeated_blocked_at = repo
+        .block_user(&blocker.id, &blocked_alpha.id)
+        .await
+        .checked("blocking should be idempotent");
+    repo.block_user(&blocker.id, &blocked_beta.id)
+        .await
+        .checked("second user should be blocked");
+
+    assert_eq!(repeated_blocked_at, first_blocked_at);
+    assert!(repo
+        .is_blocking(&blocker.id, &blocked_alpha.id)
+        .await
+        .checked("blocking relationship should be readable"));
+    assert!(!repo
+        .is_blocking(&blocked_alpha.id, &blocker.id)
+        .await
+        .checked("reverse blocking relationship should be readable"));
+
+    let (first_page, total) = repo
+        .list_blocked_users(
+            &blocker.id,
+            PageParams::new(Some(1), Some(1)),
+            Some("blocked_"),
+        )
+        .await
+        .checked("blocked users should be listed");
+    assert_eq!(total, 2);
+    assert_eq!(first_page.len(), 1);
+
+    let (search_result, search_total) = repo
+        .list_blocked_users(
+            &blocker.id,
+            PageParams::new(Some(1), Some(10)),
+            Some("alpha"),
+        )
+        .await
+        .checked("blocked users should be searchable");
+    assert_eq!(search_total, 1);
+    assert_eq!(search_result[0].user.id, blocked_alpha.id);
+
+    assert!(repo
+        .unblock_user(&blocker.id, &blocked_alpha.id)
+        .await
+        .checked("user should be unblocked"));
+    assert!(!repo
+        .unblock_user(&blocker.id, &blocked_alpha.id)
+        .await
+        .checked("unblocking should be idempotent"));
+    assert!(!repo
+        .is_blocking(&blocker.id, &blocked_alpha.id)
+        .await
+        .checked("removed relationship should remain readable"));
+}

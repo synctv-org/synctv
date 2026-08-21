@@ -16,10 +16,11 @@ use crate::http::websocket::RealtimeTransportFormat;
 use crate::http::{middleware::RequestMetadata, AppResult, AppState};
 use synctv_api_common::impls::{EndpointRateLimitCategory, EndpointRateLimitScope};
 use synctv_proto::client::{
-    GetPlaybackResponse, ListPlaybackHistoryRequest, ListPlaybackHistoryResponse,
-    PlayHistoryEntryRequest, PlayNextRequest, PlayPreviousRequest, PlaybackState,
-    StartPlaybackRequest, StopPlaybackRequest, UpdatePlaybackStateRequest, WatchPlaybackRequest,
-    WatchPlaybackStateRequest,
+    ClearPlaybackHistoryRequest, ClearPlaybackHistoryResponse, DeletePlaybackHistoryEntryRequest,
+    DeletePlaybackHistoryEntryResponse, GetPlaybackResponse, ListPlaybackHistoryRequest,
+    ListPlaybackHistoryResponse, PlayHistoryEntryRequest, PlayNextRequest, PlayPreviousRequest,
+    PlaybackState, StartPlaybackRequest, StopPlaybackRequest, UpdatePlaybackStateRequest,
+    WatchPlaybackRequest, WatchPlaybackStateRequest,
 };
 
 #[cfg_attr(
@@ -184,8 +185,10 @@ pub async fn play_previous(
         tag = "Room",
         params(
             ("roomId" = String, Path, description = "Room ID"),
-            ("beforeEntryId" = Option<String>, Query, description = "History pagination cursor"),
-            ("limit" = Option<i32>, Query, description = "Page size, up to 100")
+            ("beforeEntryId" = Option<String>, Query, description = "Legacy newest-first pagination cursor"),
+            ("cursorEntryId" = Option<String>, Query, description = "Pagination cursor for the selected sort direction"),
+            ("limit" = Option<i32>, Query, description = "Page size, up to 100"),
+            ("sortDirection" = Option<i32>, Query, description = "Sort direction enum value; defaults to descending")
         ),
         responses((status = 200, description = "Playback history", body = ListPlaybackHistoryResponse)),
         security(("bearer_auth" = []))
@@ -246,6 +249,80 @@ pub async fn play_history_entry(
                         entry_id,
                         client_operation_id: None,
                     },
+                )
+                .await
+        },
+    )
+    .await?;
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        delete,
+        path = "/api/rooms/{roomId}/playback/history/{entryId}",
+        tag = "Room",
+        params(
+            ("roomId" = String, Path, description = "Room ID"),
+            ("entryId" = String, Path, description = "Playback history entry ID")
+        ),
+        responses((status = 200, description = "Playback history deletion result", body = DeletePlaybackHistoryEntryResponse)),
+        security(("bearer_auth" = []))
+    )
+)]
+pub async fn delete_playback_history_entry(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path((room_id, entry_id)): Path<(String, String)>,
+) -> AppResult<Json<DeletePlaybackHistoryEntryResponse>> {
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Media,
+        EndpointRateLimitScope::RoomPlayback,
+        move |client_api, authenticated| async move {
+            client_api
+                .delete_playback_history_entry(
+                    &authenticated.user_id(),
+                    &room_id,
+                    DeletePlaybackHistoryEntryRequest { entry_id },
+                )
+                .await
+        },
+    )
+    .await?;
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        delete,
+        path = "/api/rooms/{roomId}/playback/history",
+        tag = "Room",
+        params(("roomId" = String, Path, description = "Room ID")),
+        responses((status = 200, description = "Playback history clear result", body = ClearPlaybackHistoryResponse)),
+        security(("bearer_auth" = []))
+    )
+)]
+pub async fn clear_playback_history(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<synctv_proto::client::RoomPathRequest>,
+) -> AppResult<Json<ClearPlaybackHistoryResponse>> {
+    let room_id = path.room_id;
+    let response = execute_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Media,
+        EndpointRateLimitScope::RoomPlayback,
+        move |client_api, authenticated| async move {
+            client_api
+                .clear_playback_history(
+                    &authenticated.user_id(),
+                    &room_id,
+                    ClearPlaybackHistoryRequest {},
                 )
                 .await
         },

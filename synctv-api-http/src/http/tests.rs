@@ -1800,6 +1800,8 @@ async fn test_playback_navigation_routes_are_reachable_via_project_router() -> T
         ("POST", "/api/rooms/room_123/playback/previous", "{}"),
         ("GET", "/api/rooms/room_123/playback/history", ""),
         ("POST", "/api/rooms/room_123/playback/history/ph_1/play", ""),
+        ("DELETE", "/api/rooms/room_123/playback/history/ph_1", ""),
+        ("DELETE", "/api/rooms/room_123/playback/history", ""),
     ] {
         let app = register_all_routes().with_state(test_app_state());
         let request = test_request(

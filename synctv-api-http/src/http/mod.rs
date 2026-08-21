@@ -539,6 +539,10 @@ fn register_write_routes() -> Router<AppState> {
             post(room::play_history_entry),
         )
         .route(
+            "/api/rooms/{roomId}/playback/history/{entryId}",
+            axum::routing::delete(room::delete_playback_history_entry),
+        )
+        .route(
             "/api/rooms/{roomId}/playback",
             axum::routing::patch(room::update_playback_state),
         )
@@ -670,7 +674,7 @@ fn register_read_routes() -> Router<AppState> {
         .route("/api/rooms/{roomId}/playback", get(room::get_playback))
         .route(
             "/api/rooms/{roomId}/playback/history",
-            get(room::list_playback_history),
+            get(room::list_playback_history).delete(room::clear_playback_history),
         )
         .route(
             "/api/rooms/{roomId}/watch/playback-state",

@@ -348,6 +348,8 @@ pub struct GoogleRpcStatusSchema {
         room::play_previous,
         room::list_playback_history,
         room::play_history_entry,
+        room::delete_playback_history_entry,
+        room::clear_playback_history,
         room::stop_playback,
         room::update_playback_state,
         room::start_room_password_login,
@@ -2257,6 +2259,15 @@ mod tests {
             "streamPreference",
             "query",
         )?;
+        for name in ["beforeEntryId", "cursorEntryId", "limit", "sortDirection"] {
+            assert_parameter_location(
+                &doc,
+                "/api/rooms/{roomId}/playback/history",
+                "get",
+                name,
+                "query",
+            )?;
+        }
         Ok(())
     }
 

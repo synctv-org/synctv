@@ -3414,23 +3414,37 @@ impl ResourceObserver {
                 (snapshot.version.clone(), None, payload)
             }
             ObservedResource::PlaybackHistory { request } => {
-                let before_entry_id = request
-                    .before_entry_id
+                let cursor_entry_id = request
+                    .cursor_entry_id
                     .as_deref()
+                    .or(request.before_entry_id.as_deref())
                     .map(|id| self.public_id_codec.decode_playback_history_entry_id(id))
                     .transpose()
-                    .map_err(|_| "Invalid playback history before_entry_id".to_string())?;
+                    .map_err(|_| "Invalid playback history cursor_entry_id".to_string())?;
+                let sort_direction =
+                    match synctv_proto::client::SortDirection::try_from(request.sort_direction)
+                        .unwrap_or_default()
+                    {
+                        synctv_proto::client::SortDirection::Asc => {
+                            synctv_core::models::SortDirection::Asc
+                        }
+                        synctv_proto::client::SortDirection::Unspecified
+                        | synctv_proto::client::SortDirection::Desc => {
+                            synctv_core::models::SortDirection::Desc
+                        }
+                    };
                 let page = self
                     .room_service
                     .playback_service()
                     .list_playback_history(
                         &self.room_id,
-                        before_entry_id,
+                        cursor_entry_id,
                         if request.limit == 0 {
                             50
                         } else {
                             request.limit
                         },
+                        sort_direction,
                     )
                     .await
                     .map_err(|error| error.to_string())?;

@@ -71,13 +71,15 @@ pub(crate) use objects::{
 };
 #[cfg(feature = "openapi")]
 pub(crate) use playback::{
-    __path_get_playback, __path_list_playback_history, __path_play_history_entry, __path_play_next,
+    __path_clear_playback_history, __path_delete_playback_history_entry, __path_get_playback,
+    __path_list_playback_history, __path_play_history_entry, __path_play_next,
     __path_play_previous, __path_start_playback, __path_stop_playback,
     __path_update_playback_state,
 };
 pub(crate) use playback::{
-    get_playback, list_playback_history, play_history_entry, play_next, play_previous,
-    start_playback, stop_playback, update_playback_state, watch_playback, watch_playback_state,
+    clear_playback_history, delete_playback_history_entry, get_playback, list_playback_history,
+    play_history_entry, play_next, play_previous, start_playback, stop_playback,
+    update_playback_state, watch_playback, watch_playback_state,
 };
 #[cfg(feature = "openapi")]
 pub(crate) use playlists::{

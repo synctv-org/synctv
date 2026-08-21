@@ -12,7 +12,7 @@ import { Aside, Steps } from '@astrojs/starlight/components';
 
 SyncTV separates security into several boundaries:
 
-- **User authentication**: password, OPAQUE, WebAuthn/passkey, email codes, and OAuth2.
+- **User authentication**: password, OPAQUE, WebAuthn/passkey, TOTP, recovery codes, email codes, and OAuth2.
 - **User 2FA**: optional per user and requires at least two local authentication methods.
 - **Access tokens**: issued after login completion for HTTP/gRPC business APIs.
 - **Management control plane**: the CLI management endpoint, separate from user tokens.
@@ -32,6 +32,8 @@ SyncTV separates security into several boundaries:
 | --- | --- | --- | --- |
 | Password/OPAQUE | Yes | Available only when the server returns `MFA_METHOD_PASSWORD` | OPAQUE login is not the same as the password MFA verifier |
 | WebAuthn/passkey | Yes | Yes | Requires WebAuthn configuration and a bound credential |
+| TOTP authenticator | No | Yes | Uses SHA-1, six-digit codes, and a 30-second period; the server requires `security.totp_encryption_key` |
+| TOTP recovery code | No | Yes | Each code works once; recovery codes belong to the TOTP factor and do not count as a separate local method |
 | Email code | Yes | Yes | Requires SMTP and email-code delivery |
 | OAuth2 | Yes | No | OAuth2 does not participate in local 2FA, but 2FA-enabled users may log in with OAuth2 |
 
@@ -61,11 +63,23 @@ Client flow:
 1. Complete the first-factor login request.
 2. If MFA is required, read the remaining available methods.
 3. If email is available, call the email-code send API immediately.
-4. Complete MFA with the session ID and second-factor proof.
-5. Store the final access and refresh tokens.
+4. If `MFA_METHOD_TOTP` is available, call `VerifyMfaTotp`.
+5. If `MFA_METHOD_RECOVERY_CODE` is available, call `VerifyMfaRecoveryCode`.
+6. Complete MFA with the session ID and second-factor proof.
+7. Store the final access and refresh tokens.
 </Steps>
 
-Failed MFA password attempts are recorded by brute-force protection and cannot bypass the normal password failure counters.
+Failed password, TOTP, and recovery-code verification attempts enter their matching brute-force controls. TOTP and recovery codes share a per-user failure counter and include the client IP in enforcement.
+
+## TOTP and Recovery Codes
+
+The server generates a random 20-byte TOTP secret and returns it in an `otpauth://` URI. The client renders a QR code from that URI and can show the response secret for manual entry. Setup expires after 10 minutes. The user must submit a valid TOTP code before the server confirms the credential and returns recovery codes.
+
+The server encrypts the TOTP secret with `security.totp_encryption_key` and binds the ciphertext context to the user ID. Verification accepts the current 30-second time step and its adjacent steps. The server records the latest accepted step, so a code cannot be reused across login and sensitive-operation verification. Production hosts should run NTP or chrony to keep clock drift within the verification window.
+
+Setup returns 10 recovery codes. The server stores their hashes and discards the plaintext; the client should require the user to save the codes. Regeneration invalidates all previous codes, and successful verification removes the submitted code.
+
+Starting setup, regenerating recovery codes, and deleting TOTP require sensitive-operation verification. Removing TOTP reduces the local-method count. The user must disable 2FA first if removal would leave fewer than two local methods. Each sensitive-operation verification ID works once.
 
 ## User Preferences and Security Settings
 
@@ -74,7 +88,8 @@ User preferences store user-level settings. `two_factor_enabled` is security-sen
 Constraints:
 
 - Enabling 2FA requires at least two usable local methods.
-- Removing a passkey while 2FA is enabled must still leave at least two usable local methods. Other authentication-method removal flows should follow the same product rule.
+- TOTP and its recovery codes count as one local method.
+- Removing a passkey, unbinding email, or deleting TOTP must leave at least two usable local methods while 2FA is enabled.
 - Admin-initiated preference updates must respect role hierarchy. A non-root admin cannot modify root or equally privileged users.
 
 ## Management Control Plane

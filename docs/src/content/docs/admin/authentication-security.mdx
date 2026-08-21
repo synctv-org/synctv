@@ -12,7 +12,7 @@ import { Aside, Steps } from '@astrojs/starlight/components';
 
 SyncTV 把安全边界拆成几层：
 
-- **用户认证**：密码、OPAQUE、WebAuthn/passkey、邮箱验证码和 OAuth2。
+- **用户认证**：密码、OPAQUE、WebAuthn/passkey、TOTP、恢复码、邮箱验证码和 OAuth2。
 - **用户 2FA**：用户可选开启，必须拥有至少两种本地验证方式。
 - **访问 token**：登录完成后签发，用于 HTTP/gRPC 业务 API。
 - **management 控制面**：CLI 使用的管理端点，独立于普通用户 token。
@@ -32,6 +32,8 @@ SyncTV 把安全边界拆成几层：
 | --- | --- | --- | --- |
 | 密码/OPAQUE | 是 | 仅当服务端返回 `MFA_METHOD_PASSWORD` 时可用 | OPAQUE 登录不等同于 password MFA verifier |
 | WebAuthn/passkey | 是 | 是 | 需要启用 WebAuthn 配置并完成绑定 |
+| TOTP 身份验证器 | 否 | 是 | 使用 SHA-1、6 位验证码和 30 秒周期；服务端必须配置 `security.totp_encryption_key` |
+| TOTP 恢复码 | 否 | 是 | 每个恢复码只能使用一次；恢复码属于 TOTP 因素，不单独计为一种本地验证方式 |
 | 邮箱验证码 | 是 | 是 | 依赖 SMTP 和验证码发送能力 |
 | OAuth2 | 是 | 否 | OAuth2 不参与本地 2FA，但 2FA 用户可以直接用 OAuth2 登录 |
 
@@ -61,11 +63,23 @@ OAuth2 是独立登录信任来源，不作为本地 2FA 的第一步或第二�
 1. 完成第一因素登录请求。
 2. 如果响应要求 MFA，读取可用的剩余验证方式。
 3. 如果剩余方式包含邮箱验证码，直接调用发送验证码接口。
-4. 使用 MFA 会话 ID 和第二因素证明完成登录。
-5. 保存最终 access/refresh token。
+4. 如果剩余方式包含 `MFA_METHOD_TOTP`，调用 `VerifyMfaTotp`。
+5. 如果剩余方式包含 `MFA_METHOD_RECOVERY_CODE`，调用 `VerifyMfaRecoveryCode`。
+6. 使用 MFA 会话 ID 和第二因素证明完成登录。
+7. 保存最终 access/refresh token。
 </Steps>
 
-失败的 MFA password 尝试会记录到暴力破解保护中，不能绕过普通密码登录的失败计数和锁定策略。
+失败的 password、TOTP 和恢复码验证会进入对应的暴力破解保护。TOTP 和恢复码共享用户级失败计数，并结合客户端 IP 执行限制。
+
+## TOTP 与恢复码
+
+服务端生成 20 字节随机 TOTP secret，并通过 `otpauth://` URI 返回给客户端。客户端使用该 URI 生成二维码，也可以显示响应中的 secret 供用户手动输入。绑定流程有 10 分钟期限；用户必须提交一个有效 TOTP 验证码，服务端才会确认凭据并返回恢复码。
+
+服务端用 `security.totp_encryption_key` 加密 TOTP secret，并把用户 ID 放入密文上下文。验证码验证接受当前 30 秒时间步及相邻时间步。服务端记录最近使用的时间步，同一验证码不能在登录和敏感操作之间重复使用。生产主机应启用 NTP 或 chrony，避免时钟偏差超出验证窗口。
+
+绑定完成后，服务端返回 10 个恢复码。服务端保存恢复码哈希并丢弃明文；客户端应要求用户保存这些恢复码。重新生成会使旧恢复码全部失效，成功验证一个恢复码后，服务端会删除该恢复码。
+
+开始绑定、重新生成恢复码和删除 TOTP 都需要一次有效的敏感操作验证。删除 TOTP 会减少一种本地验证方式；如果删除后无法保留两种本地验证方式，用户必须先关闭 2FA。每个敏感操作验证 ID 只能使用一次。
 
 ## 用户偏好与安全设置
 
@@ -74,7 +88,8 @@ OAuth2 是独立登录信任来源，不作为本地 2FA 的第一步或第二�
 约束：
 
 - 开启 2FA 前必须有至少两种可用本地验证方式。
-- 删除 passkey 时，如果 2FA 已开启，删除后仍必须保留至少两种可用本地方式。其他认证方式的删除入口应按同一产品规则实现。
+- TOTP 与它的恢复码共同计为一种本地验证方式。
+- 删除 passkey、解绑邮箱或删除 TOTP 时，如果 2FA 已开启，操作后仍必须保留至少两种可用本地方式。
 - 管理员修改用户偏好时必须遵守角色层级，普通 admin 不能越权修改 root 或同级高权限用户。
 
 ## 管理控制面

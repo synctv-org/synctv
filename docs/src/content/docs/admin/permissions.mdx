@@ -171,7 +171,7 @@ Provider instance 绑定不是用户偏好；用户通过某个 instance 登录 
 
 2FA 约束：
 
-- 开启 2FA 必须有至少两种本地验证方式：password、webauthn/passkey、verified email。
+- 开启 2FA 必须有至少两种本地验证方式：password、webauthn/passkey、TOTP、verified email。TOTP 恢复码属于 TOTP 因素，不单独增加方式数量。
 - OAuth2 不计入本地 2FA 因素，但 2FA 用户可以使用 OAuth2 登录。
 - 删除验证方式时，如果用户开启了 2FA，删除后仍必须保留至少两种可用本地方式。
 

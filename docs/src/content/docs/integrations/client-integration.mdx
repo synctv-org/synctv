@@ -198,14 +198,65 @@ Authorization: Bearer <access_token_or_guest_token>
 4. 如果 `required=true`，保存短期 `mfa.session_id`，展示 `available_methods`。
 5. 如果可用方式包含 `MFA_METHOD_EMAIL`，客户端可以直接调用 `RequestMfaEmailCode` 发送第二步验证码。
 6. 如果可用方式包含 `MFA_METHOD_WEBAUTHN`，先调用 `StartMfaPasskey` 获取 WebAuthn options，再调用 `FinishMfaPasskey`。
-7. 第二因素成功后，最终响应会返回可用 token。
+7. 如果可用方式包含 `MFA_METHOD_TOTP`，调用 `VerifyMfaTotp`，提交 `mfa_session_id` 和 6 位验证码。
+8. 如果可用方式包含 `MFA_METHOD_RECOVERY_CODE`，调用 `VerifyMfaRecoveryCode`。客户端应提示该恢复码成功后会失效。
+9. 第二因素成功后，最终响应会返回可用 token。
 </Steps>
 
-`GetUserPreferences` 会返回 `auth_factors`，用于展示当前用户是否具备 password、webauthn、email 这些本地验证方式。开启 2FA 前必须至少有两种本地验证方式。Password 是通过 OPAQUE 或直接密码登录完成的第一因素；OAuth2 不计入本地 2FA 因素。
+`GetUserPreferences` 会返回 `auth_factors`，用于展示当前用户是否具备 password、webauthn、TOTP、verified email 这些本地验证方式。`totp_recovery_codes_remaining` 表示剩余恢复码数量。开启 2FA 前必须至少有两种本地验证方式；TOTP 和恢复码共同计为一种。Password 是通过 OPAQUE 或直接密码登录完成的第一因素；OAuth2 不计入本地 2FA 因素。
 
 <Aside type="note">
-OPAQUE 是本地密码登录协议。当 password 第一因素触发 MFA 时，客户端应使用服务端返回的非 password 方法完成挑战，例如 email 或 WebAuthn。
+OPAQUE 是本地密码登录协议。当 password 第一因素触发 MFA 时，客户端应使用服务端返回的非 password 方法完成挑战，例如 email、WebAuthn 或 TOTP。
 </Aside>
+
+## TOTP 与恢复码
+
+TOTP 使用 SHA-1、6 位验证码和 30 秒周期。服务端返回完整 `otpauth_uri`；客户端直接使用该 URI 生成二维码，不要自行拼接 issuer、账号名或算法参数。
+
+绑定流程：
+
+<Steps>
+1. 调用 `StartSensitiveOperationVerification`，按返回的 `available_methods` 完成验证，取得一次性的 `verification_id`。
+2. 调用 `StartTotpSetup`。响应包含 `setup_id`、`secret`、`otpauth_uri` 和 `expires_at`。
+3. 用 `otpauth_uri` 生成二维码，同时提供 `secret` 作为手动输入方式。
+4. 用户输入身份验证器生成的验证码后，调用 `FinishTotpSetup`。绑定必须在 `expires_at` 前完成。
+5. 展示返回的 10 个 `recovery_codes`，要求用户保存并确认。服务端不会再次返回同一批明文恢复码。
+6. 用户要启用 2FA 时，获取新的 `verification_id`，再调用 `SetTwoFactorEnabled`。绑定 TOTP 和启用 2FA 是两个独立的敏感操作。
+</Steps>
+
+HTTP 和 gRPC 接口对应关系：
+
+| 操作 | HTTP | gRPC |
+| --- | --- | --- |
+| 开始敏感操作验证 | `POST /api/user/sensitive-verification/start` | `StartSensitiveOperationVerification` |
+| 完成一种敏感操作验证方式 | `POST /api/user/sensitive-verification/finish` | `FinishSensitiveOperationVerification` |
+| 开始绑定 | `POST /api/user/totp/setup/start` | `StartTotpSetup` |
+| 确认绑定 | `POST /api/user/totp/setup/finish` | `FinishTotpSetup` |
+| 开启或关闭 2FA | `PUT /api/user/two-factor` | `SetTwoFactorEnabled` |
+| TOTP 完成 MFA | `POST /api/auth/mfa/totp/verify` | `VerifyMfaTotp` |
+| 恢复码完成 MFA | `POST /api/auth/mfa/recovery-code/verify` | `VerifyMfaRecoveryCode` |
+| 重新生成恢复码 | `POST /api/user/totp/recovery-codes/regenerate` | `RegenerateTotpRecoveryCodes` |
+| 删除 TOTP | `DELETE /api/user/totp` | `DeleteTotp` |
+
+HTTP 登录验证示例：
+
+```bash
+curl -sS http://localhost:8080/api/auth/mfa/totp/verify \
+  -H 'Content-Type: application/json' \
+  -d '{"mfaSessionId":"<mfa-session-id>","code":"123456"}'
+```
+
+恢复码请求使用同一个 MFA 会话：
+
+```bash
+curl -sS http://localhost:8080/api/auth/mfa/recovery-code/verify \
+  -H 'Content-Type: application/json' \
+  -d '{"mfaSessionId":"<mfa-session-id>","recoveryCode":"ABCD-EFGH-JKLM"}'
+```
+
+重新生成恢复码会立即废止旧恢复码。删除 TOTP 前也要完成新的敏感操作验证。如果删除后只剩一种本地验证方式，先用一个 `verification_id` 关闭 2FA，再用另一个 `verification_id` 删除 TOTP。
+
+服务端会拒绝已经使用过的 30 秒时间步。同一个验证码先用于登录后，用户需要等待身份验证器生成下一组验证码，才能执行需要 TOTP 的敏感操作。
 
 ## 邮箱验证码
 

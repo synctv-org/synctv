@@ -41,7 +41,8 @@ description: 当前版本在部署、媒体、集群、认证和 API 稳定性�
 
 | 主题 | 当前边界 |
 | --- | --- |
-| 2FA | 本地 2FA 依赖 password、passkey、verified email；OAuth2 不作为本地因素 |
+| 2FA | 本地因素包括 password、passkey、TOTP 和 verified email；TOTP 恢复码不单独计为一种因素；OAuth2 不参与本地 2FA，并可直接完成 OAuth2 登录路径 |
+| TOTP | 固定使用 SHA-1、6 位验证码和 30 秒周期；客户端负责用服务端返回的 `otpauth_uri` 生成二维码；轮换 `security.totp_encryption_key` 需要迁移密文或让用户重新绑定 |
 | JWT 吊销 | 强吊销依赖 Redis token blacklist 和 token 有效期 |
 | OPAQUE secret | 与密码记录长期相关，不适合常规轮换 |
 | Provider 凭据加密 | 依赖 credential encryption key；key 丢失会影响解密 |

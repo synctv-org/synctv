@@ -21,7 +21,7 @@ import { Aside } from '@astrojs/starlight/components';
 | --- | --- | --- |
 | User identifiers | Username, user ID, role, creation time | Can be linked to user activity |
 | Email | User email, email identity, notification recipient | PII; only return to the user themselves or administrators |
-| Authentication data | Password credential, OPAQUE credential, WebAuthn credential, OAuth2 identity, email token, refresh token or blacklist | Highly sensitive; should not enter logs |
+| Authentication data | Password/OPAQUE credential, WebAuthn credential, encrypted TOTP secret, recovery-code hashes, OAuth2 identity, email token, refresh token or blacklist | Highly sensitive; should not enter logs |
 | Provider credentials | Alist token, Emby API key, Bilibili cookie, remote provider JWT secret | Highly sensitive; protected by `security.credential_encryption_key` |
 | Room data | Room name, members, permissions, playlists, media, playback state, invitation notifications, review records | Business data |
 | Message data | Chat and notification content | May contain user input and sensitive context |

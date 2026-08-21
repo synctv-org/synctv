@@ -171,7 +171,7 @@ Provider instance bindings are not user preferences. They are stored on provider
 
 2FA constraints:
 
-- Enabling 2FA requires at least two local methods: password, WebAuthn/passkey, verified email.
+- Enabling 2FA requires at least two local methods: password, WebAuthn/passkey, TOTP, or verified email. TOTP recovery codes belong to the TOTP factor and do not increase the method count.
 - OAuth2 is not counted as a local 2FA factor, but 2FA-enabled users may log in with OAuth2.
 - Removing an authentication method while 2FA is enabled must still leave at least two usable local methods.
 

@@ -21,7 +21,7 @@ import { Aside } from '@astrojs/starlight/components';
 | --- | --- | --- |
 | 用户标识 | 用户名、用户 ID、角色、创建时间 | 可关联用户行为 |
 | 邮箱 | 用户邮箱、邮箱验证身份、通知收件地址 | PII，只应返回给本人或管理员 |
-| 认证数据 | password credential、OPAQUE credential、WebAuthn credential、OAuth2 identity、email token、refresh token/blacklist | 高敏感，不应进入日志 |
+| 认证数据 | password/OPAQUE credential、WebAuthn credential、加密 TOTP secret、恢复码哈希、OAuth2 identity、email token、refresh token/blacklist | 高敏感，不应进入日志 |
 | Provider 凭据 | Alist token、Emby API key、Bilibili cookie、远程 Provider JWT secret | 高敏感，依赖 `security.credential_encryption_key` 保护 |
 | 房间数据 | 房间名、成员、权限、播放列表、媒体、播放状态、邀请通知和审核记录 | 业务数据 |
 | 消息数据 | 聊天、通知内容 | 可能包含用户输入和敏感上下文 |

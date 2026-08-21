@@ -44,7 +44,7 @@ PostgreSQL is durable business state. Redis is shared short-lived state and coor
 ## Major Components
 
 - **API and realtime**: HTTP REST, public gRPC, WebSocket, and room realtime events share the same business services and permission model.
-- **Authentication**: Password, OPAQUE, passkey/WebAuthn, email codes, OAuth2, user-level 2FA, and JWT tokens make up the login layer.
+- **Authentication**: Password, OPAQUE, passkey/WebAuthn, TOTP and recovery codes, email codes, OAuth2, user-level 2FA, and JWT tokens make up the login layer.
 - **Media**: Providers resolve external media, the proxy performs controlled forwarding, and slice cache stores Range slices only.
 - **Horizontal scaling**: Multi-node deployments use Redis, discovery, leader election, and transactional outbox delivery boundaries.
 

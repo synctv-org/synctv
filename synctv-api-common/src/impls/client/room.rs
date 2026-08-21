@@ -580,11 +580,21 @@ impl ClientApiImpl {
         } else if room.status.is_closed() {
             return Err(ApiError::NotFound("Room not found".to_string()));
         }
-        self.rooms_to_discovery_items(vec![room], viewer_id, DiscoveryReadConsistency::Primary)
+        let creator_blocked = self
+            .user_service
+            .is_blocking(viewer_id, &room.created_by)
+            .await
+            .map_err(ApiError::from)?;
+        let mut item = self
+            .rooms_to_discovery_items(vec![room], viewer_id, DiscoveryReadConsistency::Primary)
             .await?
             .into_iter()
             .next()
-            .ok_or_else(|| ApiError::NotFound("Room not found".to_string()))
+            .ok_or_else(|| ApiError::NotFound("Room not found".to_string()))?;
+        if let Some(room) = item.room.as_mut() {
+            room.creator_blocked = creator_blocked;
+        }
+        Ok(item)
     }
 
     pub async fn get_public_room_discovery(
@@ -3207,6 +3217,20 @@ mod tests {
         assert_eq!(favorites_before_leave.total, 1);
         assert_eq!(favorites_before_leave.rooms.len(), 1);
         assert!(favorites_before_leave.rooms[0].creator_blocked);
+
+        let discovery = api_ok(
+            api.get_room_discovery(
+                &member.id,
+                synctv_proto::client::GetRoomDiscoveryRequest {
+                    room_id: room_id.clone(),
+                },
+            )
+            .await,
+        )?;
+        assert!(discovery
+            .room
+            .as_ref()
+            .is_some_and(|room| room.creator_blocked));
 
         api_ok(api.leave_room(&member.id, &room_id).await)?;
 

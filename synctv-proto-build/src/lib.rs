@@ -906,6 +906,7 @@ fn build_main_protos(out_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
     builder = add_query_params_attrs(
         builder,
         &[
+            ".synctv.client.ListBlockedUsersRequest",
             ".synctv.client.ListMyRoomsRequest",
             ".synctv.client.ListNotificationsRequest",
             ".synctv.client.GetRoomMembersRequest",

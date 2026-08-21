@@ -3310,6 +3310,26 @@ async fn chat_reactions_update_history_and_emit_reaction_events() {
     assert_eq!(next.total, 2);
     assert_eq!(next.users.len(), 1);
     assert_ne!(page.users[0].user_id, next.users[0].user_id);
+
+    ok(
+        service.user_service.block_user(&member.id, &owner.id).await,
+        "member should block message owner",
+    );
+    let blocked_message_error = service
+        .list_reaction_users(
+            &room.id,
+            message.message.message.id,
+            &member.id,
+            "like",
+            None,
+            10,
+        )
+        .await
+        .expect_err("blocked message reaction users should be hidden");
+    assert!(matches!(
+        blocked_message_error,
+        crate::Error::NotFound(ref message) if message == "Message not found"
+    ));
 }
 
 #[tokio::test]

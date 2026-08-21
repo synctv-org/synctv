@@ -967,18 +967,15 @@ impl ChatRepository {
         &self,
         room_id: &RoomId,
         message_id: i64,
+        viewer_user_id: &UserId,
         reaction_key: &str,
         cursor: Option<ChatReactionUsersCursor>,
         limit: i32,
     ) -> Result<ChatReactionUsersPage> {
         let limit = limit.clamp(1, 100);
         let message = self
-            .get_by_room_and_id(room_id, message_id)
-            .await?
-            .ok_or_else(|| Error::NotFound("Message not found".to_string()))?;
-        if message.status == ChatMessageStatus::Deleted {
-            return Err(Error::Conflict("Message has been deleted".to_string()));
-        }
+            .reaction_message_for_viewer(room_id, message_id, viewer_user_id)
+            .await?;
 
         let pool = self.eventually_consistent_pool();
         let total = sqlx::query_scalar!(
@@ -1049,6 +1046,41 @@ impl ChatRepository {
             next_cursor,
             total,
         })
+    }
+
+    pub async fn ensure_reaction_message_visible_to_viewer(
+        &self,
+        room_id: &RoomId,
+        message_id: i64,
+        viewer_user_id: &UserId,
+    ) -> Result<()> {
+        self.reaction_message_for_viewer(room_id, message_id, viewer_user_id)
+            .await
+            .map(drop)
+    }
+
+    async fn reaction_message_for_viewer(
+        &self,
+        room_id: &RoomId,
+        message_id: i64,
+        viewer_user_id: &UserId,
+    ) -> Result<ChatMessage> {
+        let message = self
+            .get_by_room_and_id(room_id, message_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("Message not found".to_string()))?;
+        if let Some(message_user_id) = message.user_id.as_ref() {
+            if self
+                .is_user_blocked_by(viewer_user_id, message_user_id)
+                .await?
+            {
+                return Err(Error::NotFound("Message not found".to_string()));
+            }
+        }
+        if message.status == ChatMessageStatus::Deleted {
+            return Err(Error::Conflict("Message has been deleted".to_string()));
+        }
+        Ok(message)
     }
 
     pub async fn get_event_by_id(

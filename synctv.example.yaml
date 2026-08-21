@@ -775,13 +775,14 @@ webauthn:
 #
 # WebRTC supports 2 operation modes:
 #   - signaling_only: Pure signaling relay without ICE bootstrap
-#   - peer_to_peer:   P2P with built-in STUN plus optional external ICE servers
+#   - peer_to_peer:   P2P with public ICE servers and optional built-in STUN
 
 webrtc:
   mode: "peer_to_peer"
 
   # --- Built-in STUN Server ---
-  enable_builtin_stun: true
+  # Disabled by default. Enable only when this deployment should host STUN.
+  enable_builtin_stun: false
   stun_port: 3478
   stun_host: "0.0.0.0"
   # External address for STUN reflexive candidates. In K8s/NAT, set this to
@@ -801,7 +802,7 @@ webrtc:
   # --- External ICE Servers ---
   # Configured dynamically via the settings API (no restart required):
   #   "webrtc.external_ice_servers" - JSON array of ICE server objects, e.g.:
-  #       [{"urls":["stun:stun.example.com:3478"]},{"urls":["turn:turn.example.com:3478"],"username":"user","credential":"pass"}]
+  #       [{"urls":["stun:stun.cloudflare.com:3478"]},{"urls":["stun:stun.l.google.com:19302"]}]
 
   # ============================================================================
   # Dynamic ICE Servers Configuration
@@ -811,7 +812,8 @@ webrtc:
   #
   # Setting key: "webrtc.external_ice_servers"
   # Value: JSON array of ICE server objects
-  #   Default: [] (the built-in STUN server is used)
+  # Default: Cloudflare and Google public STUN servers shown above.
+  # Set [] to disable all external ICE servers.
   #
   # Changes take effect immediately without restarting the server.
 

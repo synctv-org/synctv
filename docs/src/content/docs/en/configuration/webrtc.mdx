@@ -33,11 +33,11 @@ webrtc:
 
 ## Built-In STUN
 
-`webrtc.enable_builtin_stun` default: `true`.
+`webrtc.enable_builtin_stun` default: `false`.
 
 STUN helps clients discover their public mapped address for NAT traversal.
 
-Disable it when:
+Enable the built-in server only when this SyncTV deployment should provide STUN and clients can reach its UDP port. Keep it disabled when:
 
 - You use external STUN/TURN infrastructure.
 - The deployment cannot expose UDP.
@@ -92,11 +92,19 @@ External ICE servers are managed through runtime settings, not static YAML:
 webrtc.external_ice_servers
 ```
 
-Value format:
+The default uses public STUN services from Cloudflare and Google:
 
 ```json
 [
-  { "urls": ["stun:stun.l.google.com:19302"] },
+  { "urls": ["stun:stun.cloudflare.com:3478"] },
+  { "urls": ["stun:stun.l.google.com:19302"] }
+]
+```
+
+Set this runtime setting to replace the defaults. Use `[]` to disable all external ICE servers. TURN servers use the same value format:
+
+```json
+[
   {
     "urls": ["turn:turn.example.com:3478"],
     "username": "user",

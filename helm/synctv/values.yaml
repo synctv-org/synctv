@@ -565,7 +565,7 @@ config:
   webrtc:
     ## Allowed values: signaling_only, peer_to_peer
     mode: "peer_to_peer"
-    enableBuiltinStun: true
+    enableBuiltinStun: false
     stunPort: 3478
     stunHost: "0.0.0.0"
     ## Public client-reachable STUN address, e.g. "stun.example.com:3478"

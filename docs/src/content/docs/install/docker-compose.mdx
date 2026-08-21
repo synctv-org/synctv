@@ -79,7 +79,7 @@ HTTP API 使用 `http://localhost:8080`。首次启动数据库为空时，root 
 
 Docker Compose 通过 `env_file` 分别加载必需的 `.env.postgres`、`.env.redis` 和 `.env.synctv`：PostgreSQL 读取数据库变量，Redis 读取 `REDIS_PASSWORD`，SyncTV 读取 `SYNCTV_*` 应用配置。Compose 文件另外固定将 `SYNCTV_DATA_DIR` 设置为 `/data`，让运行数据写入命名卷。重启、换 shell、服务器重启或升级时都应复用同一组环境文件。缺少任一文件时，`docker compose config` 会直接失败。
 
-生产 Compose 文件固定使用 `latest` 镜像以及 HTTP 8080、RTMP 1935、STUN 3478/udp 宿主机端口。容器内的健康端口 `8081`、metrics 端口 `9090` 不会被默认 Compose 文件映射到宿主机。
+生产 Compose 文件固定使用 `latest` 镜像以及 HTTP 8080、RTMP 1935 宿主机端口。内置 STUN 默认关闭。容器内的健康端口 `8081`、metrics 端口 `9090` 不会被默认 Compose 文件映射到宿主机。
 
 ## 数据卷
 
@@ -106,9 +106,10 @@ environment:
 | --- | --- | --- |
 | `8080` | `8080` | HTTP REST + public gRPC |
 | `1935` | `1935` | RTMP |
-| `3478/udp` | `3478/udp` | STUN |
 | 无宿主机映射 | `8081` | liveness/readiness，供容器 healthcheck 使用 |
 | 无宿主机映射 | `9090` | Prometheus metrics，供容器网络内的 Prometheus 抓取 |
+
+需要自行提供内置 STUN 时，在 `.env.synctv` 中设置 `SYNCTV_WEBRTC_ENABLE_BUILTIN_STUN=true` 和客户端可达的 `SYNCTV_WEBRTC_STUN_EXTERNAL_ADDR`，并在 SyncTV 服务的 `ports` 列表中添加 `3478:3478/udp`。
 
 宿主机端口冲突时，修改 Compose 文件中的宿主机端口映射并重新执行 `docker compose config`。
 

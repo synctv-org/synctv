@@ -42,7 +42,7 @@ webrtc:
 
 STUN 帮助客户端发现自己的公网映射地址，是 NAT 穿透的一部分。
 
-关闭场景：
+仅当此 SyncTV 部署需要提供 STUN，且客户端能够访问其 UDP 端口时开启。以下场景保持关闭：
 
 - 你使用外部 STUN/TURN。
 - 当前部署环境不能暴露 UDP 端口。
@@ -52,9 +52,9 @@ STUN 帮助客户端发现自己的公网映射地址，是 NAT 穿透的一部�
 
 默认值：`3478`。
 
-这是 STUN 常用端口。
+这是 STUN 常用端口，仅在启用内置 STUN 时监听。
 
-Kubernetes 或云服务器上要确保 UDP 3478 能被客户端访问。
+启用内置 STUN 后，Kubernetes 或云服务器上要确保 UDP 3478 能被客户端访问。
 
 ## `webrtc.stun_host`
 
@@ -103,11 +103,19 @@ webrtc:
 webrtc.external_ice_servers
 ```
 
-值是 ICE server 对象数组，例如：
+默认使用 Cloudflare 和 Google 的公开 STUN 服务：
 
 ```json
 [
-  { "urls": ["stun:stun.l.google.com:19302"] },
+  { "urls": ["stun:stun.cloudflare.com:3478"] },
+  { "urls": ["stun:stun.l.google.com:19302"] }
+]
+```
+
+修改此运行时设置会替换默认列表，设置为 `[]` 可禁用全部外部 ICE server。TURN server 使用相同的数据格式：
+
+```json
+[
   {
     "urls": ["turn:turn.example.com:3478"],
     "username": "user",
@@ -139,7 +147,7 @@ webrtc.external_ice_servers
 如果 WebRTC 连接失败，按顺序检查：
 
 1. 客户端是否能访问 SyncTV HTTP/gRPC API。
-2. UDP 3478 是否开放。
+2. 启用内置 STUN 时，UDP 3478 是否开放。
 3. `stun_external_addr` 是否是客户端可达地址。
    这个地址不能是 Pod IP、ClusterIP、回环地址或私网地址，除非你完全使用外部 ICE/TURN 并关闭内置 STUN。
 4. 反向代理是否只代理了 HTTP，而没有开放 UDP。

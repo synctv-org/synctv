@@ -79,7 +79,7 @@ The HTTP API is available at `http://localhost:8080`. On the first startup with 
 
 Docker Compose loads the required `.env.postgres`, `.env.redis`, and `.env.synctv` files through `env_file`: PostgreSQL reads database variables, Redis reads `REDIS_PASSWORD`, and SyncTV reads `SYNCTV_*` application settings. The Compose file also fixes `SYNCTV_DATA_DIR` to `/data` so runtime data stays on the named volume. Reuse the same files across restarts, new shells, host reboots, and upgrades. A missing file causes `docker compose config` to fail immediately.
 
-The production Compose file uses the `latest` image and fixed host ports for HTTP 8080, RTMP 1935, and STUN 3478/udp. Container-only health port `8081` and metrics port `9090` are not published by the default Compose file.
+The production Compose file uses the `latest` image and fixed host ports for HTTP 8080 and RTMP 1935. The built-in STUN server is disabled by default. Container-only health port `8081` and metrics port `9090` are not published by the default Compose file.
 
 ## Volumes
 
@@ -106,9 +106,10 @@ Host mappings and container listeners are managed separately:
 | --- | --- | --- |
 | `8080` | `8080` | HTTP REST + public gRPC |
 | `1935` | `1935` | RTMP |
-| `3478/udp` | `3478/udp` | STUN |
 | No host mapping | `8081` | liveness/readiness for the container healthcheck |
 | No host mapping | `9090` | Prometheus metrics for a collector on the container network |
+
+To host the built-in STUN server, set `SYNCTV_WEBRTC_ENABLE_BUILTIN_STUN=true`, configure a client-reachable `SYNCTV_WEBRTC_STUN_EXTERNAL_ADDR`, and add `3478:3478/udp` to the SyncTV service's `ports` list.
 
 When a host port is already in use, change the host mapping in the Compose file and run `docker compose config` again.
 

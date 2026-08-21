@@ -1316,7 +1316,7 @@ impl Default for WebRTCConfig {
     fn default() -> Self {
         Self {
             mode: WebRTCMode::PeerToPeer,
-            enable_builtin_stun: true,
+            enable_builtin_stun: false,
             stun_port: 3478,
             stun_host: "0.0.0.0".to_string(),
             stun_external_addr: String::new(),
@@ -1789,5 +1789,15 @@ impl Default for AppConfig {
             messaging_rate_limits: MessagingRateLimitConfig::default(),
             request_rate_limits: RequestRateLimitConfig::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WebRTCConfig;
+
+    #[test]
+    fn default_webrtc_config_disables_builtin_stun() {
+        assert!(!WebRTCConfig::default().enable_builtin_stun);
     }
 }

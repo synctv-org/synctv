@@ -775,6 +775,14 @@ fn register_playlist_cover_object_routes() -> Router<AppState> {
 fn register_extracted_user_routes() -> Router<AppState> {
     Router::new()
         .route("/api/user", get(user::get_me))
+        .route(
+            "/api/user/blocks",
+            get(user::list_blocked_users).post(user::block_user),
+        )
+        .route(
+            "/api/user/blocks/{userId}",
+            axum::routing::delete(user::unblock_user),
+        )
         .route("/api/user/rooms/discover", get(user::discover_rooms))
         .route(
             "/api/user/rooms/{roomId}/discovery",

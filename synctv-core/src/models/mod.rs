@@ -275,7 +275,8 @@ pub use source_config::{
     YoutubePlaylistSourceConfig,
 };
 pub use user::{
-    SignupMethod, User, UserLifecycleMetadata, UserListQuery, UserListSortBy, UserRole, UserStatus,
+    BlockedUser, SignupMethod, User, UserLifecycleMetadata, UserListQuery, UserListSortBy,
+    UserRole, UserStatus,
 };
 pub use user_preferences::{
     UserAuthFactors, UserNotificationPreferences, UserPreferences, UserPreferencesUpdate,

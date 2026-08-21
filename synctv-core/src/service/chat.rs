@@ -55,6 +55,7 @@ const CHAT_REACTION_DETAIL_CACHE_CAPACITY: u64 = 1024;
 struct ChatReactionDetailCacheKey {
     room_id: RoomId,
     message_id: i64,
+    viewer_user_id: UserId,
     reaction_key: String,
     cursor: Option<ChatReactionUsersCursor>,
     limit: i32,
@@ -1373,17 +1374,28 @@ impl ChatService {
         let key = ChatReactionDetailCacheKey {
             room_id: *room_id,
             message_id,
+            viewer_user_id: *viewer_user_id,
             reaction_key: reaction_key.to_string(),
             cursor,
             limit,
         };
         if let Some(page) = self.reaction_detail_cache.get(&key).await {
+            self.chat_repository
+                .ensure_reaction_message_visible_to_viewer(room_id, message_id, viewer_user_id)
+                .await?;
             return Ok(page);
         }
 
         let page = self
             .chat_repository
-            .list_reaction_users(room_id, message_id, reaction_key, cursor, limit)
+            .list_reaction_users(
+                room_id,
+                message_id,
+                viewer_user_id,
+                reaction_key,
+                cursor,
+                limit,
+            )
             .await?;
         self.reaction_detail_cache.insert(key, page.clone()).await;
         Ok(page)
@@ -1523,6 +1535,20 @@ impl ChatService {
             .await?
             .ok_or_else(|| Error::NotFound("User not found".to_string()))?;
         Ok(username)
+    }
+
+    pub async fn blocked_user_ids(&self, viewer_user_id: &UserId) -> Result<Vec<UserId>> {
+        self.chat_repository.blocked_user_ids(viewer_user_id).await
+    }
+
+    pub async fn blocking_viewer_ids(
+        &self,
+        viewer_user_ids: &[UserId],
+        blocked_user_id: &UserId,
+    ) -> Result<Vec<UserId>> {
+        self.chat_repository
+            .blocking_viewer_ids(viewer_user_ids, blocked_user_id)
+            .await
     }
 
     async fn ensure_reply_target_visible(

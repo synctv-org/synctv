@@ -4,18 +4,19 @@ use tonic::{Request, Response, Status};
 use super::{map_api_error, ClientServiceImpl};
 use synctv_api_common::impls::EndpointRateLimitCategory;
 use synctv_proto::client::{
-    user_service_server::UserService, CloseAccountRequest, CloseAccountResponse,
-    CompleteUserAvatarUploadSessionRequest, CompleteUserAvatarUploadSessionResponse,
-    ConfirmEmailBindRequest, CreateRoomRequest, CreateUserAvatarUploadSessionRequest,
-    CreateUserAvatarUploadSessionResponse, DeletePasskeyRequest, DeletePasskeyResponse,
-    DeleteTotpRequest, DeleteTotpResponse, DiscoverRoomsRequest, DiscoverRoomsResponse,
-    FavoriteRoomRequest, FavoriteRoomResponse, FinishOpaquePasswordUpdateRequest,
-    FinishPasskeyBindRequest, FinishRoomPasswordLoginRequest,
+    user_service_server::UserService, BlockUserRequest, BlockUserResponse, CloseAccountRequest,
+    CloseAccountResponse, CompleteUserAvatarUploadSessionRequest,
+    CompleteUserAvatarUploadSessionResponse, ConfirmEmailBindRequest, CreateRoomRequest,
+    CreateUserAvatarUploadSessionRequest, CreateUserAvatarUploadSessionResponse,
+    DeletePasskeyRequest, DeletePasskeyResponse, DeleteTotpRequest, DeleteTotpResponse,
+    DiscoverRoomsRequest, DiscoverRoomsResponse, FavoriteRoomRequest, FavoriteRoomResponse,
+    FinishOpaquePasswordUpdateRequest, FinishPasskeyBindRequest, FinishRoomPasswordLoginRequest,
     FinishSensitiveOperationVerificationRequest, FinishTotpSetupRequest, GetProfileRequest,
     GetRoomDiscoveryRequest, GetRoomRequest, GetRoomResponse, GetUserAvatarObjectRequest,
     GetUserPreferencesRequest, GetUserPreferencesResponse, JoinRoomRequest, JoinRoomResponse,
-    ListFavoriteRoomsRequest, ListFavoriteRoomsResponse, ListMyRoomsRequest, ListMyRoomsResponse,
-    ListPasskeysRequest, ListPasskeysResponse, LogoutRequest, LogoutResponse, PasskeyCredential,
+    ListBlockedUsersRequest, ListBlockedUsersResponse, ListFavoriteRoomsRequest,
+    ListFavoriteRoomsResponse, ListMyRoomsRequest, ListMyRoomsResponse, ListPasskeysRequest,
+    ListPasskeysResponse, LogoutRequest, LogoutResponse, PasskeyCredential,
     RegenerateTotpRecoveryCodesRequest, RequestSensitiveOperationEmailCodeRequest,
     RequestSensitiveOperationEmailCodeResponse, Room, RoomDiscoveryItem,
     SensitiveOperationVerificationOutcome, SetTwoFactorEnabledRequest, SetUsernameRequest,
@@ -24,9 +25,10 @@ use synctv_proto::client::{
     StartRoomPasswordLoginRequest, StartRoomPasswordLoginResponse,
     StartSensitiveOperationPasskeyRequest, StartSensitiveOperationPasskeyResponse,
     StartSensitiveOperationVerificationRequest, StartTotpSetupRequest, StartTotpSetupResponse,
-    TotpRecoveryCodesResponse, UnbindEmailRequest, UnfavoriteRoomRequest, UnfavoriteRoomResponse,
-    UpdateUserAvatarRequest, UpdateUserPreferencesRequest, UpdateUserPreferencesResponse,
-    UploadUserAvatarObjectRequest, UploadUserAvatarObjectResponse, User, UserAvatarObjectResponse,
+    TotpRecoveryCodesResponse, UnbindEmailRequest, UnblockUserRequest, UnblockUserResponse,
+    UnfavoriteRoomRequest, UnfavoriteRoomResponse, UpdateUserAvatarRequest,
+    UpdateUserPreferencesRequest, UpdateUserPreferencesResponse, UploadUserAvatarObjectRequest,
+    UploadUserAvatarObjectResponse, User, UserAvatarObjectResponse,
 };
 
 type UserAvatarObjectStream = super::GrpcStatusStream<UserAvatarObjectResponse>;
@@ -700,6 +702,71 @@ impl UserService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     client_api.close_account(&authenticated.user_id()).await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn block_user(
+        &self,
+        request: Request<BlockUserRequest>,
+    ) -> Result<Response<BlockUserResponse>, Status> {
+        let metadata = self.request_metadata(&request)?;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Write,
+                move |authenticated| async move {
+                    client_api.block_user(&authenticated.user_id(), req).await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn unblock_user(
+        &self,
+        request: Request<UnblockUserRequest>,
+    ) -> Result<Response<UnblockUserResponse>, Status> {
+        let metadata = self.request_metadata(&request)?;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Write,
+                move |authenticated| async move {
+                    client_api.unblock_user(&authenticated.user_id(), req).await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn list_blocked_users(
+        &self,
+        request: Request<ListBlockedUsersRequest>,
+    ) -> Result<Response<ListBlockedUsersResponse>, Status> {
+        let metadata = self.request_metadata(&request)?;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Read,
+                move |authenticated| async move {
+                    client_api
+                        .list_blocked_users(&authenticated.user_id(), req)
+                        .await
                 },
             )
             .await

@@ -79,6 +79,9 @@ service UserService {
   rpc UpdateUserPreferences(UpdateUserPreferencesRequest) returns (UpdateUserPreferencesResponse);
   rpc SetTwoFactorEnabled(SetTwoFactorEnabledRequest) returns (GetUserPreferencesResponse);
   rpc CloseAccount(CloseAccountRequest) returns (CloseAccountResponse);
+  rpc BlockUser(BlockUserRequest) returns (BlockUserResponse);
+  rpc UnblockUser(UnblockUserRequest) returns (UnblockUserResponse);
+  rpc ListBlockedUsers(ListBlockedUsersRequest) returns (ListBlockedUsersResponse);
 
   // User-initiated room lifecycle operations outside room-scoped context
   rpc CreateRoom(CreateRoomRequest) returns (Room);
@@ -289,6 +292,56 @@ message UserPublicView {
   string avatar_url = 5;
   UserAvatar avatar = 6;
   FileObjectAccess avatar_access = 7;
+}
+
+message BlockedUser {
+  UserPublicView user = 1;
+  int64 blocked_at = 2;
+}
+
+message BlockUserRequest {
+  string user_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^usr_[A-Za-z0-9]+$"
+  }];
+}
+
+message BlockUserResponse {
+  BlockedUser blocked_user = 1;
+}
+
+message UnblockUserRequest {
+  string user_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^usr_[A-Za-z0-9]+$"
+  }];
+}
+
+message UnblockUserResponse {
+  bool success = 1;
+}
+
+message ListBlockedUsersRequest {
+  option (buf.validate.message).cel = {
+    id: "list_blocked_users.page"
+    message: "page must be 0 (use default) or at least 1"
+    expression: "this.page == 0 || this.page >= 1"
+  };
+  option (buf.validate.message).cel = {
+    id: "list_blocked_users.page_size"
+    message: "page_size must be 0 (use default) or between 1 and 100"
+    expression: "this.page_size == 0 || (this.page_size >= 1 && this.page_size <= 100)"
+  };
+  int32 page = 1;
+  int32 page_size = 2;
+  string search = 3 [(buf.validate.field).string = {max_len: 100}];
+}
+
+message ListBlockedUsersResponse {
+  repeated BlockedUser users = 1;
+  int32 total = 2;
 }
 
 enum PlayMode {
@@ -569,6 +622,7 @@ message Room {
   RoomCategory category = 16;
   repeated RoomLabel labels = 17;
   optional bool is_public = 18;
+  bool creator_blocked = 19;
 }
 
 message RoomCategory {

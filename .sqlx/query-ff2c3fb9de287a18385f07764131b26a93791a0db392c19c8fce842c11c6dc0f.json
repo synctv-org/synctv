@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO user_blocks (blocker_user_id, blocked_user_id)\n            VALUES ($1, $2)\n            ON CONFLICT (blocker_user_id, blocked_user_id)\n            DO UPDATE SET blocker_user_id = EXCLUDED.blocker_user_id\n            RETURNING created_at AS \"created_at!\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "created_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "user_blocks",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "ff2c3fb9de287a18385f07764131b26a93791a0db392c19c8fce842c11c6dc0f"
+}

@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT blocked_user_id AS \"blocked_user_id!: UserId\"\n               FROM user_blocks\n               WHERE blocker_user_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "blocked_user_id!: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "user_blocks",
+            "name": "blocked_user_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "ac367a4f3f53aa56fb3283be08d4c8ddd3773180bcf60d7552e8552911d9fc71"
+}

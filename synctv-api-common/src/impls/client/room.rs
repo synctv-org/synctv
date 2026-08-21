@@ -2,7 +2,7 @@
 
 use crate::impls::ApiError;
 use futures::{stream, StreamExt as _, TryStreamExt as _};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use synctv_core::models::{
     ChatMentionInput, ChatMessageEvent, ChatMessageType, ChatMessageWithAttachments, ChatPinEvent,
     ChatPlaybackMessagesQuery, CreateChatAttachmentUploadSession, MarkChatRead, PageParams,
@@ -222,6 +222,7 @@ impl ClientApiImpl {
     async fn room_to_proto_for_favorite_view(
         &self,
         room: &synctv_core::models::Room,
+        creator_blocked: bool,
     ) -> Result<synctv_proto::client::Room, ApiError> {
         let (settings, presence, availability, member_count) = tokio::join!(
             self.room_service.get_room_settings(&room.id),
@@ -233,15 +234,18 @@ impl ClientApiImpl {
         let presence = presence.map_err(ApiError::from)?;
         let availability = availability.map_err(ApiError::from)?;
         let member_count = member_count?;
-        self.room_to_proto_with_availability_presence_and_loaded_cover(
-            room,
-            Some(&settings),
-            member_count,
-            availability,
-            Some(&presence),
-            None,
-        )
-        .await
+        let mut proto_room = self
+            .room_to_proto_with_availability_presence_and_loaded_cover(
+                room,
+                Some(&settings),
+                member_count,
+                availability,
+                Some(&presence),
+                None,
+            )
+            .await?;
+        proto_room.creator_blocked = creator_blocked;
+        Ok(proto_room)
     }
 
     async fn load_room_playback_state_proto(
@@ -576,11 +580,21 @@ impl ClientApiImpl {
         } else if room.status.is_closed() {
             return Err(ApiError::NotFound("Room not found".to_string()));
         }
-        self.rooms_to_discovery_items(vec![room], viewer_id, DiscoveryReadConsistency::Primary)
+        let creator_blocked = self
+            .user_service
+            .is_blocking(viewer_id, &room.created_by)
+            .await
+            .map_err(ApiError::from)?;
+        let mut item = self
+            .rooms_to_discovery_items(vec![room], viewer_id, DiscoveryReadConsistency::Primary)
             .await?
             .into_iter()
             .next()
-            .ok_or_else(|| ApiError::NotFound("Room not found".to_string()))
+            .ok_or_else(|| ApiError::NotFound("Room not found".to_string()))?;
+        if let Some(room) = item.room.as_mut() {
+            room.creator_blocked = creator_blocked;
+        }
+        Ok(item)
     }
 
     pub async fn get_public_room_discovery(
@@ -613,9 +627,17 @@ impl ClientApiImpl {
 
     async fn discover_room_window(
         &self,
+        viewer_id: Option<&UserId>,
         req: synctv_proto::client::DiscoverRoomsRequest,
     ) -> Result<DiscoveryRoomWindow, ApiError> {
-        let query = build_room_discovery_query(req, &self.public_id_codec)?;
+        let mut query = build_room_discovery_query(req, &self.public_id_codec)?;
+        if let Some(viewer_id) = viewer_id {
+            query.excluded_creator_ids = self
+                .user_service
+                .blocked_user_ids_eventually_consistent(viewer_id)
+                .await
+                .map_err(ApiError::from)?;
+        }
         let hot_stats = self
             .presence_service
             .hot_room_stats()
@@ -701,7 +723,7 @@ impl ClientApiImpl {
         viewer_id: &UserId,
         req: synctv_proto::client::DiscoverRoomsRequest,
     ) -> Result<synctv_proto::client::DiscoverRoomsResponse, ApiError> {
-        let window = self.discover_room_window(req).await?;
+        let window = self.discover_room_window(Some(viewer_id), req).await?;
         let (featured_rooms, rooms) = tokio::try_join!(
             self.rooms_to_discovery_items(
                 window.featured_rooms,
@@ -725,7 +747,7 @@ impl ClientApiImpl {
         &self,
         req: synctv_proto::client::DiscoverRoomsRequest,
     ) -> Result<synctv_proto::client::DiscoverRoomsResponse, ApiError> {
-        let window = self.discover_room_window(req).await?;
+        let window = self.discover_room_window(None, req).await?;
         let guest_enabled = self.public_guest_access_enabled()?;
         let (featured_rooms, rooms) = tokio::try_join!(
             self.rooms_to_public_discovery_items(
@@ -764,32 +786,45 @@ impl ClientApiImpl {
             rooms.iter().map(|(room, _, _)| room.id).collect();
         let room_models: Vec<synctv_core::models::Room> =
             rooms.iter().map(|(room, _, _)| room.clone()).collect();
-        let (room_settings_map, presence_stats, availability_map, creator_views, favorite_room_ids) =
-            tokio::try_join!(
-                async {
-                    self.room_service
-                        .get_room_settings_batch_eventually_consistent(&room_ids)
-                        .await
-                        .map_err(ApiError::from)
-                },
-                async {
-                    self.presence_service
-                        .room_stats_batch(&room_ids)
-                        .await
-                        .map_err(ApiError::from)
-                },
-                async {
-                    self.room_service
-                        .room_availability_batch_eventually_consistent(&room_models)
-                        .await
-                        .map_err(ApiError::from)
-                },
-                self.load_room_creator_public_views(
-                    &room_models,
-                    DiscoveryReadConsistency::EventuallyConsistent,
-                ),
-                self.favorite_room_ids_for_viewer_eventually_consistent(Some(uid), &room_ids),
-            )?;
+        let (
+            room_settings_map,
+            presence_stats,
+            availability_map,
+            creator_views,
+            favorite_room_ids,
+            blocked_creator_ids,
+        ) = tokio::try_join!(
+            async {
+                self.room_service
+                    .get_room_settings_batch_eventually_consistent(&room_ids)
+                    .await
+                    .map_err(ApiError::from)
+            },
+            async {
+                self.presence_service
+                    .room_stats_batch(&room_ids)
+                    .await
+                    .map_err(ApiError::from)
+            },
+            async {
+                self.room_service
+                    .room_availability_batch_eventually_consistent(&room_models)
+                    .await
+                    .map_err(ApiError::from)
+            },
+            self.load_room_creator_public_views(
+                &room_models,
+                DiscoveryReadConsistency::EventuallyConsistent,
+            ),
+            self.favorite_room_ids_for_viewer_eventually_consistent(Some(uid), &room_ids),
+            async {
+                self.user_service
+                    .blocked_user_ids_eventually_consistent(&uid)
+                    .await
+                    .map(|ids| ids.into_iter().collect::<HashSet<_>>())
+                    .map_err(ApiError::from)
+            },
+        )?;
         let presence_by_room: HashMap<synctv_core::models::RoomId, _> = presence_stats
             .iter()
             .map(|stats| (stats.room_id, stats))
@@ -809,6 +844,7 @@ impl ClientApiImpl {
                 let presence_by_room = &presence_by_room;
                 let availability_map = &availability_map;
                 let favorite_room_ids = &favorite_room_ids;
+                let blocked_creator_ids = &blocked_creator_ids;
                 async move {
                     let settings = required_room_settings(room_settings_map, &room.id)?;
                     let availability = required_room_availability(availability_map, &room.id)?;
@@ -822,7 +858,7 @@ impl ClientApiImpl {
                     } else {
                         synctv_proto::client::MyRoomRelation::Participating as i32
                     };
-                    let proto_room = self
+                    let mut proto_room = self
                         .room_to_proto_with_availability_presence_and_loaded_cover(
                             &room,
                             Some(settings),
@@ -832,6 +868,7 @@ impl ClientApiImpl {
                             Some(creator),
                         )
                         .await?;
+                    proto_room.creator_blocked = blocked_creator_ids.contains(&room.created_by);
                     Ok::<_, ApiError>(synctv_proto::client::MyRoom {
                         room: Some(proto_room),
                         permissions,
@@ -864,7 +901,14 @@ impl ClientApiImpl {
             .favorite_room(&uid, &room_id)
             .await
             .map_err(ApiError::from)?;
-        let proto_room = self.room_to_proto_for_favorite_view(&room).await?;
+        let creator_blocked = self
+            .user_service
+            .is_blocking(user_id, &room.created_by)
+            .await
+            .map_err(ApiError::from)?;
+        let proto_room = self
+            .room_to_proto_for_favorite_view(&room, creator_blocked)
+            .await?;
         Ok(synctv_proto::client::FavoriteRoomResponse {
             room: Some(proto_room),
         })
@@ -883,7 +927,14 @@ impl ClientApiImpl {
             .unfavorite_room(&uid, &room_id)
             .await
             .map_err(ApiError::from)?;
-        let proto_room = self.room_to_proto_for_favorite_view(&room).await?;
+        let creator_blocked = self
+            .user_service
+            .is_blocking(user_id, &room.created_by)
+            .await
+            .map_err(ApiError::from)?;
+        let proto_room = self
+            .room_to_proto_for_favorite_view(&room, creator_blocked)
+            .await?;
         Ok(synctv_proto::client::UnfavoriteRoomResponse {
             room: Some(proto_room),
         })
@@ -909,11 +960,23 @@ impl ClientApiImpl {
             .list_favorite_rooms(&uid, pagination, search.as_deref())
             .await
             .map_err(ApiError::from)?;
+        let blocked_creator_ids = self
+            .user_service
+            .blocked_user_ids(user_id)
+            .await
+            .map_err(ApiError::from)?
+            .into_iter()
+            .collect::<HashSet<_>>();
         let rooms_ref = &rooms;
+        let blocked_creator_ids = &blocked_creator_ids;
         let response_rooms = stream::iter(0..rooms.len())
             .map(|index| async move {
                 let room = &rooms_ref[index];
-                self.room_to_proto_for_favorite_view(room).await
+                self.room_to_proto_for_favorite_view(
+                    room,
+                    blocked_creator_ids.contains(&room.created_by),
+                )
+                .await
             })
             .buffered(16)
             .try_collect()
@@ -1061,7 +1124,17 @@ impl ClientApiImpl {
                 None => Ok(false),
             }
         };
-        let (playback_state, settings, presence, member_count, favorited) = tokio::try_join!(
+        let creator_blocked = async {
+            match actor.user_id() {
+                Some(user_id) => self
+                    .user_service
+                    .is_blocking(&user_id, &room.created_by)
+                    .await
+                    .map_err(ApiError::from),
+                None => Ok(false),
+            }
+        };
+        let (playback_state, settings, presence, member_count, favorited, creator_blocked) = tokio::try_join!(
             self.load_room_playback_state_proto(&rid),
             async {
                 self.room_service
@@ -1077,6 +1150,7 @@ impl ClientApiImpl {
             },
             self.load_room_member_count(&rid),
             favorite,
+            creator_blocked,
         )?;
         let availability = self
             .room_service
@@ -1084,7 +1158,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        let proto_room = self
+        let mut proto_room = self
             .room_to_proto_with_availability_presence_and_loaded_cover(
                 &room,
                 Some(&settings),
@@ -1094,6 +1168,7 @@ impl ClientApiImpl {
                 None,
             )
             .await?;
+        proto_room.creator_blocked = creator_blocked;
         Ok(synctv_proto::client::GetRoomResponse {
             room: Some(proto_room),
             playback_state: Some(playback_state),
@@ -3120,6 +3195,13 @@ mod tests {
             )
             .await,
         )?;
+        api_ok(
+            api.user_service
+                .block_user(&member.id, &owner.id)
+                .await
+                .map(|_| ())
+                .map_err(crate::impls::ApiError::from),
+        )?;
 
         let favorites_before_leave = api_ok(
             api.list_favorite_rooms(
@@ -3134,6 +3216,21 @@ mod tests {
         )?;
         assert_eq!(favorites_before_leave.total, 1);
         assert_eq!(favorites_before_leave.rooms.len(), 1);
+        assert!(favorites_before_leave.rooms[0].creator_blocked);
+
+        let discovery = api_ok(
+            api.get_room_discovery(
+                &member.id,
+                synctv_proto::client::GetRoomDiscoveryRequest {
+                    room_id: room_id.clone(),
+                },
+            )
+            .await,
+        )?;
+        assert!(discovery
+            .room
+            .as_ref()
+            .is_some_and(|room| room.creator_blocked));
 
         api_ok(api.leave_room(&member.id, &room_id).await)?;
 

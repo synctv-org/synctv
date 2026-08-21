@@ -90,6 +90,7 @@ impl AdminApiImpl {
                     crate::impls::proto_validated_user_id(creator_id, &self.public_id_codec)
                 })
                 .transpose()?,
+            excluded_creator_ids: Vec::new(),
             category_id: parse_optional_room_category_id(&req.category_id, &self.public_id_codec)?,
             label_ids: parse_room_label_ids(&req.label_ids, &self.public_id_codec)?,
             sort_by: proto_admin_room_list_sort_by(req.sort_by)?,

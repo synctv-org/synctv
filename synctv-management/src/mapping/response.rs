@@ -1190,6 +1190,7 @@ pub(crate) fn created_room_to_client_proto(
         cover: None,
         presence: None,
         creator: Some(user_public_view_to_client_proto(creator, public_id_codec)?),
+        creator_blocked: false,
         category: room
             .category
             .as_ref()

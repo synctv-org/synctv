@@ -505,6 +505,7 @@ impl ChatRepository {
         viewer_user_id: Option<&UserId>,
     ) -> Result<Vec<ChatPinnedMessage>> {
         let limit = limit.clamp(1, 100);
+        let viewer_user_id_value = viewer_user_id.map(UserId::as_i64);
         let pool = self.eventually_consistent_pool();
         let rows = sqlx::query_as!(
             ChatMessagePin,
@@ -525,6 +526,10 @@ impl ChatRepository {
             WHERE p.room_id = $1
               AND m.status <> $2
               AND m.deletion_source IS DISTINCT FROM $4
+              AND ($5::bigint IS NULL OR NOT EXISTS (
+                    SELECT 1 FROM user_blocks ub
+                    WHERE ub.blocker_user_id = $5 AND ub.blocked_user_id = m.user_id
+                  ))
             ORDER BY p.pinned_at DESC, p.message_id DESC
             LIMIT $3
             "#,
@@ -532,6 +537,7 @@ impl ChatRepository {
             i16::from(ChatMessageStatus::Deleted),
             i64::from(limit),
             DeletionSource::Account as DeletionSource,
+            viewer_user_id_value,
         )
         .fetch_all(pool)
         .await?;
@@ -961,18 +967,15 @@ impl ChatRepository {
         &self,
         room_id: &RoomId,
         message_id: i64,
+        viewer_user_id: &UserId,
         reaction_key: &str,
         cursor: Option<ChatReactionUsersCursor>,
         limit: i32,
     ) -> Result<ChatReactionUsersPage> {
         let limit = limit.clamp(1, 100);
         let message = self
-            .get_by_room_and_id(room_id, message_id)
-            .await?
-            .ok_or_else(|| Error::NotFound("Message not found".to_string()))?;
-        if message.status == ChatMessageStatus::Deleted {
-            return Err(Error::Conflict("Message has been deleted".to_string()));
-        }
+            .reaction_message_for_viewer(room_id, message_id, viewer_user_id)
+            .await?;
 
         let pool = self.eventually_consistent_pool();
         let total = sqlx::query_scalar!(
@@ -1043,6 +1046,41 @@ impl ChatRepository {
             next_cursor,
             total,
         })
+    }
+
+    pub async fn ensure_reaction_message_visible_to_viewer(
+        &self,
+        room_id: &RoomId,
+        message_id: i64,
+        viewer_user_id: &UserId,
+    ) -> Result<()> {
+        self.reaction_message_for_viewer(room_id, message_id, viewer_user_id)
+            .await
+            .map(drop)
+    }
+
+    async fn reaction_message_for_viewer(
+        &self,
+        room_id: &RoomId,
+        message_id: i64,
+        viewer_user_id: &UserId,
+    ) -> Result<ChatMessage> {
+        let message = self
+            .get_by_room_and_id(room_id, message_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("Message not found".to_string()))?;
+        if let Some(message_user_id) = message.user_id.as_ref() {
+            if self
+                .is_user_blocked_by(viewer_user_id, message_user_id)
+                .await?
+            {
+                return Err(Error::NotFound("Message not found".to_string()));
+            }
+        }
+        if message.status == ChatMessageStatus::Deleted {
+            return Err(Error::Conflict("Message has been deleted".to_string()));
+        }
+        Ok(message)
     }
 
     pub async fn get_event_by_id(
@@ -1593,6 +1631,10 @@ impl ChatRepository {
                       AND status <> $2
                       AND (user_id IS NULL OR user_id <> $3)
                       AND (created_at, id) > ($4, $5)
+                      AND NOT EXISTS (
+                            SELECT 1 FROM user_blocks ub
+                            WHERE ub.blocker_user_id = $3 AND ub.blocked_user_id = user_id
+                          )
                     "#,
                     room_id.as_i64(),
                     i16::from(ChatMessageStatus::Deleted),
@@ -1904,6 +1946,10 @@ impl ChatRepository {
               AND m.status <> $4
               AND m.deletion_source IS DISTINCT FROM $6
               AND (m.user_id IS NULL OR m.user_id <> $5)
+              AND NOT EXISTS (
+                    SELECT 1 FROM user_blocks ub
+                    WHERE ub.blocker_user_id = $5 AND ub.blocked_user_id = m.user_id
+                  )
             "#,
             room_id.as_i64(),
             sequence,
@@ -1928,6 +1974,10 @@ impl ChatRepository {
               AND deletion_source IS DISTINCT FROM $4
               AND status <> $2
               AND (user_id IS NULL OR user_id <> $3)
+              AND NOT EXISTS (
+                    SELECT 1 FROM user_blocks ub
+                    WHERE ub.blocker_user_id = $3 AND ub.blocked_user_id = user_id
+                  )
               AND created_at >= NOW() - INTERVAL '90 days'
             "#,
             room_id.as_i64(),
@@ -2001,6 +2051,7 @@ impl ChatRepository {
     ) -> Result<(Vec<ChatMessageWithAttachments>, Option<ChatHistoryCursor>)> {
         let limit = request.limit.clamp(1, 100);
         let included_message_type_codes = request.selection.message_type_codes();
+        let viewer_user_id = request.viewer_user_id.map(UserId::as_i64);
         let messages = if let Some(cursor) = request.cursor {
             sqlx::query_as!(
                 ChatMessageRow,
@@ -2027,6 +2078,10 @@ impl ChatRepository {
                   AND ($2 OR status <> $3)
                   AND (created_at, id) < ($4, $5)
                   AND message_type = ANY($7::smallint[])
+                  AND ($9::bigint IS NULL OR NOT EXISTS (
+                        SELECT 1 FROM user_blocks ub
+                        WHERE ub.blocker_user_id = $9 AND ub.blocked_user_id = user_id
+                      ))
                 ORDER BY created_at DESC, id DESC
                 LIMIT $6
                 "#,
@@ -2038,6 +2093,7 @@ impl ChatRepository {
                 i64::from(limit),
                 &included_message_type_codes,
                 DeletionSource::Account as DeletionSource,
+                viewer_user_id,
             )
             .fetch_all(pool)
             .await?
@@ -2067,6 +2123,10 @@ impl ChatRepository {
                   AND ($2 OR status <> $3)
                   AND created_at >= NOW() - INTERVAL '90 days'
                   AND message_type = ANY($5::smallint[])
+                  AND ($7::bigint IS NULL OR NOT EXISTS (
+                        SELECT 1 FROM user_blocks ub
+                        WHERE ub.blocker_user_id = $7 AND ub.blocked_user_id = user_id
+                      ))
                 ORDER BY created_at DESC, id DESC
                 LIMIT $4
                 "#,
@@ -2076,6 +2136,7 @@ impl ChatRepository {
                 i64::from(limit),
                 &included_message_type_codes,
                 DeletionSource::Account as DeletionSource,
+                viewer_user_id,
             )
             .fetch_all(pool)
             .await?
@@ -2146,6 +2207,7 @@ impl ChatRepository {
         let limit = query.limit.clamp(1, 100);
         let fetch_limit = i64::from(limit) + 1;
         let user_id = query.user_id.map(|id| id.as_i64());
+        let viewer_user_id_value = viewer_user_id.map(UserId::as_i64);
         let pool = self.pool();
         let messages = if let Some(cursor) = query.cursor {
             sqlx::query_as!(
@@ -2178,6 +2240,10 @@ impl ChatRepository {
                   AND ($4 OR m.status <> $5)
                   AND ($6::bigint IS NULL OR m.user_id = $6)
                   AND (m.created_at, m.id) < ($7, $8)
+                  AND ($11::bigint IS NULL OR NOT EXISTS (
+                        SELECT 1 FROM user_blocks ub
+                        WHERE ub.blocker_user_id = $11 AND ub.blocked_user_id = m.user_id
+                      ))
                 ORDER BY m.created_at DESC, m.id DESC
                 LIMIT $9
                 "#,
@@ -2191,6 +2257,7 @@ impl ChatRepository {
                 cursor.id,
                 fetch_limit,
                 DeletionSource::Account as DeletionSource,
+                viewer_user_id_value,
             )
             .fetch_all(pool)
             .await?
@@ -2224,6 +2291,10 @@ impl ChatRepository {
                   AND (m.content_search @@ st.tsquery OR m.content ILIKE $3 ESCAPE '\')
                   AND ($4 OR m.status <> $5)
                   AND ($6::bigint IS NULL OR m.user_id = $6)
+                  AND ($9::bigint IS NULL OR NOT EXISTS (
+                        SELECT 1 FROM user_blocks ub
+                        WHERE ub.blocker_user_id = $9 AND ub.blocked_user_id = m.user_id
+                      ))
                 ORDER BY m.created_at DESC, m.id DESC
                 LIMIT $7
                 "#,
@@ -2235,6 +2306,7 @@ impl ChatRepository {
                 user_id,
                 fetch_limit,
                 DeletionSource::Account as DeletionSource,
+                viewer_user_id_value,
             )
             .fetch_all(pool)
             .await?
@@ -2282,6 +2354,7 @@ impl ChatRepository {
             .map(|target| crate::models::try_hash_playback_target(Some(target)))
             .transpose()?;
         let included_message_type_codes = query.selection.message_type_codes();
+        let viewer_user_id_value = viewer_user_id.map(UserId::as_i64);
         let pool = self.eventually_consistent_pool();
         let rows = sqlx::query_as!(
             ChatMessageRow,
@@ -2316,6 +2389,10 @@ impl ChatRepository {
                   AND ($5::text IS NULL OR metadata #>> '{playback,playlistId}' = $5)
                   AND ($6::text IS NULL OR metadata #>> '{playback,targetHash}' = $6)
                   AND message_type = ANY($7::smallint[])
+                  AND ($12::bigint IS NULL OR NOT EXISTS (
+                        SELECT 1 FROM user_blocks ub
+                        WHERE ub.blocker_user_id = $12 AND ub.blocked_user_id = user_id
+                      ))
             )
             SELECT id AS "id!",
                    room_id AS "room_id!: RoomId",
@@ -2349,6 +2426,7 @@ impl ChatRepository {
             end_seconds,
             i64::from(limit),
             DeletionSource::Account as DeletionSource,
+            viewer_user_id_value,
         )
         .fetch_all(pool)
         .await?;
@@ -2370,6 +2448,16 @@ impl ChatRepository {
         let Some(anchor) = self.get_by_room_and_id(room_id, message_id).await? else {
             return Ok(None);
         };
+        if let (Some(viewer_user_id), Some(message_user_id)) =
+            (viewer_user_id, anchor.user_id.as_ref())
+        {
+            if self
+                .is_user_blocked_by(viewer_user_id, message_user_id)
+                .await?
+            {
+                return Ok(None);
+            }
+        }
         if anchor.status == ChatMessageStatus::Deleted && !include_deleted {
             return Ok(None);
         }
@@ -2377,6 +2465,7 @@ impl ChatRepository {
         let before_limit = before_limit.clamp(0, 50);
         let after_limit = after_limit.clamp(0, 50);
         let pool = self.eventually_consistent_pool();
+        let viewer_user_id_value = viewer_user_id.map(UserId::as_i64);
         let mut before = sqlx::query_as!(
             ChatMessageRow,
             r#"
@@ -2401,6 +2490,10 @@ impl ChatRepository {
               AND deletion_source IS DISTINCT FROM $7
               AND ($2 OR status <> $3)
               AND (created_at, id) < ($4, $5)
+              AND ($8::bigint IS NULL OR NOT EXISTS (
+                    SELECT 1 FROM user_blocks ub
+                    WHERE ub.blocker_user_id = $8 AND ub.blocked_user_id = user_id
+                  ))
             ORDER BY created_at DESC, id DESC
             LIMIT $6
             "#,
@@ -2411,6 +2504,7 @@ impl ChatRepository {
             anchor.id,
             i64::from(before_limit),
             DeletionSource::Account as DeletionSource,
+            viewer_user_id_value,
         )
         .fetch_all(pool)
         .await?;
@@ -2440,6 +2534,10 @@ impl ChatRepository {
               AND deletion_source IS DISTINCT FROM $7
               AND ($2 OR status <> $3)
               AND (created_at, id) > ($4, $5)
+              AND ($8::bigint IS NULL OR NOT EXISTS (
+                    SELECT 1 FROM user_blocks ub
+                    WHERE ub.blocker_user_id = $8 AND ub.blocked_user_id = user_id
+                  ))
             ORDER BY created_at ASC, id ASC
             LIMIT $6
             "#,
@@ -2450,6 +2548,7 @@ impl ChatRepository {
             anchor.id,
             i64::from(after_limit),
             DeletionSource::Account as DeletionSource,
+            viewer_user_id_value,
         )
         .fetch_all(pool)
         .await?;
@@ -2601,6 +2700,16 @@ impl ChatRepository {
         else {
             return Ok(None);
         };
+        if let (Some(viewer_user_id), Some(message_user_id)) =
+            (viewer_user_id, message.user_id.as_ref())
+        {
+            if self
+                .is_user_blocked_by(viewer_user_id, message_user_id)
+                .await?
+            {
+                return Ok(None);
+            }
+        }
         let attachments = if message.status == ChatMessageStatus::Deleted {
             Vec::new()
         } else {
@@ -2632,6 +2741,64 @@ impl ChatRepository {
             mentions,
             pin,
         }))
+    }
+
+    pub async fn is_user_blocked_by(
+        &self,
+        viewer_user_id: &UserId,
+        message_user_id: &UserId,
+    ) -> Result<bool> {
+        let is_blocked = sqlx::query_scalar!(
+            r#"
+            SELECT EXISTS (
+                SELECT 1 FROM user_blocks
+                WHERE blocker_user_id = $1 AND blocked_user_id = $2
+            ) AS "is_blocked!"
+            "#,
+            viewer_user_id as &UserId,
+            message_user_id as &UserId,
+        )
+        .fetch_one(self.pool())
+        .await?;
+        Ok(is_blocked)
+    }
+
+    pub async fn blocked_user_ids(&self, viewer_user_id: &UserId) -> Result<Vec<UserId>> {
+        sqlx::query_scalar!(
+            r#"SELECT blocked_user_id AS "blocked_user_id!: UserId"
+               FROM user_blocks
+               WHERE blocker_user_id = $1"#,
+            viewer_user_id as &UserId,
+        )
+        .fetch_all(self.pool())
+        .await
+        .map_err(Into::into)
+    }
+
+    pub async fn blocking_viewer_ids(
+        &self,
+        viewer_user_ids: &[UserId],
+        blocked_user_id: &UserId,
+    ) -> Result<Vec<UserId>> {
+        if viewer_user_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let viewer_ids = viewer_user_ids
+            .iter()
+            .map(UserId::as_i64)
+            .collect::<Vec<_>>();
+        sqlx::query_scalar!(
+            r#"
+            SELECT blocker_user_id AS "blocker_user_id!: UserId"
+            FROM user_blocks
+            WHERE blocked_user_id = $1 AND blocker_user_id = ANY($2::bigint[])
+            "#,
+            blocked_user_id as &UserId,
+            &viewer_ids,
+        )
+        .fetch_all(self.pool())
+        .await
+        .map_err(Into::into)
     }
 
     pub async fn edit_with_event(

@@ -1548,6 +1548,51 @@ impl MediaResourceHub {
         event_cursor: Option<synctv_proto::client::EventCursor>,
     ) -> ResourceRefreshOutcome {
         let subscriptions = self.snapshot_subscriptions().await;
+        let chat_author_id = match event {
+            RealtimeEvent::ChatMessageEvent { event, .. } => event.message.message.user_id,
+            RealtimeEvent::ChatPinEvent { event, .. } => event.message.message.user_id,
+            _ => None,
+        };
+        let mut blocked_chat_viewers = HashSet::new();
+        if let Some(chat_author_id) = chat_author_id {
+            let observers = subscriptions
+                .iter()
+                .filter_map(|(_, observer, _, _)| observer.upgrade())
+                .collect::<Vec<_>>();
+            let viewer_ids = observers
+                .iter()
+                .filter_map(|observer| observer.actor.user_id())
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            blocked_chat_viewers = if let Some(chat_service) = observers
+                .iter()
+                .find_map(|observer| observer.chat_service.as_ref())
+            {
+                match chat_service
+                    .blocking_viewer_ids(&viewer_ids, &chat_author_id)
+                    .await
+                {
+                    Ok(ids) => ids.into_iter().collect(),
+                    Err(error) => {
+                        tracing::warn!(
+                            room_id = %self.room_id,
+                            user_id = %chat_author_id,
+                            error = %error,
+                            "Failed to resolve chat block visibility; suppressing the event"
+                        );
+                        viewer_ids.into_iter().collect()
+                    }
+                }
+            } else {
+                tracing::warn!(
+                    room_id = %self.room_id,
+                    user_id = %chat_author_id,
+                    "Chat service unavailable while resolving block visibility; suppressing the event"
+                );
+                viewer_ids.into_iter().collect()
+            };
+        }
         let mut refresh_plan = HashMap::<
             ResourceSubscriberKey,
             (Weak<ResourceObserver>, ResourceObservation, bool, u64),
@@ -1709,6 +1754,28 @@ impl MediaResourceHub {
                         ) {
                             continue;
                         }
+                        if observer
+                            .actor
+                            .user_id()
+                            .is_some_and(|user_id| blocked_chat_viewers.contains(&user_id))
+                        {
+                            if matches!(
+                                self.send_and_commit_subscription_update(
+                                    key,
+                                    *revision,
+                                    &observer,
+                                    updated_observation.clone(),
+                                    None,
+                                )
+                                .await,
+                                SubscriptionRefreshCommit::Committed
+                            ) {
+                                observer
+                                    .replace_local_observation(updated_observation)
+                                    .await;
+                            }
+                            continue;
+                        }
                         let event_payload =
                             match observer.chat_message_event_to_proto(chat_event).await {
                                 Ok(event) => event,
@@ -1763,6 +1830,28 @@ impl MediaResourceHub {
                             &mut updated_observation,
                             &cursor,
                         ) {
+                            continue;
+                        }
+                        if observer
+                            .actor
+                            .user_id()
+                            .is_some_and(|user_id| blocked_chat_viewers.contains(&user_id))
+                        {
+                            if matches!(
+                                self.send_and_commit_subscription_update(
+                                    key,
+                                    *revision,
+                                    &observer,
+                                    updated_observation.clone(),
+                                    None,
+                                )
+                                .await,
+                                SubscriptionRefreshCommit::Committed
+                            ) {
+                                observer
+                                    .replace_local_observation(updated_observation)
+                                    .await;
+                            }
                             continue;
                         }
                         let event_payload = match observer.chat_pin_event_to_proto(event).await {
@@ -2534,6 +2623,15 @@ impl ResourceObserver {
         let Some(chat_service) = self.chat_service.as_ref() else {
             return Ok(());
         };
+        let blocked_user_ids = match self.actor.user_id() {
+            Some(user_id) => chat_service
+                .blocked_user_ids(&user_id)
+                .await
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .collect::<HashSet<_>>(),
+            None => HashSet::new(),
+        };
         if !observe_id.is_empty() {
             if !chat_service
                 .is_event_sequence_retained_for_room(&self.room_id, after_event_sequence)
@@ -2570,6 +2668,16 @@ impl ResourceObserver {
                     };
                     let cursor = event_cursor_for_chat_event(event);
                     if !Self::apply_event_cursor_to_observation(&mut observation, &cursor) {
+                        continue;
+                    }
+                    if event
+                        .message
+                        .message
+                        .user_id
+                        .is_some_and(|user_id| blocked_user_ids.contains(&user_id))
+                    {
+                        self.replace_local_observation(observation.clone()).await;
+                        self.room_hub.register_observation(self, observation).await;
                         continue;
                     }
                     self.send_server_message(ServerMessage {

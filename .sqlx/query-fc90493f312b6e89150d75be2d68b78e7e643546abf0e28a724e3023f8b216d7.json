@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n                SELECT id AS \"id!\",\n                       room_id AS \"room_id!: RoomId\",\n                       user_id AS \"user_id?: UserId\",\n                       client_message_id,\n                       content AS \"content!\",\n                       message_type AS \"message_type!: ChatMessageType\",\n                       status AS \"status!: ChatMessageStatus\",\n                       version AS \"version!\",\n                       reply_to_message_id,\n                       reply_to_message_created_at,\n                       metadata AS \"metadata?: ChatMetadata\",\n                       edited_at,\n                       deleted_at,\n                       deleted_by AS \"deleted_by?: UserId\",\n                       delete_reason,\n                       created_at AS \"created_at!\"\n                FROM chat_messages\n            WHERE room_id = $1\n                  AND deletion_source IS DISTINCT FROM $8\n                  AND ($2 OR status <> $3)\n                  AND (created_at, id) < ($4, $5)\n                  AND message_type = ANY($7::smallint[])\n                ORDER BY created_at DESC, id DESC\n                LIMIT $6\n                ",
+  "query": "\n                SELECT id AS \"id!\",\n                       room_id AS \"room_id!: RoomId\",\n                       user_id AS \"user_id?: UserId\",\n                       client_message_id,\n                       content AS \"content!\",\n                       message_type AS \"message_type!: ChatMessageType\",\n                       status AS \"status!: ChatMessageStatus\",\n                       version AS \"version!\",\n                       reply_to_message_id,\n                       reply_to_message_created_at,\n                       metadata AS \"metadata?: ChatMetadata\",\n                       edited_at,\n                       deleted_at,\n                       deleted_by AS \"deleted_by?: UserId\",\n                       delete_reason,\n                       created_at AS \"created_at!\"\n                FROM chat_messages\n            WHERE room_id = $1\n                  AND deletion_source IS DISTINCT FROM $8\n                  AND ($2 OR status <> $3)\n                  AND (created_at, id) < ($4, $5)\n                  AND message_type = ANY($7::smallint[])\n                  AND ($9::bigint IS NULL OR NOT EXISTS (\n                        SELECT 1 FROM user_blocks ub\n                        WHERE ub.blocker_user_id = $9 AND ub.blocked_user_id = user_id\n                      ))\n                ORDER BY created_at DESC, id DESC\n                LIMIT $6\n                ",
   "describe": {
     "columns": [
       {
@@ -189,7 +189,8 @@
         "Int8",
         "Int8",
         "Int2Array",
-        "Int2"
+        "Int2",
+        "Int8"
       ]
     },
     "nullable": [
@@ -211,5 +212,5 @@
       false
     ]
   },
-  "hash": "c37c8b961170e850d399cb2acd8b1443dd6131c58ea1bf063427cea5d32ac713"
+  "hash": "fc90493f312b6e89150d75be2d68b78e7e643546abf0e28a724e3023f8b216d7"
 }

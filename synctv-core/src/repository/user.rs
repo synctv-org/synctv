@@ -5,8 +5,8 @@ use super::query_builder::ilike_contains_pattern;
 use crate::repository::pools::RepoPools;
 use crate::{
     models::{
-        DeletionSource, SignupMethod, User, UserId, UserLifecycleMetadata, UserListQuery,
-        UserListSortBy, UserRole, UserStatus,
+        BlockedUser, DeletionSource, PageParams, SignupMethod, User, UserId, UserLifecycleMetadata,
+        UserListQuery, UserListSortBy, UserRole, UserStatus,
     },
     Error, Result,
 };
@@ -36,6 +36,49 @@ struct UserListRow {
     updated_at: DateTime<Utc>,
     version: i32,
     deleted_at: Option<DateTime<Utc>>,
+}
+
+#[derive(sqlx::FromRow)]
+struct BlockedUserListRow {
+    id: UserId,
+    username: String,
+    signup_method: SignupMethod,
+    role: UserRole,
+    avatar_file_reference_id: Option<i64>,
+    status: UserStatus,
+    is_banned: bool,
+    banned_at: Option<DateTime<Utc>>,
+    banned_by: Option<UserId>,
+    banned_reason: Option<String>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+    version: i32,
+    deleted_at: Option<DateTime<Utc>>,
+    blocked_at: DateTime<Utc>,
+}
+
+impl From<BlockedUserListRow> for BlockedUser {
+    fn from(row: BlockedUserListRow) -> Self {
+        Self {
+            user: User {
+                id: row.id,
+                username: row.username,
+                role: row.role,
+                avatar_file_reference_id: row.avatar_file_reference_id,
+                status: row.status,
+                is_banned: row.is_banned,
+                banned_at: row.banned_at,
+                banned_by: row.banned_by,
+                banned_reason: row.banned_reason,
+                signup_method: row.signup_method,
+                created_at: row.created_at,
+                updated_at: row.updated_at,
+                version: row.version,
+                deleted_at: row.deleted_at,
+            },
+            blocked_at: row.blocked_at,
+        }
+    }
 }
 
 impl From<UserListRow> for User {
@@ -78,6 +121,166 @@ impl UserRepository {
         Self {
             pools: RepoPools::with_read(pool, read_pool),
         }
+    }
+
+    pub async fn block_user(
+        &self,
+        blocker_user_id: &UserId,
+        blocked_user_id: &UserId,
+    ) -> Result<DateTime<Utc>> {
+        let blocked_at = sqlx::query_scalar!(
+            r#"
+            INSERT INTO user_blocks (blocker_user_id, blocked_user_id)
+            VALUES ($1, $2)
+            ON CONFLICT (blocker_user_id, blocked_user_id)
+            DO UPDATE SET blocker_user_id = EXCLUDED.blocker_user_id
+            RETURNING created_at AS "created_at!"
+            "#,
+            blocker_user_id as &UserId,
+            blocked_user_id as &UserId,
+        )
+        .fetch_one(self.pools.primary())
+        .await?;
+
+        Ok(blocked_at)
+    }
+
+    pub async fn unblock_user(
+        &self,
+        blocker_user_id: &UserId,
+        blocked_user_id: &UserId,
+    ) -> Result<bool> {
+        let result = sqlx::query!(
+            "DELETE FROM user_blocks WHERE blocker_user_id = $1 AND blocked_user_id = $2",
+            blocker_user_id as &UserId,
+            blocked_user_id as &UserId,
+        )
+        .execute(self.pools.primary())
+        .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn is_blocking(
+        &self,
+        blocker_user_id: &UserId,
+        blocked_user_id: &UserId,
+    ) -> Result<bool> {
+        let is_blocking = sqlx::query_scalar!(
+            r#"
+            SELECT EXISTS (
+                SELECT 1
+                FROM user_blocks
+                WHERE blocker_user_id = $1 AND blocked_user_id = $2
+            ) AS "is_blocking!"
+            "#,
+            blocker_user_id as &UserId,
+            blocked_user_id as &UserId,
+        )
+        .fetch_one(self.pools.primary())
+        .await?;
+        Ok(is_blocking)
+    }
+
+    pub async fn blocked_user_ids(&self, blocker_user_id: &UserId) -> Result<Vec<UserId>> {
+        sqlx::query_scalar!(
+            r#"SELECT blocked_user_id AS "blocked_user_id!: UserId"
+               FROM user_blocks
+               WHERE blocker_user_id = $1"#,
+            blocker_user_id as &UserId,
+        )
+        .fetch_all(self.pools.primary())
+        .await
+        .map_err(Into::into)
+    }
+
+    pub async fn blocked_user_ids_eventually_consistent(
+        &self,
+        blocker_user_id: &UserId,
+    ) -> Result<Vec<UserId>> {
+        sqlx::query_scalar!(
+            r#"SELECT blocked_user_id AS "blocked_user_id!: UserId"
+               FROM user_blocks
+               WHERE blocker_user_id = $1"#,
+            blocker_user_id as &UserId,
+        )
+        .fetch_all(self.pools.read())
+        .await
+        .map_err(Into::into)
+    }
+
+    pub async fn list_blocked_users(
+        &self,
+        blocker_user_id: &UserId,
+        pagination: PageParams,
+        search: Option<&str>,
+    ) -> Result<(Vec<BlockedUser>, i64)> {
+        let limit = pagination.limit_i64()?;
+        let offset = pagination.offset_i64()?;
+        let search_pattern = search.and_then(ilike_contains_pattern);
+
+        let mut count_builder = QueryBuilder::<Postgres>::new(
+            "SELECT COUNT(*) FROM user_blocks ub \
+             JOIN user_account_profiles p ON p.id = ub.blocked_user_id \
+             WHERE ub.blocker_user_id = ",
+        );
+        count_builder.push_bind(blocker_user_id);
+        count_builder.push(" AND p.deleted_at IS NULL");
+        if let Some(pattern) = search_pattern.as_ref() {
+            count_builder
+                .push(" AND p.username ILIKE ")
+                .push_bind(pattern)
+                .push(" ESCAPE '\\'");
+        }
+        let total = count_builder
+            .build_query_scalar::<i64>()
+            .fetch_one(self.pools.primary())
+            .await?;
+
+        let mut list_builder = QueryBuilder::<Postgres>::new(
+            r"
+            SELECT p.id,
+                   p.username,
+                   p.signup_method,
+                   p.role,
+                   p.avatar_file_reference_id,
+                   p.status,
+                   p.is_banned,
+                   p.banned_at,
+                   p.banned_by,
+                   p.banned_reason,
+                   p.created_at,
+                   p.updated_at,
+                   p.version,
+                   p.deleted_at,
+                   ub.created_at AS blocked_at
+            FROM user_blocks ub
+            JOIN user_account_profiles p ON p.id = ub.blocked_user_id
+            WHERE ub.blocker_user_id =
+            ",
+        );
+        list_builder.push_bind(blocker_user_id);
+        list_builder.push(" AND p.deleted_at IS NULL");
+        if let Some(pattern) = search_pattern.as_ref() {
+            list_builder
+                .push(" AND p.username ILIKE ")
+                .push_bind(pattern)
+                .push(" ESCAPE '\\'");
+        }
+        list_builder
+            .push(" ORDER BY ub.created_at DESC, ub.blocked_user_id DESC LIMIT ")
+            .push_bind(limit)
+            .push(" OFFSET ")
+            .push_bind(offset);
+        let users = list_builder
+            .build_query_as::<BlockedUserListRow>()
+            .fetch_all(self.pools.primary())
+            .await?
+            .into_iter()
+            .map(Into::into)
+            .collect();
+
+        Ok((users, total))
     }
 
     /// Get the database pool

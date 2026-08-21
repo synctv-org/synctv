@@ -68,7 +68,7 @@ if [ "$cargo_version" != "$version" ] ||
   [ "$docs_lock_version" != "$version" ] ||
   [ "$docs_lock_root_version" != "$version" ] ||
   [ "$docs_default_app_version" != "$version" ] ||
-  [ "$compose_image" != "synctvorg/synctv:latest" ]; then
+  [ "$compose_image" != 'synctvorg/synctv:${SYNCTV_IMAGE_TAG:-latest}' ]; then
   echo "Failed to synchronize release version across Cargo.toml, Helm chart, Compose, and docs metadata." >&2
   exit 1
 fi

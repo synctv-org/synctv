@@ -680,12 +680,22 @@ impl MediaProvider for TrueNasProvider {
             PLAYBACK_CACHE_TTL,
             ctx,
             |result, version, expires_at| {
-                mark_playback_resources(result, version, expires_at, config.proxy_mode);
+                mark_playback_resources(
+                    result,
+                    version,
+                    expires_at,
+                    config.proxy_mode,
+                    ctx.playback_client_profile(),
+                );
             },
             || async { Ok(result) },
         )
         .await?;
-        super::require_direct_playback_route(result, config.proxy_mode)
+        super::require_compatible_playback_route(
+            result,
+            config.proxy_mode,
+            ctx.playback_client_profile(),
+        )
     }
 
     async fn validate_source_config(
@@ -966,6 +976,7 @@ fn mark_playback_resources(
     version: &str,
     expires_at: i64,
     proxy_mode: crate::models::PlaybackProxyMode,
+    client_profile: Option<&super::PlaybackClientProfile>,
 ) {
     let original_default = result.default_mode.clone();
     let prefer_proxy = matches!(
@@ -988,17 +999,29 @@ fn mark_playback_resources(
             .iter()
             .any(|media| !media.requires_provider_url());
         if selection.direct && direct_available {
-            generated.insert(mode_name.clone(), original_info.clone());
+            if let Some(direct_info) = super::build_direct_playback_info_for_client(
+                &mode_name,
+                &original_info,
+                client_profile,
+            ) {
+                generated.insert(mode_name.clone(), direct_info);
+            }
         }
         if !selection.proxy {
             continue;
         }
         let mut proxy_info = original_info.clone();
-        proxy_info.medias = original_info
-            .medias
-            .iter()
-            .enumerate()
-            .filter_map(|(media_index, media)| {
+        let (proxy_medias, proxy_default_media_index) = super::map_playback_resources(
+            &original_info.medias,
+            original_info.default_media_index,
+            |media_index, media| {
+                if !super::proxy_playback_media_supported_by_client(
+                    client_profile,
+                    &mode_name,
+                    media,
+                ) {
+                    return None;
+                }
                 let PlaybackMediaProvider::TrueNas(PlaybackTrueNasMedia::Refresh {
                     credential_owner_id,
                     server_id,
@@ -1018,8 +1041,10 @@ fn mark_playback_resources(
                     path: path.clone(),
                 });
                 Some(proxy)
-            })
-            .collect();
+            },
+        );
+        proxy_info.medias = proxy_medias;
+        proxy_info.default_media_index = proxy_default_media_index;
         if proxy_info.medias.is_empty() {
             continue;
         }

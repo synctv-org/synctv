@@ -118,7 +118,7 @@ export SYNCTV_MANAGEMENT_TRANSPORT=unix; \
 export SYNCTV_MANAGEMENT_UNIX_SOCKET_PATH="$(DEV_SOCKET)"
 endef
 
-.PHONY: help clean compose-init compose-config compose-pull compose-up compose-down compose-logs compose-ps dev-check dev-env dev-up dev-stack dev-build release-build dev-serve dev-down dev-clean dev-reset dev-data-reset dev-logs dev-ps dev-status dev-wait dev-shell dev-migrate dev-dropdb dev-db dev-redis dev-open dev-smoke fmt fmt-check check check-all-targets build-workspace proto-freshness feature-check feature-check-key-crates-tls-ring-webpki sqlx-prepare nextest nextest-default nextest-ignored doc-test clippy clippy-check install-cargo-audit audit audit-advisories install-cargo-deny deny-check deny-advisories deny-licenses deny-bans deny-sources install-cargo-udeps udeps cargo-workspace-version set-release-version validate-helm require-cross install-cross cross-linux-check cross-windows-check cross-darwin-check cross-linux-clippy cross-windows-clippy cross-darwin-clippy
+.PHONY: help clean compose-init compose-config compose-pull compose-up compose-down compose-logs compose-ps dev-check dev-env dev-up dev-stack dev-build release-build web-ui-build web-release-build dev-serve dev-down dev-clean dev-reset dev-data-reset dev-logs dev-ps dev-status dev-wait dev-shell dev-migrate dev-dropdb dev-db dev-redis dev-open dev-smoke fmt fmt-check check check-all-targets build-workspace proto-freshness feature-check feature-check-key-crates-tls-ring-webpki sqlx-prepare nextest nextest-default nextest-ignored doc-test clippy clippy-check install-cargo-audit audit audit-advisories install-cargo-deny deny-check deny-advisories deny-licenses deny-bans deny-sources install-cargo-udeps udeps cargo-workspace-version set-release-version validate-helm require-cross install-cross cross-linux-check cross-windows-check cross-darwin-check cross-linux-clippy cross-windows-clippy cross-darwin-clippy
 
 help: ## Show available targets.
 	@awk 'BEGIN {FS = ":.*##"; printf "SyncTV targets:\n"} /^[a-zA-Z0-9_.-]+:.*##/ {printf "  %-18s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -218,6 +218,18 @@ dev-build: ## Build the local SyncTV binary.
 
 release-build: ## Build the optimized SyncTV release binary.
 	SQLX_OFFLINE=true $(CARGO) build $(CARGO_BUILD_ARGS) --release -p synctv --bin synctv $(RELEASE_CARGO_FEATURE_ARGS)
+
+WEB_UI_EXPORT_DIR ?= $(CURDIR)/target/web-ui-dist
+
+web-ui-build: ## Build Web assets from synctv-web-ui config into WEB_UI_EXPORT_DIR.
+	SYNCTV_WEB_EXPORT_DIR="$(WEB_UI_EXPORT_DIR)" \
+		$(CARGO) check $(CARGO_BUILD_ARGS) -p synctv-web-ui --features embed
+
+web-release-build: ## Build and embed Web UI using synctv-web-ui config. Set SYNCTV_WEB_CONFIG or use web-ui.local.toml.
+	@features="web-ui"; \
+		if [ -n "$(RELEASE_FEATURES)" ]; then features="$$features,$(RELEASE_FEATURES)"; fi; \
+		SQLX_OFFLINE=true \
+			$(CARGO) build $(CARGO_BUILD_ARGS) --release -p synctv --bin synctv --features "$$features"
 
 dev-serve: dev-up ## Run SyncTV locally with development defaults.
 	mkdir -p "$(DEV_DATA_DIR)/run"

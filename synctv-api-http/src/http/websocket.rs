@@ -511,7 +511,7 @@ fn validate_websocket_origin(
     ))
 }
 
-fn same_origin_as_host(
+pub(crate) fn same_origin_as_host(
     origin: &url::Url,
     host_header: &str,
     forwarded_proto: Option<&str>,

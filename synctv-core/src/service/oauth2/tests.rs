@@ -752,11 +752,14 @@ async fn test_authorization_rejects_mode_not_advertised_by_provider() {
     let error = err(
         service
             .prepare_authorization_url_with_control(
-                "github",
-                None,
-                OAuth2Operation::Login,
-                None,
-                OAuth2AuthorizationMode::Native,
+                OAuth2AuthorizationRequest {
+                    instance_name: "github",
+                    redirect_url: None,
+                    request_allowed_redirect_url: None,
+                    operation: OAuth2Operation::Login,
+                    target_user_id: None,
+                    mode: OAuth2AuthorizationMode::Native,
+                },
                 None,
             )
             .await,
@@ -785,6 +788,60 @@ async fn test_get_authorization_url_with_redirect() {
         "relative redirect URL must be rejected",
     );
     assert!(matches!(err, Error::InvalidInput(_)));
+}
+
+#[tokio::test]
+async fn test_request_allowed_redirect_requires_an_exact_match() {
+    let service = create_test_service();
+    service
+        .register_provider(
+            "github".to_string(),
+            OAuth2Provider::GitHub,
+            Box::new(TestOAuth2Provider::new()),
+        )
+        .await;
+    let callback = "https://app.example.test/oauth2/callback".to_string();
+
+    let prepared = ok(
+        service
+            .prepare_authorization_url_with_control(
+                OAuth2AuthorizationRequest {
+                    instance_name: "github",
+                    redirect_url: Some(callback.clone()),
+                    request_allowed_redirect_url: Some(callback.clone()),
+                    operation: OAuth2Operation::Login,
+                    target_user_id: None,
+                    mode: OAuth2AuthorizationMode::Browser,
+                },
+                None,
+            )
+            .await,
+        "request-allowed callback should generate",
+    );
+    assert_eq!(
+        prepared.oauth_state.redirect_url.as_deref(),
+        Some(callback.as_str())
+    );
+
+    let error = err(
+        service
+            .prepare_authorization_url_with_control(
+                OAuth2AuthorizationRequest {
+                    instance_name: "github",
+                    redirect_url: Some(callback),
+                    request_allowed_redirect_url: Some(
+                        "https://app.example.test/other.html".to_string(),
+                    ),
+                    operation: OAuth2Operation::Login,
+                    target_user_id: None,
+                    mode: OAuth2AuthorizationMode::Browser,
+                },
+                None,
+            )
+            .await,
+        "mismatched request callback must still require the configured allowlist",
+    );
+    assert!(error.to_string().contains("allowed redirect URLs"));
 }
 
 #[tokio::test]

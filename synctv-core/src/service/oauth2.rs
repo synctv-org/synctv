@@ -102,6 +102,15 @@ pub struct PreparedOAuth2Authorization {
     pub oauth_state: OAuth2State,
 }
 
+pub struct OAuth2AuthorizationRequest<'a> {
+    pub instance_name: &'a str,
+    pub redirect_url: Option<String>,
+    pub request_allowed_redirect_url: Option<String>,
+    pub operation: OAuth2Operation,
+    pub target_user_id: Option<UserId>,
+    pub mode: crate::oauth2::OAuth2AuthorizationMode,
+}
+
 #[derive(Debug, Clone)]
 pub enum OAuth2LinkResult {
     Linked { user_id: UserId, is_new: bool },

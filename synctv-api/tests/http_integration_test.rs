@@ -395,9 +395,10 @@ mod security_headers {
             .unwrap();
         assert!(csp.contains("default-src 'self'"));
         assert!(csp.contains("frame-ancestors 'none'"));
-        assert!(csp.contains("media-src 'none'"));
-        assert!(csp.contains("frame-src 'none'"));
-        assert!(csp.contains("connect-src 'self' wss: ws:"));
+        assert!(csp.contains("media-src 'self' blob: https: http:"));
+        assert!(csp.contains("frame-src 'self'"));
+        assert!(csp.contains("connect-src 'self' blob: https: http: wss: ws:"));
+        assert!(csp.contains("worker-src 'self' blob:"));
 
         let pp = resp
             .headers()
@@ -406,7 +407,8 @@ mod security_headers {
             .to_str()
             .unwrap();
         assert!(pp.contains("camera=()"));
-        assert!(pp.contains("microphone=()"));
+        assert!(pp.contains("microphone=(self)"));
+        assert!(pp.contains("picture-in-picture=(self)"));
         assert!(pp.contains("geolocation=()"));
 
         let cc = resp

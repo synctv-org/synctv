@@ -81,6 +81,8 @@ jobs:
       cache-scope: synctv-image
       build-args: |
         SYNCTV_CARGO_BUILD_PROFILE=${{ github.event_name == 'pull_request' && 'dev' || 'release' }}
+        SYNCTV_BUILD_FEATURES=k8s,mimalloc,openapi,web-ui
+        SYNCTV_WEB_ASSETS_STAGE=web-assets
         CARGO_INCREMENTAL=0
         CARGO_TERM_COLOR=always
       set-meta-annotations: true

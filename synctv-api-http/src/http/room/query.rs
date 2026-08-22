@@ -1,4 +1,6 @@
 use axum::http::HeaderMap;
+use base64::Engine as _;
+use prost::Message as _;
 
 use super::AppResult;
 use synctv_proto::client::{ChatMessageType, GetPlaybackRequest, ResourceDeliveryMode};
@@ -23,6 +25,9 @@ pub(super) fn validate_include_message_types(values: Vec<i32>) -> AppResult<Vec<
     into_params(parameter_in = Query, rename_all = "camelCase")
 )]
 pub struct GetPlaybackQuery {
+    /// Base64url-encoded PlaybackClientProfile protobuf. New clients use this
+    /// lossless representation; the remaining fields are legacy compatibility.
+    pub client_profile: Option<String>,
     pub stream_preference: Option<i32>,
     pub max_streaming_bitrate: Option<i64>,
     pub max_audio_channels: Option<i32>,
@@ -75,6 +80,7 @@ pub struct WatchPlaylistItemsQuery {
 pub struct WatchPlaybackQuery {
     pub delivery_mode: Option<i32>,
     pub format: Option<String>,
+    pub client_profile: Option<String>,
     pub stream_preference: Option<i32>,
     pub max_streaming_bitrate: Option<i64>,
     pub max_audio_channels: Option<i32>,
@@ -225,10 +231,27 @@ fn parse_audio_capability(
         .map_err(|_| super::super::AppError::bad_request("Invalid audioCapability enum integer"))
 }
 
+fn decode_client_profile(
+    encoded: &str,
+) -> Result<synctv_proto::client::PlaybackClientProfile, super::super::AppError> {
+    const MAX_ENCODED_PROFILE_BYTES: usize = 16 * 1024;
+    let encoded = encoded.trim();
+    if encoded.is_empty() || encoded.len() > MAX_ENCODED_PROFILE_BYTES {
+        return Err(super::super::AppError::bad_request(
+            "Invalid clientProfile length",
+        ));
+    }
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(encoded)
+        .map_err(|_| super::super::AppError::bad_request("Invalid clientProfile encoding"))?;
+    synctv_proto::client::PlaybackClientProfile::decode(bytes.as_slice())
+        .map_err(|_| super::super::AppError::bad_request("Invalid clientProfile protobuf"))
+}
+
 pub(crate) fn build_get_playback_request(
     query: &GetPlaybackQuery,
 ) -> AppResult<GetPlaybackRequest> {
-    let has_profile = query.stream_preference.is_some()
+    let has_legacy_profile = query.stream_preference.is_some()
         || query.max_streaming_bitrate.is_some()
         || query.max_audio_channels.is_some()
         || query.video_codecs.is_some()
@@ -237,7 +260,15 @@ pub(crate) fn build_get_playback_request(
         || query.audio_capability.is_some()
         || query.subtitle_preference.is_some();
 
-    let playback_client_profile = if has_profile {
+    if query.client_profile.is_some() && has_legacy_profile {
+        return Err(super::super::AppError::bad_request(
+            "clientProfile cannot be combined with legacy playback profile parameters",
+        ));
+    }
+
+    let playback_client_profile = if let Some(encoded) = query.client_profile.as_deref() {
+        Some(decode_client_profile(encoded)?)
+    } else if has_legacy_profile {
         Some(synctv_proto::client::PlaybackClientProfile {
             stream_preference: parse_stream_preference(query.stream_preference)? as i32,
             max_streaming_bitrate: query.max_streaming_bitrate,
@@ -247,6 +278,7 @@ pub(crate) fn build_get_playback_request(
             supported_live_transports: parse_live_transports(query.live_transports.as_deref())?,
             audio_capability: parse_audio_capability(query.audio_capability)? as i32,
             subtitle_preference: parse_subtitle_preference(query.subtitle_preference)? as i32,
+            ..Default::default()
         })
     } else {
         None
@@ -262,6 +294,7 @@ pub(crate) fn build_playback_client_profile_from_watch_query(
     query: &WatchPlaybackQuery,
 ) -> AppResult<Option<synctv_proto::client::PlaybackClientProfile>> {
     build_get_playback_request(&GetPlaybackQuery {
+        client_profile: query.client_profile.clone(),
         stream_preference: query.stream_preference,
         max_streaming_bitrate: query.max_streaming_bitrate,
         max_audio_channels: query.max_audio_channels,

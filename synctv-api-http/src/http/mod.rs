@@ -25,19 +25,22 @@ pub(crate) mod room_extra;
 pub(crate) mod ticket;
 pub(crate) mod user;
 pub(crate) mod validation;
+#[cfg(feature = "web-ui")]
+pub(crate) mod web_ui;
 pub(crate) mod webrtc;
 pub(crate) mod websocket;
 
 use crate::providers;
 use axum::{
     body::Body,
-    extract::State,
     http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode},
     middleware as axum_middleware,
-    response::{IntoResponse, Redirect},
+    response::IntoResponse,
     routing::{get, post},
     Router,
 };
+#[cfg(not(feature = "web-ui"))]
+use axum::{extract::State, response::Redirect};
 use futures::StreamExt;
 use std::sync::{Arc, LazyLock};
 use tower_http::compression::{
@@ -893,8 +896,18 @@ fn register_websocket_routes() -> Router<AppState> {
 }
 
 fn register_all_routes() -> Router<AppState> {
-    let mut router = Router::new()
-        .route("/", get(redirect_to_project))
+    let mut router = Router::new();
+    #[cfg(feature = "web-ui")]
+    {
+        router = router
+            .route("/", get(web_ui::index))
+            .route("/{*webUiPath}", get(web_ui::fallback));
+    }
+    #[cfg(not(feature = "web-ui"))]
+    {
+        router = router.route("/", get(redirect_to_project));
+    }
+    router = router
         .route(
             "/.well-known/apple-app-site-association",
             get(native_app_association::apple_app_site_association),
@@ -1543,6 +1556,7 @@ fn register_all_routes() -> Router<AppState> {
     router
 }
 
+#[cfg(not(feature = "web-ui"))]
 async fn redirect_to_project(State(state): State<AppState>) -> Redirect {
     Redirect::temporary(&state.runtime_settings.server.project_url)
 }
@@ -1754,7 +1768,7 @@ fn forwarded_proto_is_https(
     Ok(value.eq_ignore_ascii_case("https"))
 }
 
-fn should_compress_json_response(
+fn should_compress_application_response(
     _status: StatusCode,
     _version: axum::http::Version,
     headers: &HeaderMap,
@@ -1766,7 +1780,14 @@ fn should_compress_json_response(
         .and_then(|value| value.split(';').next())
         .map(str::trim)
         .is_some_and(|media_type| {
-            media_type.eq_ignore_ascii_case("application/json") || media_type.ends_with("+json")
+            media_type.starts_with("text/")
+                || media_type.eq_ignore_ascii_case("application/json")
+                || media_type.ends_with("+json")
+                || media_type.eq_ignore_ascii_case("application/javascript")
+                || media_type.eq_ignore_ascii_case("application/wasm")
+                || media_type.eq_ignore_ascii_case("application/xml")
+                || media_type.ends_with("+xml")
+                || media_type.eq_ignore_ascii_case("image/svg+xml")
         })
 }
 
@@ -1785,7 +1806,9 @@ fn apply_shared_http_layers(
                 .br(true)
                 .gzip(true)
                 .zstd(true)
-                .compress_when(DefaultPredicate::default().and(should_compress_json_response)),
+                .compress_when(
+                    DefaultPredicate::default().and(should_compress_application_response),
+                ),
         )
         .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024))
         .layer(axum_middleware::from_fn(middleware::request_id_middleware))

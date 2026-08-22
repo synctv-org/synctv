@@ -1101,12 +1101,22 @@ impl MediaProvider for SynologyProvider {
             PLAYBACK_CACHE_TTL,
             ctx,
             |result, version, expires_at| {
-                mark_synology_playback_resources(result, version, expires_at, config.proxy_mode);
+                mark_synology_playback_resources(
+                    result,
+                    version,
+                    expires_at,
+                    config.proxy_mode,
+                    ctx.playback_client_profile(),
+                );
             },
             || async { Ok(result) },
         )
         .await?;
-        let result = super::require_direct_playback_route(result, config.proxy_mode)?;
+        let result = super::require_compatible_playback_route(
+            result,
+            config.proxy_mode,
+            ctx.playback_client_profile(),
+        )?;
 
         if let SynologyMediaSource::LibraryItem { file_id, .. } = &config.source {
             let resource_version = result.playback_infos.values().find_map(|info| {
@@ -2126,7 +2136,7 @@ async fn generate_video_playback(
             },
             format: format.to_string(),
             expire_at: None,
-            metadata: Some(video_file_metadata(file)),
+            metadata: Some(video_file_metadata(file, profile)),
             p2p_swarm_id: Some(synology_swarm_id(
                 auth.instance_name.as_deref(),
                 "media",
@@ -2261,6 +2271,7 @@ fn mark_synology_playback_resources(
     version: &str,
     expires_at: i64,
     proxy_mode: crate::models::PlaybackProxyMode,
+    client_profile: Option<&super::PlaybackClientProfile>,
 ) {
     let original_default = result.default_mode.clone();
     let prefer_proxy = matches!(
@@ -2283,17 +2294,29 @@ fn mark_synology_playback_resources(
             .iter()
             .any(|media| !media.requires_provider_url());
         if selection.direct && direct_available {
-            generated.insert(mode_name.clone(), original_info.clone());
+            if let Some(direct_info) = super::build_direct_playback_info_for_client(
+                &mode_name,
+                &original_info,
+                client_profile,
+            ) {
+                generated.insert(mode_name.clone(), direct_info);
+            }
         }
         if !selection.proxy {
             continue;
         }
         let mut proxy_info = original_info.clone();
-        proxy_info.medias = original_info
-            .medias
-            .iter()
-            .enumerate()
-            .filter_map(|(media_index, media)| {
+        let (proxy_medias, proxy_default_media_index) = super::map_playback_resources(
+            &original_info.medias,
+            original_info.default_media_index,
+            |media_index, media| {
+                if !super::proxy_playback_media_supported_by_client(
+                    client_profile,
+                    &mode_name,
+                    media,
+                ) {
+                    return None;
+                }
                 let PlaybackMediaProvider::Synology(
                     crate::models::PlaybackSynologyMedia::Refresh {
                         credential_owner_id,
@@ -2316,8 +2339,10 @@ fn mark_synology_playback_resources(
                         resource: resource.clone(),
                     });
                 Some(proxy)
-            })
-            .collect();
+            },
+        );
+        proxy_info.medias = proxy_medias;
+        proxy_info.default_media_index = proxy_default_media_index;
         if proxy_info.medias.is_empty() {
             continue;
         }
@@ -2425,14 +2450,29 @@ fn file_metadata(file: &SynologyFile) -> PlaybackMediaMetadata {
 
 fn video_file_metadata(
     file: &synctv_media_providers::synology::SynologyVideoFile,
+    profile: SynologyPlaybackProfile,
 ) -> PlaybackMediaMetadata {
     PlaybackMediaMetadata {
         resolution: Some(format!("{}x{}", file.resolutionx, file.resolutiony)),
         bitrate: i64::try_from(file.frame_bitrate).ok(),
-        codec: Some(file.video_codec.clone()),
+        codec: video_station_profile_codec(&file.video_codec, profile),
         fps: (file.frame_rate_den > 0)
             .then(|| i32::try_from(file.frame_rate_num / file.frame_rate_den).ok())
             .flatten(),
+    }
+}
+
+fn video_station_profile_codec(
+    source_codec: &str,
+    profile: SynologyPlaybackProfile,
+) -> Option<String> {
+    match profile {
+        SynologyPlaybackProfile::HlsMedium | SynologyPlaybackProfile::HlsLow => {
+            Some("h264".to_string())
+        }
+        SynologyPlaybackProfile::Raw | SynologyPlaybackProfile::HlsRemux => {
+            (!source_codec.is_empty()).then(|| source_codec.to_string())
+        }
     }
 }
 
@@ -2647,11 +2687,32 @@ mod tests {
             "version",
             1_900_000_000,
             crate::models::PlaybackProxyMode::Prefer,
+            None,
         );
 
         assert_eq!(result.default_mode, "proxy_original");
         assert_eq!(result.playback_infos.len(), 1);
         assert!(result.playback_infos.contains_key("proxy_original"));
+    }
+
+    #[test]
+    fn video_station_transcode_profiles_advertise_h264() {
+        assert_eq!(
+            video_station_profile_codec("hevc", SynologyPlaybackProfile::Raw).as_deref(),
+            Some("hevc")
+        );
+        assert_eq!(
+            video_station_profile_codec("hevc", SynologyPlaybackProfile::HlsRemux).as_deref(),
+            Some("hevc")
+        );
+        assert_eq!(
+            video_station_profile_codec("hevc", SynologyPlaybackProfile::HlsMedium).as_deref(),
+            Some("h264")
+        );
+        assert_eq!(
+            video_station_profile_codec("hevc", SynologyPlaybackProfile::HlsLow).as_deref(),
+            Some("h264")
+        );
     }
 
     #[test]

@@ -8,6 +8,13 @@ impl RemoteProviderManager {
     pub(super) fn map_remote_resolution_error(err: crate::Error) -> ProviderError {
         match err {
             crate::Error::InvalidInput(msg) => ProviderError::InvalidConfig(msg),
+            crate::Error::ClientIncompatible {
+                reason,
+                required_capability,
+            } => ProviderError::ClientIncompatible {
+                reason,
+                required_capability,
+            },
             crate::Error::RangeNotSatisfiable { total_size } => ProviderError::InvalidConfig(
                 format!("Range not satisfiable: total size {total_size}"),
             ),
@@ -83,6 +90,13 @@ impl RemoteProviderManager {
             ProviderError::UnsupportedFormat(format) => {
                 ProviderError::UnsupportedFormat(format.clone())
             }
+            ProviderError::ClientIncompatible {
+                reason,
+                required_capability,
+            } => ProviderError::ClientIncompatible {
+                reason: reason.clone(),
+                required_capability: required_capability.clone(),
+            },
             ProviderError::ParseError(message) => ProviderError::ParseError(message.clone()),
             ProviderError::MissingInstance => ProviderError::MissingInstance,
             ProviderError::InstanceNotFound(name) => ProviderError::InstanceNotFound(name.clone()),

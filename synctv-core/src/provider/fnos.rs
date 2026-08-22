@@ -1626,6 +1626,7 @@ fn mark_fnos_playback_resources(
     version: &str,
     expires_at: i64,
     selection: super::PlaybackRouteSelection,
+    client_profile: Option<&super::PlaybackClientProfile>,
 ) {
     let original_default_mode = result.default_mode.clone();
     let original_modes = result
@@ -1640,7 +1641,13 @@ fn mark_fnos_playback_resources(
         }
         if mode_name.starts_with("direct_") {
             if selection.direct {
-                generated.insert(mode_name, original_info);
+                if let Some(direct_info) = super::build_direct_playback_info_for_client(
+                    &mode_name,
+                    &original_info,
+                    client_profile,
+                ) {
+                    generated.insert(mode_name, direct_info);
+                }
             }
             continue;
         }
@@ -1648,11 +1655,17 @@ fn mark_fnos_playback_resources(
             continue;
         }
         let mut proxy_info = original_info.clone();
-        proxy_info.medias = original_info
-            .medias
-            .iter()
-            .enumerate()
-            .filter_map(|(media_index, media)| {
+        let (proxy_medias, proxy_default_media_index) = super::map_playback_resources(
+            &original_info.medias,
+            original_info.default_media_index,
+            |media_index, media| {
+                if !super::proxy_playback_media_supported_by_client(
+                    client_profile,
+                    &mode_name,
+                    media,
+                ) {
+                    return None;
+                }
                 let (credential_owner_id, server_id, resource) = match &media.provider {
                     PlaybackMediaProvider::Fnos(PlaybackFnosMedia::FileRefresh {
                         credential_owner_id,
@@ -1711,8 +1724,10 @@ fn mark_fnos_playback_resources(
                     resource,
                 });
                 Some(proxy)
-            })
-            .collect();
+            },
+        );
+        proxy_info.medias = proxy_medias;
+        proxy_info.default_media_index = proxy_default_media_index;
         if proxy_info.medias.is_empty() {
             continue;
         }
@@ -2425,18 +2440,22 @@ impl MediaProvider for FnosProvider {
             Duration::from_hours(2),
             ctx,
             |result, version, expires_at| {
-                mark_fnos_playback_resources(result, version, expires_at, selection);
+                mark_fnos_playback_resources(
+                    result,
+                    version,
+                    expires_at,
+                    selection,
+                    ctx.playback_client_profile(),
+                );
             },
             || async { Ok(result) },
         )
         .await?;
-        if config.proxy_mode == crate::models::PlaybackProxyMode::DirectOnly
-            && result.playback_infos.is_empty()
-        {
-            return Err(ProviderError::UnsupportedFormat(
-                "This FNOS media source cannot provide a direct playback route".to_string(),
-            ));
-        }
+        let result = super::require_compatible_playback_route(
+            result,
+            config.proxy_mode,
+            ctx.playback_client_profile(),
+        )?;
 
         let media = result
             .metadata
@@ -3450,6 +3469,7 @@ mod tests {
             "version",
             123,
             fnos_route_selection(crate::models::PlaybackProxyMode::Auto),
+            None,
         );
 
         assert!(matches!(
@@ -3520,6 +3540,7 @@ mod tests {
             "version",
             123,
             fnos_route_selection(crate::models::PlaybackProxyMode::Auto),
+            None,
         );
 
         let info = &result.playback_infos["proxy_direct"];

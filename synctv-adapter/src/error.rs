@@ -17,6 +17,7 @@ pub mod error_codes {
     pub const CONFLICT: i32 = 2003;
 
     pub const INVALID_ARGUMENT: i32 = 3000;
+    pub const FAILED_PRECONDITION: i32 = 3001;
 
     pub const PERMISSION_DENIED: i32 = 4000;
     pub const FORBIDDEN: i32 = 4001;
@@ -35,6 +36,7 @@ pub enum ErrorKind {
     AlreadyExists,
     Conflict,
     InvalidArgument,
+    FailedPrecondition,
     RateLimited,
     ServiceUnavailable,
     Timeout,
@@ -51,6 +53,7 @@ impl ErrorKind {
             Self::AlreadyExists => error_codes::ALREADY_EXISTS,
             Self::Conflict => error_codes::CONFLICT,
             Self::InvalidArgument => error_codes::INVALID_ARGUMENT,
+            Self::FailedPrecondition => error_codes::FAILED_PRECONDITION,
             Self::RateLimited => error_codes::RESOURCE_EXHAUSTED,
             Self::ServiceUnavailable => error_codes::SERVICE_UNAVAILABLE,
             Self::Timeout => error_codes::TIMEOUT,
@@ -79,6 +82,7 @@ pub fn classified_error_to_tonic_status(error: &impl ClassifiedError) -> tonic::
         ErrorKind::AlreadyExists => tonic::Status::already_exists(message),
         ErrorKind::Conflict => tonic::Status::aborted(message),
         ErrorKind::InvalidArgument => tonic::Status::invalid_argument(message),
+        ErrorKind::FailedPrecondition => tonic::Status::failed_precondition(message),
         ErrorKind::RateLimited => tonic::Status::resource_exhausted(message),
         ErrorKind::ServiceUnavailable => tonic::Status::unavailable(message),
         ErrorKind::Timeout => tonic::Status::deadline_exceeded(message),
@@ -107,6 +111,7 @@ impl ClassifiedError for ProviderError {
             | Self::InvalidCredentialType
             | Self::EncryptionRequired(_)
             | Self::JsonError(_) => ErrorKind::InvalidArgument,
+            Self::ClientIncompatible { .. } => ErrorKind::FailedPrecondition,
             Self::NotFound | Self::InstanceNotFound(_) | Self::CredentialNotFound(_) => {
                 ErrorKind::NotFound
             }
@@ -145,6 +150,7 @@ impl ClassifiedError for ProviderError {
             | Self::CredentialExpired(message)
             | Self::RouteRegistrationFailed(message)
             | Self::Internal(message) => Cow::Borrowed(message),
+            Self::ClientIncompatible { reason, .. } => Cow::Borrowed(reason),
             Self::NotFound => Cow::Borrowed(synctv_common::messages::RESOURCE_NOT_FOUND),
             Self::MissingInstance => Cow::Borrowed("Provider instance not configured"),
             Self::AuthRequired => Cow::Borrowed(synctv_common::messages::AUTHENTICATION_REQUIRED),

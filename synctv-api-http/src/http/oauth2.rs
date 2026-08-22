@@ -23,6 +23,7 @@
 
 use axum::{
     extract::{Path, Query, State},
+    http::HeaderMap,
     Json,
 };
 use std::sync::Arc;
@@ -135,6 +136,53 @@ fn map_oauth2_exchange_error(error: synctv_api_common::impls::ApiError) -> AppEr
     map_api_error(error)
 }
 
+fn request_allowed_web_callback(
+    redirect_url: Option<&str>,
+    native: Option<bool>,
+    headers: &HeaderMap,
+    direct_peer_ip: Option<std::net::IpAddr>,
+    server: &synctv_api_common::ApiServerSettings,
+) -> AppResult<Option<String>> {
+    let Some(redirect_url) = redirect_url.filter(|_| native != Some(true)) else {
+        return Ok(None);
+    };
+    let Ok(parsed) = url::Url::parse(redirect_url) else {
+        return Ok(None);
+    };
+    if parsed.path() != "/oauth2/callback"
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+    {
+        return Ok(None);
+    }
+
+    let request_scheme = if direct_peer_ip.is_some_and(|ip| server.is_trusted_proxy(&ip)) {
+        match super::optional_header_str(headers, &super::X_FORWARDED_PROTO)? {
+            Some(value) if value.eq_ignore_ascii_case("http") => "http",
+            Some(value) if value.eq_ignore_ascii_case("https") => "https",
+            Some(_) => {
+                return Err(AppError::bad_request(
+                    "x-forwarded-proto must be http or https",
+                ));
+            }
+            None => "http",
+        }
+    } else {
+        "http"
+    };
+    if !parsed.scheme().eq_ignore_ascii_case(request_scheme) {
+        return Ok(None);
+    }
+
+    let host = super::required_header_str(headers, "host", "Host header is required")?;
+    Ok(
+        super::websocket::same_origin_as_host(&parsed, host, Some(request_scheme))?
+            .then(|| redirect_url.to_string()),
+    )
+}
+
 /// Get `OAuth2` authorization URL for login flow
 ///
 /// GET /`api/oauth2/:provider/authorize?redirectUrl`=<url>
@@ -159,9 +207,17 @@ pub async fn get_authorize_url(
     State(state): State<AppState>,
     Path(path): Path<OAuth2ProviderInstancePathRequest>,
     Query(query): Query<AuthorizationUrlQuery>,
+    headers: HeaderMap,
 ) -> AppResult<Json<GetAuthorizationUrlResponse>> {
     let oauth2_api = require_oauth2_api(&state)?;
     let req = query.into_request(path.provider);
+    let request_allowed_redirect_url = request_allowed_web_callback(
+        req.redirect_url.as_deref(),
+        req.native,
+        &headers,
+        request_meta.0.socket_ip,
+        &state.runtime_settings.server,
+    )?;
     let provider_for_log = req.provider.clone();
 
     let request_meta = request_meta.0;
@@ -173,7 +229,11 @@ pub async fn get_authorize_url(
             EndpointRateLimitCategory::Read,
             move |request_control| async move {
                 oauth2_api
-                    .get_authorization_url_response_with_control(req, Some(&request_control))
+                    .get_authorization_url_response_with_control(
+                        req,
+                        request_allowed_redirect_url,
+                        Some(&request_control),
+                    )
                     .await
             },
         )
@@ -294,9 +354,17 @@ pub async fn get_bind_authorize_url(
     State(state): State<AppState>,
     Path(path): Path<OAuth2ProviderInstancePathRequest>,
     Query(query): Query<BindAuthorizationUrlQuery>,
+    headers: HeaderMap,
 ) -> AppResult<Json<GetAuthorizationUrlForBindResponse>> {
     let oauth2_api = require_oauth2_api(&state)?;
     let req = query.into_request(path.provider);
+    let request_allowed_redirect_url = request_allowed_web_callback(
+        req.redirect_url.as_deref(),
+        req.native,
+        &headers,
+        request_meta.0.socket_ip,
+        &state.runtime_settings.server,
+    )?;
     let provider_for_log = req.provider.clone();
 
     let request_meta = request_meta.0;
@@ -311,6 +379,7 @@ pub async fn get_bind_authorize_url(
                     .get_authorization_url_for_bind_response_with_control(
                         &authenticated.user_id(),
                         req,
+                        request_allowed_redirect_url,
                         Some(&request_control),
                     )
                     .await
@@ -480,7 +549,7 @@ pub async fn get_linked_providers(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::StatusCode;
+    use axum::http::{header, HeaderMap, StatusCode};
 
     type TestResult<T = ()> = anyhow::Result<T>;
 
@@ -538,5 +607,107 @@ mod tests {
         let err = oauth2_unavailable_error();
         assert_eq!(err.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(err.message(), "OAuth2 is not available on this server.");
+    }
+
+    fn callback_headers(host: &str) -> TestResult<HeaderMap> {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, host.parse()?);
+        Ok(headers)
+    }
+
+    #[test]
+    fn same_origin_web_callback_is_request_allowed() -> TestResult {
+        let mut server = synctv_api_common::ApiServerSettings::default();
+        server.trusted_proxies = vec!["127.0.0.1".to_string()];
+        let mut headers = callback_headers("app.example.test")?;
+        headers.insert("x-forwarded-proto", "https".parse()?);
+
+        let allowed = request_allowed_web_callback(
+            Some("https://app.example.test/oauth2/callback"),
+            Some(false),
+            &headers,
+            Some("127.0.0.1".parse()?),
+            &server,
+        )?;
+
+        assert_eq!(
+            allowed.as_deref(),
+            Some("https://app.example.test/oauth2/callback")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn web_callback_requires_exact_origin_and_path() -> TestResult {
+        let mut server = synctv_api_common::ApiServerSettings::default();
+        server.trusted_proxies = vec!["127.0.0.1".to_string()];
+        let mut headers = callback_headers("app.example.test:8443")?;
+        headers.insert("x-forwarded-proto", "https".parse()?);
+        let peer = Some("127.0.0.1".parse()?);
+
+        for redirect in [
+            "https://evil.example.test:8443/oauth2/callback",
+            "https://app.example.test/oauth2/callback",
+            "https://app.example.test:8443/auth.html",
+            "https://app.example.test:8443/oauth2/callback?next=/rooms",
+            "https://app.example.test:8443/oauth2/callback#fragment",
+        ] {
+            assert_eq!(
+                request_allowed_web_callback(Some(redirect), Some(false), &headers, peer, &server,)?,
+                None,
+                "unexpectedly allowed {redirect}",
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_and_untrusted_forwarded_callbacks_are_not_request_allowed() -> TestResult {
+        let server = synctv_api_common::ApiServerSettings::default();
+        let mut headers = callback_headers("app.example.test")?;
+        headers.insert("x-forwarded-proto", "https".parse()?);
+        let redirect = Some("https://app.example.test/oauth2/callback");
+
+        assert_eq!(
+            request_allowed_web_callback(
+                redirect,
+                Some(true),
+                &headers,
+                Some("127.0.0.1".parse()?),
+                &server,
+            )?,
+            None,
+        );
+        assert_eq!(
+            request_allowed_web_callback(
+                redirect,
+                Some(false),
+                &headers,
+                Some("198.51.100.10".parse()?),
+                &server,
+            )?,
+            None,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn trusted_proxy_callback_rejects_invalid_forwarded_proto() -> TestResult {
+        let mut server = synctv_api_common::ApiServerSettings::default();
+        server.trusted_proxies = vec!["127.0.0.1".to_string()];
+        let mut headers = callback_headers("app.example.test")?;
+        headers.insert("x-forwarded-proto", "javascript".parse()?);
+
+        let error = request_allowed_web_callback(
+            Some("https://app.example.test/oauth2/callback"),
+            Some(false),
+            &headers,
+            Some("127.0.0.1".parse()?),
+            &server,
+        )
+        .expect_err("invalid proxy scheme must fail");
+
+        assert_eq!(error.status(), StatusCode::BAD_REQUEST);
+        Ok(())
     }
 }

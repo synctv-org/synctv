@@ -854,6 +854,7 @@ fn mark_cloudreve_playback_resources(
     version: &str,
     expires_at: i64,
     proxy_mode: crate::models::PlaybackProxyMode,
+    client_profile: Option<&super::PlaybackClientProfile>,
 ) {
     let original_default_mode = result.default_mode.clone();
     let mut default_selection = super::PlaybackRouteSelection::DIRECT_ONLY;
@@ -873,7 +874,13 @@ fn mark_cloudreve_playback_resources(
             default_selection = selection;
         }
         if selection.direct {
-            generated.insert(mode_name.clone(), original_info.clone());
+            if let Some(direct_info) = super::build_direct_playback_info_for_client(
+                &mode_name,
+                &original_info,
+                client_profile,
+            ) {
+                generated.insert(mode_name.clone(), direct_info);
+            }
         }
         if !selection.proxy {
             continue;
@@ -881,17 +888,20 @@ fn mark_cloudreve_playback_resources(
         let proxy_mode_name = format!("proxy_{mode_name}");
 
         let mut proxy_info = original_info.clone();
-        proxy_info.medias = original_info
-            .medias
-            .iter()
-            .enumerate()
-            .filter(|(_, media)| {
-                matches!(
+        let (proxy_medias, proxy_default_media_index) = super::map_playback_resources(
+            &original_info.medias,
+            original_info.default_media_index,
+            |media_index, media| {
+                if !super::proxy_playback_media_supported_by_client(
+                    client_profile,
+                    &mode_name,
+                    media,
+                ) || !matches!(
                     media.provider,
                     PlaybackMediaProvider::Cloudreve(PlaybackCloudreveMedia::Direct { .. })
-                )
-            })
-            .map(|(media_index, media)| {
+                ) {
+                    return None;
+                }
                 let mut proxy = media.clone();
                 proxy.expire_at = chrono::DateTime::from_timestamp(expires_at, 0);
                 proxy.provider = PlaybackMediaProvider::Cloudreve(
@@ -911,9 +921,11 @@ fn mark_cloudreve_playback_resources(
                         }
                     },
                 );
-                proxy
-            })
-            .collect();
+                Some(proxy)
+            },
+        );
+        proxy_info.medias = proxy_medias;
+        proxy_info.default_media_index = proxy_default_media_index;
         proxy_info.subtitles = original_info
             .subtitles
             .iter()
@@ -1094,7 +1106,7 @@ impl MediaProvider for CloudreveProvider {
             metadata: None,
         };
         let proxy_mode = config.proxy_mode;
-        super::cached_versioned_playback_or_fill(
+        let result = super::cached_versioned_playback_or_fill(
             Self::NAME,
             &format!(
                 "playback:{user_id}:{}:room:{}:{}",
@@ -1106,11 +1118,18 @@ impl MediaProvider for CloudreveProvider {
             PLAYBACK_CACHE_TTL,
             ctx,
             |result, version, expires_at| {
-                mark_cloudreve_playback_resources(result, version, expires_at, proxy_mode);
+                mark_cloudreve_playback_resources(
+                    result,
+                    version,
+                    expires_at,
+                    proxy_mode,
+                    ctx.playback_client_profile(),
+                );
             },
             || async { Ok(result) },
         )
-        .await
+        .await?;
+        super::require_compatible_playback_route(result, proxy_mode, ctx.playback_client_profile())
     }
 
     async fn validate_source_config(
@@ -1830,6 +1849,7 @@ mod tests {
             "version-1",
             1_900_000_000,
             crate::models::PlaybackProxyMode::Prefer,
+            None,
         );
 
         let direct = &result.playback_infos["direct"];
@@ -1864,6 +1884,7 @@ mod tests {
             "version-1",
             1_900_000_000,
             crate::models::PlaybackProxyMode::Auto,
+            None,
         );
 
         assert!(matches!(
@@ -1880,6 +1901,7 @@ mod tests {
             "version-1",
             1_900_000_000,
             crate::models::PlaybackProxyMode::Prefer,
+            None,
         );
         assert_eq!(preferred.default_mode, "proxy_direct");
         assert!(preferred.playback_infos.contains_key("direct"));
@@ -1890,6 +1912,7 @@ mod tests {
             "version-1",
             1_900_000_000,
             crate::models::PlaybackProxyMode::Only,
+            None,
         );
         assert_eq!(proxy_only.default_mode, "proxy_direct");
         assert!(!proxy_only.playback_infos.contains_key("direct"));

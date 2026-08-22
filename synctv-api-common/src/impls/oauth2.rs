@@ -383,6 +383,7 @@ impl OAuth2ApiImpl {
     pub async fn get_authorization_url_response_with_control(
         &self,
         req: GetAuthorizationUrlRequest,
+        request_allowed_redirect_url: Option<String>,
         control: Option<&ExecutionControl>,
     ) -> Result<GetAuthorizationUrlResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
@@ -397,6 +398,7 @@ impl OAuth2ApiImpl {
             .prepare_authorization_url_with_control(
                 &req.provider,
                 redirect_url,
+                request_allowed_redirect_url,
                 OAuth2Operation::Login,
                 None,
                 mode,
@@ -420,6 +422,7 @@ impl OAuth2ApiImpl {
         &self,
         user_id: &UserId,
         req: GetAuthorizationUrlForBindRequest,
+        request_allowed_redirect_url: Option<String>,
         control: Option<&ExecutionControl>,
     ) -> Result<GetAuthorizationUrlForBindResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
@@ -447,6 +450,7 @@ impl OAuth2ApiImpl {
             .prepare_authorization_url_with_control(
                 &req.provider,
                 redirect_url,
+                request_allowed_redirect_url,
                 OAuth2Operation::Bind,
                 Some(*user_id),
                 mode,

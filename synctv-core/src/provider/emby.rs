@@ -1962,6 +1962,9 @@ impl MediaProvider for EmbyProvider {
         ))
         .await?;
 
+        let result =
+            super::filter_playback_routes_by_client(result, proxy_mode, playback_client_profile)?;
+
         let Some(play_session_id) = emby_play_session_id(&result) else {
             return Ok(result);
         };

@@ -2368,6 +2368,7 @@ fn mark_bilibili_playback_resources(
     // while proxy siblings remain as a server-mediated fallback.
     attach_bilibili_live_danmaku(result, context);
     let selection = bilibili_route_selection(proxy_mode);
+    let client_profile = context.and_then(ProviderContext::playback_client_profile);
     let original_default_mode = result.default_mode.clone();
     let original_modes = result
         .playback_infos
@@ -2388,7 +2389,13 @@ fn mark_bilibili_playback_resources(
             )
         {
             let mut direct_info = original_info.clone();
-            if selection.direct {
+            if selection.direct
+                && super::direct_playback_media_supported_by_client(
+                    client_profile,
+                    &mode_name,
+                    &direct_info.medias[0],
+                )
+            {
                 if let PlaybackMediaProvider::Bilibili(
                     PlaybackBilibiliMedia::DirectDurlManifest {
                         version: resource_version,
@@ -2427,14 +2434,23 @@ fn mark_bilibili_playback_resources(
                             });
                     }
                 }
-                populate_bilibili_proxy_attachments(
-                    &original_info,
-                    &mut proxy_info,
-                    version,
-                    expires_at,
-                    &mode_name,
-                );
-                generated.insert(format!("proxy_{mode_name}"), proxy_info);
+                proxy_info.medias.retain(|media| {
+                    super::proxy_playback_media_supported_by_client(
+                        client_profile,
+                        &mode_name,
+                        media,
+                    )
+                });
+                if !proxy_info.medias.is_empty() {
+                    populate_bilibili_proxy_attachments(
+                        &original_info,
+                        &mut proxy_info,
+                        version,
+                        expires_at,
+                        &mode_name,
+                    );
+                    generated.insert(format!("proxy_{mode_name}"), proxy_info);
+                }
             }
             continue;
         }
@@ -2498,11 +2514,25 @@ fn mark_bilibili_playback_resources(
                         ),
                     )
                 })
+                .filter(|media| {
+                    super::direct_playback_media_supported_by_client(
+                        client_profile,
+                        &mode_name,
+                        media,
+                    )
+                })
                 .collect();
-            direct_info.default_media_index = Some(0);
-            generated.insert(mode_name.clone(), direct_info);
+            if !direct_info.medias.is_empty() {
+                direct_info.default_media_index = Some(0);
+                generated.insert(mode_name.clone(), direct_info);
+            }
         } else if selection.direct {
-            generated.insert(mode_name.clone(), direct_info);
+            direct_info.medias.retain(|media| {
+                super::direct_playback_media_supported_by_client(client_profile, &mode_name, media)
+            });
+            if !direct_info.medias.is_empty() {
+                generated.insert(mode_name.clone(), direct_info);
+            }
         }
 
         if selection.proxy {
@@ -2526,8 +2556,15 @@ fn mark_bilibili_playback_resources(
                             ),
                         )
                     })
+                    .filter(|media| {
+                        super::proxy_playback_media_supported_by_client(
+                            client_profile,
+                            &mode_name,
+                            media,
+                        )
+                    })
                     .collect();
-                proxy_info.default_media_index = Some(0);
+                proxy_info.default_media_index = (!proxy_info.medias.is_empty()).then_some(0);
             } else {
                 proxy_info.medias = original_info
                     .medias
@@ -2563,30 +2600,34 @@ fn mark_bilibili_playback_resources(
                             ),
                         ))
                     })
+                    .filter(|media| {
+                        super::proxy_playback_media_supported_by_client(
+                            client_profile,
+                            &mode_name,
+                            media,
+                        )
+                    })
                     .collect();
             }
-            populate_bilibili_proxy_attachments(
-                &original_info,
-                &mut proxy_info,
-                version,
-                expires_at,
-                &mode_name,
-            );
-            generated.insert(proxy_mode_name, proxy_info);
+            if !proxy_info.medias.is_empty() {
+                populate_bilibili_proxy_attachments(
+                    &original_info,
+                    &mut proxy_info,
+                    version,
+                    expires_at,
+                    &mode_name,
+                );
+                generated.insert(proxy_mode_name, proxy_info);
+            }
         }
     }
 
     result.playback_infos = generated;
-    let proxy_default_mode = format!("proxy_{original_default_mode}");
-    let direct_default_available = result.playback_infos.contains_key(&original_default_mode);
-    let proxy_default_available = result.playback_infos.contains_key(&proxy_default_mode);
-    result.default_mode = if direct_default_available && !selection.prefer_proxy {
-        original_default_mode
-    } else if proxy_default_available {
-        proxy_default_mode
-    } else {
-        original_default_mode
-    };
+    super::select_generated_playback_default(
+        result,
+        &original_default_mode,
+        selection.prefer_proxy,
+    );
 }
 
 fn bilibili_credential_server_id() -> String {
@@ -3499,7 +3540,7 @@ impl MediaProvider for BilibiliProvider {
         )?;
         let proxy_mode = config.proxy_mode();
 
-        Box::pin(super::cached_versioned_playback_or_fill(
+        let result = Box::pin(super::cached_versioned_playback_or_fill(
             Self::NAME,
             &cache_key,
             cache_ttl,
@@ -3524,7 +3565,8 @@ impl MediaProvider for BilibiliProvider {
                 .await
             },
         ))
-        .await
+        .await?;
+        super::require_compatible_playback_route(result, proxy_mode, _ctx.playback_client_profile())
     }
 
     async fn validate_source_config(
@@ -4450,9 +4492,11 @@ mod tests {
     };
     use crate::models::{BilibiliTarget, PlaylistId, ProviderTarget, RoomId};
     use crate::provider::{
-        InMemoryProviderStore, PlaybackInfo, PlaybackResult, PlaybackTransportAction,
+        InMemoryProviderStore, PlaybackAudioCodec, PlaybackClientEnvironment,
+        PlaybackClientProfile, PlaybackInfo, PlaybackMediaCapability, PlaybackMediaPipeline,
+        PlaybackMediaTransport, PlaybackResult, PlaybackTransportAction, PlaybackVideoCodec,
         ProviderActor, ProviderContext, ProviderStore, ProviderStoreExt, SourceConfig,
-        VersionedPlayback,
+        VersionedPlayback, CURRENT_PLAYBACK_CLIENT_PROFILE_VERSION,
     };
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -4461,6 +4505,58 @@ mod tests {
 
     fn provider_ok<T>(result: Result<T, super::ProviderError>) -> TestResult<T> {
         result.map_err(|error| anyhow::anyhow!(error.to_string()))
+    }
+
+    fn web_hls_profile() -> PlaybackClientProfile {
+        PlaybackClientProfile {
+            profile_version: CURRENT_PLAYBACK_CLIENT_PROFILE_VERSION,
+            environment: PlaybackClientEnvironment::Web,
+            supported_video_codecs: vec![PlaybackVideoCodec::H264],
+            media_capabilities: vec![PlaybackMediaCapability {
+                transport: PlaybackMediaTransport::Hls,
+                container: None,
+                video_codec: Some(PlaybackVideoCodec::H264),
+                audio_codec: Some(PlaybackAudioCodec::Aac),
+                pipeline: PlaybackMediaPipeline::MediaSource,
+                codec_string: Some("avc1.42E01E,mp4a.40.2".to_string()),
+            }],
+            supports_custom_http_headers: false,
+            supports_provider_proxy: true,
+            supports_media_source_extensions: true,
+            ..PlaybackClientProfile::default()
+        }
+    }
+
+    fn durl_test_result() -> TestResult<PlaybackResult> {
+        let media = provider_ok(bilibili_durl_media(
+            "MP4",
+            [(
+                "https://cdn.example/video.mp4?deadline=200".to_string(),
+                Vec::new(),
+                1_000,
+            )],
+            "sm3_test_durl_web".to_string(),
+        ))?;
+        Ok(PlaybackResult {
+            playback_infos: HashMap::from([(
+                "durl".to_string(),
+                PlaybackInfo {
+                    thumbnail: None,
+                    medias: vec![media],
+                    default_media_index: Some(0),
+                    subtitles: Vec::new(),
+                    default_subtitle_index: None,
+                    danmakus: Vec::new(),
+                    default_danmaku_index: None,
+                },
+            )]),
+            default_mode: "durl".to_string(),
+            provider: crate::models::SourceProvider::Bilibili,
+            provider_instance_name: None,
+            duration_seconds: None,
+            playback_kind: Some(crate::models::PlaybackKind::Regular),
+            metadata: None,
+        })
     }
 
     #[test]
@@ -5052,6 +5148,57 @@ mod tests {
         assert!(matches!(
             proxy_only.playback_infos["proxy_durl"].danmakus[0].provider,
             PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::FileProxy { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn web_durl_with_required_headers_only_exposes_the_proxy_route() -> TestResult {
+        let profile = web_hls_profile();
+        let context = ProviderContext::new("test", ProviderActor::System)
+            .with_playback_client_profile(Some(profile));
+        let mut result = durl_test_result()?;
+
+        mark_bilibili_playback_resources(
+            &mut result,
+            "version",
+            123,
+            crate::models::PlaybackProxyMode::DirectPrefer,
+            Some(&context),
+        );
+
+        assert_eq!(result.default_mode, "proxy_durl");
+        assert!(!result.playback_infos.contains_key("durl"));
+        assert!(result.playback_infos.contains_key("proxy_durl"));
+        Ok(())
+    }
+
+    #[test]
+    fn web_direct_only_durl_returns_structured_client_incompatibility() -> TestResult {
+        let profile = web_hls_profile();
+        let context = ProviderContext::new("test", ProviderActor::System)
+            .with_playback_client_profile(Some(profile.clone()));
+        let mut result = durl_test_result()?;
+        mark_bilibili_playback_resources(
+            &mut result,
+            "version",
+            123,
+            crate::models::PlaybackProxyMode::DirectOnly,
+            Some(&context),
+        );
+
+        let error = super::super::require_compatible_playback_route(
+            result,
+            crate::models::PlaybackProxyMode::DirectOnly,
+            Some(&profile),
+        )
+        .expect_err("DirectOnly cannot satisfy browser header restrictions");
+        assert!(matches!(
+            error,
+            super::ProviderError::ClientIncompatible {
+                required_capability: Some(ref capability),
+                ..
+            } if capability == "custom_http_headers_or_provider_proxy"
         ));
         Ok(())
     }

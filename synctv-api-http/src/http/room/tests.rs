@@ -99,6 +99,7 @@ fn test_watch_after_event_sequence_rejects_non_utf8_last_event_id() -> TestResul
 #[test]
 fn test_build_get_playback_request_parses_generic_profile_query() -> TestResult {
     let request = app_ok(build_get_playback_request(&GetPlaybackQuery {
+        client_profile: None,
         stream_preference: Some(synctv_proto::client::PlaybackStreamPreference::Transcode as i32),
         max_streaming_bitrate: Some(8_000_000),
         max_audio_channels: Some(2),
@@ -173,6 +174,48 @@ fn test_build_get_playback_request_omits_profile_when_query_is_empty() -> TestRe
 }
 
 #[test]
+fn test_build_get_playback_request_decodes_versioned_profile() -> TestResult {
+    use base64::Engine as _;
+    use prost::Message as _;
+
+    let expected = synctv_proto::client::PlaybackClientProfile {
+        profile_version: 2,
+        environment: synctv_proto::client::PlaybackClientEnvironment::Web as i32,
+        media_capabilities: vec![synctv_proto::client::PlaybackMediaCapability {
+            transport: synctv_proto::client::PlaybackMediaTransport::Dash as i32,
+            container: Some(synctv_proto::client::PlaybackContainer::Mp4 as i32),
+            video_codec: Some(synctv_proto::client::PlaybackVideoCodec::H264 as i32),
+            audio_codec: Some(synctv_proto::client::PlaybackAudioCodec::Aac as i32),
+            pipeline: synctv_proto::client::PlaybackMediaPipeline::MediaSource as i32,
+            codec_string: Some("avc1.42E01E,mp4a.40.2".to_string()),
+        }],
+        supports_provider_proxy: true,
+        supports_media_source_extensions: true,
+        ..Default::default()
+    };
+    let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(expected.encode_to_vec());
+    let request = app_ok(build_get_playback_request(&GetPlaybackQuery {
+        client_profile: Some(encoded),
+        ..Default::default()
+    }))?;
+
+    assert_eq!(request.playback_client_profile, Some(expected));
+    Ok(())
+}
+
+#[test]
+fn test_build_get_playback_request_rejects_mixed_profile_encodings() {
+    let error = build_get_playback_request(&GetPlaybackQuery {
+        client_profile: Some("AA".to_string()),
+        stream_preference: Some(1),
+        ..Default::default()
+    })
+    .expect_err("profile encodings must be unambiguous");
+
+    assert!(error.message().contains("cannot be combined"), "{error:?}");
+}
+
+#[test]
 fn test_handwritten_room_queries_ignore_unknown_fields() {
     let playback_query =
         serde_urlencoded::from_str::<GetPlaybackQuery>("streamPreference=2&extra=true")
@@ -240,6 +283,7 @@ fn test_handwritten_room_queries_ignore_unknown_fields() {
 #[test]
 fn test_build_get_playback_request_rejects_invalid_video_codec() {
     let error = build_get_playback_request(&GetPlaybackQuery {
+        client_profile: None,
         stream_preference: None,
         max_streaming_bitrate: None,
         max_audio_channels: None,
@@ -257,6 +301,7 @@ fn test_build_get_playback_request_rejects_invalid_video_codec() {
 #[test]
 fn test_build_get_playback_request_rejects_invalid_stream_preference() {
     let error = build_get_playback_request(&GetPlaybackQuery {
+        client_profile: None,
         stream_preference: Some(999),
         max_streaming_bitrate: None,
         max_audio_channels: None,
@@ -274,6 +319,7 @@ fn test_build_get_playback_request_rejects_invalid_stream_preference() {
 #[test]
 fn test_build_get_playback_request_rejects_invalid_container() {
     let error = build_get_playback_request(&GetPlaybackQuery {
+        client_profile: None,
         stream_preference: None,
         max_streaming_bitrate: None,
         max_audio_channels: None,
@@ -291,6 +337,7 @@ fn test_build_get_playback_request_rejects_invalid_container() {
 #[test]
 fn test_build_get_playback_request_rejects_invalid_audio_capability() {
     let error = build_get_playback_request(&GetPlaybackQuery {
+        client_profile: None,
         stream_preference: None,
         max_streaming_bitrate: None,
         max_audio_channels: None,
@@ -308,6 +355,7 @@ fn test_build_get_playback_request_rejects_invalid_audio_capability() {
 #[test]
 fn test_build_get_playback_request_rejects_invalid_subtitle_preference() -> TestResult {
     let error = app_err(build_get_playback_request(&GetPlaybackQuery {
+        client_profile: None,
         stream_preference: None,
         max_streaming_bitrate: None,
         max_audio_channels: None,

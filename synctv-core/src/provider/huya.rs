@@ -485,7 +485,7 @@ impl MediaProvider for HuyaProvider {
             HuyaResourceKind::Live => Duration::from_mins(2),
             HuyaResourceKind::Video => Duration::from_hours(2),
         };
-        super::cached_versioned_playback_or_fill(
+        let result = super::cached_versioned_playback_or_fill(
             Self::NAME,
             &Self::cache_key(&resource),
             cache_ttl,
@@ -493,7 +493,12 @@ impl MediaProvider for HuyaProvider {
             mark_huya_playback_resources,
             || async { Self::playback_result(self.client.resolve(&resource, None).await?) },
         )
-        .await
+        .await?;
+        super::filter_playback_routes_by_client(
+            result,
+            crate::models::PlaybackProxyMode::Only,
+            ctx.playback_client_profile(),
+        )
     }
 
     async fn validate_source_config(

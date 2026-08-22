@@ -1120,7 +1120,7 @@ impl MediaProvider for YoutubeProvider {
         let credential_partition =
             owner_id.map_or_else(|| "anonymous".to_string(), |id| id.to_string());
         let cache_key = format!("playback:{video_id}:{credential_partition}:{server_id}");
-        Box::pin(super::cached_versioned_playback_or_fill(
+        let result = Box::pin(super::cached_versioned_playback_or_fill(
             Self::NAME,
             &cache_key,
             Duration::from_hours(5),
@@ -1139,7 +1139,12 @@ impl MediaProvider for YoutubeProvider {
                 Self::playback_result(&player, owner_id, instance_name.as_deref())
             },
         ))
-        .await
+        .await?;
+        super::filter_playback_routes_by_client(
+            result,
+            crate::models::PlaybackProxyMode::Only,
+            ctx.playback_client_profile(),
+        )
     }
 
     async fn validate_source_config(

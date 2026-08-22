@@ -990,7 +990,11 @@ impl MediaProvider for QnapProvider {
             || async { Ok(result) },
         )
         .await?;
-        super::require_direct_playback_route(result, config.proxy_mode)
+        super::filter_playback_routes_by_client(
+            result,
+            config.proxy_mode,
+            ctx.playback_client_profile(),
+        )
     }
 
     async fn validate_source_config(

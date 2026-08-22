@@ -109,7 +109,7 @@ impl MediaProvider for RtmpProvider {
 
         let cache_key = format!("playback:{room_id}:{media_id}");
         let cache_ttl = Duration::from_mins(5); // 5 minutes for live
-        super::cache_versioned_playback_and_build_response(
+        let result = super::cache_versioned_playback_and_build_response(
             result,
             Self::NAME,
             &cache_key,
@@ -117,7 +117,12 @@ impl MediaProvider for RtmpProvider {
             ctx,
             mark_rtmp_playback_resources,
         )
-        .await
+        .await?;
+        super::filter_playback_routes_by_client(
+            result,
+            crate::models::PlaybackProxyMode::Only,
+            ctx.playback_client_profile(),
+        )
     }
 
     async fn validate_source_config(

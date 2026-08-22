@@ -613,6 +613,7 @@ fn watch_playback_observe_builds_playback_resource_only() {
                 audio_capability: synctv_proto::client::PlaybackAudioCapability::Unspecified as i32,
                 subtitle_preference: synctv_proto::client::PlaybackSubtitlePreference::Unspecified
                     as i32,
+                ..Default::default()
             }),
         }),
     })

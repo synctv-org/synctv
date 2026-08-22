@@ -287,7 +287,7 @@ impl MediaProvider for CctvProvider {
             .map_err(|error| ProviderError::NetworkError(error.to_string()))?;
         let config = Self::config(source_config)?;
         let resource = Self::resource(config)?;
-        super::cached_versioned_playback_or_fill(
+        let result = super::cached_versioned_playback_or_fill(
             Self::NAME,
             &format!("playback:{}", config.resource),
             Duration::from_hours(2),
@@ -297,7 +297,12 @@ impl MediaProvider for CctvProvider {
                 Self::playback_result(&config.resource, self.client.resolve(&resource).await?)
             },
         )
-        .await
+        .await?;
+        super::filter_playback_routes_by_client(
+            result,
+            crate::models::PlaybackProxyMode::Only,
+            ctx.playback_client_profile(),
+        )
     }
 
     async fn validate_source_config(

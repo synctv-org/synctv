@@ -2559,7 +2559,7 @@ impl MediaProvider for AlistProvider {
         let cache_ttl = Duration::from_mins(15);
         let proxy_mode = config.proxy_mode;
 
-        Box::pin(super::cached_versioned_playback_or_fill(
+        let result = Box::pin(super::cached_versioned_playback_or_fill(
             Self::NAME,
             &cache_key,
             cache_ttl,
@@ -2573,7 +2573,8 @@ impl MediaProvider for AlistProvider {
                     .await
             },
         ))
-        .await
+        .await?;
+        super::filter_playback_routes_by_client(result, proxy_mode, playback_client_profile)
     }
 
     fn as_dynamic_playlist_provider(&self) -> Option<&dyn DynamicPlaylistProvider> {

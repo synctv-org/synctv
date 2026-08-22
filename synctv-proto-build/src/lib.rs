@@ -881,6 +881,13 @@ fn configure_well_known_types(config: &mut tonic_prost_build::Config) {
 fn build_main_protos(out_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let mut prost_config = tonic_prost_build::Config::new();
     configure_well_known_types(&mut prost_config);
+    // prost does not auto-derive Eq/Hash for a message that contains another
+    // message. Management GET request types use PlaybackClientProfile in
+    // hashable request keys, and every profile field is itself Eq/Hash.
+    prost_config.type_attribute(
+        ".synctv.client.PlaybackClientProfile",
+        "#[derive(Eq, Hash)]",
+    );
     prost_reflect_build::Builder::new()
         .descriptor_pool("crate::DESCRIPTOR_POOL")
         .file_descriptor_set_path(out_dir.join("descriptor.bin"))

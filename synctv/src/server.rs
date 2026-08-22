@@ -2896,11 +2896,13 @@ impl SyncTvServer {
                 }
             };
 
+            let router = http_router.merge(grpc_router);
+            #[cfg(feature = "web-ui")]
+            let router = router.fallback(synctv_api::web_ui_fallback);
+
             let server = axum::serve(
                 listener,
-                http_router
-                    .merge(grpc_router)
-                    .into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
             )
             .with_graceful_shutdown(graceful);
 

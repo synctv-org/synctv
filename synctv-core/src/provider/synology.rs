@@ -1106,7 +1106,11 @@ impl MediaProvider for SynologyProvider {
             || async { Ok(result) },
         )
         .await?;
-        let result = super::require_direct_playback_route(result, config.proxy_mode)?;
+        let result = super::filter_playback_routes_by_client(
+            result,
+            config.proxy_mode,
+            ctx.playback_client_profile(),
+        )?;
 
         if let SynologyMediaSource::LibraryItem { file_id, .. } = &config.source {
             let resource_version = result.playback_infos.values().find_map(|info| {
@@ -2126,7 +2130,7 @@ async fn generate_video_playback(
             },
             format: format.to_string(),
             expire_at: None,
-            metadata: Some(video_file_metadata(file)),
+            metadata: Some(video_file_metadata(file, profile)),
             p2p_swarm_id: Some(synology_swarm_id(
                 auth.instance_name.as_deref(),
                 "media",
@@ -2425,14 +2429,29 @@ fn file_metadata(file: &SynologyFile) -> PlaybackMediaMetadata {
 
 fn video_file_metadata(
     file: &synctv_media_providers::synology::SynologyVideoFile,
+    profile: SynologyPlaybackProfile,
 ) -> PlaybackMediaMetadata {
     PlaybackMediaMetadata {
         resolution: Some(format!("{}x{}", file.resolutionx, file.resolutiony)),
         bitrate: i64::try_from(file.frame_bitrate).ok(),
-        codec: Some(file.video_codec.clone()),
+        codec: video_station_profile_codec(&file.video_codec, profile),
         fps: (file.frame_rate_den > 0)
             .then(|| i32::try_from(file.frame_rate_num / file.frame_rate_den).ok())
             .flatten(),
+    }
+}
+
+fn video_station_profile_codec(
+    source_codec: &str,
+    profile: SynologyPlaybackProfile,
+) -> Option<String> {
+    match profile {
+        SynologyPlaybackProfile::HlsMedium | SynologyPlaybackProfile::HlsLow => {
+            Some("h264".to_string())
+        }
+        SynologyPlaybackProfile::Raw | SynologyPlaybackProfile::HlsRemux => {
+            (!source_codec.is_empty()).then(|| source_codec.to_string())
+        }
     }
 }
 
@@ -2652,6 +2671,26 @@ mod tests {
         assert_eq!(result.default_mode, "proxy_original");
         assert_eq!(result.playback_infos.len(), 1);
         assert!(result.playback_infos.contains_key("proxy_original"));
+    }
+
+    #[test]
+    fn video_station_transcode_profiles_advertise_h264() {
+        assert_eq!(
+            video_station_profile_codec("hevc", SynologyPlaybackProfile::Raw).as_deref(),
+            Some("hevc")
+        );
+        assert_eq!(
+            video_station_profile_codec("hevc", SynologyPlaybackProfile::HlsRemux).as_deref(),
+            Some("hevc")
+        );
+        assert_eq!(
+            video_station_profile_codec("hevc", SynologyPlaybackProfile::HlsMedium).as_deref(),
+            Some("h264")
+        );
+        assert_eq!(
+            video_station_profile_codec("hevc", SynologyPlaybackProfile::HlsLow).as_deref(),
+            Some("h264")
+        );
     }
 
     #[test]

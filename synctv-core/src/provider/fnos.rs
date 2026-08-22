@@ -2430,13 +2430,11 @@ impl MediaProvider for FnosProvider {
             || async { Ok(result) },
         )
         .await?;
-        if config.proxy_mode == crate::models::PlaybackProxyMode::DirectOnly
-            && result.playback_infos.is_empty()
-        {
-            return Err(ProviderError::UnsupportedFormat(
-                "This FNOS media source cannot provide a direct playback route".to_string(),
-            ));
-        }
+        let result = super::filter_playback_routes_by_client(
+            result,
+            config.proxy_mode,
+            ctx.playback_client_profile(),
+        )?;
 
         let media = result
             .metadata

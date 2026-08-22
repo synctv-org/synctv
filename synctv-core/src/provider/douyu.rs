@@ -419,7 +419,7 @@ impl MediaProvider for DouyuProvider {
         ctx.check_active()
             .map_err(|error| ProviderError::NetworkError(error.to_string()))?;
         let resource = Self::resource(Self::config(source_config)?)?;
-        super::cached_versioned_playback_or_fill(
+        let result = super::cached_versioned_playback_or_fill(
             Self::NAME,
             &Self::cache_key(&resource),
             Duration::from_mins(2),
@@ -427,7 +427,12 @@ impl MediaProvider for DouyuProvider {
             mark_douyu_playback_resources,
             || async { Self::playback_result(self.client.resolve(&resource, None).await?) },
         )
-        .await
+        .await?;
+        super::filter_playback_routes_by_client(
+            result,
+            crate::models::PlaybackProxyMode::Only,
+            ctx.playback_client_profile(),
+        )
     }
 
     async fn validate_source_config(

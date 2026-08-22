@@ -964,7 +964,7 @@ impl MediaProvider for DouyinProvider {
             credential_owner_id.map_or_else(|| "anonymous".to_string(), |id| id.to_string()),
             Self::credential_server_id_for_instance(provider_instance_name.as_deref())
         );
-        super::cached_versioned_playback_or_fill(
+        let result = super::cached_versioned_playback_or_fill(
             Self::NAME,
             &cache_key,
             Duration::from_mins(30),
@@ -980,7 +980,12 @@ impl MediaProvider for DouyinProvider {
                 )
             },
         )
-        .await
+        .await?;
+        super::filter_playback_routes_by_client(
+            result,
+            crate::models::PlaybackProxyMode::Only,
+            ctx.playback_client_profile(),
+        )
     }
 
     async fn media_metadata(

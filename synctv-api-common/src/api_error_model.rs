@@ -47,6 +47,16 @@ impl GoogleApiError {
                 operation.as_str().to_string(),
             );
         }
+        if let crate::impls::ApiError::ClientIncompatible {
+            required_capability: Some(required_capability),
+            ..
+        } = err
+        {
+            metadata.insert(
+                "requiredCapability".to_string(),
+                required_capability.clone(),
+            );
+        }
 
         let mut details = ErrorDetails::new();
         details.set_error_info(classification.reason, ERROR_DOMAIN, metadata);
@@ -194,6 +204,11 @@ impl ErrorClassification {
                 grpc_code: Code::InvalidArgument,
                 http_status: StatusCode::BAD_REQUEST,
                 reason: "INVALID_ARGUMENT",
+            },
+            crate::impls::ErrorKind::FailedPrecondition => Self {
+                grpc_code: Code::FailedPrecondition,
+                http_status: StatusCode::PRECONDITION_FAILED,
+                reason: "CLIENT_INCOMPATIBLE",
             },
             crate::impls::ErrorKind::RateLimited => Self {
                 grpc_code: Code::ResourceExhausted,
@@ -354,6 +369,31 @@ mod tests {
             .iter()
             .any(|detail| detail.type_url == "type.googleapis.com/google.rpc.RetryInfo"));
 
+        Ok(())
+    }
+
+    #[test]
+    fn client_incompatible_uses_failed_precondition_and_capability_metadata() -> anyhow::Result<()>
+    {
+        let error = GoogleApiError::from_api_error(&crate::impls::ApiError::ClientIncompatible {
+            message: "Browser cannot attach the required media headers".to_string(),
+            required_capability: Some("custom_http_headers".to_string()),
+        });
+
+        assert_eq!(error.grpc_code, tonic::Code::FailedPrecondition);
+        assert_eq!(error.http_status, StatusCode::PRECONDITION_FAILED);
+        let json: serde_json::Value = serde_json::from_slice(&error.to_protojson_bytes()?)?;
+        let error_info = detail_by_type(&json, "google.rpc.ErrorInfo")
+            .ok_or_else(|| anyhow::anyhow!("missing ErrorInfo detail: {json}"))?;
+        assert_eq!(error_info["reason"], "CLIENT_INCOMPATIBLE");
+        assert_eq!(
+            error_info["metadata"]["requiredCapability"],
+            "custom_http_headers"
+        );
+        assert_eq!(
+            error_info["metadata"][ERROR_CODE_METADATA_KEY],
+            crate::impls::error_codes::FAILED_PRECONDITION.to_string()
+        );
         Ok(())
     }
 }

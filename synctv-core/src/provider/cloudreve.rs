@@ -1094,7 +1094,7 @@ impl MediaProvider for CloudreveProvider {
             metadata: None,
         };
         let proxy_mode = config.proxy_mode;
-        super::cached_versioned_playback_or_fill(
+        let result = super::cached_versioned_playback_or_fill(
             Self::NAME,
             &format!(
                 "playback:{user_id}:{}:room:{}:{}",
@@ -1110,7 +1110,8 @@ impl MediaProvider for CloudreveProvider {
             },
             || async { Ok(result) },
         )
-        .await
+        .await?;
+        super::filter_playback_routes_by_client(result, proxy_mode, ctx.playback_client_profile())
     }
 
     async fn validate_source_config(

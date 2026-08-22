@@ -1054,7 +1054,7 @@ impl MediaProvider for TwitchProvider {
             credential_owner_id.map_or_else(|| "anonymous".to_string(), |id| id.to_string()),
             credential_server_id,
         );
-        Box::pin(super::cached_versioned_playback_or_fill(
+        let result = Box::pin(super::cached_versioned_playback_or_fill(
             Self::NAME,
             &cache_key,
             Duration::from_hours(6),
@@ -1073,7 +1073,12 @@ impl MediaProvider for TwitchProvider {
                 )
             },
         ))
-        .await
+        .await?;
+        super::filter_playback_routes_by_client(
+            result,
+            crate::models::PlaybackProxyMode::Only,
+            ctx.playback_client_profile(),
+        )
     }
 
     async fn validate_source_config(

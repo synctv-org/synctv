@@ -47,6 +47,7 @@ impl OAuth2Service {
         &self,
         instance_name: &str,
         redirect_url: Option<String>,
+        request_allowed_redirect_url: Option<String>,
         operation: OAuth2Operation,
         target_user_id: Option<UserId>,
         mode: OAuth2AuthorizationMode,
@@ -58,7 +59,11 @@ impl OAuth2Service {
                 Some(settings) => settings.oauth2.allowed_redirect_urls.get()?.0,
                 None => Vec::new(),
             };
-            Self::validate_redirect_url_with_allowlist(url, &allowed_urls)?;
+            if request_allowed_redirect_url.as_deref() == Some(url.as_str()) {
+                Self::validate_redirect_url_with_allowlist(url, std::slice::from_ref(url))?;
+            } else {
+                Self::validate_redirect_url_with_allowlist(url, &allowed_urls)?;
+            }
         }
 
         let provider = self.provider_entry(instance_name).await?.provider;
@@ -119,6 +124,7 @@ impl OAuth2Service {
             .prepare_authorization_url_with_control(
                 instance_name,
                 redirect_url,
+                None,
                 operation,
                 target_user_id,
                 OAuth2AuthorizationMode::Browser,

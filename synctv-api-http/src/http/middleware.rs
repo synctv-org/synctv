@@ -172,23 +172,24 @@ pub async fn security_headers_middleware(request: Request, next: Next) -> Respon
     }
 
     // Content Security Policy
-    // Default API responses should not grant broad media or framing privileges.
-    // Routes that intentionally serve embeddable frontend/media content can set
-    // their own CSP; this middleware preserves existing endpoint-specific
-    // headers.
+    // Keep the default restrictive while allowing the same-origin Web client to
+    // render HTML media, MSE blobs, Flutter's generated styles, and its worker.
+    // Endpoint-specific headers still take precedence over this default.
     if !headers.contains_key("Content-Security-Policy") {
         headers.insert(
             CONTENT_SECURITY_POLICY.clone(),
             axum::http::HeaderValue::from_static(
                 "default-src 'self'; \
-                 media-src 'none'; \
-                 frame-src 'none'; \
-                 connect-src 'self' wss: ws:; \
-                 img-src 'self' data: https:; \
-                 style-src 'self'; \
-                 script-src 'self'; \
+                 media-src 'self' blob: https: http:; \
+                 frame-src 'self'; \
+                 connect-src 'self' blob: https: http: wss: ws:; \
+                 img-src 'self' data: blob: https:; \
+                 font-src 'self' data:; \
+                 style-src 'self' 'unsafe-inline'; \
+                 script-src 'self' 'wasm-unsafe-eval'; \
+                 worker-src 'self' blob:; \
                  frame-ancestors 'none'; \
-                 base-uri 'none'",
+                 base-uri 'self'",
             ),
         );
     }
@@ -210,7 +211,8 @@ pub async fn security_headers_middleware(request: Request, next: Next) -> Respon
             PERMISSIONS_POLICY.clone(),
             axum::http::HeaderValue::from_static(
                 "accelerometer=(), camera=(), geolocation=(), gyroscope=(), \
-                 magnetometer=(), microphone=(), payment=(), usb=()",
+                 magnetometer=(), microphone=(self), payment=(), \
+                 picture-in-picture=(self), usb=()",
             ),
         );
     }
@@ -345,11 +347,18 @@ mod tests {
         let csp = header_str(response.headers(), "Content-Security-Policy")?;
 
         assert!(csp.contains("default-src 'self'"));
-        assert!(csp.contains("media-src 'none'"));
-        assert!(csp.contains("frame-src 'none'"));
-        assert!(csp.contains("style-src 'self'"));
+        assert!(csp.contains("media-src 'self' blob: https: http:"));
+        assert!(csp.contains("frame-src 'self'"));
+        assert!(csp.contains("connect-src 'self' blob: https: http: wss: ws:"));
+        assert!(csp.contains("style-src 'self' 'unsafe-inline'"));
+        assert!(csp.contains("script-src 'self' 'wasm-unsafe-eval'"));
+        assert!(csp.contains("worker-src 'self' blob:"));
         assert!(csp.contains("frame-ancestors 'none'"));
-        assert!(csp.contains("base-uri 'none'"));
+        assert!(csp.contains("base-uri 'self'"));
+
+        let permissions = header_str(response.headers(), "Permissions-Policy")?;
+        assert!(permissions.contains("microphone=(self)"));
+        assert!(permissions.contains("picture-in-picture=(self)"));
         Ok(())
     }
 

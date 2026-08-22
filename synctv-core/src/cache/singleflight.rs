@@ -62,6 +62,11 @@ pub enum CloneableError {
     Conflict(String),
     #[error("Invalid input: {0}")]
     InvalidInput(String),
+    #[error("Client cannot play this resource: {reason}")]
+    ClientIncompatible {
+        reason: String,
+        required_capability: Option<String>,
+    },
     #[error("Rate limited: {0}")]
     RateLimited(String),
     #[error("Service unavailable: {0}")]
@@ -105,6 +110,13 @@ impl From<Error> for CloneableError {
             Error::AlreadyExists(message) => Self::AlreadyExists(message),
             Error::Conflict(message) => Self::Conflict(message),
             Error::InvalidInput(message) => Self::InvalidInput(message),
+            Error::ClientIncompatible {
+                reason,
+                required_capability,
+            } => Self::ClientIncompatible {
+                reason,
+                required_capability,
+            },
             Error::RangeNotSatisfiable { total_size } => {
                 Self::InvalidInput(format!("Range not satisfiable: total size {total_size}"))
             }
@@ -128,6 +140,13 @@ impl From<CloneableError> for Error {
             CloneableError::AlreadyExists(message) => Self::AlreadyExists(message),
             CloneableError::Conflict(message) => Self::Conflict(message),
             CloneableError::InvalidInput(message) => Self::InvalidInput(message),
+            CloneableError::ClientIncompatible {
+                reason,
+                required_capability,
+            } => Self::ClientIncompatible {
+                reason,
+                required_capability,
+            },
             CloneableError::RateLimited(message) => Self::RateLimited(message),
             CloneableError::ServiceUnavailable(message) => Self::ServiceUnavailable(message),
             CloneableError::Internal(message) => Self::Internal(message),

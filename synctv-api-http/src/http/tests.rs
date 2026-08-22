@@ -1694,6 +1694,7 @@ async fn test_playback_patch_route_is_reachable_via_project_router() -> TestResu
 
 #[tokio::test]
 #[ignore = "Requires Docker-backed PostgreSQL"]
+#[cfg(not(feature = "web-ui"))]
 async fn test_api_root_redirects_to_configured_project_url() -> TestResult {
     let mut state = test_app_state();
     Arc::make_mut(&mut Arc::make_mut(&mut state.router_options).runtime_settings)
@@ -2872,7 +2873,7 @@ async fn test_transport_layers_preserve_shared_http_metadata_without_global_time
 
 #[tokio::test]
 #[ignore = "Requires Docker-backed PostgreSQL"]
-async fn json_compression_is_enabled_without_compressing_media_responses() -> TestResult {
+async fn application_compression_is_enabled_without_compressing_media_responses() -> TestResult {
     let state = test_app_state();
     let app = apply_global_layers(
         Router::new()
@@ -2886,6 +2887,24 @@ async fn json_compression_is_enabled_without_compressing_media_responses() -> Te
                             "x".repeat(256)
                         )))
                         .expect("JSON response should build")
+                }),
+            )
+            .route(
+                "/javascript",
+                get(|| async {
+                    Response::builder()
+                        .header(header::CONTENT_TYPE, "text/javascript; charset=utf-8")
+                        .body(Body::from("x".repeat(256)))
+                        .expect("JavaScript response should build")
+                }),
+            )
+            .route(
+                "/wasm",
+                get(|| async {
+                    Response::builder()
+                        .header(header::CONTENT_TYPE, "application/wasm")
+                        .body(Body::from("x".repeat(256)))
+                        .expect("Wasm response should build")
                 }),
             )
             .route(
@@ -2917,6 +2936,27 @@ async fn json_compression_is_enabled_without_compressing_media_responses() -> Te
             .and_then(|value| value.to_str().ok()),
         Some("gzip")
     );
+
+    for path in ["/javascript", "/wasm"] {
+        let response = test_response(
+            app.clone()
+                .oneshot(test_request(
+                    Request::builder()
+                        .uri(path)
+                        .header(header::ACCEPT_ENCODING, "gzip")
+                        .body(Body::empty()),
+                )?)
+                .await,
+        )?;
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_ENCODING)
+                .and_then(|value| value.to_str().ok()),
+            Some("gzip"),
+            "{path} should use transport compression"
+        );
+    }
 
     let flv_response = test_response(
         app.oneshot(test_request(

@@ -1196,7 +1196,7 @@ impl MediaProvider for DirectUrlProvider {
             metadata: Some(metadata),
         };
 
-        super::cache_versioned_playback_and_build_response(
+        let result = super::cache_versioned_playback_and_build_response(
             result,
             Self::NAME,
             &cache_key,
@@ -1212,7 +1212,12 @@ impl MediaProvider for DirectUrlProvider {
                 );
             },
         )
-        .await
+        .await?;
+        super::filter_playback_routes_by_client(
+            result,
+            config.proxy_mode,
+            _ctx.playback_client_profile(),
+        )
     }
 }
 

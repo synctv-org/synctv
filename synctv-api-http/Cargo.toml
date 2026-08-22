@@ -4,9 +4,17 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+build = "build.rs"
+
+[build-dependencies]
+brotli.workspace = true
+flate2.workspace = true
+hex.workspace = true
+sha2.workspace = true
 
 [features]
 default = ["tls-aws-lc", "tls-webpki-roots"]
+web-ui = []
 openapi = [
     "synctv-api-common/openapi",
     "synctv-proto/openapi",

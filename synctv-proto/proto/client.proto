@@ -2687,12 +2687,7 @@ message PlaybackClientProfile {
   repeated PlaybackMediaCapability media_capabilities = 11 [(buf.validate.field).repeated.max_items = 64];
   bool supports_custom_http_headers = 12;
   bool supports_provider_proxy = 13;
-  bool supports_p2p_media_loader = 14;
-  bool supports_media_source_extensions = 15;
-  bool supports_managed_media_source = 16;
-  bool supports_web_rtc_data_channel = 17;
-  bool supports_indexed_db = 18;
-  bool supports_opfs = 19;
+  reserved 14 to 19;
   // True when the page/runtime may load http:// media without mixed-content blocking.
   bool supports_insecure_http_media = 20;
 }

@@ -2897,8 +2897,6 @@ impl SyncTvServer {
             };
 
             let router = http_router.merge(grpc_router);
-            #[cfg(feature = "web-ui")]
-            let router = router.fallback(synctv_api::web_ui_fallback);
 
             let server = axum::serve(
                 listener,

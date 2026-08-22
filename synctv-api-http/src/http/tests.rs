@@ -22,6 +22,14 @@ use tower::ServiceExt;
 
 type TestResult<T = ()> = anyhow::Result<T>;
 
+#[cfg(feature = "web-ui")]
+#[test]
+fn web_ui_routes_can_merge_with_a_grpc_style_fallback() {
+    let grpc_router = Router::<super::AppState>::new().fallback(StatusCode::NOT_FOUND);
+
+    let _combined = register_all_routes().merge(grpc_router);
+}
+
 fn test_error(message: impl Into<String>) -> anyhow::Error {
     anyhow::anyhow!(message.into())
 }

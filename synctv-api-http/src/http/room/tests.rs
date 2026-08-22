@@ -190,7 +190,6 @@ fn test_build_get_playback_request_decodes_versioned_profile() -> TestResult {
             codec_string: Some("avc1.42E01E,mp4a.40.2".to_string()),
         }],
         supports_provider_proxy: true,
-        supports_media_source_extensions: true,
         ..Default::default()
     };
     let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(expected.encode_to_vec());

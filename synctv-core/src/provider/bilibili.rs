@@ -4522,7 +4522,6 @@ mod tests {
             }],
             supports_custom_http_headers: false,
             supports_provider_proxy: true,
-            supports_media_source_extensions: true,
             ..PlaybackClientProfile::default()
         }
     }
@@ -4944,6 +4943,22 @@ mod tests {
         };
         assert!(!super::bilibili_live_uses_hls(Some(&native_profile)));
 
+        let web_flv_profile = super::super::PlaybackClientProfile {
+            profile_version: super::super::CURRENT_PLAYBACK_CLIENT_PROFILE_VERSION,
+            environment: super::super::PlaybackClientEnvironment::Web,
+            media_capabilities: vec![super::super::PlaybackMediaCapability {
+                transport: super::super::PlaybackMediaTransport::Flv,
+                container: None,
+                video_codec: Some(super::super::PlaybackVideoCodec::H264),
+                audio_codec: Some(super::super::PlaybackAudioCodec::Aac),
+                pipeline: super::super::PlaybackMediaPipeline::MediaSource,
+                codec_string: Some("avc1.42E01E,mp4a.40.2".to_string()),
+            }],
+            supported_live_transports: Vec::new(),
+            ..Default::default()
+        };
+        assert!(!super::bilibili_live_uses_hls(Some(&web_flv_profile)));
+
         let config = super::BilibiliSourceConfig::Live(crate::models::BilibiliLiveSourceConfig {
             room_id: 42,
             shared: false,
@@ -4959,8 +4974,14 @@ mod tests {
             "anonymous",
             Some(&native_profile),
         ))?;
+        let (web_flv_key, _) = provider_ok(super::playback_cache_entry(
+            &config,
+            "anonymous",
+            Some(&web_flv_profile),
+        ))?;
         assert!(hls_key.ends_with(":hls"));
         assert!(flv_key.ends_with(":flv"));
+        assert!(web_flv_key.ends_with(":flv"));
         assert_ne!(hls_key, flv_key);
         Ok(())
     }
@@ -6360,9 +6381,8 @@ fn bilibili_live_streams_request(
 
 fn bilibili_live_uses_hls(profile: Option<&super::PlaybackClientProfile>) -> bool {
     !profile.is_some_and(|profile| {
-        profile
-            .supported_live_transports
-            .contains(&super::PlaybackLiveTransport::Flv)
+        profile.supports_transport(super::PlaybackMediaTransport::Flv)
+            && !profile.supports_transport(super::PlaybackMediaTransport::Hls)
     })
 }
 

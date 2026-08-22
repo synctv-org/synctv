@@ -102,8 +102,9 @@ make web-release-build SYNCTV_APP_DIR=/path/to/synctv-app
 The target builds Flutter without runtime CDN resources, then compiles the
 release server with `SYNCTV_WEB_DIST` and the `web-ui` feature. The server
 provides SPA fallback, content types, ETags, Brotli/gzip variants, cache policy,
-CSP, and the OAuth/provider-verification callback pages. API and media routes
-remain outside the application-shell cache.
+and CSP. OAuth uses the normal SPA entry point, while provider verification
+uses its dedicated static page. API and media routes remain outside the
+application-shell cache.
 
 Keep the app and server protobuf snapshots aligned. Browser playback sends a
 versioned `PlaybackClientProfile`; Providers use it with the configured proxy

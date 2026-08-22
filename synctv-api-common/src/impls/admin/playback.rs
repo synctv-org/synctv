@@ -155,8 +155,6 @@ impl AdminApiImpl {
             actor_id: &public_user_id,
             playback_generation: state.playback_generation,
             resource_owner_id: resource_owner_id.as_deref(),
-            supports_p2p_media_loader: playback_client_profile
-                .is_none_or(|profile| profile.supports_p2p_media_loader),
         };
         let mut playback =
             try_playback_to_proto(&full_result, &self.public_id_codec, Some(&signing))?;
@@ -282,8 +280,6 @@ impl AdminApiImpl {
             actor_id: &public_user_id,
             playback_generation: state.playback_generation,
             resource_owner_id: resource_owner_id.as_deref(),
-            supports_p2p_media_loader: playback_client_profile
-                .is_none_or(|profile| profile.supports_p2p_media_loader),
         };
         let mut playback =
             try_playback_to_proto(&full_result, &self.public_id_codec, Some(&signing))?;

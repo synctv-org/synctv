@@ -149,7 +149,7 @@ fn request_allowed_web_callback(
     let Ok(parsed) = url::Url::parse(redirect_url) else {
         return Ok(None);
     };
-    if parsed.path() != "/auth.html"
+    if parsed.path() != "/oauth2/callback"
         || parsed.query().is_some()
         || parsed.fragment().is_some()
         || !parsed.username().is_empty()
@@ -623,7 +623,7 @@ mod tests {
         headers.insert("x-forwarded-proto", "https".parse()?);
 
         let allowed = request_allowed_web_callback(
-            Some("https://app.example.test/auth.html"),
+            Some("https://app.example.test/oauth2/callback"),
             Some(false),
             &headers,
             Some("127.0.0.1".parse()?),
@@ -632,7 +632,7 @@ mod tests {
 
         assert_eq!(
             allowed.as_deref(),
-            Some("https://app.example.test/auth.html")
+            Some("https://app.example.test/oauth2/callback")
         );
         Ok(())
     }
@@ -646,11 +646,11 @@ mod tests {
         let peer = Some("127.0.0.1".parse()?);
 
         for redirect in [
-            "https://evil.example.test:8443/auth.html",
-            "https://app.example.test/auth.html",
-            "https://app.example.test:8443/oauth2/callback",
-            "https://app.example.test:8443/auth.html?next=/rooms",
-            "https://app.example.test:8443/auth.html#fragment",
+            "https://evil.example.test:8443/oauth2/callback",
+            "https://app.example.test/oauth2/callback",
+            "https://app.example.test:8443/auth.html",
+            "https://app.example.test:8443/oauth2/callback?next=/rooms",
+            "https://app.example.test:8443/oauth2/callback#fragment",
         ] {
             assert_eq!(
                 request_allowed_web_callback(Some(redirect), Some(false), &headers, peer, &server,)?,
@@ -666,7 +666,7 @@ mod tests {
         let server = synctv_api_common::ApiServerSettings::default();
         let mut headers = callback_headers("app.example.test")?;
         headers.insert("x-forwarded-proto", "https".parse()?);
-        let redirect = Some("https://app.example.test/auth.html");
+        let redirect = Some("https://app.example.test/oauth2/callback");
 
         assert_eq!(
             request_allowed_web_callback(
@@ -699,7 +699,7 @@ mod tests {
         headers.insert("x-forwarded-proto", "javascript".parse()?);
 
         let error = request_allowed_web_callback(
-            Some("https://app.example.test/auth.html"),
+            Some("https://app.example.test/oauth2/callback"),
             Some(false),
             &headers,
             Some("127.0.0.1".parse()?),

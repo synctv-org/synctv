@@ -5,7 +5,6 @@ use axum::response::{IntoResponse, Response};
 include!(concat!(env!("OUT_DIR"), "/web_assets.rs"));
 
 const PROVIDER_VERIFICATION_PAGE: &str = "provider_verification.html";
-const OAUTH_CALLBACK_PAGE: &str = "auth.html";
 const PROVIDER_VERIFICATION_CSP: &str = "default-src 'none'; \
     script-src 'self' https://static.geetest.com https://*.geetest.com https://dn-staticdown.qbox.me; \
     connect-src https://geetest.com https://*.geetest.com https://monitor.geetest.com https://dn-staticdown.qbox.me; \
@@ -77,7 +76,7 @@ fn find_asset(path: &str) -> Option<&'static Asset> {
 }
 
 fn asset_response(asset: &'static Asset, html_navigation: bool, headers: &HeaderMap) -> Response {
-    let cache_control = if matches!(asset.path, PROVIDER_VERIFICATION_PAGE | OAUTH_CALLBACK_PAGE) {
+    let cache_control = if asset.path == PROVIDER_VERIFICATION_PAGE {
         "no-store"
     } else if versioned_playback_asset(asset.path) {
         "public, max-age=31536000, immutable"
@@ -399,7 +398,6 @@ mod tests {
     #[test]
     fn browser_update_metadata_always_revalidates() {
         assert!(update_metadata_asset("index.html"));
-        assert!(update_metadata_asset("auth.html"));
         assert!(update_metadata_asset("manifest.json"));
         assert!(update_metadata_asset("version.json"));
         assert!(update_metadata_asset("flutter_service_worker.js"));
@@ -407,17 +405,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn oauth_callback_page_is_never_cached() {
+    async fn oauth_callback_uses_the_spa_entrypoint() {
         let response = fallback(
-            "/auth.html".parse::<Uri>().expect("valid callback URI"),
+            "/oauth2/callback"
+                .parse::<Uri>()
+                .expect("valid callback URI"),
             HeaderMap::new(),
         )
         .await;
 
+        if !WEB_UI_AVAILABLE {
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            return;
+        }
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
             response.headers().get(header::CACHE_CONTROL),
-            Some(&HeaderValue::from_static("no-store"))
+            Some(&HeaderValue::from_static("no-cache"))
         );
     }
 
@@ -522,6 +526,9 @@ mod tests {
 
     #[tokio::test]
     async fn fallback_negotiates_encoded_assets_and_revalidates_each_representation() {
+        if !WEB_UI_AVAILABLE {
+            return;
+        }
         let asset = ASSETS
             .iter()
             .find(|asset| asset.brotli.is_some() && asset.gzip.is_some())

@@ -242,12 +242,6 @@ pub struct PlaybackClientProfile {
     pub media_capabilities: Vec<PlaybackMediaCapability>,
     pub supports_custom_http_headers: bool,
     pub supports_provider_proxy: bool,
-    pub supports_p2p_media_loader: bool,
-    pub supports_media_source_extensions: bool,
-    pub supports_managed_media_source: bool,
-    pub supports_web_rtc_data_channel: bool,
-    pub supports_indexed_db: bool,
-    pub supports_opfs: bool,
     pub supports_insecure_http_media: bool,
 }
 
@@ -276,12 +270,6 @@ impl Default for PlaybackClientProfile {
             media_capabilities: Vec::new(),
             supports_custom_http_headers: true,
             supports_provider_proxy: true,
-            supports_p2p_media_loader: true,
-            supports_media_source_extensions: false,
-            supports_managed_media_source: false,
-            supports_web_rtc_data_channel: false,
-            supports_indexed_db: false,
-            supports_opfs: false,
             supports_insecure_http_media: true,
         }
     }
@@ -398,7 +386,7 @@ impl PlaybackClientProfile {
             .collect::<Vec<_>>();
         capabilities.sort_unstable();
         format!(
-            "v={}:environment={}:stream={}:bitrate={}:channels={}:video_codecs={}:containers={}:audio={}:subtitle={}:live_transports={}:media={}:headers={}:proxy={}:p2p={}:mse={}:managed_mse={}:webrtc={}:idb={}:opfs={}:insecure_http_media={}",
+            "v={}:environment={}:stream={}:bitrate={}:channels={}:video_codecs={}:containers={}:audio={}:subtitle={}:live_transports={}:media={}:headers={}:proxy={}:insecure_http_media={}",
             self.profile_version,
             self.environment.cache_token(),
             self.stream_preference.cache_token(),
@@ -426,12 +414,6 @@ impl PlaybackClientProfile {
             capabilities.join(","),
             self.supports_custom_http_headers,
             self.supports_provider_proxy,
-            self.supports_p2p_media_loader,
-            self.supports_media_source_extensions,
-            self.supports_managed_media_source,
-            self.supports_web_rtc_data_channel,
-            self.supports_indexed_db,
-            self.supports_opfs,
             self.supports_insecure_http_media,
         )
     }
@@ -502,18 +484,12 @@ mod tests {
             }],
             supports_custom_http_headers: false,
             supports_provider_proxy: true,
-            supports_p2p_media_loader: true,
-            supports_media_source_extensions: true,
-            supports_managed_media_source: false,
-            supports_web_rtc_data_channel: true,
-            supports_indexed_db: true,
-            supports_opfs: false,
             supports_insecure_http_media: false,
         };
 
         assert_eq!(
             profile.cache_fingerprint(),
-            "v=2:environment=web:stream=transcode:bitrate=8000000:channels=2:video_codecs=h264,av1:containers=mp4,webm:audio=surround:subtitle=embedded_or_external:live_transports=hls,flv:media=progressive+mp4+h264+aac+media_source+avc1.42E01E,mp4a.40.2:headers=false:proxy=true:p2p=true:mse=true:managed_mse=false:webrtc=true:idb=true:opfs=false:insecure_http_media=false"
+            "v=2:environment=web:stream=transcode:bitrate=8000000:channels=2:video_codecs=h264,av1:containers=mp4,webm:audio=surround:subtitle=embedded_or_external:live_transports=hls,flv:media=progressive+mp4+h264+aac+media_source+avc1.42E01E,mp4a.40.2:headers=false:proxy=true:insecure_http_media=false"
         );
     }
 

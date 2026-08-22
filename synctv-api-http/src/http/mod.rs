@@ -899,7 +899,9 @@ fn register_all_routes() -> Router<AppState> {
     let mut router = Router::new();
     #[cfg(feature = "web-ui")]
     {
-        router = router.route("/", get(web_ui::index));
+        router = router
+            .route("/", get(web_ui::index))
+            .route("/{*webUiPath}", get(web_ui::fallback));
     }
     #[cfg(not(feature = "web-ui"))]
     {

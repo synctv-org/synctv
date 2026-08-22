@@ -798,7 +798,7 @@ async fn test_request_allowed_redirect_requires_an_exact_match() {
             Box::new(TestOAuth2Provider::new()),
         )
         .await;
-    let callback = "https://app.example.test/auth.html".to_string();
+    let callback = "https://app.example.test/oauth2/callback".to_string();
 
     let prepared = ok(
         service

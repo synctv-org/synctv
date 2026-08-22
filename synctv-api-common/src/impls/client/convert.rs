@@ -82,7 +82,6 @@ pub struct PlaybackHttpSigningContext<'a> {
     pub actor_id: &'a str,
     pub playback_generation: i64,
     pub resource_owner_id: Option<&'a str>,
-    pub supports_p2p_media_loader: bool,
 }
 
 fn proto_encode_error(kind: &str, error: &str) -> crate::impls::ApiError {
@@ -2623,16 +2622,6 @@ pub fn playback_client_profile_from_proto(
         } else {
             profile.supports_provider_proxy
         },
-        supports_p2p_media_loader: if uses_legacy_defaults {
-            default_profile.supports_p2p_media_loader
-        } else {
-            profile.supports_p2p_media_loader
-        },
-        supports_media_source_extensions: profile.supports_media_source_extensions,
-        supports_managed_media_source: profile.supports_managed_media_source,
-        supports_web_rtc_data_channel: profile.supports_web_rtc_data_channel,
-        supports_indexed_db: profile.supports_indexed_db,
-        supports_opfs: profile.supports_opfs,
         supports_insecure_http_media: if uses_legacy_defaults {
             default_profile.supports_insecure_http_media
         } else {
@@ -4180,13 +4169,9 @@ fn playback_media_to_proto(
     .into_iter()
     .flatten()
     .min();
-    let p2p_delivery = if signing.is_none_or(|context| context.supports_p2p_media_loader) {
-        synctv_core::provider::playback_media_p2p_delivery(media)
-            .map(|delivery| p2p_resource_delivery_to_proto(delivery, signing))
-            .transpose()?
-    } else {
-        None
-    };
+    let p2p_delivery = synctv_core::provider::playback_media_p2p_delivery(media)
+        .map(|delivery| p2p_resource_delivery_to_proto(delivery, signing))
+        .transpose()?;
     Ok(synctv_proto::client::PlaybackMedia {
         name: media.name.clone(),
         url: require_non_empty_url(&url_value, "playback")?,
@@ -4251,13 +4236,9 @@ fn subtitle_to_proto(
     signing: Option<&PlaybackHttpSigningContext<'_>>,
 ) -> Result<synctv_proto::client::PlaybackSubtitle, crate::impls::ApiError> {
     let url_value = playback_subtitle_url(subtitle, signing)?;
-    let p2p_delivery = if signing.is_none_or(|context| context.supports_p2p_media_loader) {
-        synctv_core::provider::playback_subtitle_p2p_delivery(subtitle)
-            .map(|delivery| p2p_resource_delivery_to_proto(delivery, signing))
-            .transpose()?
-    } else {
-        None
-    };
+    let p2p_delivery = synctv_core::provider::playback_subtitle_p2p_delivery(subtitle)
+        .map(|delivery| p2p_resource_delivery_to_proto(delivery, signing))
+        .transpose()?;
     Ok(synctv_proto::client::PlaybackSubtitle {
         name: subtitle.name.clone(),
         language: subtitle.language.clone(),
@@ -4275,13 +4256,9 @@ fn danmaku_to_proto(
     signing: Option<&PlaybackHttpSigningContext<'_>>,
 ) -> Result<synctv_proto::client::PlaybackDanmaku, crate::impls::ApiError> {
     let url_value = playback_danmaku_url(danmaku, public_id_codec, signing)?;
-    let p2p_delivery = if signing.is_none_or(|context| context.supports_p2p_media_loader) {
-        synctv_core::provider::playback_danmaku_p2p_delivery(danmaku)
-            .map(|delivery| p2p_resource_delivery_to_proto(delivery, signing))
-            .transpose()?
-    } else {
-        None
-    };
+    let p2p_delivery = synctv_core::provider::playback_danmaku_p2p_delivery(danmaku)
+        .map(|delivery| p2p_resource_delivery_to_proto(delivery, signing))
+        .transpose()?;
     Ok(synctv_proto::client::PlaybackDanmaku {
         name: danmaku.name.clone(),
         url: require_non_empty_url(&url_value, "danmaku")?,
@@ -5412,7 +5389,6 @@ mod playback_conversion_tests {
             actor_id: "user-1",
             playback_generation: 7,
             resource_owner_id: Some("user-owner"),
-            supports_p2p_media_loader: true,
         }
     }
 
@@ -6291,7 +6267,7 @@ mod playback_conversion_tests {
             })
             .build();
         let key = signing_key();
-        let mut signing = signing_context(&key);
+        let signing = signing_context(&key);
         let result = playback_result_with_mode("direct", info);
         let proto = try_playback_to_proto(&result, &codec(), Some(&signing))
             .expect("playback should convert");
@@ -6331,13 +6307,5 @@ mod playback_conversion_tests {
                 )
                 .expect("attachment ticket should bind the current playback");
         }
-
-        signing.supports_p2p_media_loader = false;
-        let proto = try_playback_to_proto(&result, &codec(), Some(&signing))
-            .expect("playback should convert without P2P delivery");
-        let info = &proto.playback_infos["direct"];
-        assert!(info.medias[0].p2p_delivery.is_none());
-        assert!(info.subtitles[0].p2p_delivery.is_none());
-        assert!(info.danmakus[0].p2p_delivery.is_none());
     }
 }

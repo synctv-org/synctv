@@ -5,8 +5,6 @@ pub mod http;
 pub mod openapi;
 pub(crate) mod providers;
 
-#[cfg(feature = "web-ui")]
-pub use http::web_ui::fallback as web_ui_fallback;
 pub use http::{
     build_app_state, create_health_router, create_metrics_router, create_router_from_options,
     create_router_from_shared_state, create_router_with_state_from_options, extract_client_ip,

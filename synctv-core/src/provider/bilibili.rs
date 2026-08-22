@@ -2409,13 +2409,25 @@ fn mark_bilibili_playback_resources(
                     *resource_expires_at = expires_at;
                     resource_mode_name.clone_from(&mode_name);
                 }
-                generated.insert(mode_name.clone(), direct_info);
+                if let Some(direct_info) = super::build_direct_playback_info_for_client(
+                    &mode_name,
+                    &direct_info,
+                    client_profile,
+                ) {
+                    generated.insert(mode_name.clone(), direct_info);
+                }
             }
 
             // Direct DURL playback serves a generated manifest with Bilibili
             // segment URLs. The proxy sibling preserves server forwarding and
             // backup CDN candidate selection for proxy playback modes.
-            if selection.proxy {
+            if selection.proxy
+                && super::proxy_playback_media_supported_by_client(
+                    client_profile,
+                    &mode_name,
+                    &original_info.medias[0],
+                )
+            {
                 let mut proxy_info = original_info.clone();
                 if let Some(media) = proxy_info.medias.first_mut() {
                     if let PlaybackMediaProvider::Bilibili(
@@ -2434,13 +2446,6 @@ fn mark_bilibili_playback_resources(
                             });
                     }
                 }
-                proxy_info.medias.retain(|media| {
-                    super::proxy_playback_media_supported_by_client(
-                        client_profile,
-                        &mode_name,
-                        media,
-                    )
-                });
                 if !proxy_info.medias.is_empty() {
                     populate_bilibili_proxy_attachments(
                         &original_info,
@@ -2524,13 +2529,20 @@ fn mark_bilibili_playback_resources(
                 .collect();
             if !direct_info.medias.is_empty() {
                 direct_info.default_media_index = Some(0);
-                generated.insert(mode_name.clone(), direct_info);
+                if let Some(direct_info) = super::build_direct_playback_info_for_client(
+                    &mode_name,
+                    &direct_info,
+                    client_profile,
+                ) {
+                    generated.insert(mode_name.clone(), direct_info);
+                }
             }
         } else if selection.direct {
-            direct_info.medias.retain(|media| {
-                super::direct_playback_media_supported_by_client(client_profile, &mode_name, media)
-            });
-            if !direct_info.medias.is_empty() {
+            if let Some(direct_info) = super::build_direct_playback_info_for_client(
+                &mode_name,
+                &direct_info,
+                client_profile,
+            ) {
                 generated.insert(mode_name.clone(), direct_info);
             }
         }
@@ -2566,11 +2578,17 @@ fn mark_bilibili_playback_resources(
                     .collect();
                 proxy_info.default_media_index = (!proxy_info.medias.is_empty()).then_some(0);
             } else {
-                proxy_info.medias = original_info
-                    .medias
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(url_index, media)| {
+                let (proxy_medias, proxy_default_media_index) = super::map_playback_resources(
+                    &original_info.medias,
+                    original_info.default_media_index,
+                    |url_index, media| {
+                        if !super::proxy_playback_media_supported_by_client(
+                            client_profile,
+                            &mode_name,
+                            media,
+                        ) {
+                            return None;
+                        }
                         let url = media.upstream_url()?.to_string();
                         Some(playback_media(
                             media.name.clone(),
@@ -2599,15 +2617,10 @@ fn mark_bilibili_playback_resources(
                                 },
                             ),
                         ))
-                    })
-                    .filter(|media| {
-                        super::proxy_playback_media_supported_by_client(
-                            client_profile,
-                            &mode_name,
-                            media,
-                        )
-                    })
-                    .collect();
+                    },
+                );
+                proxy_info.medias = proxy_medias;
+                proxy_info.default_media_index = proxy_default_media_index;
             }
             if !proxy_info.medias.is_empty() {
                 populate_bilibili_proxy_attachments(
@@ -5219,7 +5232,7 @@ mod tests {
             super::ProviderError::ClientIncompatible {
                 required_capability: Some(ref capability),
                 ..
-            } if capability == "custom_http_headers_or_provider_proxy"
+            } if capability == "browser_direct_media_access_or_provider_proxy"
         ));
         Ok(())
     }

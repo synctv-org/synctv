@@ -4,17 +4,10 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-build = "build.rs"
-
-[build-dependencies]
-brotli.workspace = true
-flate2.workspace = true
-hex.workspace = true
-sha2.workspace = true
 
 [features]
 default = ["tls-aws-lc", "tls-webpki-roots"]
-web-ui = []
+web-ui = ["dep:synctv-web-ui", "synctv-web-ui/embed"]
 openapi = [
     "synctv-api-common/openapi",
     "synctv-proto/openapi",
@@ -97,6 +90,7 @@ synctv-media-providers = { workspace = true, default-features = false }
 synctv-livestream = { workspace = true, default-features = false }
 synctv-proto = { workspace = true, default-features = false, features = ["main", "providers", "playback-provider"] }
 synctv-common = { workspace = true, default-features = false }
+synctv-web-ui = { workspace = true, optional = true }
 webauthn-rs.workspace = true
 webauthn-rs-proto.workspace = true
 

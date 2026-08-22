@@ -687,8 +687,8 @@ impl ApiError {
             | Self::ServiceUnavailable(msg)
             | Self::Timeout(msg)
             | Self::Internal(msg) => msg,
-            Self::ClientIncompatible { message, .. } => message,
-            Self::RateLimitedWithRetry { message, .. }
+            Self::ClientIncompatible { message, .. }
+            | Self::RateLimitedWithRetry { message, .. }
             | Self::OAuth2InvalidState { message }
             | Self::OAuth2ProviderExchangeFailed { message, .. }
             | Self::OAuth2MissingTargetUser { message, .. }

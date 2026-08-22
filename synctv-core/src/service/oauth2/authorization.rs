@@ -1,11 +1,15 @@
+#[cfg(test)]
+use crate::oauth2::OAuth2AuthorizationMode;
 use synctv_common::ExecutionControl;
 #[cfg(test)]
 use tracing::debug;
 
 use crate::{
     models::UserId,
-    oauth2::OAuth2AuthorizationMode,
-    service::oauth2::{OAuth2Operation, OAuth2Service, OAuth2State, PreparedOAuth2Authorization},
+    service::oauth2::{
+        OAuth2AuthorizationRequest, OAuth2Operation, OAuth2Service, OAuth2State,
+        PreparedOAuth2Authorization,
+    },
     Error, InternalExt, Result,
 };
 
@@ -45,14 +49,17 @@ impl OAuth2Service {
 
     pub async fn prepare_authorization_url_with_control(
         &self,
-        instance_name: &str,
-        redirect_url: Option<String>,
-        request_allowed_redirect_url: Option<String>,
-        operation: OAuth2Operation,
-        target_user_id: Option<UserId>,
-        mode: OAuth2AuthorizationMode,
+        request: OAuth2AuthorizationRequest<'_>,
         control: Option<&ExecutionControl>,
     ) -> Result<PreparedOAuth2Authorization> {
+        let OAuth2AuthorizationRequest {
+            instance_name,
+            redirect_url,
+            request_allowed_redirect_url,
+            operation,
+            target_user_id,
+            mode,
+        } = request;
         Self::validate_operation_target(operation, target_user_id)?;
         if let Some(ref url) = redirect_url {
             let allowed_urls = match &self.runtime_settings_store {
@@ -122,12 +129,14 @@ impl OAuth2Service {
     ) -> Result<(String, String)> {
         let prepared = self
             .prepare_authorization_url_with_control(
-                instance_name,
-                redirect_url,
-                None,
-                operation,
-                target_user_id,
-                OAuth2AuthorizationMode::Browser,
+                OAuth2AuthorizationRequest {
+                    instance_name,
+                    redirect_url,
+                    request_allowed_redirect_url: None,
+                    operation,
+                    target_user_id,
+                    mode: OAuth2AuthorizationMode::Browser,
+                },
                 control,
             )
             .await?;

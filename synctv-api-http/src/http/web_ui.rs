@@ -2,7 +2,7 @@ use axum::body::Body;
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 
-include!(concat!(env!("OUT_DIR"), "/web_assets.rs"));
+use synctv_web_ui::{Asset, ASSETS, WEB_UI_AVAILABLE};
 
 const PROVIDER_VERIFICATION_PAGE: &str = "provider_verification.html";
 const PROVIDER_VERIFICATION_CSP: &str = "default-src 'none'; \

@@ -18,4 +18,6 @@ helm/
 scripts/
 .env
 .env.*
+**/*.local
+**/*.local.*
 synctv.yaml

@@ -7811,12 +7811,10 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.23.1",
- "brotli",
  "bytes",
  "chrono",
  "clap",
  "dashmap 7.0.0-rc2",
- "flate2",
  "futures",
  "hex",
  "hmac 0.13.0",
@@ -7860,6 +7858,7 @@ dependencies = [
  "synctv-proto",
  "synctv-proxy",
  "synctv-realtime",
+ "synctv-web-ui",
  "thiserror 2.0.20",
  "tokio",
  "tokio-stream",
@@ -8325,6 +8324,19 @@ dependencies = [
  "tonic-prost",
  "tonic-prost-build",
  "tracing",
+]
+
+[[package]]
+name = "synctv-web-ui"
+version = "1.0.3"
+dependencies = [
+ "brotli",
+ "flate2",
+ "hex",
+ "serde",
+ "sha2 0.11.0",
+ "tempfile",
+ "toml",
 ]
 
 [[package]]

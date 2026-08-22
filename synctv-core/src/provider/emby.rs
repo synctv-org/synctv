@@ -156,6 +156,7 @@ fn mark_emby_playback_resources(
     version: &str,
     expires_at: i64,
     proxy_mode: crate::models::PlaybackProxyMode,
+    client_profile: Option<&PlaybackClientProfile>,
 ) {
     // Emby exposes upstream modes and SyncTV proxy siblings together.
     // Upstream token headers remain visible by product policy; administrators
@@ -178,7 +179,13 @@ fn mark_emby_playback_resources(
             default_selection = selection;
         }
         if selection.direct {
-            generated.insert(mode_name.clone(), original_info.clone());
+            if let Some(direct_info) = super::build_direct_playback_info_for_client(
+                &mode_name,
+                &original_info,
+                client_profile,
+            ) {
+                generated.insert(mode_name.clone(), direct_info);
+            }
         }
         if !selection.proxy {
             continue;
@@ -187,11 +194,17 @@ fn mark_emby_playback_resources(
         let proxy_mode_name = format!("proxy_{mode_name}");
 
         let mut proxy_info = original_info.clone();
-        proxy_info.medias = original_info
-            .medias
-            .iter()
-            .enumerate()
-            .filter_map(|(url_index, media)| {
+        let (proxy_medias, proxy_default_media_index) = super::map_playback_resources(
+            &original_info.medias,
+            original_info.default_media_index,
+            |url_index, media| {
+                if !super::proxy_playback_media_supported_by_client(
+                    client_profile,
+                    &mode_name,
+                    media,
+                ) {
+                    return None;
+                }
                 let url = media.upstream_url()?.to_string();
                 let mut proxy = playback_media(
                     media.name.clone(),
@@ -221,8 +234,10 @@ fn mark_emby_playback_resources(
                 );
                 proxy.p2p_swarm_id.clone_from(&media.p2p_swarm_id);
                 Some(proxy)
-            })
-            .collect();
+            },
+        );
+        proxy_info.medias = proxy_medias;
+        proxy_info.default_media_index = proxy_default_media_index;
         proxy_info.subtitles = original_info
             .subtitles
             .iter()
@@ -1953,7 +1968,13 @@ impl MediaProvider for EmbyProvider {
             cache_ttl,
             _ctx,
             |result, version, expires_at| {
-                mark_emby_playback_resources(result, version, expires_at, proxy_mode);
+                mark_emby_playback_resources(
+                    result,
+                    version,
+                    expires_at,
+                    proxy_mode,
+                    playback_client_profile,
+                );
             },
             || async {
                 self.resolve_from_api(&resolved, _ctx.request_context(), playback_client_profile)
@@ -1963,7 +1984,7 @@ impl MediaProvider for EmbyProvider {
         .await?;
 
         let result =
-            super::filter_playback_routes_by_client(result, proxy_mode, playback_client_profile)?;
+            super::require_compatible_playback_route(result, proxy_mode, playback_client_profile)?;
 
         let Some(play_session_id) = emby_play_session_id(&result) else {
             return Ok(result);
@@ -3151,6 +3172,7 @@ mod tests {
             "version-1",
             1234,
             crate::models::PlaybackProxyMode::Prefer,
+            None,
         );
 
         assert!(matches!(

@@ -312,9 +312,13 @@ pub(crate) fn require_compatible_playback_route(
         {
             Some("provider_proxy".to_string())
         } else if matches!(proxy_mode, crate::models::PlaybackProxyMode::DirectOnly)
-            && profile.is_some_and(|profile| !profile.supports_custom_http_headers)
+            && profile.is_some_and(|profile| {
+                profile.is_web()
+                    && (!profile.supports_custom_http_headers
+                        || !profile.supports_insecure_http_media)
+            })
         {
-            Some("custom_http_headers_or_provider_proxy".to_string())
+            Some("browser_direct_media_access_or_provider_proxy".to_string())
         } else {
             Some("media_transport_codec_combination".to_string())
         };
@@ -328,103 +332,100 @@ pub(crate) fn require_compatible_playback_route(
     require_direct_playback_route(result, proxy_mode)
 }
 
-fn retain_playback_resources<T>(
-    resources: &mut Vec<T>,
-    default_index: &mut Option<usize>,
-    mut keep: impl FnMut(&T) -> bool,
-) {
-    let previous_default = *default_index;
-    let mut retained_default = None;
-    let mut retained = Vec::with_capacity(resources.len());
-    for (source_index, resource) in resources.drain(..).enumerate() {
-        if !keep(&resource) {
+pub(crate) fn map_playback_resources<T, U>(
+    resources: &[T],
+    default_index: Option<usize>,
+    mut map: impl FnMut(usize, &T) -> Option<U>,
+) -> (Vec<U>, Option<usize>) {
+    let mut mapped_default = None;
+    let mut mapped = Vec::with_capacity(resources.len());
+    for (source_index, resource) in resources.iter().enumerate() {
+        let Some(resource) = map(source_index, resource) else {
             continue;
+        };
+        if default_index == Some(source_index) {
+            mapped_default = Some(mapped.len());
         }
-        if previous_default == Some(source_index) {
-            retained_default = Some(retained.len());
-        }
-        retained.push(resource);
+        mapped.push(resource);
     }
-    *resources = retained;
-    *default_index = retained_default;
+    (mapped, mapped_default)
 }
 
-/// Apply request-scoped client capabilities to routes produced by one
-/// Provider. Providers remain responsible for creating direct/proxy siblings;
-/// this helper only intersects those concrete resources with the client.
-pub(crate) fn filter_playback_routes_by_client(
-    mut result: PlaybackResult,
-    proxy_mode: crate::models::PlaybackProxyMode,
+/// Build one direct route from a provider's cached upstream response.
+///
+/// Providers call this before inserting the route into the generated result,
+/// so unsupported resources never become public playback routes.
+pub(crate) fn build_direct_playback_info_for_client(
+    mode_name: &str,
+    source: &PlaybackInfo,
     profile: Option<&PlaybackClientProfile>,
-) -> Result<PlaybackResult, ProviderError> {
-    let original_default = result.default_mode.clone();
+) -> Option<PlaybackInfo> {
     let Some(profile) = profile.filter(|profile| profile.uses_explicit_capabilities()) else {
-        return require_compatible_playback_route(result, proxy_mode, profile);
+        return Some(source.clone());
     };
-    let rejected_insecure_direct_media = result.playback_infos.values().any(|info| {
-        info.medias.iter().any(|media| {
-            !media.requires_provider_url()
-                && !direct_http_resource_supported_by_client(profile, media.upstream_url())
-        })
-    });
-
-    result.playback_infos.retain(|mode_name, info| {
-        retain_playback_resources(&mut info.medias, &mut info.default_media_index, |media| {
-            if media.requires_provider_url() {
-                proxy_playback_media_supported_by_client(Some(profile), mode_name, media)
-            } else {
-                direct_playback_media_supported_by_client(Some(profile), mode_name, media)
-            }
+    let (medias, default_media_index) =
+        map_playback_resources(&source.medias, source.default_media_index, |_, media| {
+            direct_playback_media_supported_by_client(Some(profile), mode_name, media)
+                .then(|| media.clone())
         });
-        if info.medias.is_empty() {
-            return false;
-        }
-
-        retain_playback_resources(
-            &mut info.subtitles,
-            &mut info.default_subtitle_index,
-            |subtitle| {
-                subtitle.requires_provider_url()
-                    || (direct_http_resource_supported_by_client(
-                        profile,
-                        Some(subtitle.upstream_url()),
-                    ) && (profile.supports_custom_http_headers
-                        || subtitle.upstream_headers().is_empty()))
-            },
-        );
-        retain_playback_resources(
-            &mut info.danmakus,
-            &mut info.default_danmaku_index,
-            |danmaku| {
-                danmaku.requires_provider_url()
-                    || (direct_http_resource_supported_by_client(profile, danmaku.upstream_url())
-                        && (profile.supports_custom_http_headers
-                            || danmaku.upstream_headers().is_empty()))
-            },
-        );
-        true
-    });
-
-    select_generated_playback_default(
-        &mut result,
-        &original_default,
-        matches!(
-            proxy_mode,
-            crate::models::PlaybackProxyMode::Only | crate::models::PlaybackProxyMode::Prefer
-        ),
-    );
-    if result.playback_infos.is_empty()
-        && rejected_insecure_direct_media
-        && matches!(proxy_mode, crate::models::PlaybackProxyMode::DirectOnly)
-    {
-        return Err(ProviderError::ClientIncompatible {
-            reason:
-                "The secure Web client cannot load an insecure HTTP media URL in direct-only mode"
-                    .to_string(),
-            required_capability: Some("secure_media_url_or_provider_proxy".to_string()),
-        });
+    if medias.is_empty() {
+        return None;
     }
-    require_compatible_playback_route(result, proxy_mode, Some(profile))
+    let (subtitles, default_subtitle_index) = map_playback_resources(
+        &source.subtitles,
+        source.default_subtitle_index,
+        |_, subtitle| {
+            (subtitle.requires_provider_url()
+                || (direct_http_resource_supported_by_client(
+                    profile,
+                    Some(subtitle.upstream_url()),
+                ) && (profile.supports_custom_http_headers
+                    || subtitle.upstream_headers().is_empty())))
+            .then(|| subtitle.clone())
+        },
+    );
+    let (danmakus, default_danmaku_index) = map_playback_resources(
+        &source.danmakus,
+        source.default_danmaku_index,
+        |_, danmaku| {
+            (danmaku.requires_provider_url()
+                || (direct_http_resource_supported_by_client(profile, danmaku.upstream_url())
+                    && (profile.supports_custom_http_headers
+                        || danmaku.upstream_headers().is_empty())))
+            .then(|| danmaku.clone())
+        },
+    );
+    Some(PlaybackInfo {
+        thumbnail: source.thumbnail.clone(),
+        medias,
+        default_media_index,
+        subtitles,
+        default_subtitle_index,
+        danmakus,
+        default_danmaku_index,
+    })
+}
+
+/// Build one provider-proxy route from a provider's cached upstream response.
+pub(crate) fn build_proxy_playback_info_for_client(
+    mode_name: &str,
+    source: &PlaybackInfo,
+    profile: Option<&PlaybackClientProfile>,
+) -> Option<PlaybackInfo> {
+    let (medias, default_media_index) =
+        map_playback_resources(&source.medias, source.default_media_index, |_, media| {
+            proxy_playback_media_supported_by_client(profile, mode_name, media)
+                .then(|| media.clone())
+        });
+    (!medias.is_empty()).then(|| PlaybackInfo {
+        thumbnail: source.thumbnail.clone(),
+        medias,
+        default_media_index,
+        subtitles: source.subtitles.clone(),
+        default_subtitle_index: source.default_subtitle_index,
+        danmakus: source.danmakus.clone(),
+        default_danmaku_index: source.default_danmaku_index,
+    })
 }
 
 use crate::models::media::{
@@ -1870,6 +1871,46 @@ mod playback_route_capability_tests {
         }
     }
 
+    fn generate_test_routes(
+        mut result: PlaybackResult,
+        proxy_mode: crate::models::PlaybackProxyMode,
+        profile: Option<&PlaybackClientProfile>,
+    ) -> Result<PlaybackResult, ProviderError> {
+        let original_default = result.default_mode.clone();
+        result.playback_infos = std::mem::take(&mut result.playback_infos)
+            .into_iter()
+            .filter_map(|(mode_name, info)| {
+                let prepared = if mode_name.starts_with("proxy_") {
+                    build_proxy_playback_info_for_client(&mode_name, &info, profile)
+                } else {
+                    build_direct_playback_info_for_client(&mode_name, &info, profile)
+                };
+                prepared.map(|info| (mode_name, info))
+            })
+            .collect();
+        select_generated_playback_default(
+            &mut result,
+            &original_default,
+            matches!(
+                proxy_mode,
+                crate::models::PlaybackProxyMode::Only | crate::models::PlaybackProxyMode::Prefer
+            ),
+        );
+        require_compatible_playback_route(result, proxy_mode, profile)
+    }
+
+    #[test]
+    fn mapped_playback_resources_keep_source_indices_and_remap_the_default() {
+        let resources = ["unsupported", "selected", "fallback"];
+        let (mapped, default_index) =
+            map_playback_resources(&resources, Some(1), |source_index, resource| {
+                (source_index > 0).then_some((source_index, *resource))
+            });
+
+        assert_eq!(mapped, vec![(1, "selected"), (2, "fallback")]);
+        assert_eq!(default_index, Some(0));
+    }
+
     #[test]
     fn web_header_bound_direct_media_falls_back_to_provider_proxy() {
         let headers = HashMap::from([("Referer".to_string(), "https://example.test".to_string())]);
@@ -1894,7 +1935,7 @@ mod playback_route_capability_tests {
             ("proxy_direct".to_string(), info(proxy)),
         ]));
 
-        let filtered = filter_playback_routes_by_client(
+        let filtered = generate_test_routes(
             playback,
             crate::models::PlaybackProxyMode::DirectPrefer,
             Some(&web_profile()),
@@ -1935,7 +1976,7 @@ mod playback_route_capability_tests {
             PlaybackMediaPipeline::MediaSource,
         );
 
-        let filtered = filter_playback_routes_by_client(
+        let filtered = generate_test_routes(
             playback,
             crate::models::PlaybackProxyMode::DirectPrefer,
             Some(&profile),
@@ -1959,7 +2000,7 @@ mod playback_route_capability_tests {
         let profile =
             web_streaming_profile(PlaybackMediaTransport::Hls, PlaybackMediaPipeline::Native);
 
-        let filtered = filter_playback_routes_by_client(
+        let filtered = generate_test_routes(
             result(HashMap::from([("hls".to_string(), info(direct))])),
             crate::models::PlaybackProxyMode::DirectOnly,
             Some(&profile),
@@ -1988,7 +2029,7 @@ mod playback_route_capability_tests {
             },
         ));
 
-        let filtered = filter_playback_routes_by_client(
+        let filtered = generate_test_routes(
             result(HashMap::from([
                 ("direct".to_string(), info(direct)),
                 ("proxy_direct".to_string(), info(proxy)),
@@ -2012,7 +2053,7 @@ mod playback_route_capability_tests {
             },
         ));
 
-        let error = filter_playback_routes_by_client(
+        let error = generate_test_routes(
             result(HashMap::from([("direct".to_string(), info(direct))])),
             crate::models::PlaybackProxyMode::DirectOnly,
             Some(&web_profile()),
@@ -2024,7 +2065,7 @@ mod playback_route_capability_tests {
             ProviderError::ClientIncompatible {
                 required_capability: Some(ref capability),
                 ..
-            } if capability == "secure_media_url_or_provider_proxy"
+            } if capability == "browser_direct_media_access_or_provider_proxy"
         ));
     }
 
@@ -2060,7 +2101,7 @@ mod playback_route_capability_tests {
         }];
         playback_info.default_danmaku_index = Some(0);
 
-        let filtered = filter_playback_routes_by_client(
+        let filtered = generate_test_routes(
             result(HashMap::from([("direct".to_string(), playback_info)])),
             crate::models::PlaybackProxyMode::DirectOnly,
             Some(&web_profile()),
@@ -2092,7 +2133,7 @@ mod playback_route_capability_tests {
             PlaybackMediaPipeline::MediaSource,
         );
 
-        let error = filter_playback_routes_by_client(
+        let error = generate_test_routes(
             result(HashMap::from([("proxy_flv".to_string(), info(proxy))])),
             crate::models::PlaybackProxyMode::Only,
             Some(&profile),
@@ -2118,7 +2159,7 @@ mod playback_route_capability_tests {
             },
         ));
 
-        let error = filter_playback_routes_by_client(
+        let error = generate_test_routes(
             result(HashMap::from([("direct".to_string(), info(direct))])),
             crate::models::PlaybackProxyMode::DirectOnly,
             Some(&web_profile()),
@@ -2130,7 +2171,7 @@ mod playback_route_capability_tests {
             ProviderError::ClientIncompatible {
                 required_capability: Some(ref capability),
                 ..
-            } if capability == "custom_http_headers_or_provider_proxy"
+            } if capability == "browser_direct_media_access_or_provider_proxy"
         ));
     }
 
@@ -2192,7 +2233,7 @@ mod playback_route_capability_tests {
         ];
         playback_info.default_danmaku_index = Some(1);
 
-        let filtered = filter_playback_routes_by_client(
+        let filtered = generate_test_routes(
             result(HashMap::from([("direct".to_string(), playback_info)])),
             crate::models::PlaybackProxyMode::DirectOnly,
             Some(&web_profile()),

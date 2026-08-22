@@ -23,7 +23,9 @@ use std::{collections::HashSet, sync::Arc};
 use synctv_core::models::{OAuth2Provider, User, UserId, UserRole, UserStatus};
 use synctv_core::oauth2::OAuth2AuthorizationMode;
 use synctv_core::provider::ExecutionControl;
-use synctv_core::service::{OAuth2LinkResult, OAuth2Operation, OAuth2Service, UserService};
+use synctv_core::service::{
+    OAuth2AuthorizationRequest, OAuth2LinkResult, OAuth2Operation, OAuth2Service, UserService,
+};
 use synctv_proto::client::{
     ExchangeAuthorizationCodeRequest, ExchangeAuthorizationCodeResponse,
     GetAuthorizationUrlForBindRequest, GetAuthorizationUrlForBindResponse,
@@ -396,12 +398,14 @@ impl OAuth2ApiImpl {
         let prepared = self
             .oauth2_service
             .prepare_authorization_url_with_control(
-                &req.provider,
-                redirect_url,
-                request_allowed_redirect_url,
-                OAuth2Operation::Login,
-                None,
-                mode,
+                OAuth2AuthorizationRequest {
+                    instance_name: &req.provider,
+                    redirect_url,
+                    request_allowed_redirect_url,
+                    operation: OAuth2Operation::Login,
+                    target_user_id: None,
+                    mode,
+                },
                 control,
             )
             .await?;
@@ -448,12 +452,14 @@ impl OAuth2ApiImpl {
         let prepared = self
             .oauth2_service
             .prepare_authorization_url_with_control(
-                &req.provider,
-                redirect_url,
-                request_allowed_redirect_url,
-                OAuth2Operation::Bind,
-                Some(*user_id),
-                mode,
+                OAuth2AuthorizationRequest {
+                    instance_name: &req.provider,
+                    redirect_url,
+                    request_allowed_redirect_url,
+                    operation: OAuth2Operation::Bind,
+                    target_user_id: Some(*user_id),
+                    mode,
+                },
                 control,
             )
             .await

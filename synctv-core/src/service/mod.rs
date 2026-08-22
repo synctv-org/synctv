@@ -137,9 +137,9 @@ pub use notification_partition_manager::{
     NotificationPartitionManager,
 };
 pub use oauth2::{
-    local_oauth_state_store, state_store_from_shared_state_profile, OAuth2LinkResult,
-    OAuth2Operation, OAuth2PendingRegistration, OAuth2Service, OAuth2ServiceRuntime, OAuth2State,
-    OAuth2UserInfo, OAuthStateStore, RedisOAuthStateStore,
+    local_oauth_state_store, state_store_from_shared_state_profile, OAuth2AuthorizationRequest,
+    OAuth2LinkResult, OAuth2Operation, OAuth2PendingRegistration, OAuth2Service,
+    OAuth2ServiceRuntime, OAuth2State, OAuth2UserInfo, OAuthStateStore, RedisOAuthStateStore,
 };
 pub use optimistic_retry::retry_with_optimistic_lock;
 pub use partitioning::acquire_unbounded_ddl_connection;

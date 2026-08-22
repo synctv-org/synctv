@@ -254,22 +254,48 @@ const fn cctv_stream_kind_name(kind: CctvPlaybackStreamKind) -> &'static str {
     }
 }
 
-fn mark_cctv_playback_resources(result: &mut PlaybackResult, version: &str, expires_at: i64) {
+fn mark_cctv_playback_resources(
+    result: &mut PlaybackResult,
+    version: &str,
+    expires_at: i64,
+    client_profile: Option<&super::PlaybackClientProfile>,
+) {
+    let original_default = result.default_mode.clone();
     for (mode_name, info) in &mut result.playback_infos {
-        for (media_index, media) in info.medias.iter_mut().enumerate() {
-            if matches!(
-                media.provider,
-                PlaybackMediaProvider::Cctv(PlaybackCctvMedia::Refresh { .. })
-            ) {
-                media.provider = PlaybackMediaProvider::Cctv(PlaybackCctvMedia::Proxy {
-                    version: version.to_string(),
-                    expires_at,
-                    mode_name: mode_name.clone(),
-                    media_index,
-                });
-            }
-        }
+        let source_medias = std::mem::take(&mut info.medias);
+        let (medias, default_media_index) = super::map_playback_resources(
+            &source_medias,
+            info.default_media_index,
+            |media_index, media| {
+                if !super::proxy_playback_media_supported_by_client(
+                    client_profile,
+                    mode_name,
+                    media,
+                ) {
+                    return None;
+                }
+                let mut media = media.clone();
+                if matches!(
+                    media.provider,
+                    PlaybackMediaProvider::Cctv(PlaybackCctvMedia::Refresh { .. })
+                ) {
+                    media.provider = PlaybackMediaProvider::Cctv(PlaybackCctvMedia::Proxy {
+                        version: version.to_string(),
+                        expires_at,
+                        mode_name: mode_name.clone(),
+                        media_index,
+                    });
+                }
+                Some(media)
+            },
+        );
+        info.medias = medias;
+        info.default_media_index = default_media_index;
     }
+    result
+        .playback_infos
+        .retain(|_, info| !info.medias.is_empty());
+    super::select_generated_playback_default(result, &original_default, true);
 }
 
 #[async_trait]
@@ -287,21 +313,24 @@ impl MediaProvider for CctvProvider {
             .map_err(|error| ProviderError::NetworkError(error.to_string()))?;
         let config = Self::config(source_config)?;
         let resource = Self::resource(config)?;
+        let client_profile = ctx.playback_client_profile();
         let result = super::cached_versioned_playback_or_fill(
             Self::NAME,
             &format!("playback:{}", config.resource),
             Duration::from_hours(2),
             ctx,
-            mark_cctv_playback_resources,
+            |result, version, expires_at| {
+                mark_cctv_playback_resources(result, version, expires_at, client_profile);
+            },
             || async {
                 Self::playback_result(&config.resource, self.client.resolve(&resource).await?)
             },
         )
         .await?;
-        super::filter_playback_routes_by_client(
+        super::require_compatible_playback_route(
             result,
             crate::models::PlaybackProxyMode::Only,
-            ctx.playback_client_profile(),
+            client_profile,
         )
     }
 

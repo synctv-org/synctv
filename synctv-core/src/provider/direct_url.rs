@@ -452,6 +452,7 @@ fn mark_direct_url_playback_resources(
     expires_at: i64,
     selection: super::PlaybackRouteSelection,
     auto_mode: bool,
+    client_profile: Option<&super::PlaybackClientProfile>,
 ) {
     let original_default_mode = result.default_mode.clone();
     let auto_default_prefers_proxy = auto_mode
@@ -559,7 +560,11 @@ fn mark_direct_url_playback_resources(
                     .map(|(_, danmaku)| danmaku.clone())
                     .collect();
             }
-            if !direct_info.medias.is_empty() {
+            if let Some(direct_info) = super::build_direct_playback_info_for_client(
+                &mode_name,
+                &direct_info,
+                client_profile,
+            ) {
                 generated.insert(mode_name.clone(), direct_info);
             }
         }
@@ -575,6 +580,13 @@ fn mark_direct_url_playback_resources(
             .iter()
             .enumerate()
             .filter_map(|(url_index, media)| {
+                if !super::proxy_playback_media_supported_by_client(
+                    client_profile,
+                    &mode_name,
+                    media,
+                ) {
+                    return None;
+                }
                 let url = media.upstream_url()?.to_string();
                 let headers = media.upstream_headers();
                 Some((
@@ -925,6 +937,7 @@ impl MediaProvider for DirectUrlProvider {
         };
         let route_selection = direct_url_route_selection(config);
         let auto_mode = config.proxy_mode == crate::models::PlaybackProxyMode::Auto;
+        let client_profile = _ctx.playback_client_profile();
         Self::validate_config_shape(config)?;
         for media in &config.medias {
             Self::validate_source_url(&media.url, &self.ssrf_guard)?;
@@ -990,6 +1003,7 @@ impl MediaProvider for DirectUrlProvider {
                                     expires_at,
                                     route_selection,
                                     auto_mode,
+                                    client_profile,
                                 );
                             },
                         )
@@ -1209,15 +1223,12 @@ impl MediaProvider for DirectUrlProvider {
                     expires_at,
                     route_selection,
                     auto_mode,
+                    client_profile,
                 );
             },
         )
         .await?;
-        super::filter_playback_routes_by_client(
-            result,
-            config.proxy_mode,
-            _ctx.playback_client_profile(),
-        )
+        super::require_compatible_playback_route(result, config.proxy_mode, client_profile)
     }
 }
 
@@ -1230,6 +1241,82 @@ mod tests {
         ProviderContext::new("test", crate::provider::ProviderActor::System).with_store(Arc::new(
             super::super::store::InMemoryProviderStore::new(100),
         ))
+    }
+
+    fn web_progressive_profile() -> super::super::PlaybackClientProfile {
+        super::super::PlaybackClientProfile {
+            profile_version: super::super::CURRENT_PLAYBACK_CLIENT_PROFILE_VERSION,
+            environment: super::super::PlaybackClientEnvironment::Web,
+            media_capabilities: vec![super::super::PlaybackMediaCapability {
+                transport: super::super::PlaybackMediaTransport::Progressive,
+                container: Some(super::super::PlaybackContainer::Mp4),
+                video_codec: Some(super::super::PlaybackVideoCodec::H264),
+                audio_codec: Some(super::super::PlaybackAudioCodec::Aac),
+                pipeline: super::super::PlaybackMediaPipeline::Native,
+                codec_string: None,
+            }],
+            supports_custom_http_headers: false,
+            supports_provider_proxy: true,
+            supports_insecure_http_media: false,
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn web_header_bound_media_only_generates_the_proxy_route() {
+        let provider = DirectUrlProvider::new();
+        let ctx = test_context().with_playback_client_profile(Some(web_progressive_profile()));
+        let mut config = crate::models::DirectUrlMediaSourceConfig::single(
+            "https://example.com/video.mp4".to_string(),
+            HashMap::from([("Authorization".to_string(), "Bearer secret".to_string())]),
+        );
+        config.proxy_mode = crate::models::PlaybackProxyMode::DirectPrefer;
+
+        let result = provider
+            .generate_playback(&ctx, &crate::models::MediaSourceConfig::DirectUrl(config))
+            .await
+            .expect("the provider proxy satisfies browser header restrictions");
+
+        assert!(!result.playback_infos.contains_key("direct"));
+        assert!(result.playback_infos.contains_key("proxy_direct"));
+        assert_eq!(result.default_mode, "proxy_direct");
+    }
+
+    #[tokio::test]
+    async fn proxy_locator_keeps_the_cached_source_index_after_capability_selection() {
+        let provider = DirectUrlProvider::new();
+        let ctx = test_context().with_playback_client_profile(Some(web_progressive_profile()));
+        let mut config = crate::models::DirectUrlMediaSourceConfig::single(
+            "https://example.com/live.m3u8".to_string(),
+            HashMap::new(),
+        );
+        config.proxy_mode = crate::models::PlaybackProxyMode::Only;
+        config
+            .medias
+            .push(crate::models::DirectUrlMediaResourceConfig {
+                name: "compatible".to_string(),
+                url: "https://example.com/video.mp4".to_string(),
+                headers: HashMap::new(),
+                format: "mp4".to_string(),
+                expires_at: None,
+            });
+        config.default_media_index = Some(1);
+
+        let result = provider
+            .generate_playback(&ctx, &crate::models::MediaSourceConfig::DirectUrl(config))
+            .await
+            .expect("the compatible fallback should generate");
+        let info = &result.playback_infos["proxy_direct"];
+
+        assert_eq!(info.medias.len(), 1);
+        assert_eq!(info.default_media_index, Some(0));
+        assert!(matches!(
+            info.medias[0].provider,
+            PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::ProxyStream {
+                url_index: 1,
+                ..
+            })
+        ));
     }
 
     #[tokio::test]

@@ -1,4 +1,45 @@
-# Stage 1: Build
+ARG SYNCTV_WEB_ASSETS_STAGE=no-web-assets
+ARG SYNCTV_WEB_ASSETS_PLATFORM=linux/amd64
+
+# Stage 1: Select empty assets for ordinary backend-only builds.
+FROM debian:trixie-slim AS no-web-assets
+RUN mkdir /web-dist
+
+# Stage 2: Build platform-independent Web assets on the supported Flutter host.
+FROM --platform=${SYNCTV_WEB_ASSETS_PLATFORM} rust:slim-trixie AS web-assets
+
+ARG FLUTTER_VERSION=3.44.8
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    curl \
+    git \
+    xz-utils && rm -rf /var/lib/apt/lists/*
+RUN curl --fail --location --retry 3 \
+    "https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_${FLUTTER_VERSION}-stable.tar.xz" \
+    --output /tmp/flutter.tar.xz && \
+    tar --extract --xz --file /tmp/flutter.tar.xz --directory /opt && \
+    rm /tmp/flutter.tar.xz && \
+    git config --global --add safe.directory /opt/flutter
+ENV PATH="/opt/flutter/bin:/opt/flutter/bin/cache/dart-sdk/bin:${PATH}"
+WORKDIR /web-source
+COPY . /web-source
+ENV SYNCTV_WEB_CACHE_DIR=/web-cache
+ENV SYNCTV_WEB_EXPORT_DIR=/web-dist
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,id=synctv-web-rustup,target=/usr/local/rustup,sharing=locked \
+    --mount=type=cache,id=synctv-web-target,target=/web-source/target,sharing=locked \
+    --mount=type=cache,id=synctv-web-git,target=/web-cache/git,sharing=locked \
+    --mount=type=cache,id=synctv-web-builds,target=/web-cache/builds,sharing=locked \
+    --mount=type=cache,id=synctv-web-compressed,target=/web-cache/compressed,sharing=locked \
+    --mount=type=cache,id=synctv-web-pub,target=/root/.pub-cache,sharing=locked \
+    cargo clean -p synctv-web-ui && \
+    cargo check --locked -p synctv-web-ui --features embed && \
+    test -f /web-dist/index.html
+
+FROM ${SYNCTV_WEB_ASSETS_STAGE} AS selected-web-assets
+
+# Stage 3: Build the backend for the target platform.
 FROM rust:slim-trixie AS builder
 
 # Install build dependencies
@@ -35,6 +76,8 @@ ARG SYNCTV_CARGO_BUILD_PROFILE=release
 ARG CARGO_INCREMENTAL=0
 ARG CARGO_TERM_COLOR="auto"
 ARG TARGETARCH
+ARG SYNCTV_CARGO_BUILD_JOBS=1
+ARG SYNCTV_RUSTC_THREADS=1
 
 # Clean CI runners benefit from deterministic non-incremental compilation.
 ENV CARGO_INCREMENTAL=$CARGO_INCREMENTAL
@@ -42,11 +85,14 @@ ENV CARGO_TERM_COLOR=$CARGO_TERM_COLOR
 
 # Copy entire source tree
 COPY . .
+COPY --from=selected-web-assets /web-dist /web-dist
+ENV SYNCTV_WEB_DIST=/web-dist
 
 # Build with cache mounts for cargo registry, git deps, and target directory
 # Copy binary out of cache mount before RUN completes
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,id=synctv-rustup-${TARGETARCH},target=/usr/local/rustup,sharing=locked \
     --mount=type=cache,id=synctv-target-${SYNCTV_CARGO_BUILD_PROFILE}-${TARGETARCH},target=/app/target,sharing=locked \
     case "$SYNCTV_CARGO_BUILD_PROFILE" in \
         dev) target_profile_dir=debug ;; \
@@ -63,13 +109,14 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     if [ -n "$SYNCTV_BUILD_FEATURES" ]; then \
         build_flags="$build_flags --features $SYNCTV_BUILD_FEATURES"; \
     fi; \
+    RUSTFLAGS="-Zthreads=$SYNCTV_RUSTC_THREADS -Zshare-generics=y -Clink-arg=-Wl,-z,pack-relative-relocs" \
     cargo +nightly \
-        --config 'build.rustflags=["-Clink-arg=-Wl,-z,pack-relative-relocs"]' \
         build $build_flags \
+        --jobs "$SYNCTV_CARGO_BUILD_JOBS" \
         --bin synctv && \
     cp "target/$target_profile_dir/synctv" /synctv
 
-# Stage 2: Runtime image
+# Stage 4: Runtime image
 FROM debian:trixie-slim
 
 # OCI image labels

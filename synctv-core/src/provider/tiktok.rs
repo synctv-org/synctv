@@ -849,21 +849,47 @@ impl TikTokProvider {
     }
 }
 
-fn mark_playback_resources(result: &mut PlaybackResult, version: &str, expires_at: i64) {
-    for (mode_name, info) in &mut result.playback_infos {
-        for (media_index, media) in info.medias.iter_mut().enumerate() {
-            if matches!(
-                media.provider,
-                PlaybackMediaProvider::TikTok(PlaybackTikTokMedia::Refresh { .. })
-            ) {
-                media.provider = PlaybackMediaProvider::TikTok(PlaybackTikTokMedia::Proxy {
-                    version: version.to_string(),
-                    expires_at,
-                    mode_name: mode_name.clone(),
-                    media_index,
-                });
-            }
+fn mark_playback_resources(
+    result: &mut PlaybackResult,
+    version: &str,
+    expires_at: i64,
+    client_profile: Option<&super::PlaybackClientProfile>,
+) {
+    let original_default = result.default_mode.clone();
+    let original_modes = std::mem::take(&mut result.playback_infos);
+    for (mode_name, mut info) in original_modes {
+        let source_medias = std::mem::take(&mut info.medias);
+        let (medias, default_media_index) = super::map_playback_resources(
+            &source_medias,
+            info.default_media_index,
+            |media_index, media| {
+                if !super::proxy_playback_media_supported_by_client(
+                    client_profile,
+                    &mode_name,
+                    media,
+                ) {
+                    return None;
+                }
+                let mut media = media.clone();
+                if matches!(
+                    media.provider,
+                    PlaybackMediaProvider::TikTok(PlaybackTikTokMedia::Refresh { .. })
+                ) {
+                    media.provider = PlaybackMediaProvider::TikTok(PlaybackTikTokMedia::Proxy {
+                        version: version.to_string(),
+                        expires_at,
+                        mode_name: mode_name.clone(),
+                        media_index,
+                    });
+                }
+                Some(media)
+            },
+        );
+        if medias.is_empty() {
+            continue;
         }
+        info.medias = medias;
+        info.default_media_index = default_media_index;
         for (subtitle_index, subtitle) in info.subtitles.iter_mut().enumerate() {
             if matches!(
                 subtitle.provider,
@@ -878,7 +904,9 @@ fn mark_playback_resources(result: &mut PlaybackResult, version: &str, expires_a
                     });
             }
         }
+        result.playback_infos.insert(mode_name, info);
     }
+    super::select_generated_playback_default(result, &original_default, true);
 }
 
 fn stream_format(format: TikTokStreamFormat) -> &'static str {
@@ -983,12 +1011,15 @@ impl MediaProvider for TikTokProvider {
             credential_owner_id.map_or_else(|| "anonymous".to_string(), |id| id.to_string()),
             Self::credential_server_id_for_instance(provider_instance_name.as_deref())
         );
+        let client_profile = ctx.playback_client_profile();
         let result = super::cached_versioned_playback_or_fill(
             Self::NAME,
             &cache_key,
             Duration::from_mins(30),
             ctx,
-            mark_playback_resources,
+            |result, version, expires_at| {
+                mark_playback_resources(result, version, expires_at, client_profile);
+            },
             || async {
                 let media = self.resolve_media(config, &session).await?;
                 Self::playback_result(
@@ -1000,10 +1031,10 @@ impl MediaProvider for TikTokProvider {
             },
         )
         .await?;
-        super::filter_playback_routes_by_client(
+        super::require_compatible_playback_route(
             result,
             crate::models::PlaybackProxyMode::Only,
-            ctx.playback_client_profile(),
+            client_profile,
         )
     }
 

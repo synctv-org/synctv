@@ -597,21 +597,60 @@ const fn acfun_format_name(format: AcFunPlaybackFormat) -> &'static str {
     }
 }
 
-fn mark_acfun_playback_resources(result: &mut PlaybackResult, version: &str, expires_at: i64) {
+fn mark_acfun_playback_resources(
+    result: &mut PlaybackResult,
+    version: &str,
+    expires_at: i64,
+    client_profile: Option<&super::PlaybackClientProfile>,
+) {
+    let original_default = result.default_mode.clone();
     for (mode_name, info) in &mut result.playback_infos {
-        for (media_index, media) in info.medias.iter_mut().enumerate() {
-            if matches!(
-                media.provider,
-                PlaybackMediaProvider::AcFun(PlaybackAcFunMedia::Refresh { .. })
-            ) {
-                media.provider = PlaybackMediaProvider::AcFun(PlaybackAcFunMedia::Proxy {
-                    version: version.to_string(),
-                    expires_at,
-                    mode_name: mode_name.clone(),
-                    media_index,
-                });
-            }
-        }
+        let source_medias = std::mem::take(&mut info.medias);
+        let supported_indices = source_medias
+            .iter()
+            .enumerate()
+            .filter_map(|(media_index, media)| {
+                super::proxy_playback_media_supported_by_client(client_profile, mode_name, media)
+                    .then_some(media_index)
+            })
+            .collect::<std::collections::HashSet<_>>();
+        let (medias, default_media_index) = super::map_playback_resources(
+            &source_medias,
+            info.default_media_index,
+            |media_index, media| {
+                if !supported_indices.contains(&media_index) {
+                    return None;
+                }
+                let mut media = media.clone();
+                if matches!(
+                    media.provider,
+                    PlaybackMediaProvider::AcFun(PlaybackAcFunMedia::Refresh { .. })
+                ) {
+                    media.provider = PlaybackMediaProvider::AcFun(PlaybackAcFunMedia::Proxy {
+                        version: version.to_string(),
+                        expires_at,
+                        mode_name: mode_name.clone(),
+                        media_index,
+                    });
+                }
+                Some(media)
+            },
+        );
+        info.medias = medias;
+        info.default_media_index = default_media_index;
+        let (danmakus, default_danmaku_index) = super::map_playback_resources(
+            &info.danmakus,
+            info.default_danmaku_index,
+            |_, danmaku| match &danmaku.provider {
+                PlaybackDanmakuProvider::AcFun(
+                    PlaybackAcFunDanmaku::FileRefresh { media_index }
+                    | PlaybackAcFunDanmaku::LiveRefresh { media_index },
+                ) if !supported_indices.contains(media_index) => None,
+                _ => Some(danmaku.clone()),
+            },
+        );
+        info.danmakus = danmakus;
+        info.default_danmaku_index = default_danmaku_index;
         for danmaku in &mut info.danmakus {
             danmaku.provider = match &danmaku.provider {
                 PlaybackDanmakuProvider::AcFun(PlaybackAcFunDanmaku::FileRefresh {
@@ -634,6 +673,10 @@ fn mark_acfun_playback_resources(result: &mut PlaybackResult, version: &str, exp
             };
         }
     }
+    result
+        .playback_infos
+        .retain(|_, info| !info.medias.is_empty());
+    super::select_generated_playback_default(result, &original_default, true);
 }
 
 #[async_trait]
@@ -684,19 +727,22 @@ impl MediaProvider for AcFunProvider {
         } else {
             Duration::from_hours(2)
         };
+        let client_profile = ctx.playback_client_profile();
         let result = super::cached_versioned_playback_or_fill(
             Self::NAME,
             &Self::cache_key(&resource),
             cache_ttl,
             ctx,
-            mark_acfun_playback_resources,
+            |result, version, expires_at| {
+                mark_acfun_playback_resources(result, version, expires_at, client_profile);
+            },
             || async { Self::playback_result(self.client.resolve(&resource, None).await?) },
         )
         .await?;
-        super::filter_playback_routes_by_client(
+        super::require_compatible_playback_route(
             result,
             crate::models::PlaybackProxyMode::Only,
-            ctx.playback_client_profile(),
+            client_profile,
         )
     }
 

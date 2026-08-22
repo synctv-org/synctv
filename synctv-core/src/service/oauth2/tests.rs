@@ -752,12 +752,14 @@ async fn test_authorization_rejects_mode_not_advertised_by_provider() {
     let error = err(
         service
             .prepare_authorization_url_with_control(
-                "github",
-                None,
-                None,
-                OAuth2Operation::Login,
-                None,
-                OAuth2AuthorizationMode::Native,
+                OAuth2AuthorizationRequest {
+                    instance_name: "github",
+                    redirect_url: None,
+                    request_allowed_redirect_url: None,
+                    operation: OAuth2Operation::Login,
+                    target_user_id: None,
+                    mode: OAuth2AuthorizationMode::Native,
+                },
                 None,
             )
             .await,
@@ -803,12 +805,14 @@ async fn test_request_allowed_redirect_requires_an_exact_match() {
     let prepared = ok(
         service
             .prepare_authorization_url_with_control(
-                "github",
-                Some(callback.clone()),
-                Some(callback.clone()),
-                OAuth2Operation::Login,
-                None,
-                OAuth2AuthorizationMode::Browser,
+                OAuth2AuthorizationRequest {
+                    instance_name: "github",
+                    redirect_url: Some(callback.clone()),
+                    request_allowed_redirect_url: Some(callback.clone()),
+                    operation: OAuth2Operation::Login,
+                    target_user_id: None,
+                    mode: OAuth2AuthorizationMode::Browser,
+                },
                 None,
             )
             .await,
@@ -822,12 +826,16 @@ async fn test_request_allowed_redirect_requires_an_exact_match() {
     let error = err(
         service
             .prepare_authorization_url_with_control(
-                "github",
-                Some(callback),
-                Some("https://app.example.test/other.html".to_string()),
-                OAuth2Operation::Login,
-                None,
-                OAuth2AuthorizationMode::Browser,
+                OAuth2AuthorizationRequest {
+                    instance_name: "github",
+                    redirect_url: Some(callback),
+                    request_allowed_redirect_url: Some(
+                        "https://app.example.test/other.html".to_string(),
+                    ),
+                    operation: OAuth2Operation::Login,
+                    target_user_id: None,
+                    mode: OAuth2AuthorizationMode::Browser,
+                },
                 None,
             )
             .await,

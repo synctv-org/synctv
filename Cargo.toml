@@ -15,6 +15,7 @@ members = [
     "synctv-api",
     "synctv-api-common",
     "synctv-api-http",
+    "synctv-web-ui",
     "synctv-api-grpc",
     "synctv-livestream",
     "synctv-cluster",
@@ -379,6 +380,7 @@ synctv-adapter = { path = "synctv-adapter", default-features = false }
 synctv-api = { path = "synctv-api", default-features = false }
 synctv-api-common = { path = "synctv-api-common", default-features = false }
 synctv-api-http = { path = "synctv-api-http", default-features = false }
+synctv-web-ui = { path = "synctv-web-ui" }
 synctv-api-grpc = { path = "synctv-api-grpc", default-features = false }
 synctv-cluster = { path = "synctv-cluster", default-features = false }
 synctv-realtime = { path = "synctv-realtime", default-features = false }

@@ -79,6 +79,10 @@ The Web-only command exports to `target/web-ui-dist` by default. Set
 | `SYNCTV_WEB_OFFLINE` | Disable Git fetches and use `flutter pub get --offline`. Missing cache entries fail. |
 | `SYNCTV_WEB_FORCE_REBUILD` | Fetch the pinned revision again and rebuild Flutter output. |
 
+Relative paths in these controls resolve from the workspace root containing the
+`synctv-web-ui` crate. Paths inside a selected configuration resolve from that
+configuration file.
+
 The fingerprint includes the source file hash or pinned commit, Flutter version,
 build arguments, dart-defines, builder version, and final distribution hash.
 Git checkout, Flutter output, and compression data use separate cache layers.

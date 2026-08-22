@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-pub const BUILDER_VERSION: &str = "synctv-web-ui-v2";
+pub const BUILDER_VERSION: &str = "synctv-web-ui-v3";
 pub const DEFAULT_CONFIG: &str = "web-ui.toml";
 pub const LOCAL_CONFIG: &str = "web-ui.local.toml";
 
@@ -276,10 +276,15 @@ pub fn prepare_git_source(
         "-e",
         &format!("{commit}^{{commit}}"),
     ]));
-    if !has_commit || force {
+    let source_marker = project.join(".synctv-source");
+    let expected_marker =
+        format!("repository={repository}\nrevision={revision}\ncommit={commit}\n");
+    let source_is_validated =
+        fs::read_to_string(&source_marker).is_ok_and(|value| value == expected_marker);
+    if !has_commit || !source_is_validated || force {
         if offline {
             return Err(format!(
-                "offline Web UI build cannot fetch missing commit {commit}"
+                "offline Web UI build cannot validate uncached Git source {repository}@{revision} ({commit})"
             ));
         }
         run(
@@ -304,6 +309,12 @@ pub fn prepare_git_source(
                 "Web UI revision {revision} resolved to {resolved}, expected pinned commit {commit}"
             ));
         }
+        fs::write(&source_marker, expected_marker).map_err(|error| {
+            format!(
+                "failed to record validated Web UI Git source {}: {error}",
+                source_marker.display()
+            )
+        })?;
     }
     run(
         Command::new("git")
@@ -732,6 +743,59 @@ mod tests {
             false,
         )
         .expect_err("mismatched revision must fail");
+
+        assert!(error.contains("resolved to"));
+        assert!(error.contains("expected pinned commit"));
+        Ok(())
+    }
+
+    #[test]
+    fn cached_git_source_revalidates_a_changed_revision() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let repository = create_test_repository()?;
+        let first = git_stdout(repository.path(), &["rev-parse", "HEAD"])?;
+        let cache = tempfile::tempdir()?;
+        prepare_git_source(
+            &repository.path().to_string_lossy(),
+            &first,
+            &first,
+            cache.path(),
+            false,
+            false,
+        )?;
+
+        fs::write(repository.path().join("pubspec.yaml"), "name: changed\n")?;
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(repository.path())
+            .args(["add", "pubspec.yaml"])
+            .status()?
+            .success());
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(repository.path())
+            .args([
+                "-c",
+                "user.name=SyncTV Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "-m",
+                "changed fixture",
+            ])
+            .status()?
+            .success());
+        let second = git_stdout(repository.path(), &["rev-parse", "HEAD"])?;
+
+        let error = prepare_git_source(
+            &repository.path().to_string_lossy(),
+            &second,
+            &first,
+            cache.path(),
+            false,
+            false,
+        )
+        .expect_err("a changed revision must be resolved again");
 
         assert!(error.contains("resolved to"));
         assert!(error.contains("expected pinned commit"));

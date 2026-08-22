@@ -22,6 +22,7 @@ const CACHE_ENV: &str = "SYNCTV_WEB_CACHE_DIR";
 const OFFLINE_ENV: &str = "SYNCTV_WEB_OFFLINE";
 const FORCE_ENV: &str = "SYNCTV_WEB_FORCE_REBUILD";
 const EXPORT_ENV: &str = "SYNCTV_WEB_EXPORT_DIR";
+const COMPRESSION_CACHE_VERSION: &str = "br-q9-w22-gzip-best-v1";
 
 fn main() {
     if let Err(error) = build() {
@@ -53,8 +54,19 @@ fn build() -> Result<(), String> {
     }
 
     let manifest_dir = required_path("CARGO_MANIFEST_DIR")?;
-    let explicit_config = env::var_os(CONFIG_ENV).map(PathBuf::from);
-    let legacy_dist = env::var_os(LEGACY_DIST_ENV).map(PathBuf::from);
+    let control_base = manifest_dir.parent().unwrap_or(&manifest_dir);
+    for config_name in [build_support::DEFAULT_CONFIG, build_support::LOCAL_CONFIG] {
+        println!(
+            "cargo:rerun-if-changed={}",
+            manifest_dir.join(config_name).display()
+        );
+    }
+    let explicit_config = env::var_os(CONFIG_ENV)
+        .map(PathBuf::from)
+        .map(|path| absolute_control_path(control_base, path));
+    let legacy_dist = env::var_os(LEGACY_DIST_ENV)
+        .map(PathBuf::from)
+        .map(|path| absolute_control_path(control_base, path));
     let loaded = load_config(
         &manifest_dir,
         explicit_config.as_deref(),
@@ -69,7 +81,7 @@ fn build() -> Result<(), String> {
                 .unwrap_or(&manifest_dir)
                 .join("target/web-ui-cache")
         },
-        PathBuf::from,
+        |value| absolute_control_path(control_base, PathBuf::from(value)),
     );
     fs::create_dir_all(&cache_dir).map_err(|error| {
         format!(
@@ -129,7 +141,10 @@ fn build() -> Result<(), String> {
             dist.display()
         ));
     }
-    if let Some(export_dir) = env::var_os(EXPORT_ENV).map(PathBuf::from) {
+    if let Some(export_dir) = env::var_os(EXPORT_ENV)
+        .map(PathBuf::from)
+        .map(|path| absolute_control_path(control_base, path))
+    {
         ensure_disjoint_directories(&dist, &export_dir)?;
         replace_directory(&dist, &export_dir)?;
     }
@@ -185,6 +200,14 @@ fn required_path(name: &str) -> Result<PathBuf, String> {
     env::var_os(name)
         .map(PathBuf::from)
         .ok_or_else(|| format!("{name} is not set"))
+}
+
+fn absolute_control_path(base: &Path, path: PathBuf) -> PathBuf {
+    if path.is_absolute() {
+        path
+    } else {
+        base.join(path)
+    }
 }
 
 fn env_flag(name: &str) -> Result<bool, String> {
@@ -298,7 +321,7 @@ fn build_flutter_project(
     let mut flutter_build = Command::new(&build.flutter);
     flutter_build
         .current_dir(project)
-        .args(["build", "web", "--output"])
+        .args(["build", "web", "--no-pub", "--output"])
         .arg(&temporary_dist)
         .args(&build.arguments);
     for (key, value) in &build.dart_defines {
@@ -375,8 +398,10 @@ fn generate_assets(
         let path_literal = rust_string_literal(&path.to_string_lossy());
         let (brotli, gzip) = if compressible_content_type(content_type) {
             let digest = hex::encode(Sha256::digest(&bytes));
-            let brotli_path = compression_cache.join(format!("{digest}.br"));
-            let gzip_path = compression_cache.join(format!("{digest}.gz"));
+            let brotli_path =
+                compression_cache.join(format!("{COMPRESSION_CACHE_VERSION}-{digest}.br"));
+            let gzip_path =
+                compression_cache.join(format!("{COMPRESSION_CACHE_VERSION}-{digest}.gz"));
             ensure_compressed(&bytes, &brotli_path, &gzip_path)?;
             (
                 encoded_asset_source(&brotli_path)?,

@@ -9,6 +9,7 @@ RUN mkdir /web-dist
 FROM --platform=${SYNCTV_WEB_ASSETS_PLATFORM} rust:slim-trixie AS web-assets
 
 ARG FLUTTER_VERSION=3.44.8
+ARG FLUTTER_ARCHIVE_SHA256=672089e001571a9fbb209a495c583580c0c6c73ef98999264ba07fa93ace332d
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     curl \
@@ -17,6 +18,7 @@ RUN apt-get update && apt-get install -y \
 RUN curl --fail --location --retry 3 \
     "https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_${FLUTTER_VERSION}-stable.tar.xz" \
     --output /tmp/flutter.tar.xz && \
+    echo "${FLUTTER_ARCHIVE_SHA256}  /tmp/flutter.tar.xz" | sha256sum --check - && \
     tar --extract --xz --file /tmp/flutter.tar.xz --directory /opt && \
     rm /tmp/flutter.tar.xz && \
     git config --global --add safe.directory /opt/flutter

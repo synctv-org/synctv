@@ -235,12 +235,23 @@ impl LiveProxyProvider {
     }
 }
 
-fn mark_live_proxy_playback_resources(result: &mut PlaybackResult, version: &str, expires_at: i64) {
+fn mark_live_proxy_playback_resources(
+    result: &mut PlaybackResult,
+    version: &str,
+    expires_at: i64,
+    client_profile: Option<&super::PlaybackClientProfile>,
+) {
     // Live proxy playback is owned by SyncTV, so generated modes point at
     // provider-playback transport actions directly.
     let default_mode = result.default_mode.clone();
-    for (mode_name, info) in &mut result.playback_infos {
-        let is_hls = super::playback_info_is_hls(mode_name, info);
+    let original_modes = std::mem::take(&mut result.playback_infos);
+    for (mode_name, info) in original_modes {
+        let Some(mut info) =
+            super::build_proxy_playback_info_for_client(&mode_name, &info, client_profile)
+        else {
+            continue;
+        };
+        let is_hls = super::playback_info_is_hls(&mode_name, &info);
         let media_count = info.medias.len();
         for media in &mut info.medias {
             let (room_id, media_id) = match &media.provider {
@@ -262,7 +273,7 @@ fn mark_live_proxy_playback_resources(result: &mut PlaybackResult, version: &str
                     room_id,
                     media_id,
                 })
-            } else if mode_name == "flv" || (mode_name == &default_mode && media_count == 1) {
+            } else if mode_name == "flv" || (mode_name == default_mode && media_count == 1) {
                 PlaybackMediaProvider::LiveProxy(PlaybackLiveProxyMedia::FlvStream {
                     version: version.to_string(),
                     expires_at,
@@ -273,7 +284,9 @@ fn mark_live_proxy_playback_resources(result: &mut PlaybackResult, version: &str
                 continue;
             };
         }
+        result.playback_infos.insert(mode_name, info);
     }
+    super::select_generated_playback_default(result, &default_mode, true);
 }
 
 fn default_live_proxy_mode(profile: Option<&super::PlaybackClientProfile>) -> &'static str {
@@ -329,15 +342,23 @@ impl MediaProvider for LiveProxyProvider {
 
         let cache_key = format!("playback:{room_id}:{media_id}");
         let cache_ttl = Duration::from_mins(5);
-        super::cache_versioned_playback_and_build_response(
+        let client_profile = ctx.playback_client_profile();
+        let result = super::cache_versioned_playback_and_build_response(
             result,
             Self::NAME,
             &cache_key,
             cache_ttl,
             ctx,
-            mark_live_proxy_playback_resources,
+            |result, version, expires_at| {
+                mark_live_proxy_playback_resources(result, version, expires_at, client_profile);
+            },
         )
-        .await
+        .await?;
+        super::require_compatible_playback_route(
+            result,
+            crate::models::PlaybackProxyMode::Only,
+            client_profile,
+        )
     }
 
     async fn validate_source_config(

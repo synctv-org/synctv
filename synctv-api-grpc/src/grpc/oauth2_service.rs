@@ -101,7 +101,11 @@ impl OAuth2Service for OAuth2GrpcService {
                 EndpointRateLimitCategory::Read,
                 move |request_control| async move {
                     oauth2_api
-                        .get_authorization_url_response_with_control(req, Some(&request_control))
+                        .get_authorization_url_response_with_control(
+                            req,
+                            None,
+                            Some(&request_control),
+                        )
                         .await
                 },
             )
@@ -144,6 +148,7 @@ impl OAuth2Service for OAuth2GrpcService {
                         .get_authorization_url_for_bind_response_with_control(
                             &authenticated.user_id(),
                             req,
+                            None,
                             Some(&request_control),
                         )
                         .await

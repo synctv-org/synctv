@@ -41,11 +41,23 @@ impl RtmpProvider {
     }
 }
 
-fn mark_rtmp_playback_resources(result: &mut PlaybackResult, version: &str, expires_at: i64) {
+fn mark_rtmp_playback_resources(
+    result: &mut PlaybackResult,
+    version: &str,
+    expires_at: i64,
+    client_profile: Option<&super::PlaybackClientProfile>,
+) {
     // RTMP playback is a SyncTV-managed live source. HLS and FLV use distinct
     // playback transport actions so clients can request either delivery format.
-    for (mode_name, info) in &mut result.playback_infos {
-        let is_hls = super::playback_info_is_hls(mode_name, info);
+    let original_default = result.default_mode.clone();
+    let original_modes = std::mem::take(&mut result.playback_infos);
+    for (mode_name, info) in original_modes {
+        let Some(mut info) =
+            super::build_proxy_playback_info_for_client(&mode_name, &info, client_profile)
+        else {
+            continue;
+        };
+        let is_hls = super::playback_info_is_hls(&mode_name, &info);
         for media in &mut info.medias {
             let (room_id, media_id) = match &media.provider {
                 PlaybackMediaProvider::Rtmp(
@@ -77,7 +89,9 @@ fn mark_rtmp_playback_resources(result: &mut PlaybackResult, version: &str, expi
                 continue;
             };
         }
+        result.playback_infos.insert(mode_name, info);
     }
+    super::select_generated_playback_default(result, &original_default, true);
 }
 
 impl Default for RtmpProvider {
@@ -109,15 +123,23 @@ impl MediaProvider for RtmpProvider {
 
         let cache_key = format!("playback:{room_id}:{media_id}");
         let cache_ttl = Duration::from_mins(5); // 5 minutes for live
-        super::cache_versioned_playback_and_build_response(
+        let client_profile = ctx.playback_client_profile();
+        let result = super::cache_versioned_playback_and_build_response(
             result,
             Self::NAME,
             &cache_key,
             cache_ttl,
             ctx,
-            mark_rtmp_playback_resources,
+            |result, version, expires_at| {
+                mark_rtmp_playback_resources(result, version, expires_at, client_profile);
+            },
         )
-        .await
+        .await?;
+        super::require_compatible_playback_route(
+            result,
+            crate::models::PlaybackProxyMode::Only,
+            client_profile,
+        )
     }
 
     async fn validate_source_config(

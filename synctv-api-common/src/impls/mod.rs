@@ -427,6 +427,10 @@ pub enum ApiError {
         message: String,
         violations: Vec<ApiFieldViolation>,
     },
+    ClientIncompatible {
+        message: String,
+        required_capability: Option<String>,
+    },
     PayloadTooLarge(String),
     RangeNotSatisfiable {
         total_size: u64,
@@ -508,6 +512,13 @@ impl From<synctv_core::Error> for ApiError {
                 Self::Conflict("Resource modified concurrently".to_string())
             }
             synctv_core::Error::InvalidInput(msg) => Self::InvalidInput(msg),
+            synctv_core::Error::ClientIncompatible {
+                reason,
+                required_capability,
+            } => Self::ClientIncompatible {
+                message: reason,
+                required_capability,
+            },
             synctv_core::Error::RangeNotSatisfiable { total_size } => {
                 Self::RangeNotSatisfiable { total_size }
             }
@@ -577,6 +588,13 @@ impl From<synctv_core::provider::ProviderError> for ApiError {
             | ProviderError::InvalidUrl(msg)
             | ProviderError::MissingField(msg)
             | ProviderError::UnsupportedFormat(msg) => Self::InvalidInput(msg),
+            ProviderError::ClientIncompatible {
+                reason,
+                required_capability,
+            } => Self::ClientIncompatible {
+                message: reason,
+                required_capability,
+            },
             ProviderError::NotFound => {
                 Self::NotFound(synctv_common::messages::RESOURCE_NOT_FOUND.to_string())
             }
@@ -627,6 +645,7 @@ impl ApiError {
             Self::InvalidInput(_)
             | Self::InvalidRequest { .. }
             | Self::RangeNotSatisfiable { .. } => ErrorKind::InvalidArgument,
+            Self::ClientIncompatible { .. } => ErrorKind::FailedPrecondition,
             Self::BadGateway(_) => ErrorKind::ServiceUnavailable,
             Self::RequestTimeout(_) | Self::Timeout(_) => ErrorKind::Timeout,
             Self::PayloadTooLarge(_) | Self::RateLimited(_) | Self::RateLimitedWithRetry { .. } => {
@@ -668,7 +687,8 @@ impl ApiError {
             | Self::ServiceUnavailable(msg)
             | Self::Timeout(msg)
             | Self::Internal(msg) => msg,
-            Self::RateLimitedWithRetry { message, .. }
+            Self::ClientIncompatible { message, .. }
+            | Self::RateLimitedWithRetry { message, .. }
             | Self::OAuth2InvalidState { message }
             | Self::OAuth2ProviderExchangeFailed { message, .. }
             | Self::OAuth2MissingTargetUser { message, .. }
@@ -852,6 +872,10 @@ impl From<String> for ApiError {
             ErrorKind::AlreadyExists => Self::AlreadyExists(msg),
             ErrorKind::Conflict => Self::Conflict(msg),
             ErrorKind::InvalidArgument => Self::InvalidInput(msg),
+            ErrorKind::FailedPrecondition => Self::ClientIncompatible {
+                message: msg,
+                required_capability: None,
+            },
             ErrorKind::RateLimited => Self::RateLimited(msg),
             ErrorKind::ServiceUnavailable => Self::ServiceUnavailable(msg),
             ErrorKind::Timeout => Self::Timeout(msg),

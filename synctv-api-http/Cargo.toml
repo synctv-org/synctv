@@ -7,6 +7,7 @@ license.workspace = true
 
 [features]
 default = ["tls-aws-lc", "tls-webpki-roots"]
+web-ui = ["dep:synctv-web-ui", "synctv-web-ui/embed"]
 openapi = [
     "synctv-api-common/openapi",
     "synctv-proto/openapi",
@@ -89,6 +90,7 @@ synctv-media-providers = { workspace = true, default-features = false }
 synctv-livestream = { workspace = true, default-features = false }
 synctv-proto = { workspace = true, default-features = false, features = ["main", "providers", "playback-provider"] }
 synctv-common = { workspace = true, default-features = false }
+synctv-web-ui = { workspace = true, optional = true }
 webauthn-rs.workspace = true
 webauthn-rs-proto.workspace = true
 

@@ -20,4 +20,9 @@ logs/
 .env.synctv
 synctv.yaml
 
+# Local Web UI source/build overrides
+synctv-web-ui/web-ui.local.toml
+synctv-web-ui/dist/*
+!synctv-web-ui/dist/.gitkeep
+
 AGENTS.md

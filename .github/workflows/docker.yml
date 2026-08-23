@@ -57,10 +57,73 @@ jobs:
             echo 'EOF'
           } >> "$GITHUB_OUTPUT"
 
+  web-ui:
+    name: Build Web UI
+    runs-on: ubuntu-24.04
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      artifact-digest: ${{ steps.upload.outputs.artifact-digest }}
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/web-ui-cargo
+      SYNCTV_WEB_CACHE_DIR: ${{ github.workspace }}/target/web-ui-cache
+      SYNCTV_WEB_CONFIG: synctv-web-ui/web-ui.production.toml
+      WEB_UI_EXPORT_DIR: ${{ github.workspace }}/synctv-web-ui/dist
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-08-21
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: 3.44.8
+          cache: true
+
+      - name: Cache Web build inputs
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.pub-cache
+            target/web-ui-cache
+          key: web-ui-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'synctv-web-ui/build.rs', 'synctv-web-ui/src/build_support.rs', 'synctv-web-ui/web-ui.production.toml') }}
+          restore-keys: |
+            web-ui-${{ runner.os }}-
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target/web-ui-cargo"
+
+      - name: Build Web distribution
+        run: |
+          cargo clean -p synctv-web-ui
+          make web-ui-build
+          test -f synctv-web-ui/dist/index.html
+
+      - name: Upload Web distribution
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: synctv-web-ui
+          path: synctv-web-ui/dist
+          include-hidden-files: true
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 1
+
   docker-build:
     name: Docker Build
-    needs: docker-prepare
+    needs:
+      - docker-prepare
+      - web-ui
     permissions:
+      actions: read
       contents: read
       packages: write
       id-token: write
@@ -81,6 +144,9 @@ jobs:
       cache-scope: synctv-image
       build-args: |
         SYNCTV_CARGO_BUILD_PROFILE=${{ github.event_name == 'pull_request' && 'dev' || 'release' }}
+        SYNCTV_BUILD_FEATURES=k8s,mimalloc,openapi,web-ui
+        SYNCTV_WEB_ARTIFACT_URL=https://api.github.com/repos/${{ github.repository }}/actions/artifacts/${{ needs.web-ui.outputs.artifact-id }}/zip
+        SYNCTV_WEB_ARTIFACT_DIGEST=${{ needs.web-ui.outputs.artifact-digest }}
         CARGO_INCREMENTAL=0
         CARGO_TERM_COLOR=always
       set-meta-annotations: true

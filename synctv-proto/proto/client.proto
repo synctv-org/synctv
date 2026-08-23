@@ -2621,6 +2621,56 @@ enum PlaybackAudioCapability {
   PLAYBACK_AUDIO_CAPABILITY_LOSSLESS_SURROUND = 3;
 }
 
+// Runtime environment is declared by the client. Servers must not infer it
+// from User-Agent because embedded browsers and privacy modes make that signal
+// unreliable.
+enum PlaybackClientEnvironment {
+  PLAYBACK_CLIENT_ENVIRONMENT_UNSPECIFIED = 0;
+  PLAYBACK_CLIENT_ENVIRONMENT_NATIVE = 1;
+  PLAYBACK_CLIENT_ENVIRONMENT_WEB = 2;
+}
+
+// Delivery protocol consumed by a player pipeline. This is independent from
+// the byte container because HLS and DASH can carry several container types.
+enum PlaybackMediaTransport {
+  PLAYBACK_MEDIA_TRANSPORT_UNSPECIFIED = 0;
+  PLAYBACK_MEDIA_TRANSPORT_PROGRESSIVE = 1;
+  PLAYBACK_MEDIA_TRANSPORT_HLS = 2;
+  PLAYBACK_MEDIA_TRANSPORT_DASH = 3;
+  PLAYBACK_MEDIA_TRANSPORT_FLV = 4;
+  PLAYBACK_MEDIA_TRANSPORT_MPEG_TS = 5;
+}
+
+enum PlaybackMediaPipeline {
+  PLAYBACK_MEDIA_PIPELINE_UNSPECIFIED = 0;
+  PLAYBACK_MEDIA_PIPELINE_NATIVE = 1;
+  PLAYBACK_MEDIA_PIPELINE_MEDIA_SOURCE = 2;
+  PLAYBACK_MEDIA_PIPELINE_MANAGED_MEDIA_SOURCE = 3;
+}
+
+enum PlaybackAudioCodec {
+  PLAYBACK_AUDIO_CODEC_UNSPECIFIED = 0;
+  PLAYBACK_AUDIO_CODEC_AAC = 1;
+  PLAYBACK_AUDIO_CODEC_MP3 = 2;
+  PLAYBACK_AUDIO_CODEC_OPUS = 3;
+  PLAYBACK_AUDIO_CODEC_VORBIS = 4;
+  PLAYBACK_AUDIO_CODEC_AC3 = 5;
+  PLAYBACK_AUDIO_CODEC_EAC3 = 6;
+  PLAYBACK_AUDIO_CODEC_FLAC = 7;
+}
+
+// One browser-tested media type. Optional codec/container fields mean that the
+// client tested the protocol or pipeline without narrowing that dimension.
+// codec_string carries the RFC 6381 value used for the runtime probe.
+message PlaybackMediaCapability {
+  PlaybackMediaTransport transport = 1 [(buf.validate.field).enum.defined_only = true];
+  optional PlaybackContainer container = 2 [(buf.validate.field).enum.defined_only = true];
+  optional PlaybackVideoCodec video_codec = 3 [(buf.validate.field).enum.defined_only = true];
+  optional PlaybackAudioCodec audio_codec = 4 [(buf.validate.field).enum.defined_only = true];
+  PlaybackMediaPipeline pipeline = 5 [(buf.validate.field).enum.defined_only = true];
+  optional string codec_string = 6 [(buf.validate.field).string.max_len = 128];
+}
+
 message PlaybackClientProfile {
   PlaybackStreamPreference stream_preference = 1 [(buf.validate.field).enum.defined_only = true];
   optional int64 max_streaming_bitrate = 2 [(buf.validate.field).int64.gt = 0];
@@ -2630,6 +2680,16 @@ message PlaybackClientProfile {
   PlaybackAudioCapability audio_capability = 6 [(buf.validate.field).enum.defined_only = true];
   PlaybackSubtitlePreference subtitle_preference = 7 [(buf.validate.field).enum.defined_only = true];
   repeated PlaybackLiveTransport supported_live_transports = 8 [(buf.validate.field).repeated.items.enum.defined_only = true];
+  // Version 0 preserves the legacy defaults of fields 1-8. Version 2 gives
+  // repeated capability fields explicit empty-set semantics.
+  uint32 profile_version = 9;
+  PlaybackClientEnvironment environment = 10 [(buf.validate.field).enum.defined_only = true];
+  repeated PlaybackMediaCapability media_capabilities = 11 [(buf.validate.field).repeated.max_items = 64];
+  bool supports_custom_http_headers = 12;
+  bool supports_provider_proxy = 13;
+  reserved 14 to 19;
+  // True when the page/runtime may load http:// media without mixed-content blocking.
+  bool supports_insecure_http_media = 20;
 }
 
 message GetPlaybackRequest {

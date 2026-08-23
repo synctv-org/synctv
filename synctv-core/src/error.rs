@@ -41,6 +41,12 @@ pub enum Error {
     #[error("Invalid input: {0}")]
     InvalidInput(String),
 
+    #[error("Client cannot play this resource: {reason}")]
+    ClientIncompatible {
+        reason: String,
+        required_capability: Option<String>,
+    },
+
     #[error("Range not satisfiable: total size {total_size}")]
     RangeNotSatisfiable { total_size: u64 },
 
@@ -230,6 +236,13 @@ impl From<crate::provider::ProviderError> for Error {
             ProviderError::UnsupportedFormat(fmt) => {
                 Self::InvalidInput(format!("Unsupported format: {fmt}"))
             }
+            ProviderError::ClientIncompatible {
+                reason,
+                required_capability,
+            } => Self::ClientIncompatible {
+                reason,
+                required_capability,
+            },
             ProviderError::ParseError(msg) => Self::InvalidInput(format!("Parse error: {msg}")),
             // Route registration
             ProviderError::RouteRegistrationFailed(msg) => {

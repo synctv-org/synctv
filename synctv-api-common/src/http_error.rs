@@ -727,6 +727,19 @@ mod tests {
     }
 
     #[test]
+    fn test_from_provider_client_incompatible_maps_to_precondition_failed() {
+        let app_err = AppError::from(synctv_core::provider::ProviderError::ClientIncompatible {
+            reason: "Browser cannot attach the required media headers".to_string(),
+            required_capability: Some("custom_http_headers".to_string()),
+        });
+        assert_eq!(app_err.status(), StatusCode::PRECONDITION_FAILED);
+        assert_eq!(
+            app_err.api_error.code(),
+            crate::impls::error_codes::FAILED_PRECONDITION
+        );
+    }
+
+    #[test]
     fn test_from_provider_upstream_http_404_maps_to_not_found() {
         let app_err = AppError::from(synctv_core::provider::ProviderError::UpstreamHttp {
             status: 404,

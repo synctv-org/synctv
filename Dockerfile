@@ -1,4 +1,4 @@
-# Stage 1: Build
+# Stage 1: Build the backend for the target platform.
 FROM rust:slim-trixie AS builder
 
 # Install build dependencies
@@ -9,10 +9,12 @@ RUN apt-get update && apt-get install -y \
     protobuf-compiler \
     pkg-config \
     build-essential \
+    lld \
     libclang-dev \
     nasm \
     cmake \
     curl \
+    unzip \
     perl \
     perl-modules-5.40 && rm -rf /var/lib/apt/lists/*
 
@@ -32,6 +34,8 @@ ARG SYNCTV_BUILD_NO_DEFAULT_FEATURES=false
 ARG SYNCTV_BUILD_FEATURES="k8s,mimalloc,openapi"
 ARG SYNCTV_CARGO_BUILD_ARGS=""
 ARG SYNCTV_CARGO_BUILD_PROFILE=release
+ARG SYNCTV_WEB_ARTIFACT_URL=""
+ARG SYNCTV_WEB_ARTIFACT_DIGEST=""
 ARG CARGO_INCREMENTAL=0
 ARG CARGO_TERM_COLOR="auto"
 ARG TARGETARCH
@@ -43,10 +47,39 @@ ENV CARGO_TERM_COLOR=$CARGO_TERM_COLOR
 # Copy entire source tree
 COPY . .
 
+# CI passes a prebuilt Web distribution. Local builds use synctv-web-ui/dist.
+RUN --mount=type=secret,id=GIT_AUTH_TOKEN \
+    if [ -n "$SYNCTV_WEB_ARTIFACT_URL" ]; then \
+        test -s /run/secrets/GIT_AUTH_TOKEN || { \
+            echo "GIT_AUTH_TOKEN is required to download the Web UI artifact" >&2; \
+            exit 1; \
+        }; \
+        [ "${#SYNCTV_WEB_ARTIFACT_DIGEST}" -eq 64 ] && \
+        case "$SYNCTV_WEB_ARTIFACT_DIGEST" in \
+            *[!0-9a-f]*) false ;; \
+            *) true ;; \
+        esac || { \
+            echo "SYNCTV_WEB_ARTIFACT_DIGEST must be a lowercase SHA-256 digest" >&2; \
+            exit 1; \
+        }; \
+        curl --fail --location --retry 3 --retry-all-errors \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer $(cat /run/secrets/GIT_AUTH_TOKEN)" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            --output /tmp/synctv-web-ui.zip \
+            "$SYNCTV_WEB_ARTIFACT_URL"; \
+        echo "$SYNCTV_WEB_ARTIFACT_DIGEST  /tmp/synctv-web-ui.zip" | sha256sum --check -; \
+        find synctv-web-ui/dist -mindepth 1 -delete; \
+        unzip -q /tmp/synctv-web-ui.zip -d synctv-web-ui/dist; \
+        rm /tmp/synctv-web-ui.zip; \
+        test -f synctv-web-ui/dist/index.html; \
+    fi
+
 # Build with cache mounts for cargo registry, git deps, and target directory
 # Copy binary out of cache mount before RUN completes
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,id=synctv-rustup-${TARGETARCH},target=/usr/local/rustup,sharing=locked \
     --mount=type=cache,id=synctv-target-${SYNCTV_CARGO_BUILD_PROFILE}-${TARGETARCH},target=/app/target,sharing=locked \
     case "$SYNCTV_CARGO_BUILD_PROFILE" in \
         dev) target_profile_dir=debug ;; \
@@ -63,8 +96,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     if [ -n "$SYNCTV_BUILD_FEATURES" ]; then \
         build_flags="$build_flags --features $SYNCTV_BUILD_FEATURES"; \
     fi; \
-    cargo +nightly \
-        --config 'build.rustflags=["-Clink-arg=-Wl,-z,pack-relative-relocs"]' \
+    RUSTFLAGS="-Clink-arg=-fuse-ld=lld -Clink-arg=-Wl,-z,pack-relative-relocs" \
+    cargo \
         build $build_flags \
         --bin synctv && \
     cp "target/$target_profile_dir/synctv" /synctv

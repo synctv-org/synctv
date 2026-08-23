@@ -39,6 +39,12 @@ pub enum ProviderError {
     #[error("Unsupported format: {0}")]
     UnsupportedFormat(String),
 
+    #[error("Client cannot play this resource: {reason}")]
+    ClientIncompatible {
+        reason: String,
+        required_capability: Option<String>,
+    },
+
     #[error("Parse error: {0}")]
     ParseError(String),
 

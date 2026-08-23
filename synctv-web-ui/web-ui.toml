@@ -1,0 +1,5 @@
+schema-version = 1
+
+[source]
+kind = "dist"
+path = "dist"

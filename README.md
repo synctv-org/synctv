@@ -88,6 +88,28 @@ Start locally:
 cargo +nightly run -p synctv --bin synctv -- serve
 ```
 
+### Embedded Web client
+
+The optional `web-ui` feature embeds a Flutter Web distribution in the HTTP
+server. The browser client always uses the page origin, so one deployed Web UI
+belongs to one SyncTV server. Build the configured Web distribution and server:
+
+```bash
+make web-ui-build
+make web-release-build
+```
+
+[`synctv-web-ui/README.md`](synctv-web-ui/README.md) documents prebuilt,
+local-project, and immutable Git sources together with cache and offline
+controls. The server provides SPA fallback, content types, ETags, Brotli/gzip
+variants, cache policy, and CSP. OAuth uses the normal SPA entry point, while
+provider verification uses its dedicated static page. API and media routes
+remain outside the application-shell cache.
+
+Keep the app and server protobuf snapshots aligned. Browser playback sends a
+versioned `PlaybackClientProfile`; Providers use it with the configured proxy
+policy to select direct or proxy routes before returning playback output.
+
 ## Documentation
 
 Read the complete documentation at [docs.syncs.tv](https://docs.syncs.tv).

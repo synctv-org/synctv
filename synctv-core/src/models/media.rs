@@ -3120,6 +3120,21 @@ impl PlaybackSubtitle {
             | PlaybackSubtitleProvider::TikTok(_) => std::collections::HashMap::new(),
         }
     }
+
+    #[must_use]
+    pub fn requires_provider_url(&self) -> bool {
+        !matches!(
+            self.provider,
+            PlaybackSubtitleProvider::Cloudreve(PlaybackCloudreveSubtitle::Direct { .. })
+                | PlaybackSubtitleProvider::Bilibili(PlaybackBilibiliSubtitle::Direct { .. })
+                | PlaybackSubtitleProvider::DirectUrl(PlaybackDirectUrlSubtitle::Direct { .. })
+                | PlaybackSubtitleProvider::Emby(PlaybackEmbySubtitle::Direct { .. })
+                | PlaybackSubtitleProvider::Fnos(PlaybackFnosSubtitle::Direct { .. })
+                | PlaybackSubtitleProvider::Alist(PlaybackAlistSubtitle::Refresh { .. })
+                | PlaybackSubtitleProvider::Youtube(PlaybackYoutubeSubtitle::Refresh { .. })
+                | PlaybackSubtitleProvider::TikTok(PlaybackTikTokSubtitle::Refresh { .. })
+        )
+    }
 }
 
 impl PlaybackDanmaku {
@@ -3203,6 +3218,15 @@ impl PlaybackDanmaku {
             | PlaybackDanmakuProvider::Douyin(_)
             | PlaybackDanmakuProvider::AcFun(_) => std::collections::HashMap::new(),
         }
+    }
+
+    #[must_use]
+    pub fn requires_provider_url(&self) -> bool {
+        !matches!(
+            self.provider,
+            PlaybackDanmakuProvider::DirectUrl(_)
+                | PlaybackDanmakuProvider::Bilibili(PlaybackBilibiliDanmaku::FileDirect { .. })
+        )
     }
 
     #[must_use]

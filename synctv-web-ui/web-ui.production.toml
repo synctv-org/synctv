@@ -1,0 +1,11 @@
+schema-version = 1
+
+[source]
+kind = "git"
+repository = "https://github.com/synctv-org/synctv-app.git"
+revision = "64235a3584e4fa97560629e34f0160cc44672898"
+commit = "64235a3584e4fa97560629e34f0160cc44672898"
+
+[build]
+flutter = "flutter"
+arguments = ["--release", "--no-web-resources-cdn", "--no-wasm-dry-run"]

@@ -1,47 +1,4 @@
-ARG SYNCTV_WEB_ASSETS_STAGE=no-web-assets
-ARG SYNCTV_WEB_ASSETS_PLATFORM=linux/amd64
-
-# Stage 1: Select empty assets for ordinary backend-only builds.
-FROM debian:trixie-slim AS no-web-assets
-RUN mkdir /web-dist
-
-# Stage 2: Build platform-independent Web assets on the supported Flutter host.
-FROM --platform=${SYNCTV_WEB_ASSETS_PLATFORM} rust:slim-trixie AS web-assets
-
-ARG FLUTTER_VERSION=3.44.8
-ARG FLUTTER_ARCHIVE_SHA256=672089e001571a9fbb209a495c583580c0c6c73ef98999264ba07fa93ace332d
-RUN apt-get update && apt-get install -y \
-    ca-certificates \
-    curl \
-    git \
-    xz-utils && rm -rf /var/lib/apt/lists/*
-RUN curl --fail --location --retry 3 \
-    "https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_${FLUTTER_VERSION}-stable.tar.xz" \
-    --output /tmp/flutter.tar.xz && \
-    echo "${FLUTTER_ARCHIVE_SHA256}  /tmp/flutter.tar.xz" | sha256sum --check - && \
-    tar --extract --xz --file /tmp/flutter.tar.xz --directory /opt && \
-    rm /tmp/flutter.tar.xz && \
-    git config --global --add safe.directory /opt/flutter
-ENV PATH="/opt/flutter/bin:/opt/flutter/bin/cache/dart-sdk/bin:${PATH}"
-WORKDIR /web-source
-COPY . /web-source
-ENV SYNCTV_WEB_CACHE_DIR=/web-cache
-ENV SYNCTV_WEB_EXPORT_DIR=/web-dist
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,id=synctv-web-rustup,target=/usr/local/rustup,sharing=locked \
-    --mount=type=cache,id=synctv-web-target,target=/web-source/target,sharing=locked \
-    --mount=type=cache,id=synctv-web-git,target=/web-cache/git,sharing=locked \
-    --mount=type=cache,id=synctv-web-builds,target=/web-cache/builds,sharing=locked \
-    --mount=type=cache,id=synctv-web-compressed,target=/web-cache/compressed,sharing=locked \
-    --mount=type=cache,id=synctv-web-pub,target=/root/.pub-cache,sharing=locked \
-    cargo clean -p synctv-web-ui && \
-    cargo check --locked -p synctv-web-ui --features embed && \
-    test -f /web-dist/index.html
-
-FROM ${SYNCTV_WEB_ASSETS_STAGE} AS selected-web-assets
-
-# Stage 3: Build the backend for the target platform.
+# Stage 1: Build the backend for the target platform.
 FROM rust:slim-trixie AS builder
 
 # Install build dependencies
@@ -57,6 +14,7 @@ RUN apt-get update && apt-get install -y \
     nasm \
     cmake \
     curl \
+    unzip \
     perl \
     perl-modules-5.40 && rm -rf /var/lib/apt/lists/*
 
@@ -76,11 +34,11 @@ ARG SYNCTV_BUILD_NO_DEFAULT_FEATURES=false
 ARG SYNCTV_BUILD_FEATURES="k8s,mimalloc,openapi"
 ARG SYNCTV_CARGO_BUILD_ARGS=""
 ARG SYNCTV_CARGO_BUILD_PROFILE=release
+ARG SYNCTV_WEB_ARTIFACT_URL=""
+ARG SYNCTV_WEB_ARTIFACT_DIGEST=""
 ARG CARGO_INCREMENTAL=0
 ARG CARGO_TERM_COLOR="auto"
 ARG TARGETARCH
-ARG SYNCTV_CARGO_BUILD_JOBS=1
-ARG SYNCTV_RUSTC_THREADS=1
 
 # Clean CI runners benefit from deterministic non-incremental compilation.
 ENV CARGO_INCREMENTAL=$CARGO_INCREMENTAL
@@ -88,8 +46,34 @@ ENV CARGO_TERM_COLOR=$CARGO_TERM_COLOR
 
 # Copy entire source tree
 COPY . .
-COPY --from=selected-web-assets /web-dist /web-dist
-ENV SYNCTV_WEB_DIST=/web-dist
+
+# CI passes a prebuilt Web distribution. Local builds use synctv-web-ui/dist.
+RUN --mount=type=secret,id=GIT_AUTH_TOKEN \
+    if [ -n "$SYNCTV_WEB_ARTIFACT_URL" ]; then \
+        test -s /run/secrets/GIT_AUTH_TOKEN || { \
+            echo "GIT_AUTH_TOKEN is required to download the Web UI artifact" >&2; \
+            exit 1; \
+        }; \
+        [ "${#SYNCTV_WEB_ARTIFACT_DIGEST}" -eq 64 ] && \
+        case "$SYNCTV_WEB_ARTIFACT_DIGEST" in \
+            *[!0-9a-f]*) false ;; \
+            *) true ;; \
+        esac || { \
+            echo "SYNCTV_WEB_ARTIFACT_DIGEST must be a lowercase SHA-256 digest" >&2; \
+            exit 1; \
+        }; \
+        curl --fail --location --retry 3 --retry-all-errors \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer $(cat /run/secrets/GIT_AUTH_TOKEN)" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            --output /tmp/synctv-web-ui.zip \
+            "$SYNCTV_WEB_ARTIFACT_URL"; \
+        echo "$SYNCTV_WEB_ARTIFACT_DIGEST  /tmp/synctv-web-ui.zip" | sha256sum --check -; \
+        find synctv-web-ui/dist -mindepth 1 -delete; \
+        unzip -q /tmp/synctv-web-ui.zip -d synctv-web-ui/dist; \
+        rm /tmp/synctv-web-ui.zip; \
+        test -f synctv-web-ui/dist/index.html; \
+    fi
 
 # Build with cache mounts for cargo registry, git deps, and target directory
 # Copy binary out of cache mount before RUN completes
@@ -112,14 +96,13 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     if [ -n "$SYNCTV_BUILD_FEATURES" ]; then \
         build_flags="$build_flags --features $SYNCTV_BUILD_FEATURES"; \
     fi; \
-    RUSTFLAGS="-Zthreads=$SYNCTV_RUSTC_THREADS -Clink-arg=-fuse-ld=lld -Clink-arg=-Wl,-z,pack-relative-relocs" \
+    RUSTFLAGS="-Clink-arg=-fuse-ld=lld -Clink-arg=-Wl,-z,pack-relative-relocs" \
     cargo \
         build $build_flags \
-        --jobs "$SYNCTV_CARGO_BUILD_JOBS" \
         --bin synctv && \
     cp "target/$target_profile_dir/synctv" /synctv
 
-# Stage 4: Runtime image
+# Stage 2: Runtime image
 FROM debian:trixie-slim
 
 # OCI image labels

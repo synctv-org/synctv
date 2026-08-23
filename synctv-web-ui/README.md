@@ -6,9 +6,13 @@ only serves the generated asset table.
 
 ## Sources
 
-`web-ui.toml` is the versioned production configuration. A Git source must pin
-both the requested revision and its expected full lowercase commit SHA. The
-build fails when the revision resolves to another commit.
+`web-ui.toml` reads prebuilt files from `dist/`. The directory is empty in Git
+apart from `.gitkeep`; place a Web distribution there before enabling the
+server's `web-ui` feature.
+
+`web-ui.production.toml` is the versioned production source used by CI. Its Git
+source pins both the requested revision and its expected full lowercase commit
+SHA. The build fails when the revision resolves to another commit.
 
 For local development, create the ignored `web-ui.local.toml` beside the
 default file. It takes precedence unless `SYNCTV_WEB_CONFIG` names another
@@ -56,7 +60,8 @@ fingerprint.
 Build and export the Web distribution:
 
 ```bash
-make web-ui-build
+SYNCTV_WEB_CONFIG=synctv-web-ui/web-ui.production.toml \
+  make web-ui-build WEB_UI_EXPORT_DIR=synctv-web-ui/dist
 ```
 
 Build the release server with the assets embedded:
@@ -65,8 +70,10 @@ Build the release server with the assets embedded:
 make web-release-build
 ```
 
-The Web-only command exports to `target/web-ui-dist` by default. Set
-`WEB_UI_EXPORT_DIR` to select another disjoint directory.
+The Web-only command exports to `target/web-ui-dist` by default. CI uploads the
+exported distribution once, then passes its authenticated artifact URL and
+SHA-256 digest to the existing multi-platform Docker build. Docker verifies and
+embeds the archive; it never installs Flutter or builds the frontend.
 
 ## Build controls
 

@@ -1094,10 +1094,10 @@ async fn test_proxy_head_with_cache_uses_head_and_reuses_cached_metadata() {
 }
 
 #[tokio::test]
-async fn test_head_without_accept_ranges_stores_length_without_range_support() {
+async fn test_head_without_accept_ranges_does_not_block_later_range_probe() {
     let mock_server = MockServer::start().await;
     let total_size: u64 = 4096;
-    let full_body = Bytes::from(vec![0xE1; 4096]);
+    let slice_body = Bytes::from((0_u8..=u8::MAX).cycle().take(1024).collect::<Vec<_>>());
 
     Mock::given(method("HEAD"))
         .and(path("/head-no-range.bin"))
@@ -1112,19 +1112,12 @@ async fn test_head_without_accept_ranges_stores_length_without_range_support() {
 
     Mock::given(method("GET"))
         .and(path("/head-no-range.bin"))
-        .and(header("Range", "bytes=0-1023"))
-        .respond_with(ResponseTemplate::new(500))
-        .expect(0)
-        .mount(&mock_server)
-        .await;
-
-    Mock::given(method("GET"))
-        .and(path("/head-no-range.bin"))
-        .and(HeaderAbsent("Range"))
+        .and(header("Range", "bytes=2048-3071"))
         .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_bytes(full_body.clone())
-                .insert_header("Content-Length", total_size.to_string()),
+            ResponseTemplate::new(206)
+                .set_body_bytes(slice_body.clone())
+                .insert_header("Content-Range", format!("bytes 2048-3071/{total_size}"))
+                .insert_header("Content-Length", "1024"),
         )
         .expect(1)
         .mount(&mock_server)
@@ -1155,17 +1148,21 @@ async fn test_head_without_accept_ranges_stores_length_without_range_support() {
         "Content-Length alone must not prove range support"
     );
 
-    let range = proxy_slice(&cache, Some("bytes=0-511"), &url, &provider_headers)
+    let range = proxy_slice(&cache, Some("bytes=2304-2559"), &url, &provider_headers)
         .await
         .unwrap();
-    assert_eq!(range.status(), StatusCode::OK);
+    assert_eq!(range.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        range.headers().get("Content-Range").unwrap(),
+        "bytes 2304-2559/4096"
+    );
     assert_eq!(
         range.headers().get("X-Cache-Status").unwrap(),
-        CacheStatus::Bypass.as_str()
+        CacheStatus::Miss.as_str()
     );
     assert_eq!(
         range.into_body().collect().await.unwrap().to_bytes(),
-        full_body
+        slice_body.slice(256..512)
     );
 }
 
@@ -2369,8 +2366,13 @@ async fn test_suffix_range_with_head_length_bypasses_when_origin_ignores_aligned
     Mock::given(method("GET"))
         .and(path("/suffix-no-ranges.bin"))
         .and(header("Range", "bytes=3072-4095"))
-        .respond_with(ResponseTemplate::new(500))
-        .expect(0)
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_bytes(full_body.clone())
+                .insert_header("Content-Length", total_size.to_string())
+                .insert_header("Content-Type", "application/octet-stream"),
+        )
+        .expect(1)
         .mount(&mock_server)
         .await;
 
@@ -2383,7 +2385,7 @@ async fn test_suffix_range_with_head_length_bypasses_when_origin_ignores_aligned
                 .insert_header("Content-Length", total_size.to_string())
                 .insert_header("Content-Type", "application/octet-stream"),
         )
-        .expect(1)
+        .expect(0)
         .mount(&mock_server)
         .await;
 

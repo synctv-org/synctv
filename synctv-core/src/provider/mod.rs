@@ -360,6 +360,9 @@ pub(crate) fn build_direct_playback_info_for_client(
     source: &PlaybackInfo,
     profile: Option<&PlaybackClientProfile>,
 ) -> Option<PlaybackInfo> {
+    if source.medias.is_empty() {
+        return None;
+    }
     let Some(profile) = profile.filter(|profile| profile.uses_explicit_capabilities()) else {
         return Some(source.clone());
     };
@@ -1909,6 +1912,21 @@ mod playback_route_capability_tests {
 
         assert_eq!(mapped, vec![(1, "selected"), (2, "fallback")]);
         assert_eq!(default_index, Some(0));
+    }
+
+    #[test]
+    fn empty_direct_route_is_not_emitted_without_a_client_profile() {
+        let empty = PlaybackInfo {
+            thumbnail: None,
+            medias: Vec::new(),
+            default_media_index: None,
+            subtitles: Vec::new(),
+            default_subtitle_index: None,
+            danmakus: Vec::new(),
+            default_danmaku_index: None,
+        };
+
+        assert!(build_direct_playback_info_for_client("direct", &empty, None).is_none());
     }
 
     #[test]

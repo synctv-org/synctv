@@ -346,7 +346,7 @@ message OAuth2GiteeProviderConfig {
 }
 
 message RtmpSettings {
-  optional string custom_publish_host = 1;
+  optional string advertise_address = 1;
   bool ts_disguised_as_png = 2;
 }
 
@@ -454,7 +454,7 @@ message OAuth2SettingsPatch {
 }
 
 message RtmpSettingsPatch {
-  optional string custom_publish_host = 1;
+  optional string advertise_address = 1;
   optional bool ts_disguised_as_png = 2;
 }
 

@@ -24,7 +24,7 @@ use axum::{
     response::IntoResponse,
 };
 use futures::{SinkExt, StreamExt};
-use prost_reflect::{DynamicMessage, ReflectMessage};
+use prost_reflect::{DeserializeOptions, DynamicMessage, ReflectMessage};
 use std::convert::Infallible;
 use std::future::Future;
 use std::sync::{
@@ -743,7 +743,8 @@ impl WebSocketMessageSender {
 fn decode_client_message_json(text: &str) -> Result<ClientMessage, String> {
     let descriptor = ClientMessage::default().descriptor();
     let mut deserializer = serde_json::Deserializer::from_str(text);
-    let dynamic = DynamicMessage::deserialize(descriptor, &mut deserializer)
+    let options = DeserializeOptions::new().deny_unknown_fields(false);
+    let dynamic = DynamicMessage::deserialize_with_options(descriptor, &mut deserializer, &options)
         .map_err(|e| format!("Failed to decode JSON message: {e}"))?;
     deserializer
         .end()

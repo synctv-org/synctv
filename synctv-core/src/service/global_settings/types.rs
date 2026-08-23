@@ -190,7 +190,10 @@ impl std::str::FromStr for PermissionSet {
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_webrtc_settings, IceServerList, PermissionSet, WebRtcRuntimeSettings};
+    use super::{
+        parse_rtmp_advertise_address, validate_webrtc_settings, IceServerList, PermissionSet,
+        WebRtcRuntimeSettings,
+    };
     use crate::models::RoomAdminPermissionBits;
     use std::str::FromStr;
 
@@ -235,6 +238,38 @@ mod tests {
                 max_voice_participants_per_room,
             })
             .is_err());
+        }
+    }
+
+    #[test]
+    fn rtmp_advertise_address_accepts_origin_without_business_path() {
+        let plain = parse_rtmp_advertise_address("rtmp://live.example.com")
+            .expect("RTMP origin should be accepted");
+        assert_eq!(plain.scheme(), "rtmp");
+        assert_eq!(plain.host_str(), Some("live.example.com"));
+        assert_eq!(plain.port(), None);
+
+        let secure = parse_rtmp_advertise_address("rtmps://live.example.com:8443")
+            .expect("RTMPS origin with an explicit port should be accepted");
+        assert_eq!(secure.scheme(), "rtmps");
+        assert_eq!(secure.host_str(), Some("live.example.com"));
+        assert_eq!(secure.port(), Some(8443));
+    }
+
+    #[test]
+    fn rtmp_advertise_address_rejects_non_origin_components() {
+        for address in [
+            "",
+            "http://live.example.com",
+            "rtmp://user:secret@live.example.com",
+            "rtmp://live.example.com/app",
+            "rtmp://live.example.com?token=secret",
+            "rtmp://live.example.com#fragment",
+        ] {
+            assert!(
+                parse_rtmp_advertise_address(address).is_err(),
+                "unexpectedly accepted {address}"
+            );
         }
     }
 }
@@ -987,7 +1022,7 @@ impl OAuth2RuntimeSettingsUpdateMask {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RtmpRuntimeSettingsUpdateMask {
-    pub custom_publish_host: bool,
+    pub advertise_address: bool,
     pub ts_disguised_as_png: bool,
 }
 
@@ -995,14 +1030,14 @@ impl RtmpRuntimeSettingsUpdateMask {
     #[must_use]
     pub const fn all() -> Self {
         Self {
-            custom_publish_host: true,
+            advertise_address: true,
             ts_disguised_as_png: true,
         }
     }
 
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        !self.custom_publish_host && !self.ts_disguised_as_png
+        !self.advertise_address && !self.ts_disguised_as_png
     }
 }
 
@@ -1183,8 +1218,50 @@ pub struct OAuth2RuntimeSettings {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RtmpRuntimeSettings {
-    pub custom_publish_host: Option<String>,
+    pub advertise_address: Option<String>,
     pub ts_disguised_as_png: bool,
+}
+
+pub fn parse_rtmp_advertise_address(address: &str) -> crate::Result<url::Url> {
+    let address = address.trim();
+    if address.is_empty() {
+        return Err(crate::Error::InvalidInput(
+            "rtmp.advertise_address must be non-empty when configured".to_string(),
+        ));
+    }
+
+    let url = url::Url::parse(address).map_err(|error| {
+        crate::Error::InvalidInput(format!(
+            "rtmp.advertise_address must be a valid URL: {error}"
+        ))
+    })?;
+    if !matches!(url.scheme(), "rtmp" | "rtmps") {
+        return Err(crate::Error::InvalidInput(
+            "rtmp.advertise_address must use the rtmp or rtmps scheme".to_string(),
+        ));
+    }
+    if url.host_str().is_none() || url.cannot_be_a_base() {
+        return Err(crate::Error::InvalidInput(
+            "rtmp.advertise_address must include a host".to_string(),
+        ));
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(crate::Error::InvalidInput(
+            "rtmp.advertise_address must not include credentials".to_string(),
+        ));
+    }
+    if !matches!(url.path(), "" | "/") {
+        return Err(crate::Error::InvalidInput(
+            "rtmp.advertise_address must not include a path".to_string(),
+        ));
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err(crate::Error::InvalidInput(
+            "rtmp.advertise_address must not include a query or fragment".to_string(),
+        ));
+    }
+
+    Ok(url)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1340,14 +1417,8 @@ fn validate_user_settings(
 }
 
 fn validate_rtmp_settings(settings: &RtmpRuntimeSettings) -> crate::Result<()> {
-    if settings
-        .custom_publish_host
-        .as_ref()
-        .is_some_and(|host| host.trim().is_empty())
-    {
-        return Err(crate::Error::InvalidInput(
-            "rtmp.custom_publish_host must be non-empty when configured".to_string(),
-        ));
+    if let Some(address) = settings.advertise_address.as_deref() {
+        parse_rtmp_advertise_address(address)?;
     }
     let _ = settings.ts_disguised_as_png;
     Ok(())
@@ -1509,7 +1580,7 @@ pub struct PublicSettings {
     pub enable_webauthn: bool,
     pub ts_disguised_as_png: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub custom_publish_host: Option<String>,
+    pub advertise_address: Option<String>,
     pub email_whitelist_enabled: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub email_whitelist_domains: Vec<String>,
@@ -1536,7 +1607,7 @@ impl PublicSettings {
             enable_email: false,
             enable_webauthn: false,
             ts_disguised_as_png: false,
-            custom_publish_host: None,
+            advertise_address: None,
             email_whitelist_enabled: false,
             email_whitelist_domains: Vec::new(),
         }

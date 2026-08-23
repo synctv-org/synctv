@@ -243,15 +243,16 @@ impl AdminApiImpl {
                 "Publish key service is not available on this server.".to_string(),
             )
         })?;
-        let response = crate::impls::client::stream::issue_room_publish_key(
+        let advertise_address = crate::impls::client::stream::rtmp_advertise_address(
+            self.runtime_settings_store.as_deref(),
+        )?;
+        let response = crate::impls::client::stream::RoomPublishKeyIssuer::new(
             publish_key_service,
             &self.runtime_settings,
+            advertise_address.as_deref(),
             &self.public_id_codec,
-            room_id_value,
-            media_id_value,
-            actor_user_id,
-            options,
-        )?;
+        )
+        .issue(room_id_value, media_id_value, actor_user_id, options)?;
 
         tracing::info!(
             room_id,

@@ -34,17 +34,17 @@ use tracing::warn;
 
 mod types;
 pub use types::{
-    ChatRuntimeSettings, ConfiguredIceServer, CorsAllowedOrigins, CorsRuntimeSettings,
-    EmailRuntimeSettings, IceServerList, OAuth2AllowedRedirectUrls, OAuth2AppleProviderConfig,
-    OAuth2CasdoorProviderConfig, OAuth2DiscordProviderConfig, OAuth2FeishuProviderConfig,
-    OAuth2GiteeProviderConfig, OAuth2GithubProviderConfig, OAuth2GoogleProviderConfig,
-    OAuth2LogtoProviderConfig, OAuth2MicrosoftProviderConfig, OAuth2OidcProviderConfig,
-    OAuth2ProviderConfig, OAuth2ProviderConfigs, OAuth2ProviderPrivateConfig,
-    OAuth2QqProviderConfig, OAuth2RuntimeSettings, OAuth2SignupPolicy, OptionalRuntimeConfig,
-    PermissionRuntimeSettings, PermissionSet, PlaybackHistoryRuntimeSettings, PublicSettings,
-    RoomCreationRuntimeSettings, RoomDefaultsRuntimeSettings, RoomPasswordPolicy,
-    RtmpRuntimeSettings, RuntimeSettings, RuntimeSettingsUpdateMask, ServerRuntimeSettings,
-    UserRuntimeSettings, WebRtcRuntimeSettings,
+    parse_rtmp_advertise_address, ChatRuntimeSettings, ConfiguredIceServer, CorsAllowedOrigins,
+    CorsRuntimeSettings, EmailRuntimeSettings, IceServerList, OAuth2AllowedRedirectUrls,
+    OAuth2AppleProviderConfig, OAuth2CasdoorProviderConfig, OAuth2DiscordProviderConfig,
+    OAuth2FeishuProviderConfig, OAuth2GiteeProviderConfig, OAuth2GithubProviderConfig,
+    OAuth2GoogleProviderConfig, OAuth2LogtoProviderConfig, OAuth2MicrosoftProviderConfig,
+    OAuth2OidcProviderConfig, OAuth2ProviderConfig, OAuth2ProviderConfigs,
+    OAuth2ProviderPrivateConfig, OAuth2QqProviderConfig, OAuth2RuntimeSettings, OAuth2SignupPolicy,
+    OptionalRuntimeConfig, PermissionRuntimeSettings, PermissionSet,
+    PlaybackHistoryRuntimeSettings, PublicSettings, RoomCreationRuntimeSettings,
+    RoomDefaultsRuntimeSettings, RoomPasswordPolicy, RtmpRuntimeSettings, RuntimeSettings,
+    RuntimeSettingsUpdateMask, ServerRuntimeSettings, UserRuntimeSettings, WebRtcRuntimeSettings,
 };
 
 /// Maximum allowed value for `default_max_chat_messages` setting (0 = unlimited)
@@ -210,15 +210,13 @@ setting!(
 setting!(EnableGuestSetting, bool, "user.enable_guest", true);
 
 setting!(
-    CustomPublishHostSetting,
+    RtmpAdvertiseAddressSetting,
     OptionalRuntimeConfig<String>,
-    "rtmp.custom_publish_host",
+    "rtmp.advertise_address",
     OptionalRuntimeConfig::default(),
     |value: &OptionalRuntimeConfig<String>| -> crate::Result<()> {
-        if value.0.as_ref().is_some_and(|host| host.trim().is_empty()) {
-            return Err(crate::Error::InvalidInput(
-                "rtmp.custom_publish_host must be non-empty when configured".to_string(),
-            ));
+        if let Some(address) = value.0.as_deref() {
+            parse_rtmp_advertise_address(address)?;
         }
         Ok(())
     }
@@ -581,7 +579,7 @@ pub struct OAuth2SettingsStore {
 
 #[derive(Clone)]
 pub struct RtmpSettingsStore {
-    pub custom_publish_host: CustomPublishHostSetting,
+    pub advertise_address: RtmpAdvertiseAddressSetting,
     pub ts_disguised_as_png: TsDisguisedAsPngSetting,
 }
 
@@ -839,7 +837,7 @@ impl RuntimeSettingsStore {
         };
 
         let rtmp = RtmpSettingsStore {
-            custom_publish_host: CustomPublishHostSetting::new(storage.clone()),
+            advertise_address: RtmpAdvertiseAddressSetting::new(storage.clone()),
             ts_disguised_as_png: TsDisguisedAsPngSetting::new(storage.clone()),
         };
 
@@ -1003,11 +1001,7 @@ impl RuntimeSettingsStore {
                     .0,
             },
             rtmp: RtmpRuntimeSettings {
-                custom_publish_host: self
-                    .rtmp
-                    .custom_publish_host
-                    .get_from_snapshot(&snapshot)?
-                    .0,
+                advertise_address: self.rtmp.advertise_address.get_from_snapshot(&snapshot)?.0,
                 ts_disguised_as_png: self.rtmp.ts_disguised_as_png.get_from_snapshot(&snapshot)?,
             },
             email: EmailRuntimeSettings {
@@ -1206,9 +1200,9 @@ impl RuntimeSettingsStore {
         )?;
         Self::push_update_entry(
             &mut entries,
-            update_mask.rtmp.custom_publish_host,
-            &self.rtmp.custom_publish_host,
-            &OptionalRuntimeConfig(settings.rtmp.custom_publish_host.clone()),
+            update_mask.rtmp.advertise_address,
+            &self.rtmp.advertise_address,
+            &OptionalRuntimeConfig(settings.rtmp.advertise_address.clone()),
         )?;
         Self::push_update_entry(
             &mut entries,
@@ -1412,7 +1406,7 @@ impl RuntimeSettingsStore {
             enable_email: settings.email.enabled,
             enable_webauthn: false,
             ts_disguised_as_png: settings.rtmp.ts_disguised_as_png,
-            custom_publish_host: settings.rtmp.custom_publish_host,
+            advertise_address: settings.rtmp.advertise_address,
             email_whitelist_enabled: settings.email.whitelist_enabled,
             email_whitelist_domains,
         })
@@ -1823,14 +1817,14 @@ mod tests {
     }
 
     #[test]
-    fn test_public_settings_includes_nonempty_custom_publish_host() {
+    fn test_public_settings_includes_nonempty_rtmp_advertise_address() {
         let mut settings = PublicSettings::defaults();
-        settings.custom_publish_host = Some("rtmp://live.example.com".to_string());
+        settings.advertise_address = Some("rtmp://live.example.com".to_string());
         let json = ok(
             serde_json::to_string(&settings),
             "public settings should serialize",
         );
-        assert!(json.contains("custom_publish_host"));
+        assert!(json.contains("advertise_address"));
         assert!(json.contains("rtmp://live.example.com"));
     }
 }

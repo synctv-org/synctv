@@ -28,7 +28,8 @@ use tracing::{error, info, warn};
 pub use super::tracker::{StreamSubscriberGuard, StreamTracker};
 
 const KICK_PUBLISHER_EVENT_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-const HLS_GENERATION_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+const HLS_ACTIVE_GENERATION_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+const HLS_GENERATION_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 const HLS_GENERATION_READY_POLL_INTERVAL: std::time::Duration =
     std::time::Duration::from_millis(25);
 
@@ -47,7 +48,12 @@ pub(crate) async fn find_hls_generation_state(
             .get(&stream_key)
             .map(|entry| Arc::clone(entry.value()))
         {
-            return Some(state);
+            if !state.read().playlist.segments.is_empty() {
+                return Some(state);
+            }
+            if !wait_for_ready {
+                return None;
+            }
         }
         if !wait_for_ready || tokio::time::Instant::now() >= deadline {
             return None;
@@ -720,7 +726,7 @@ impl HlsStreamingApi {
         room_id: &str,
         media_id: &str,
     ) -> Result<Option<StreamGeneration>> {
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        let deadline = tokio::time::Instant::now() + HLS_ACTIVE_GENERATION_READY_TIMEOUT;
         loop {
             let generation = infrastructure
                 .registry
@@ -782,7 +788,7 @@ impl HlsStreamingApi {
                     "Failed to resolve active HLS generation: {error}"
                 ))
             })?;
-        if generation.is_some() || external_source.is_none() {
+        if generation.is_some() {
             return Ok(generation);
         }
 
@@ -1069,7 +1075,74 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn active_local_playlist_waits_for_remuxer_generation_state() -> TestResult {
+    async fn rtmp_hls_master_waits_for_delayed_active_generation() -> TestResult {
+        let registry = Arc::new(TestStreamRegistry::new());
+        let (event_sender, _event_receiver) = mpsc::channel(8);
+        let infrastructure = LiveStreamingInfrastructure::new(
+            registry.clone(),
+            event_sender,
+            Arc::new(StreamTracker::new()),
+            "node-local".to_string(),
+            synctv_common::ssrf::SsrfGuard::disabled(),
+        )?;
+        let generation_id = synctv_xiu::streamhub::utils::Uuid::new().to_string();
+        let delayed_generation_id = generation_id.clone();
+        let register_task = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            registry
+                .try_activate_generation(
+                    "room-master",
+                    "media-master",
+                    "node-local",
+                    "",
+                    "127.0.0.1:50051",
+                    &delayed_generation_id,
+                )
+                .await
+        });
+
+        let generation = HlsStreamingApi::resolve_active_generation_with_pull(
+            &infrastructure,
+            "room-master",
+            "media-master",
+            None,
+        )
+        .await?
+        .ok_or_else(|| test_error("master should wait for publisher registration"))?;
+        assert!(register_task.await??);
+
+        assert_eq!(generation.generation_id, generation_id);
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rtmp_hls_master_times_out_when_stream_stays_offline() -> TestResult {
+        let registry = Arc::new(TestStreamRegistry::new());
+        let (event_sender, _event_receiver) = mpsc::channel(8);
+        let infrastructure = LiveStreamingInfrastructure::new(
+            registry,
+            event_sender,
+            Arc::new(StreamTracker::new()),
+            "node-local".to_string(),
+            synctv_common::ssrf::SsrfGuard::disabled(),
+        )?;
+        let started_at = tokio::time::Instant::now();
+
+        let generation = HlsStreamingApi::resolve_active_generation_with_pull(
+            &infrastructure,
+            "room-offline",
+            "media-offline",
+            None,
+        )
+        .await?;
+
+        assert!(generation.is_none());
+        assert!(started_at.elapsed() >= HLS_ACTIVE_GENERATION_READY_TIMEOUT);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn active_local_playlist_waits_for_first_complete_segment() -> TestResult {
         let registry = Arc::new(TestStreamRegistry::new());
         let generation_id = synctv_xiu::streamhub::utils::Uuid::new();
         let generation_id_string = generation_id.to_string();
@@ -1096,35 +1169,38 @@ mod tests {
         )?
         .with_hls_stream_registry(hls_registry.clone());
 
-        let delayed_registry = hls_registry;
-        let delayed_generation_id = generation_id_string.clone();
+        let stream_state = Arc::new(parking_lot::RwLock::new(
+            synctv_xiu::hls::StreamProcessorState {
+                app_name: "room-ready".to_string(),
+                stream_name: "media-ready".to_string(),
+                playlist: synctv_xiu::hls::HlsPlaylist::new(),
+                generation_id,
+                marked_for_cleanup: false,
+                cleanup_segment_names: Vec::new(),
+            },
+        ));
+        hls_registry.insert(
+            synctv_xiu::hls::generation_registry_key(
+                "room-ready",
+                "media-ready",
+                &generation_id_string,
+            ),
+            stream_state.clone(),
+        );
+
+        let delayed_state = stream_state;
         let insert_task = tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            let mut playlist = synctv_xiu::hls::HlsPlaylist::new();
-            playlist.push_segment(synctv_xiu::hls::SegmentInfo {
-                sequence: 0,
-                duration_ms: 1_000,
-                started_at_ms: 0,
-                ts_name: "ready-segment".to_string(),
-                discontinuity: false,
-            });
-            delayed_registry.insert(
-                synctv_xiu::hls::generation_registry_key(
-                    "room-ready",
-                    "media-ready",
-                    &delayed_generation_id,
-                ),
-                Arc::new(parking_lot::RwLock::new(
-                    synctv_xiu::hls::StreamProcessorState {
-                        app_name: "room-ready".to_string(),
-                        stream_name: "media-ready".to_string(),
-                        playlist,
-                        generation_id,
-                        marked_for_cleanup: false,
-                        cleanup_segment_names: Vec::new(),
-                    },
-                )),
-            );
+            delayed_state
+                .write()
+                .playlist
+                .push_segment(synctv_xiu::hls::SegmentInfo {
+                    sequence: 0,
+                    duration_ms: 1_000,
+                    started_at_ms: 0,
+                    ts_name: "ready-segment".to_string(),
+                    discontinuity: false,
+                });
         });
 
         let playlist = HlsStreamingApi::generate_playlist_simple(
@@ -1139,6 +1215,66 @@ mod tests {
         insert_task.await?;
 
         assert!(playlist.contains("/segments/ready-segment.ts"));
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn active_local_playlist_times_out_before_returning_an_empty_manifest() -> TestResult {
+        let registry = Arc::new(TestStreamRegistry::new());
+        let generation_id = synctv_xiu::streamhub::utils::Uuid::new();
+        let generation_id_string = generation_id.to_string();
+        assert!(
+            registry
+                .try_activate_generation(
+                    "room-empty",
+                    "media-empty",
+                    "node-local",
+                    "",
+                    "127.0.0.1:50051",
+                    &generation_id_string,
+                )
+                .await?
+        );
+        let (event_sender, _event_receiver) = mpsc::channel(8);
+        let hls_registry = Arc::new(dashmap::DashMap::new());
+        hls_registry.insert(
+            synctv_xiu::hls::generation_registry_key(
+                "room-empty",
+                "media-empty",
+                &generation_id_string,
+            ),
+            Arc::new(parking_lot::RwLock::new(
+                synctv_xiu::hls::StreamProcessorState {
+                    app_name: "room-empty".to_string(),
+                    stream_name: "media-empty".to_string(),
+                    playlist: synctv_xiu::hls::HlsPlaylist::new(),
+                    generation_id,
+                    marked_for_cleanup: false,
+                    cleanup_segment_names: Vec::new(),
+                },
+            )),
+        );
+        let infrastructure = LiveStreamingInfrastructure::new(
+            registry,
+            event_sender,
+            Arc::new(StreamTracker::new()),
+            "node-local".to_string(),
+            synctv_common::ssrf::SsrfGuard::disabled(),
+        )?
+        .with_hls_stream_registry(hls_registry);
+        let started_at = tokio::time::Instant::now();
+
+        let playlist = HlsStreamingApi::generate_playlist_simple(
+            &infrastructure,
+            "room-empty",
+            "media-empty",
+            &generation_id_string,
+            "/segments/",
+        )
+        .await?;
+
+        assert!(playlist.is_none());
+        assert!(started_at.elapsed() >= HLS_GENERATION_READY_TIMEOUT);
         Ok(())
     }
 

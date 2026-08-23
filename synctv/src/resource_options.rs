@@ -41,6 +41,7 @@ use crate::app_config::{
 
 pub fn logging_options(config: &AppConfig) -> LoggingOptions {
     LoggingOptions {
+        timezone: config.time.timezone.clone(),
         global: component_logging("global", &config.logging, Vec::new()),
         components: vec![
             access_component_logging(
@@ -703,8 +704,11 @@ mod tests {
 
     #[test]
     fn global_logging_is_the_unscoped_output() {
-        let options = logging_options(&AppConfig::default());
+        let mut config = AppConfig::default();
+        config.time.timezone = "Asia/Shanghai".to_string();
+        let options = logging_options(&config);
 
+        assert_eq!(options.timezone, "Asia/Shanghai");
         assert_eq!(options.global.name, "global");
         assert!(options.global.targets.is_empty());
         assert!(options

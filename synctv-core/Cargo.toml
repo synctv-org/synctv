@@ -84,6 +84,7 @@ failsafe.workspace = true
 
 # Time
 chrono.workspace = true
+chrono-tz.workspace = true
 rsntp.workspace = true
 
 # Logging

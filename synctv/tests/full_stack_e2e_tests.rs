@@ -550,6 +550,7 @@ static TEST_LOGGING: OnceLock<synctv_core::logging::LoggingGuards> = OnceLock::n
 fn ensure_test_logging() {
     TEST_LOGGING.get_or_init(|| {
         let logging = synctv_core::logging::LoggingOptions {
+            timezone: "UTC".to_string(),
             global: synctv_core::logging::ComponentLoggingOptions {
                 name: "global".to_string(),
                 style: synctv_core::logging::LogStyle::Diagnostic,

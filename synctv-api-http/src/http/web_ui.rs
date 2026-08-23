@@ -66,9 +66,9 @@ fn serve_path(path: &str, html_navigation: bool, headers: &HeaderMap) -> Respons
         )
             .into_response();
     }
-    find_asset(path)
-        .map(|asset| asset_response(asset, html_navigation, headers))
-        .unwrap_or_else(not_found)
+    find_asset(path).map_or_else(not_found, |asset| {
+        asset_response(asset, html_navigation, headers)
+    })
 }
 
 fn find_asset(path: &str) -> Option<&'static Asset> {
@@ -85,9 +85,8 @@ fn asset_response(asset: &'static Asset, html_navigation: bool, headers: &Header
     } else {
         "public, max-age=0, must-revalidate"
     };
-    let representation = match select_representation(asset, headers) {
-        Some(representation) => representation,
-        None => return StatusCode::NOT_ACCEPTABLE.into_response(),
+    let Some(representation) = select_representation(asset, headers) else {
+        return StatusCode::NOT_ACCEPTABLE.into_response();
     };
     if if_none_match_matches(headers, representation.etag) {
         let mut response = StatusCode::NOT_MODIFIED.into_response();
@@ -402,6 +401,27 @@ mod tests {
         assert!(update_metadata_asset("version.json"));
         assert!(update_metadata_asset("flutter_service_worker.js"));
         assert!(!update_metadata_asset("main.dart.js"));
+    }
+
+    #[tokio::test]
+    async fn root_serves_spa_entrypoint_without_redirect() {
+        assert!(
+            WEB_UI_AVAILABLE,
+            "the web-ui feature must embed a SPA entrypoint"
+        );
+
+        let response = index(HeaderMap::new()).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE),
+            Some(&HeaderValue::from_static("text/html; charset=utf-8"))
+        );
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL),
+            Some(&HeaderValue::from_static("no-cache"))
+        );
+        assert!(response.headers().get(header::LOCATION).is_none());
     }
 
     #[tokio::test]

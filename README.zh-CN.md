@@ -44,49 +44,6 @@ SyncTV 是使用 Rust 实现的实时同步观影平台，支持媒体 Provider 
 
 ![SyncTV 贡献者](https://contrib.nn.ci/api?repo=synctv-org/synctv&repo=synctv-org/synctv-app)
 
-## 快速开始
-
-开发环境需要完整源码仓库：
-
-```bash
-# 启动 PostgreSQL 和 Redis，然后用开发配置在本机运行 SyncTV。
-make dev-serve
-
-# 同时启动媒体、认证和对象存储等可选依赖。
-make dev-stack
-
-# 通过 Makefile dev 启动路径执行真实 CLI/curl provider smoke 测试。
-make dev-smoke
-```
-
-生产 Compose 使用自动生成的 PostgreSQL、Redis 和应用 secret：
-
-```bash
-# 需要 Docker Compose 和 openssl。
-make compose-init
-
-# 启动前编辑 .env.synctv 中的 SYNCTV_BOOTSTRAP_ROOT_PASSWORD。
-make compose-up
-```
-
-校验配置：
-
-```bash
-cargo +nightly run -p synctv --bin synctv -- config validate
-```
-
-可选 migration 预检。服务启动阶段也会自动执行 embedded SQLx migrations：
-
-```bash
-cargo +nightly run -p synctv --bin synctv -- db migrate
-```
-
-本地启动：
-
-```bash
-cargo +nightly run -p synctv --bin synctv -- serve
-```
-
 ## 文档
 
 完整文档见 [docs.syncs.tv](https://docs.syncs.tv)。

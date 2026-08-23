@@ -7,9 +7,8 @@ COMPOSE ?= docker compose
 PROD_COMPOSE_FILE ?= docker-compose.yml
 COMPOSE_PROD := $(COMPOSE) -f $(PROD_COMPOSE_FILE)
 COMPOSE_ENV_FILES := .env.postgres .env.redis .env.synctv
-RUST_TOOLCHAIN ?= nightly
-CARGO ?= cargo +$(RUST_TOOLCHAIN)
-CROSS ?= cargo cross +$(RUST_TOOLCHAIN)
+CARGO ?= cargo
+CROSS ?= cargo cross
 CARGO_LOCKED ?= --locked
 CARGO_WORKSPACE_ARGS ?= --workspace
 CARGO_ALL_TARGETS_ARGS ?= --all-targets
@@ -187,7 +186,7 @@ dev-check: ## Check required local tools.
 	@$(COMPOSE) version >/dev/null
 	@command -v rustup >/dev/null
 	@$(CARGO) --version >/dev/null
-	@printf "Docker, Docker Compose, and Cargo %s are available.\n" "$(RUST_TOOLCHAIN)"
+	@printf "Docker, Docker Compose, and Cargo are available.\n"
 
 dev-env: ## Print local service URLs and credentials.
 	@printf "SyncTV:    http://127.0.0.1:8080  root / %s\n" "$(DEV_ROOT_PASSWORD)"
@@ -411,10 +410,10 @@ cargo-workspace-version: ## Print the Cargo workspace version.
 
 set-release-version: ## Synchronize release files. Set VERSION=x.y.z.
 	@test -n "$(VERSION)" || { printf "VERSION is required.\n" >&2; exit 1; }
-	RUSTUP_TOOLCHAIN="$(RUST_TOOLCHAIN)" scripts/set-release-version.sh "$(VERSION)"
+	scripts/set-release-version.sh "$(VERSION)"
 
 validate-helm: ## Validate Helm charts and rendered SyncTV configuration.
-	RUSTUP_TOOLCHAIN="$(RUST_TOOLCHAIN)" scripts/validate-helm.sh
+	scripts/validate-helm.sh
 
 require-cross:
 	@command -v cargo-cross >/dev/null || { printf "cargo-cross is required; run 'make install-cross'.\n" >&2; exit 1; }

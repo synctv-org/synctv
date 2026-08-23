@@ -8,10 +8,11 @@ use crate::bootstrap::{
     SsrfOptions,
 };
 use synctv_api::{
-    ApiRuntimeSettings, ApiServerSettings, ClusterRuntimeSettings, ConnectionLimitSettings,
-    LivestreamRuntimeSettings, MetricsAuthMode, MetricsAuthSettings, MetricsKubernetesAuthSettings,
-    MetricsRuntimeSettings, ProxySliceCacheRuntimeSettings, RateLimitScopeRule,
-    RateLimitScopeStrategy, RedisRuntimeSettings, RequestRateLimitSettings, WebRtcRuntimeSettings,
+    AccessLogSettings, ApiRuntimeSettings, ApiServerSettings, ClusterRuntimeSettings,
+    ConnectionLimitSettings, LivestreamRuntimeSettings, MetricsAuthMode, MetricsAuthSettings,
+    MetricsKubernetesAuthSettings, MetricsRuntimeSettings, ProxySliceCacheRuntimeSettings,
+    RateLimitScopeRule, RateLimitScopeStrategy, RedisRuntimeSettings, RequestRateLimitSettings,
+    WebRtcRuntimeSettings,
 };
 #[cfg(feature = "k8s")]
 use synctv_cluster::leader::K8sLeaderRuntimeOptions;
@@ -20,7 +21,7 @@ use synctv_core::clock::{
     ClockSyncOptions, ClockSyncProvider, ClockSyncSntpProviderOptions, TimeOptions,
 };
 use synctv_core::logging::{
-    ComponentLoggingOptions, LogColor, LogOutput, LogRotation, LoggingOptions,
+    ComponentLoggingOptions, LogColor, LogOutput, LogRotation, LogStyle, LoggingOptions,
 };
 use synctv_core::service::{
     LocalProviderHttpOptions, MediaProvidersOptions, PasskeyServiceOptions,
@@ -42,6 +43,11 @@ pub fn logging_options(config: &AppConfig) -> LoggingOptions {
     LoggingOptions {
         global: component_logging("global", &config.logging, Vec::new()),
         components: vec![
+            access_component_logging(
+                "access",
+                &config.server.access_log.logging,
+                vec!["synctv::access".to_string()],
+            ),
             component_logging(
                 "server",
                 &config.server.logging,
@@ -126,6 +132,7 @@ fn component_logging(
     };
     ComponentLoggingOptions {
         name: name.to_string(),
+        style: LogStyle::Diagnostic,
         targets,
         level: config.level.clone(),
         format: config.format.clone(),
@@ -135,6 +142,17 @@ fn component_logging(
             crate::app_config::LogColor::Always => LogColor::Always,
             crate::app_config::LogColor::Never => LogColor::Never,
         },
+    }
+}
+
+fn access_component_logging(
+    name: &str,
+    config: &crate::app_config::LoggingConfig,
+    targets: Vec<String>,
+) -> ComponentLoggingOptions {
+    ComponentLoggingOptions {
+        style: LogStyle::Access,
+        ..component_logging(name, config, targets)
     }
 }
 
@@ -622,6 +640,10 @@ pub fn api_runtime_settings(config: &AppConfig) -> ApiRuntimeSettings {
             grpc_compression_enabled: config.server.grpc_compression_enabled,
             enable_reflection: config.server.enable_reflection,
         },
+        access_log: AccessLogSettings {
+            enabled: config.server.access_log.enabled,
+            slow_request_threshold_ms: config.server.access_log.slow_request_threshold_ms,
+        },
         request_rate_limits: request_rate_limit_settings(config),
         metrics: metrics_runtime_settings(config),
         cluster_enabled: config.cluster_runtime_enabled(),
@@ -692,6 +714,18 @@ mod tests {
     }
 
     #[test]
+    fn access_log_runtime_settings_follow_server_config() {
+        let mut config = AppConfig::default();
+        config.server.access_log.enabled = false;
+        config.server.access_log.slow_request_threshold_ms = 2_500;
+
+        let runtime = api_runtime_settings(&config);
+
+        assert!(!runtime.access_log.enabled);
+        assert_eq!(runtime.access_log.slow_request_threshold_ms, 2_500);
+    }
+
+    #[test]
     fn cluster_logging_includes_application_bootstrap_target() {
         let options = logging_options(&AppConfig::default());
         let cluster = options
@@ -718,6 +752,8 @@ mod tests {
                 .expect("logging component must exist")
         };
 
+        assert!(targets_for("access").contains(&"synctv::access".to_string()));
+        assert!(!targets_for("server").contains(&"synctv::access".to_string()));
         assert!(targets_for("server").contains(&"synctv_api_http".to_string()));
         assert!(targets_for("metrics").contains(&"synctv_core::metrics".to_string()));
         assert!(targets_for("livestream").contains(&"synctv_livestream".to_string()));

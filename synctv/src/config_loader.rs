@@ -921,6 +921,9 @@ mod tests {
         );
         assert_eq!(config.logging.level, "info");
         assert_eq!(config.server.logging.level, "info");
+        assert!(config.server.access_log.enabled);
+        assert_eq!(config.server.access_log.slow_request_threshold_ms, 1000);
+        assert_eq!(config.server.access_log.logging.level, "info");
         assert_eq!(config.health.logging.level, "info");
         assert_eq!(config.metrics.logging.level, "warn");
         assert_eq!(config.management.logging.level, "info");

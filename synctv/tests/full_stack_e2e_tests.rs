@@ -552,6 +552,7 @@ fn ensure_test_logging() {
         let logging = synctv_core::logging::LoggingOptions {
             global: synctv_core::logging::ComponentLoggingOptions {
                 name: "global".to_string(),
+                style: synctv_core::logging::LogStyle::Diagnostic,
                 targets: Vec::new(),
                 level: "debug".to_string(),
                 format: "text".to_string(),

@@ -9,7 +9,7 @@ use tracing_appender::non_blocking::{ErrorCounter, NonBlocking, NonBlockingBuild
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{
     filter::FilterFn,
-    fmt::{self, format::FmtSpan, writer::BoxMakeWriter},
+    fmt::{self, writer::BoxMakeWriter},
     layer::{Layer, Layered, SubscriberExt},
     registry::Registry,
     util::SubscriberInitExt,
@@ -39,6 +39,12 @@ pub enum LogRotation {
     Never,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogStyle {
+    Diagnostic,
+    Access,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LogOutput {
     Stdout,
@@ -53,6 +59,7 @@ pub enum LogOutput {
 #[derive(Debug, Clone)]
 pub struct ComponentLoggingOptions {
     pub name: String,
+    pub style: LogStyle,
     pub targets: Vec<String>,
     pub level: String,
     pub format: String,
@@ -71,6 +78,7 @@ impl Default for LoggingOptions {
         Self {
             global: ComponentLoggingOptions {
                 name: "global".to_string(),
+                style: LogStyle::Diagnostic,
                 targets: Vec::new(),
                 level: "info".to_string(),
                 format: "text".to_string(),
@@ -175,10 +183,22 @@ fn build_subscriber(config: &LoggingOptions) -> anyhow::Result<(LoggingSubscribe
         });
 
         let writer = writers.writer_for(component)?;
-        let layer = if component.format.eq_ignore_ascii_case("json") {
+        let is_access_log = component.style == LogStyle::Access;
+        let layer = if component.format.eq_ignore_ascii_case("json") && is_access_log {
             fmt::layer()
                 .json()
-                .with_span_events(FmtSpan::CLOSE)
+                .with_current_span(false)
+                .with_span_list(false)
+                .with_target(false)
+                .with_line_number(false)
+                .with_file(false)
+                .with_ansi(false)
+                .with_writer(writer)
+                .with_filter(filter)
+                .boxed()
+        } else if component.format.eq_ignore_ascii_case("json") {
+            fmt::layer()
+                .json()
                 .with_current_span(true)
                 .with_span_list(true)
                 .with_target(true)
@@ -188,10 +208,19 @@ fn build_subscriber(config: &LoggingOptions) -> anyhow::Result<(LoggingSubscribe
                 .with_writer(writer)
                 .with_filter(filter)
                 .boxed()
+        } else if component.format.eq_ignore_ascii_case("text") && is_access_log {
+            fmt::layer()
+                .compact()
+                .with_target(false)
+                .with_line_number(false)
+                .with_file(false)
+                .with_ansi(ansi_enabled(component))
+                .with_writer(writer)
+                .with_filter(filter)
+                .boxed()
         } else if component.format.eq_ignore_ascii_case("text") {
             fmt::layer()
                 .compact()
-                .with_span_events(FmtSpan::CLOSE)
                 .with_target(true)
                 .with_line_number(true)
                 .with_file(false)
@@ -649,6 +678,8 @@ mod tests {
             tracing::info!(target: "synctv_core::cache", "global-only-event");
             tracing::info!(target: "synctv::health", "filtered-health-event");
             tracing::warn!(target: "synctv::health", "health-only-event");
+            let span = tracing::info_span!("silent-span");
+            drop(span.enter());
         });
         drop(guards);
 
@@ -658,10 +689,52 @@ mod tests {
         assert!(global_log.contains("\"target\":\"synctv_core::cache\""));
         assert!(!global_log.contains("health-only-event"));
         assert!(!global_log.contains("filtered-health-event"));
+        assert!(!global_log.contains("silent-span"));
         assert!(health_log.contains("health-only-event"));
         assert!(!health_log.contains("filtered-health-event"));
         assert!(!health_log.contains("global-only-event"));
         assert!(!health_log.trim_start().starts_with('{'));
+    }
+
+    #[test]
+    fn access_component_uses_compact_context_free_text() {
+        let dir = tempdir().expect("temporary log directory should be created");
+        let config = LoggingOptions {
+            global: default_component("global"),
+            components: vec![ComponentLoggingOptions {
+                name: "access".to_string(),
+                style: LogStyle::Access,
+                targets: vec!["synctv::access".to_string()],
+                output: LogOutput::File {
+                    path: dir.path().join("access.log"),
+                    rotation: LogRotation::Never,
+                    max_files: 2,
+                },
+                ..default_component("access")
+            }],
+        };
+        let (subscriber, guards) =
+            build_subscriber(&config).expect("logging subscriber should build");
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("request", secret = "must-not-be-inherited");
+            let _guard = span.enter();
+            tracing::info!(
+                target: "synctv::access",
+                protocol = "http",
+                status = 200,
+                "request completed"
+            );
+        });
+        drop(guards);
+
+        let access_log = read_log_with_prefix(dir.path(), "access");
+        assert!(access_log.contains("request completed"));
+        assert!(access_log.contains("protocol=\"http\""));
+        assert!(access_log.contains("status=200"));
+        assert!(!access_log.contains("synctv::access"));
+        assert!(!access_log.contains("must-not-be-inherited"));
+        assert!(!access_log.contains("logging.rs"));
     }
 
     fn read_log_with_prefix(dir: &Path, prefix: &str) -> String {
@@ -684,6 +757,7 @@ mod tests {
     fn default_component(name: &str) -> ComponentLoggingOptions {
         ComponentLoggingOptions {
             name: name.to_string(),
+            style: LogStyle::Diagnostic,
             targets: Vec::new(),
             level: "info".to_string(),
             format: "text".to_string(),

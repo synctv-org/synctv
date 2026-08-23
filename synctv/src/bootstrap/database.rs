@@ -521,6 +521,7 @@ mod tests {
         let logging = LoggingOptions {
             global: synctv_core::logging::ComponentLoggingOptions {
                 name: "global".to_string(),
+                style: synctv_core::logging::LogStyle::Diagnostic,
                 level: "debug".to_string(),
                 targets: Vec::new(),
                 format: "text".to_string(),

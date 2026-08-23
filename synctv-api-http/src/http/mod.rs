@@ -49,9 +49,7 @@ use tower_http::compression::{
 };
 use tower_http::cors::CorsLayer;
 use tower_http::on_early_drop::{EarlyDropsAsFailures, OnEarlyDropLayer};
-use tower_http::trace::{
-    DefaultMakeSpan, DefaultOnFailure, DefaultOnRequest, DefaultOnResponse, TraceLayer,
-};
+use tower_http::trace::DefaultOnFailure;
 
 pub use auth::extract_client_ip;
 pub use error::{map_api_error, AppError, AppResult};
@@ -1791,8 +1789,8 @@ fn should_compress_application_response(
         })
 }
 
-/// Apply shared transport layers (CORS, body limit, security headers, HSTS,
-/// request ID propagation, and tracing) and bind state.
+/// Apply shared transport layers (CORS, compression, body limit, security
+/// headers, and HSTS) and bind state.
 fn apply_shared_http_layers(
     router: Router<AppState>,
     cors: CorsLayer,
@@ -1811,7 +1809,6 @@ fn apply_shared_http_layers(
                 ),
         )
         .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024))
-        .layer(axum_middleware::from_fn(middleware::request_id_middleware))
         .layer(axum_middleware::from_fn(
             middleware::security_headers_middleware,
         ))
@@ -1854,6 +1851,8 @@ fn apply_shared_http_layers(
 fn apply_global_layers(router: Router<AppState>, state: &AppState) -> anyhow::Result<axum::Router> {
     let cors = build_cors_layer(&state.runtime_settings)?;
     let server_config = state.runtime_settings.server.clone();
+    let access_log_server_config = Arc::new(server_config.clone());
+    let access_log_config = Arc::new(state.runtime_settings.access_log.clone());
     let hsts_value = middleware::hsts_header(63_072_000, true, false);
     Ok(
         apply_shared_http_layers(router, cors, server_config, hsts_value)
@@ -1861,12 +1860,19 @@ fn apply_global_layers(router: Router<AppState>, state: &AppState) -> anyhow::Re
             .layer(OnEarlyDropLayer::new(EarlyDropsAsFailures::new(
                 DefaultOnFailure::default(),
             )))
-            .layer(
-                TraceLayer::new_for_http()
-                    .make_span_with(DefaultMakeSpan::new().level(tracing::Level::DEBUG))
-                    .on_request(DefaultOnRequest::new().level(tracing::Level::DEBUG))
-                    .on_response(DefaultOnResponse::new().level(tracing::Level::INFO)),
-            )
+            .layer(axum_middleware::from_fn(move |request, next| {
+                let server_config = Arc::clone(&access_log_server_config);
+                let access_log = Arc::clone(&access_log_config);
+                async move {
+                    synctv_api_common::transport_access_log::http_access_log_middleware(
+                        request,
+                        next,
+                        server_config.as_ref(),
+                        access_log.as_ref(),
+                    )
+                    .await
+                }
+            }))
             .with_state(state.clone()),
     )
 }

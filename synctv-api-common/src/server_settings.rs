@@ -6,6 +6,21 @@ pub struct AndroidAppAssociationSettings {
     pub sha256_cert_fingerprints: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccessLogSettings {
+    pub enabled: bool,
+    pub slow_request_threshold_ms: u64,
+}
+
+impl Default for AccessLogSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            slow_request_threshold_ms: 1_000,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ApiServerSettings {
     pub bind_address: String,

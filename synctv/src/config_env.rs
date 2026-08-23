@@ -129,12 +129,7 @@ pub(crate) fn apply_env_overrides_with(
         }
     };
     let apply_logging_env =
-        |service: &str, logging: &mut LoggingConfig| -> Result<(), ConfigError> {
-            let prefix = if service.is_empty() {
-                "SYNCTV_LOGGING".to_string()
-            } else {
-                format!("SYNCTV_{service}_LOGGING")
-            };
+        |prefix: &str, logging: &mut LoggingConfig| -> Result<(), ConfigError> {
             if let Some(value) = get_env(&format!("{prefix}_LEVEL")) {
                 logging.level = value;
             }
@@ -712,14 +707,26 @@ pub(crate) fn apply_env_overrides_with(
         &mut config.webauthn.timeout_seconds,
     )?;
 
-    apply_logging_env("", &mut config.logging)?;
-    apply_logging_env("SERVER", &mut config.server.logging)?;
-    apply_logging_env("HEALTH", &mut config.health.logging)?;
-    apply_logging_env("METRICS", &mut config.metrics.logging)?;
-    apply_logging_env("CLUSTER", &mut config.cluster.logging)?;
-    apply_logging_env("MANAGEMENT", &mut config.management.logging)?;
-    apply_logging_env("LIVESTREAM", &mut config.livestream.logging)?;
-    apply_logging_env("WEBRTC", &mut config.webrtc.logging)?;
+    apply_logging_env("SYNCTV_LOGGING", &mut config.logging)?;
+    apply_logging_env("SYNCTV_SERVER_LOGGING", &mut config.server.logging)?;
+    apply_logging_env(
+        "SYNCTV_SERVER_ACCESS_LOG",
+        &mut config.server.access_log.logging,
+    )?;
+    env_override_bool(
+        "SYNCTV_SERVER_ACCESS_LOG_ENABLED",
+        &mut config.server.access_log.enabled,
+    )?;
+    env_override_parse(
+        "SYNCTV_SERVER_ACCESS_LOG_SLOW_REQUEST_THRESHOLD_MS",
+        &mut config.server.access_log.slow_request_threshold_ms,
+    )?;
+    apply_logging_env("SYNCTV_HEALTH_LOGGING", &mut config.health.logging)?;
+    apply_logging_env("SYNCTV_METRICS_LOGGING", &mut config.metrics.logging)?;
+    apply_logging_env("SYNCTV_CLUSTER_LOGGING", &mut config.cluster.logging)?;
+    apply_logging_env("SYNCTV_MANAGEMENT_LOGGING", &mut config.management.logging)?;
+    apply_logging_env("SYNCTV_LIVESTREAM_LOGGING", &mut config.livestream.logging)?;
+    apply_logging_env("SYNCTV_WEBRTC_LOGGING", &mut config.webrtc.logging)?;
 
     env_override_parse(
         "SYNCTV_LIVESTREAM_RTMP_PORT",
@@ -1245,6 +1252,7 @@ pub(crate) fn resolve_owned_local_paths(
     for logging in [
         &mut config.logging,
         &mut config.server.logging,
+        &mut config.server.access_log.logging,
         &mut config.health.logging,
         &mut config.metrics.logging,
         &mut config.cluster.logging,
@@ -1474,6 +1482,13 @@ mod tests {
             ("SYNCTV_SERVER_LOGGING_LEVEL", "debug".to_string()),
             ("SYNCTV_SERVER_LOGGING_FORMAT", "json".to_string()),
             ("SYNCTV_SERVER_LOGGING_COLOR", "never".to_string()),
+            ("SYNCTV_SERVER_ACCESS_LOG_ENABLED", "false".to_string()),
+            (
+                "SYNCTV_SERVER_ACCESS_LOG_SLOW_REQUEST_THRESHOLD_MS",
+                "2500".to_string(),
+            ),
+            ("SYNCTV_SERVER_ACCESS_LOG_LEVEL", "warn".to_string()),
+            ("SYNCTV_SERVER_ACCESS_LOG_FORMAT", "json".to_string()),
             ("SYNCTV_HEALTH_LOGGING_LEVEL", "error".to_string()),
             ("SYNCTV_HEALTH_LOGGING_FORMAT", "json".to_string()),
             ("SYNCTV_HEALTH_LOGGING_COLOR", "never".to_string()),
@@ -1514,6 +1529,10 @@ mod tests {
         assert_eq!(config.server.logging.level, "debug");
         assert_eq!(config.server.logging.format, "json");
         assert!(matches!(config.server.logging.color, LogColor::Never));
+        assert!(!config.server.access_log.enabled);
+        assert_eq!(config.server.access_log.slow_request_threshold_ms, 2500);
+        assert_eq!(config.server.access_log.logging.level, "warn");
+        assert_eq!(config.server.access_log.logging.format, "json");
         assert_eq!(config.health.logging.level, "error");
         assert_eq!(config.health.logging.format, "json");
         assert!(matches!(config.health.logging.color, LogColor::Never));
@@ -1546,6 +1565,10 @@ mod tests {
             path: "logs/server".to_string(),
             ..LogFileOutput::default()
         });
+        config.server.access_log.logging.output = LogOutput::File(LogFileOutput {
+            path: "logs/access".to_string(),
+            ..LogFileOutput::default()
+        });
         config.health.logging.output = LogOutput::File(LogFileOutput {
             path: "logs/health".to_string(),
             ..LogFileOutput::default()
@@ -1574,6 +1597,13 @@ mod tests {
         assert_eq!(
             output.path,
             data_dir.join("logs/server").display().to_string()
+        );
+        let LogOutput::File(output) = config.server.access_log.logging.output else {
+            panic!("access logging output should remain a file output");
+        };
+        assert_eq!(
+            output.path,
+            data_dir.join("logs/access").display().to_string()
         );
         let LogOutput::File(output) = config.health.logging.output else {
             panic!("health logging output should remain a file output");

@@ -11,8 +11,6 @@ use std::sync::LazyLock;
 
 use super::{optional_header_str, AppError, AppState};
 
-pub use synctv_api_common::request_context::CURRENT_REQUEST_ID;
-
 /// Transport metadata extracted from the HTTP request without performing
 /// authentication, blacklist, rate-limit, or timeout decisions.
 #[derive(Debug, Clone)]
@@ -73,55 +71,6 @@ where
 
         ready(result)
     }
-}
-
-/// HTTP header name for request/trace ID propagation.
-static X_REQUEST_ID: LazyLock<axum::http::HeaderName> =
-    LazyLock::new(|| axum::http::HeaderName::from_static("x-request-id"));
-
-/// Middleware that generates a unique request ID per request.
-///
-/// - If the client sends an `X-Request-ID` header whose value is a non-empty
-///   alphanumeric ASCII string of at most 64 characters, that value is reused
-///   (allows end-to-end trace correlation from trusted clients).
-/// - Otherwise a fresh 12-character shared base62 request ID is generated.
-///
-/// The request ID is:
-/// 1. Recorded in the current tracing span as `request_id` for log correlation.
-/// 2. Echoed back in the `X-Request-ID` response header so callers can correlate
-///    logs with their own request tracking.
-/// 3. Exposed via a task-local so `AppError` responses can include it without
-///    buffering and rewriting response bodies.
-pub async fn request_id_middleware(request: Request, next: Next) -> Response {
-    // Honour an incoming X-Request-ID header when safe to do so.
-    let request_id = request
-        .headers()
-        .get(X_REQUEST_ID.clone())
-        .and_then(|v| v.to_str().ok())
-        .filter(|s| {
-            // Validate: non-empty, max 64 chars, alphanumeric + hyphens/underscores only.
-            let len = s.len();
-            len > 0
-                && len <= 64
-                && s.bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-        })
-        .map_or_else(|| synctv_common::snanoid!(12), str::to_owned);
-
-    // Record in current tracing span for log correlation.
-    tracing::Span::current().record("requestId", request_id.as_str());
-    tracing::debug!(request_id = %request_id, "Request received");
-
-    let mut response = CURRENT_REQUEST_ID
-        .scope(request_id.clone(), async move { next.run(request).await })
-        .await;
-
-    // Echo back in response header so callers can correlate.
-    if let Ok(value) = axum::http::HeaderValue::from_str(&request_id) {
-        response.headers_mut().insert(X_REQUEST_ID.clone(), value);
-    }
-
-    response
 }
 
 /// Pre-validated security header names (validated once at startup via Lazy)

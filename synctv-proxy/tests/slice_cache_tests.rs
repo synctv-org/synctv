@@ -1097,11 +1097,7 @@ async fn test_proxy_head_with_cache_uses_head_and_reuses_cached_metadata() {
 async fn test_head_without_accept_ranges_does_not_block_later_range_probe() {
     let mock_server = MockServer::start().await;
     let total_size: u64 = 4096;
-    let slice_body = Bytes::from(
-        (0_u16..1024)
-            .map(|value| (value % 256) as u8)
-            .collect::<Vec<_>>(),
-    );
+    let slice_body = Bytes::from((0_u8..=u8::MAX).cycle().take(1024).collect::<Vec<_>>());
 
     Mock::given(method("HEAD"))
         .and(path("/head-no-range.bin"))

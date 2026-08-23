@@ -24,6 +24,7 @@ pub struct CachedResourceMeta {
     /// Total size of the resource as reported by upstream.
     pub total_size: Option<u64>,
     /// Whether upstream has proven byte-range support for this resource.
+    /// `false` means unknown and must not suppress a later range probe.
     pub supports_ranges: bool,
     /// Content-Type of the resource.
     pub content_type: Option<String>,

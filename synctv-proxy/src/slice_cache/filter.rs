@@ -425,22 +425,6 @@ async fn proxy_slice_cache(
     }
 
     let cached_meta = cache.get_resource_meta(url, provider_headers);
-    if cached_meta
-        .as_ref()
-        .is_some_and(|meta| !meta.supports_ranges)
-    {
-        return stream_through_with_status(StreamThroughRequest {
-            client: cache.client(),
-            ssrf_guard: cache.ssrf_guard(),
-            url,
-            provider_headers,
-            range_header: None,
-            cache_status: CacheStatus::Bypass,
-            request_control,
-            upstream_header_timeout,
-        })
-        .await;
-    }
     let known_total_size = cached_meta.and_then(|meta| meta.total_size);
     if let Some(total_size) = known_total_size {
         range_bounds_for_total(plan, total_size).map_err(proxy_error_from_client_range_error)?;

@@ -39,6 +39,7 @@ pub mod status;
 pub mod synology_image_urls;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
+pub mod transport_access_log;
 pub mod webrtc_status;
 
 pub use api_runtime::*;
@@ -51,6 +52,7 @@ pub use realtime_fanout::*;
 pub use runtime::RealtimeAdmissionError;
 pub use runtime_adapters::proxy_slice_cache_options_from_runtime_settings;
 pub use server_settings::{
-    validate_cors_origin, AndroidAppAssociationSettings, ApiServerSettings, DEFAULT_PROJECT_URL,
+    validate_cors_origin, AccessLogSettings, AndroidAppAssociationSettings, ApiServerSettings,
+    DEFAULT_PROJECT_URL,
 };
 pub use synctv_adapter::{PublicIdCodec, PublicIdConfig, PublicIdKind, PublicIdType};

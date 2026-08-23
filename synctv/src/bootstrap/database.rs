@@ -519,8 +519,10 @@ mod tests {
     #[test]
     fn effective_log_level_uses_synctv_config_for_database_policy() {
         let logging = LoggingOptions {
+            timezone: "UTC".to_string(),
             global: synctv_core::logging::ComponentLoggingOptions {
                 name: "global".to_string(),
+                style: synctv_core::logging::LogStyle::Diagnostic,
                 level: "debug".to_string(),
                 targets: Vec::new(),
                 format: "text".to_string(),

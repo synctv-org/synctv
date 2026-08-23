@@ -2067,6 +2067,7 @@ mod tests {
                 advertise_host: String::new(),
                 shutdown_drain_timeout_seconds: 30,
                 logging: crate::app_config::LoggingConfig::default(),
+                access_log: crate::app_config::AccessLogConfig::default(),
             },
             health: crate::app_config::HealthConfig::default(),
             time: crate::app_config::TimeConfig::default(),

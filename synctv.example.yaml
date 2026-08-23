@@ -86,6 +86,22 @@ server:
     #   rotation:
     #     strategy: "daily"
     #     max_files: 30
+  # One completion line per public HTTP or gRPC request. This output is routed
+  # independently from server diagnostics. It can reuse a validated X-Request-ID,
+  # and never includes other headers, query strings, metadata, cookies, or bodies.
+  # Environment variables: SYNCTV_SERVER_ACCESS_LOG_ENABLED,
+  # SYNCTV_SERVER_ACCESS_LOG_SLOW_REQUEST_THRESHOLD_MS,
+  # SYNCTV_SERVER_ACCESS_LOG_LEVEL, SYNCTV_SERVER_ACCESS_LOG_FORMAT,
+  # SYNCTV_SERVER_ACCESS_LOG_COLOR, SYNCTV_SERVER_ACCESS_LOG_OUTPUT, and the
+  # standard *_OUTPUT_PATH / *_OUTPUT_ROTATION_* variants.
+  access_log:
+    enabled: true
+    # Set to 0 to disable slow HTTP request classification.
+    slow_request_threshold_ms: 1000
+    level: "info"
+    format: "text"
+    output: "stdout"
+    color: "auto"
 
 time:
   # Default IANA timezone used for human-readable time output and local datetime parsing.

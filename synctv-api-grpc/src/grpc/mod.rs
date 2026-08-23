@@ -293,23 +293,6 @@ const fn grpc_service_registration_plan(
     }
 }
 
-fn request_targets_grpc_transport(
-    headers: &axum::http::HeaderMap,
-) -> Result<bool, axum::http::header::ToStrError> {
-    let Some(value) = headers.get(axum::http::header::CONTENT_TYPE) else {
-        return Ok(false);
-    };
-    let media_type = value
-        .to_str()?
-        .trim()
-        .split(';')
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
-    Ok(media_type.starts_with("application/grpc"))
-}
-
 fn relay_cancellation_token(
     mut shutdown_rx: Option<tokio::sync::watch::Receiver<bool>>,
 ) -> tokio_util::sync::CancellationToken {
@@ -332,7 +315,8 @@ async fn grpc_transport_only_middleware(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    match request_targets_grpc_transport(request.headers()) {
+    match synctv_api_common::transport_access_log::request_targets_grpc_transport(request.headers())
+    {
         Ok(true) => next.run(request).await,
         Ok(false) => axum::response::IntoResponse::into_response(axum::http::StatusCode::NOT_FOUND),
         Err(_) => axum::response::IntoResponse::into_response(axum::http::StatusCode::BAD_REQUEST),
@@ -2225,10 +2209,25 @@ async fn build_axum_router_with_health(
         tracing::info!("gRPC reflection service registered");
     }
 
+    let access_log_server_config = Arc::new(runtime_settings.server.clone());
+    let access_log_config = Arc::new(runtime_settings.access_log.clone());
     let router = routes
         .routes()
         .into_axum_router()
-        .layer(axum::middleware::from_fn(grpc_transport_only_middleware));
+        .layer(axum::middleware::from_fn(grpc_transport_only_middleware))
+        .layer(axum::middleware::from_fn(move |request, next| {
+            let server_config = Arc::clone(&access_log_server_config);
+            let access_log = Arc::clone(&access_log_config);
+            async move {
+                synctv_api_common::transport_access_log::grpc_access_log_middleware(
+                    request,
+                    next,
+                    server_config.as_ref(),
+                    access_log.as_ref(),
+                )
+                .await
+            }
+        }));
 
     Ok(BuiltGrpcRouter {
         router,
@@ -2657,7 +2656,7 @@ mod tests {
     fn test_request_targets_grpc_transport_requires_grpc_content_type() -> TestResult {
         let mut headers = axum::http::HeaderMap::new();
         assert!(
-            !super::request_targets_grpc_transport(&headers)?,
+            !synctv_api_common::transport_access_log::request_targets_grpc_transport(&headers)?,
             "requests without Content-Type must not be treated as gRPC"
         );
 
@@ -2666,7 +2665,7 @@ mod tests {
             axum::http::HeaderValue::from_static("application/json"),
         );
         assert!(
-            !super::request_targets_grpc_transport(&headers)?,
+            !synctv_api_common::transport_access_log::request_targets_grpc_transport(&headers)?,
             "plain HTTP JSON requests must not be treated as gRPC"
         );
 
@@ -2675,7 +2674,7 @@ mod tests {
             axum::http::HeaderValue::from_static("application/grpc"),
         );
         assert!(
-            super::request_targets_grpc_transport(&headers)?,
+            synctv_api_common::transport_access_log::request_targets_grpc_transport(&headers)?,
             "canonical gRPC requests must be routed to tonic"
         );
 
@@ -2684,7 +2683,7 @@ mod tests {
             axum::http::HeaderValue::from_static("application/grpc+proto; charset=utf-8"),
         );
         assert!(
-            super::request_targets_grpc_transport(&headers)?,
+            synctv_api_common::transport_access_log::request_targets_grpc_transport(&headers)?,
             "gRPC content-type variants must still be routed to tonic"
         );
         Ok(())
@@ -2699,7 +2698,8 @@ mod tests {
         );
 
         assert!(
-            super::request_targets_grpc_transport(&headers).is_err(),
+            synctv_api_common::transport_access_log::request_targets_grpc_transport(&headers)
+                .is_err(),
             "invalid Content-Type bytes must not be silently treated as a non-gRPC request"
         );
         Ok(())

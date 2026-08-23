@@ -10,7 +10,12 @@
 #[must_use]
 pub fn map_api_error_ref(err: &synctv_api_common::impls::ApiError) -> tonic::Status {
     let sanitized = synctv_api_common::api_error_model::sanitized_api_error(err);
-    synctv_api_common::api_error_model::GoogleApiError::from_api_error(&sanitized).to_tonic_status()
+    let request_id = synctv_api_common::request_context::CURRENT_REQUEST_ID
+        .try_with(Clone::clone)
+        .ok();
+    synctv_api_common::api_error_model::GoogleApiError::from_api_error(&sanitized)
+        .with_request_id(request_id.as_deref())
+        .to_tonic_status()
 }
 
 pub fn map_api_error(err: impl Into<synctv_api_common::impls::ApiError>) -> tonic::Status {
@@ -99,6 +104,7 @@ pub const fn grpc_unary_request_timeout() -> std::time::Duration {
 #[cfg(test)]
 mod tests {
     use super::request_metadata;
+    use tonic_types::StatusExt;
 
     type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
@@ -159,6 +165,23 @@ mod tests {
         let metadata = request_metadata(&request, &config, None)?;
 
         assert!(metadata.user_agent.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mapped_api_error_includes_current_request_id() -> TestResult {
+        let status = synctv_api_common::request_context::CURRENT_REQUEST_ID
+            .scope("grpc-request-123".to_string(), async {
+                super::map_api_error(synctv_api_common::impls::ApiError::InvalidInput(
+                    "invalid request".to_string(),
+                ))
+            })
+            .await;
+
+        let request_info = status
+            .get_details_request_info()
+            .ok_or("missing RequestInfo error detail")?;
+        assert_eq!(request_info.request_id, "grpc-request-123");
         Ok(())
     }
 }

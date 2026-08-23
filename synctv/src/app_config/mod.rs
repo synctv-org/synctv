@@ -100,6 +100,7 @@ pub struct ServerConfig {
     pub grpc_max_message_size_bytes: usize,
     pub grpc_compression_enabled: bool,
     pub logging: LoggingConfig,
+    pub access_log: AccessLogConfig,
 }
 
 impl Default for ServerConfig {
@@ -115,6 +116,26 @@ impl Default for ServerConfig {
             shutdown_drain_timeout_seconds: 30,
             grpc_max_message_size_bytes: 16 * 1024 * 1024,
             grpc_compression_enabled: true,
+            logging: LoggingConfig::default(),
+            access_log: AccessLogConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AccessLogConfig {
+    pub enabled: bool,
+    pub slow_request_threshold_ms: u64,
+    #[serde(flatten)]
+    pub logging: LoggingConfig,
+}
+
+impl Default for AccessLogConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            slow_request_threshold_ms: 1_000,
             logging: LoggingConfig::default(),
         }
     }

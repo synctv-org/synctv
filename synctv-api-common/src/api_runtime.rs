@@ -226,6 +226,7 @@ impl Default for ConnectionLimitSettings {
 #[derive(Clone, Debug)]
 pub struct ApiRuntimeSettings {
     pub server: ApiServerSettings,
+    pub access_log: crate::AccessLogSettings,
     pub request_rate_limits: RequestRateLimitSettings,
     pub metrics: MetricsRuntimeSettings,
     pub cluster_enabled: bool,
@@ -243,6 +244,7 @@ impl Default for ApiRuntimeSettings {
     fn default() -> Self {
         Self {
             server: ApiServerSettings::default(),
+            access_log: crate::AccessLogSettings::default(),
             request_rate_limits: RequestRateLimitSettings::default(),
             metrics: MetricsRuntimeSettings::default(),
             cluster_enabled: false,

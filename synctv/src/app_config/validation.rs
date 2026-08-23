@@ -612,6 +612,7 @@ impl AppConfig {
         for (path, logging) in [
             ("logging", &self.logging),
             ("server.logging", &self.server.logging),
+            ("server.access_log", &self.server.access_log.logging),
             ("health.logging", &self.health.logging),
             ("metrics.logging", &self.metrics.logging),
             ("cluster.logging", &self.cluster.logging),

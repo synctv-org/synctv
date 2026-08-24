@@ -438,6 +438,7 @@ Emby 服务操作：
 
 ```bash
 synctv provider emby login --username alice --server-endpoint https://emby.example --account-username alice --password 'pass' --instance-name emby-main
+synctv provider emby login --username alice --server-endpoint https://emby.example --account-username guest --no-password --instance-name emby-main
 synctv provider emby list --username alice --server-id <SERVER_ID> --path / --instance-name emby-main
 synctv provider emby me --username alice --server-id <SERVER_ID> --instance-name emby-main
 synctv provider emby binds --username alice

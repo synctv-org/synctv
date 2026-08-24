@@ -3447,6 +3447,7 @@ fn cli_parses_provider_emby_login_with_api_key() {
             assert_eq!(args.server_endpoint, "https://emby.example.com");
             assert_eq!(args.account_username, "emby-user");
             assert_eq!(args.password, None);
+            assert!(!args.no_password);
             assert_eq!(args.api_key.as_deref(), Some("emby-api-key"));
             assert_eq!(args.instance.instance_name.as_deref(), Some("emby-edge"));
         }
@@ -3479,7 +3480,42 @@ fn cli_parses_provider_emby_login_with_password() {
         }) => {
             assert_eq!(args.access.actor.username.as_deref(), Some("alice"));
             assert_eq!(args.password.as_deref(), Some("secret"));
+            assert!(!args.no_password);
             assert_eq!(args.api_key, None);
+        }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+}
+
+#[test]
+fn cli_parses_provider_emby_login_without_password() {
+    let cli = Cli::parse_from([
+        "synctv",
+        "provider",
+        "emby",
+        "login",
+        "--username",
+        "alice",
+        "--server-endpoint",
+        "https://emby.example.com",
+        "--account-username",
+        "emby-user",
+        "--no-password",
+    ]);
+    match cli.command {
+        Commands::Provider(ProviderCommand {
+            command:
+                ProviderSubcommand::Emby(ProviderEmbyCommand {
+                    command: ProviderEmbySubcommand::Login(args),
+                }),
+        }) => {
+            assert_eq!(args.password, None);
+            assert!(args.no_password);
+            assert_eq!(args.api_key, None);
+            assert_eq!(
+                emby_login_credential(&args).expect("no-password credential should build"),
+                synctv_proto::providers::emby::login_request::Credential::Password(String::new())
+            );
         }
         other => panic!("unexpected command parsed: {other:?}"),
     }
@@ -3619,6 +3655,30 @@ fn cli_rejects_provider_emby_login_with_both_password_and_api_key() {
     assert!(
         result.is_err(),
         "provider emby login must reject simultaneous password and api key"
+    );
+}
+
+#[test]
+fn cli_rejects_provider_emby_login_with_password_and_no_password() {
+    let result = Cli::try_parse_from([
+        "synctv",
+        "provider",
+        "emby",
+        "login",
+        "--username",
+        "alice",
+        "--server-endpoint",
+        "https://emby.example.com",
+        "--account-username",
+        "emby-user",
+        "--password",
+        "secret",
+        "--no-password",
+    ]);
+
+    assert!(
+        result.is_err(),
+        "provider emby login must reject simultaneous password modes"
     );
 }
 

@@ -23,6 +23,21 @@ pub struct EmbyService {
     service: EmbyServiceImpl,
 }
 
+#[allow(clippy::result_large_err)]
+fn validate_login_credential(
+    credential: Option<&super::emby::login_req::Credential>,
+) -> Result<(), Status> {
+    match credential {
+        Some(super::emby::login_req::Credential::Password(_)) => Ok(()),
+        Some(super::emby::login_req::Credential::ApiKey(api_key)) => {
+            validate_required("api_key", api_key)
+        }
+        None => Err(Status::invalid_argument(
+            "exactly one of password or api_key must be provided",
+        )),
+    }
+}
+
 impl EmbyService {
     pub fn new() -> Result<Self, reqwest::Error> {
         Ok(Self {
@@ -37,19 +52,7 @@ impl Emby for EmbyService {
         let req = request.into_inner();
         validate_provider_grpc_host(&req.host)?;
         validate_required("username", &req.username)?;
-        match req.credential.as_ref() {
-            Some(super::emby::login_req::Credential::Password(password)) => {
-                validate_required("password", password)?;
-            }
-            Some(super::emby::login_req::Credential::ApiKey(api_key)) => {
-                validate_required("api_key", api_key)?;
-            }
-            None => {
-                return Err(Status::invalid_argument(
-                    "exactly one of password or api_key must be provided",
-                ));
-            }
-        }
+        validate_login_credential(req.credential.as_ref())?;
         let resp = self
             .service
             .login(req)
@@ -203,5 +206,25 @@ impl Emby for EmbyService {
             .await
             .map_err(|e| map_provider_error("report_playback_progress", &e))?;
         Ok(Response::new(resp))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn login_credential_allows_explicit_empty_password() {
+        let credential = super::super::emby::login_req::Credential::Password(String::new());
+
+        assert!(validate_login_credential(Some(&credential)).is_ok());
+    }
+
+    #[test]
+    fn login_credential_still_rejects_missing_credentials_and_empty_api_keys() {
+        assert!(validate_login_credential(None).is_err());
+
+        let credential = super::super::emby::login_req::Credential::ApiKey(String::new());
+        assert!(validate_login_credential(Some(&credential)).is_err());
     }
 }

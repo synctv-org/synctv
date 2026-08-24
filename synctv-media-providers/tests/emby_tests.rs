@@ -3,6 +3,8 @@
 //! Tests for item ID validation, API prefix detection, and HTTP API interactions using wiremock.
 
 #![allow(clippy::unwrap_used)]
+use synctv_media_providers::emby::{EmbyInterface, EmbyService};
+use synctv_media_providers::transport_dto::emby::{login_req, LoginReq, LoginResp};
 use synctv_media_providers::EmbyClient;
 use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -26,6 +28,63 @@ async fn mock_public_info(server: &MockServer, prefix: &str) {
         })))
         .mount(server)
         .await;
+}
+
+async fn login_through_service(password: &str) -> LoginResp {
+    let server = MockServer::start().await;
+    mock_public_info(&server, "/emby").await;
+
+    Mock::given(method("POST"))
+        .and(path("/emby/Users/authenticatebyname"))
+        .and(body_partial_json(serde_json::json!({
+            "Username": "guest",
+            "Pw": password,
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "AccessToken": "guest-token",
+            "User": {
+                "Id": "guest-id",
+                "Name": "guest"
+            }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/emby/Users/guest-id"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "Id": "guest-id",
+            "Name": "guest",
+            "ServerId": "server-1"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    EmbyService::with_client(reqwest::Client::new())
+        .login(LoginReq {
+            host: server.uri(),
+            username: "guest".to_string(),
+            credential: Some(login_req::Credential::Password(password.to_string())),
+        })
+        .await
+        .expect("Emby password login should succeed")
+}
+
+#[tokio::test]
+async fn test_emby_service_allows_passwordless_accounts() {
+    let response = login_through_service("").await;
+
+    assert_eq!(response.token, "guest-token");
+    assert_eq!(response.user_id, "guest-id");
+}
+
+#[tokio::test]
+async fn test_emby_service_preserves_password_whitespace() {
+    let response = login_through_service("  secret  ").await;
+
+    assert_eq!(response.token, "guest-token");
 }
 
 #[tokio::test]

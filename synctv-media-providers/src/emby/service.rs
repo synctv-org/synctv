@@ -152,15 +152,8 @@ impl EmbyInterface for EmbyService {
         }
         match request.credential {
             Some(crate::transport_dto::emby::login_req::Credential::Password(password)) => {
-                let password = password.trim();
-                if password.is_empty() {
-                    return Err(EmbyError::InvalidConfig(
-                        "password must not be empty".to_string(),
-                    ));
-                }
-
                 let mut client = self.anonymous_client(&request.host)?;
-                let (token, user_id) = client.login(username, password).await?;
+                let (token, user_id) = client.login(username, &password).await?;
                 let user_info = client.me().await?;
 
                 if !username_matches(&user_info.name, username) {

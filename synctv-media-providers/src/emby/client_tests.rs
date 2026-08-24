@@ -26,6 +26,28 @@ fn authenticated_client(server: &MockServer) -> Result<EmbyClient, EmbyError> {
     )
 }
 
+#[tokio::test]
+async fn get_item_maps_empty_result_to_not_found() -> TestResult {
+    let server = MockServer::start().await;
+    mount_api_prefix_probe(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/Users/user-1/Items"))
+        .and(query_param("Ids", "missing-item"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "Items": [],
+            "TotalRecordCount": 0
+        })))
+        .mount(&server)
+        .await;
+
+    let error = authenticated_client(&server)?
+        .get_item("missing-item")
+        .await
+        .expect_err("an empty item result must be reported as not found");
+    assert!(matches!(error, EmbyError::Api { code: 404, .. }));
+    Ok(())
+}
+
 fn items_response(item_type: &str) -> serde_json::Value {
     serde_json::json!({
         "Items": [{

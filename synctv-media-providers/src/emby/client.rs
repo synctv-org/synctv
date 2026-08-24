@@ -487,7 +487,7 @@ impl EmbyClient {
         let headers = self.build_headers()?;
         let response: ItemsResponse = self.send_get_json(&url, &headers).await?;
         response.items.into_iter().next().ok_or(EmbyError::Api {
-            code: 0,
+            code: 404,
             message: "Item not found".to_string(),
         })
     }

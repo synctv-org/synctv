@@ -46,3 +46,26 @@ fn test_custom_clients_injection() {
     assert_eq!(Arc::as_ptr(&bilibili), bilibili_ptr);
     assert_eq!(Arc::as_ptr(&emby), emby_ptr);
 }
+
+#[test]
+fn provider_not_found_errors_map_to_not_found() {
+    let api_error = synctv_media_providers::ProviderClientError::Api {
+        code: 404,
+        message: "missing".to_string(),
+    };
+    assert!(matches!(
+        ProviderError::from(api_error),
+        ProviderError::NotFound
+    ));
+
+    let http_error = synctv_media_providers::ProviderClientError::Http {
+        status: reqwest::StatusCode::NOT_FOUND,
+        url: "https://provider.example/items/missing".to_string(),
+        retry_after_secs: None,
+        body: String::new(),
+    };
+    assert!(matches!(
+        ProviderError::from(http_error),
+        ProviderError::NotFound
+    ));
+}

@@ -8,6 +8,7 @@ license.workspace = true
 [features]
 default = ["tls-aws-lc", "tls-webpki-roots"]
 web-ui = ["dep:synctv-web-ui", "synctv-web-ui/embed"]
+web-ui-dynamic = ["dep:synctv-web-ui"]
 openapi = [
     "synctv-api-common/openapi",
     "synctv-proto/openapi",
@@ -181,6 +182,7 @@ rayon.workspace = true
 workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
 synctv-api-common = { workspace = true, default-features = false, features = ["test-support"] }
 wiremock.workspace = true
 serde_urlencoded.workspace = true

@@ -25,7 +25,7 @@ pub(crate) mod room_extra;
 pub(crate) mod ticket;
 pub(crate) mod user;
 pub(crate) mod validation;
-#[cfg(feature = "web-ui")]
+#[cfg(any(feature = "web-ui", feature = "web-ui-dynamic"))]
 pub(crate) mod web_ui;
 pub(crate) mod webrtc;
 pub(crate) mod websocket;
@@ -39,7 +39,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
-#[cfg(not(feature = "web-ui"))]
+#[cfg(not(any(feature = "web-ui", feature = "web-ui-dynamic")))]
 use axum::{extract::State, response::Redirect};
 use futures::StreamExt;
 use std::sync::{Arc, LazyLock};
@@ -895,13 +895,13 @@ fn register_websocket_routes() -> Router<AppState> {
 
 fn register_all_routes() -> Router<AppState> {
     let mut router = Router::new();
-    #[cfg(feature = "web-ui")]
+    #[cfg(any(feature = "web-ui", feature = "web-ui-dynamic"))]
     {
         router = router
             .route("/", get(web_ui::index))
             .route("/{*webUiPath}", get(web_ui::fallback));
     }
-    #[cfg(not(feature = "web-ui"))]
+    #[cfg(not(any(feature = "web-ui", feature = "web-ui-dynamic")))]
     {
         router = router.route("/", get(redirect_to_project));
     }
@@ -1554,7 +1554,7 @@ fn register_all_routes() -> Router<AppState> {
     router
 }
 
-#[cfg(not(feature = "web-ui"))]
+#[cfg(not(any(feature = "web-ui", feature = "web-ui-dynamic")))]
 async fn redirect_to_project(State(state): State<AppState>) -> Redirect {
     Redirect::temporary(&state.runtime_settings.server.project_url)
 }

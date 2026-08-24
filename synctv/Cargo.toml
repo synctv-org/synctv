@@ -13,6 +13,7 @@ path = "src/main.rs"
 # OpenAPI is opt-in through the `openapi` feature below.
 default = ["tls-aws-lc", "tls-webpki-roots"]
 web-ui = ["synctv-api/web-ui"]
+web-ui-dynamic = ["synctv-api/web-ui-dynamic"]
 # Enable Kubernetes support (K8s DNS discovery, K8s Lease leader election).
 # Disable to reduce binary size for non-K8s deployments:
 #   cargo build --no-default-features

@@ -47,6 +47,18 @@ TCP 监听端口可设为 `0`。SyncTV 在启动初始化阶段直接建立监�
 
 开启公开 gRPC reflection。默认关闭；本地开发和受控内网调试可以显式开启，公网生产环境应保持关闭。
 
+### `server.web_ui_directory`
+
+默认值：未设置。
+
+设置后，启用了 `web-ui-dynamic` 或 `web-ui` feature 的服务会在每次请求时从该目录读取前端文件。替换目录中的构建产物后立即生效，无需重新构建或重启后端。动态文件使用 `Cache-Control: no-store`，缺少 `index.html` 时返回 `503`。相对路径基于服务进程的工作目录解析。
+
+```bash
+SYNCTV_SERVER_WEB_UI_DIRECTORY=/path/to/dist
+```
+
+动态目录优先于二进制中的内嵌资源。目录只应包含可信的前端构建产物。
+
 ### `server.grpc_max_message_size_bytes`
 
 默认值：`16777216`，即 16 MiB。

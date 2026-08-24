@@ -1,14 +1,13 @@
 # SyncTV Web UI assets
 
-This crate owns the acquisition, optional Flutter build, compression, manifest,
-and compile-time embedding of the SyncTV browser client. `synctv-api-http`
-only serves the generated asset table.
+This crate owns acquisition, optional Flutter builds, compression, manifests,
+and compile-time embedding of the SyncTV browser client. `synctv-api-http` can
+also serve a distribution directly from disk during development.
 
 ## Sources
 
 `web-ui.toml` reads prebuilt files from `dist/`. The directory is empty in Git
-apart from `.gitkeep`; place a Web distribution there before enabling the
-server's `web-ui` feature.
+apart from `.gitkeep`.
 
 `web-ui.production.toml` is the versioned production source used by CI. Its Git
 source pins both the requested revision and its expected full lowercase commit
@@ -57,6 +56,19 @@ fingerprint.
 
 ## Commands
 
+Run the server against a mutable local distribution:
+
+```bash
+make dev-serve
+```
+
+`dev-serve` enables the `web-ui-dynamic` feature and sets
+`SYNCTV_SERVER_WEB_UI_DIRECTORY` to `synctv-web-ui/dist`. Override the directory
+with `DEV_WEB_UI_DIR=/path/to/dist`. Files are read for every request, use
+`Cache-Control: no-store`, and can be replaced without rebuilding or restarting
+the Rust server. A relative runtime directory is resolved from the server's
+working directory.
+
 Build and export the Web distribution:
 
 ```bash
@@ -69,6 +81,11 @@ Build the release server with the assets embedded:
 ```bash
 make web-release-build
 ```
+
+The existing `web-ui` feature embeds the distribution for release deployment.
+Both features expose the same routes. When `server.web_ui_directory` is
+configured, its disk contents are authoritative and take precedence over
+embedded assets.
 
 The Web-only command exports to `target/web-ui-dist` by default. CI uploads the
 exported distribution once, then passes its authenticated artifact URL and

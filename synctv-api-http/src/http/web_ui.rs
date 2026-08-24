@@ -1,7 +1,12 @@
+use std::io::ErrorKind;
+use std::path::{Component, Path, PathBuf};
+
 use axum::body::Body;
+use axum::extract::State;
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 
+use synctv_api_common::AppState;
 use synctv_web_ui::{Asset, ASSETS, WEB_UI_AVAILABLE};
 
 const PROVIDER_VERIFICATION_PAGE: &str = "provider_verification.html";
@@ -16,14 +21,22 @@ const PROVIDER_VERIFICATION_CSP: &str = "default-src 'none'; \
     base-uri 'none'; \
     form-action 'none'";
 
-pub async fn index(headers: HeaderMap) -> Response {
-    serve_path("index.html", true, &headers)
+pub async fn index(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    serve_path(web_ui_directory(&state), "index.html", true, &headers).await
 }
 
-pub async fn fallback(uri: Uri, headers: HeaderMap) -> Response {
+pub async fn fallback(State(state): State<AppState>, uri: Uri, headers: HeaderMap) -> Response {
+    fallback_response(web_ui_directory(&state), &uri, &headers).await
+}
+
+fn web_ui_directory(state: &AppState) -> Option<&Path> {
+    state.runtime_settings.server.web_ui_directory.as_deref()
+}
+
+async fn fallback_response(directory: Option<&Path>, uri: &Uri, headers: &HeaderMap) -> Response {
     let path = uri.path().trim_start_matches('/');
     if path.is_empty() {
-        return serve_path("index.html", true, &headers);
+        return serve_path(directory, "index.html", true, headers).await;
     }
     if path.starts_with("api/")
         || path == "api"
@@ -34,11 +47,13 @@ pub async fn fallback(uri: Uri, headers: HeaderMap) -> Response {
     {
         return not_found();
     }
-    if path.contains("..") || path.contains('\\') {
+    if !safe_asset_path(path) {
         return not_found();
     }
-    if let Some(response) = find_asset(path).map(|asset| asset_response(asset, false, &headers)) {
-        return response;
+    match find_response(directory, path, false, headers).await {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(()) => return unavailable(),
     }
 
     let accepts_html = headers
@@ -52,23 +67,44 @@ pub async fn fallback(uri: Uri, headers: HeaderMap) -> Response {
             })
         });
     if !path.contains('.') && (accepts_html || headers.get(header::ACCEPT).is_none()) {
-        return serve_path("index.html", true, &headers);
+        return serve_path(directory, "index.html", true, headers).await;
     }
     not_found()
 }
 
-fn serve_path(path: &str, html_navigation: bool, headers: &HeaderMap) -> Response {
-    if !WEB_UI_AVAILABLE {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-            "The embedded SyncTV Web client is not available in this build.",
-        )
-            .into_response();
+async fn serve_path(
+    directory: Option<&Path>,
+    path: &str,
+    html_navigation: bool,
+    headers: &HeaderMap,
+) -> Response {
+    match find_response(directory, path, html_navigation, headers).await {
+        Ok(Some(response)) => response,
+        Ok(None) if directory.is_some() && path == "index.html" => unavailable(),
+        Ok(None) => not_found(),
+        Err(()) => unavailable(),
     }
-    find_asset(path).map_or_else(not_found, |asset| {
-        asset_response(asset, html_navigation, headers)
-    })
+}
+
+async fn find_response(
+    directory: Option<&Path>,
+    path: &str,
+    html_navigation: bool,
+    headers: &HeaderMap,
+) -> Result<Option<Response>, ()> {
+    if let Some(directory) = directory {
+        return disk_asset_response(directory, path, headers)
+            .await
+            .map(Some)
+            .or_else(|error| match error {
+                DiskAssetError::Missing => Ok(None),
+                DiskAssetError::Unavailable => Err(()),
+            });
+    }
+    if !WEB_UI_AVAILABLE {
+        return Err(());
+    }
+    Ok(find_asset(path).map(|asset| asset_response(asset, html_navigation, headers)))
 }
 
 fn find_asset(path: &str) -> Option<&'static Asset> {
@@ -116,6 +152,93 @@ fn asset_response(asset: &'static Asset, html_navigation: bool, headers: &Header
     apply_representation_headers(response.headers_mut(), representation);
     apply_asset_security_headers(asset.path, response.headers_mut());
     response
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DiskAssetError {
+    Missing,
+    Unavailable,
+}
+
+async fn disk_asset_response(
+    directory: &Path,
+    route: &str,
+    headers: &HeaderMap,
+) -> Result<Response, DiskAssetError> {
+    let path = resolve_disk_asset(directory, route).await?;
+    if accepted_encoding_qualities(headers).identity == 0 {
+        return Ok(StatusCode::NOT_ACCEPTABLE.into_response());
+    }
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|_| DiskAssetError::Unavailable)?;
+    let mut response = Response::new(Body::from(bytes));
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static(content_type(route)),
+    );
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    apply_asset_security_headers(route, response.headers_mut());
+    Ok(response)
+}
+
+async fn resolve_disk_asset(directory: &Path, route: &str) -> Result<PathBuf, DiskAssetError> {
+    if !safe_asset_path(route) {
+        return Err(DiskAssetError::Missing);
+    }
+    let root = tokio::fs::canonicalize(directory)
+        .await
+        .map_err(|_| DiskAssetError::Unavailable)?;
+    let candidate = tokio::fs::canonicalize(root.join(route))
+        .await
+        .map_err(|error| match error.kind() {
+            ErrorKind::NotFound => DiskAssetError::Missing,
+            _ => DiskAssetError::Unavailable,
+        })?;
+    if !candidate.starts_with(&root) {
+        return Err(DiskAssetError::Missing);
+    }
+    let metadata = tokio::fs::metadata(&candidate)
+        .await
+        .map_err(|_| DiskAssetError::Unavailable)?;
+    if !metadata.is_file() {
+        return Err(DiskAssetError::Missing);
+    }
+    Ok(candidate)
+}
+
+fn safe_asset_path(path: &str) -> bool {
+    !path.is_empty()
+        && !path.contains('\\')
+        && Path::new(path)
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
+}
+
+fn content_type(path: &str) -> &'static str {
+    match Path::new(path)
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "html" => "text/html; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "js" => "text/javascript; charset=utf-8",
+        "json" | "map" => "application/json; charset=utf-8",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "ico" => "image/x-icon",
+        "wasm" => "application/wasm",
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        _ => "application/octet-stream",
+    }
 }
 
 fn apply_asset_security_headers(path: &str, headers: &mut HeaderMap) {
@@ -350,9 +473,19 @@ fn not_found() -> Response {
     StatusCode::NOT_FOUND.into_response()
 }
 
+fn unavailable() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        "The SyncTV Web client is not available from the configured source.",
+    )
+        .into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use http_body_util::BodyExt;
 
     const ETAG: &str = "\"0123456789abcdef-42\"";
 
@@ -405,12 +538,17 @@ mod tests {
 
     #[tokio::test]
     async fn root_serves_spa_entrypoint_without_redirect() {
-        assert!(
-            WEB_UI_AVAILABLE,
-            "the web-ui feature must embed a SPA entrypoint"
-        );
+        let directory = tempfile::tempdir().expect("temporary Web UI directory");
+        std::fs::write(directory.path().join("index.html"), "dynamic index")
+            .expect("write SPA entrypoint");
 
-        let response = index(HeaderMap::new()).await;
+        let response = serve_path(
+            Some(directory.path()),
+            "index.html",
+            true,
+            &HeaderMap::new(),
+        )
+        .await;
 
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
@@ -419,29 +557,127 @@ mod tests {
         );
         assert_eq!(
             response.headers().get(header::CACHE_CONTROL),
-            Some(&HeaderValue::from_static("no-cache"))
+            Some(&HeaderValue::from_static("no-store"))
         );
         assert!(response.headers().get(header::LOCATION).is_none());
     }
 
     #[tokio::test]
     async fn oauth_callback_uses_the_spa_entrypoint() {
-        let response = fallback(
-            "/oauth2/callback"
-                .parse::<Uri>()
-                .expect("valid callback URI"),
-            HeaderMap::new(),
-        )
-        .await;
+        let directory = tempfile::tempdir().expect("temporary Web UI directory");
+        std::fs::write(directory.path().join("index.html"), "dynamic index")
+            .expect("write SPA entrypoint");
+        let uri = "/oauth2/callback"
+            .parse::<Uri>()
+            .expect("valid callback URI");
+        let response = fallback_response(Some(directory.path()), &uri, &HeaderMap::new()).await;
 
-        if !WEB_UI_AVAILABLE {
-            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-            return;
-        }
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
             response.headers().get(header::CACHE_CONTROL),
-            Some(&HeaderValue::from_static("no-cache"))
+            Some(&HeaderValue::from_static("no-store"))
+        );
+    }
+
+    #[tokio::test]
+    async fn disk_assets_are_reloaded_after_replacement() {
+        let directory = tempfile::tempdir().expect("temporary Web UI directory");
+        let asset = directory.path().join("main.dart.js");
+        std::fs::write(&asset, "first build").expect("write first build");
+
+        let first = serve_path(
+            Some(directory.path()),
+            "main.dart.js",
+            false,
+            &HeaderMap::new(),
+        )
+        .await;
+        let first = first
+            .into_body()
+            .collect()
+            .await
+            .expect("read first response")
+            .to_bytes();
+        std::fs::write(&asset, "second build").expect("write second build");
+        let second = serve_path(
+            Some(directory.path()),
+            "main.dart.js",
+            false,
+            &HeaderMap::new(),
+        )
+        .await;
+        let second = second
+            .into_body()
+            .collect()
+            .await
+            .expect("read second response")
+            .to_bytes();
+
+        assert_eq!(first.as_ref(), b"first build");
+        assert_eq!(second.as_ref(), b"second build");
+    }
+
+    #[tokio::test]
+    async fn disk_assets_honor_identity_encoding_exclusion() {
+        let directory = tempfile::tempdir().expect("temporary Web UI directory");
+        std::fs::write(directory.path().join("main.dart.js"), "dynamic build")
+            .expect("write dynamic build");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::ACCEPT_ENCODING,
+            HeaderValue::from_static("br;q=0, gzip;q=0, identity;q=0"),
+        );
+
+        let response = serve_path(Some(directory.path()), "main.dart.js", false, &headers).await;
+
+        assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE);
+    }
+
+    #[tokio::test]
+    async fn unavailable_or_incomplete_disk_source_does_not_use_embedded_assets() {
+        let directory = tempfile::tempdir().expect("temporary Web UI directory");
+        let missing = directory.path().join("missing");
+
+        let missing_directory =
+            serve_path(Some(&missing), "index.html", true, &HeaderMap::new()).await;
+        let missing_entrypoint = serve_path(
+            Some(directory.path()),
+            "index.html",
+            true,
+            &HeaderMap::new(),
+        )
+        .await;
+
+        assert_eq!(missing_directory.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(missing_entrypoint.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn disk_source_rejects_path_traversal() {
+        let directory = tempfile::tempdir().expect("temporary Web UI directory");
+
+        assert_eq!(
+            resolve_disk_asset(directory.path(), "../secret").await,
+            Err(DiskAssetError::Missing)
+        );
+        assert_eq!(
+            resolve_disk_asset(directory.path(), "nested\\secret").await,
+            Err(DiskAssetError::Missing)
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn disk_source_rejects_symlinks_outside_the_root() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().expect("temporary Web UI directory");
+        let outside = tempfile::NamedTempFile::new().expect("outside file");
+        symlink(outside.path(), directory.path().join("escaped.js")).expect("create symlink");
+
+        assert_eq!(
+            resolve_disk_asset(directory.path(), "escaped.js").await,
+            Err(DiskAssetError::Missing)
         );
     }
 
@@ -553,11 +789,13 @@ mod tests {
             .iter()
             .find(|asset| asset.brotli.is_some() && asset.gzip.is_some())
             .expect("the Web UI build should contain a compressible asset");
-        let uri = format!("/{}", asset.path).parse::<Uri>().unwrap();
+        let uri = format!("/{}", asset.path)
+            .parse::<Uri>()
+            .expect("embedded asset path should form a valid URI");
 
         let mut brotli_headers = HeaderMap::new();
         brotli_headers.insert(header::ACCEPT_ENCODING, HeaderValue::from_static("br"));
-        let brotli_response = fallback(uri.clone(), brotli_headers).await;
+        let brotli_response = fallback_response(None, &uri, &brotli_headers).await;
         assert_eq!(brotli_response.status(), StatusCode::OK);
         assert_eq!(
             brotli_response.headers().get(header::CONTENT_ENCODING),
@@ -575,7 +813,7 @@ mod tests {
 
         let mut gzip_headers = HeaderMap::new();
         gzip_headers.insert(header::ACCEPT_ENCODING, HeaderValue::from_static("gzip"));
-        let gzip_response = fallback(uri.clone(), gzip_headers).await;
+        let gzip_response = fallback_response(None, &uri, &gzip_headers).await;
         assert_eq!(gzip_response.status(), StatusCode::OK);
         assert_eq!(
             gzip_response.headers().get(header::CONTENT_ENCODING),
@@ -589,7 +827,7 @@ mod tests {
         let mut revalidation_headers = HeaderMap::new();
         revalidation_headers.insert(header::ACCEPT_ENCODING, HeaderValue::from_static("br"));
         revalidation_headers.insert(header::IF_NONE_MATCH, brotli_etag.clone());
-        let revalidation_response = fallback(uri.clone(), revalidation_headers).await;
+        let revalidation_response = fallback_response(None, &uri, &revalidation_headers).await;
         assert_eq!(revalidation_response.status(), StatusCode::NOT_MODIFIED);
         assert_eq!(
             revalidation_response
@@ -607,7 +845,7 @@ mod tests {
             header::ACCEPT_ENCODING,
             HeaderValue::from_static("br;q=0, gzip;q=0, identity;q=0"),
         );
-        let rejected_response = fallback(uri, rejected_headers).await;
+        let rejected_response = fallback_response(None, &uri, &rejected_headers).await;
         assert_eq!(rejected_response.status(), StatusCode::NOT_ACCEPTABLE);
     }
 }

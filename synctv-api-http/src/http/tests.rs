@@ -22,7 +22,7 @@ use tower::ServiceExt;
 
 type TestResult<T = ()> = anyhow::Result<T>;
 
-#[cfg(feature = "web-ui")]
+#[cfg(any(feature = "web-ui", feature = "web-ui-dynamic"))]
 #[test]
 fn web_ui_routes_can_merge_with_a_grpc_style_fallback() {
     let grpc_router = Router::<super::AppState>::new().fallback(StatusCode::NOT_FOUND);
@@ -1702,7 +1702,7 @@ async fn test_playback_patch_route_is_reachable_via_project_router() -> TestResu
 
 #[tokio::test]
 #[ignore = "Requires Docker-backed PostgreSQL"]
-#[cfg(not(feature = "web-ui"))]
+#[cfg(not(any(feature = "web-ui", feature = "web-ui-dynamic")))]
 async fn test_api_root_redirects_to_configured_project_url() -> TestResult {
     let mut state = test_app_state();
     Arc::make_mut(&mut Arc::make_mut(&mut state.router_options).runtime_settings)

@@ -34,7 +34,7 @@ OPAQUE、Provider credential 和 email outbox 使用各自的长期 secret。备
 
 | 检查项 | 验收标准 |
 | --- | --- |
-| HTTP 入口 | 反向代理或 Ingress 支持 WebSocket upgrade。 |
+| HTTP 入口 | [Nginx 反向代理](../nginx/)或 Ingress 支持 WebSocket Upgrade；Nginx 代理缓存和响应缓冲已关闭。 |
 | CORS | 前端和 API 不同 origin 时，`server.cors_allowed_origins` 只包含真实 origin。 |
 | 可信代理 | `server.trusted_proxies` 只包含你控制的代理网段。 |
 | gRPC | 对外暴露 gRPC 时，HTTP 和 gRPC 使用独立 Service/Ingress。 |

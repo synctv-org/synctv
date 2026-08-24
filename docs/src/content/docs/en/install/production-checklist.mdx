@@ -34,7 +34,7 @@ OPAQUE, Provider credentials, and the email outbox use separate long-lived secre
 
 | Check | Acceptance criteria |
 | --- | --- |
-| HTTP entrypoint | Reverse proxy or Ingress supports WebSocket upgrade. |
+| HTTP entrypoint | The [Nginx reverse proxy](../nginx/) or Ingress supports WebSocket upgrades; Nginx proxy caching and response buffering are disabled. |
 | CORS | When frontend and API use different origins, `server.cors_allowed_origins` contains only real origins. |
 | Trusted proxies | `server.trusted_proxies` contains only proxy networks you control. |
 | gRPC | Public gRPC uses separate Service/Ingress resources from HTTP. |

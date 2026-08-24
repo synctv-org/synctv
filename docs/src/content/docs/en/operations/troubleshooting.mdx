@@ -57,6 +57,7 @@ Start with the first error. Later errors are often cascading failures.
 | WebSocket 401/403 | Expired token/ticket, missing room membership, or rejected origin | Request a new ticket and verify membership/origin |
 | OAuth2 callback/state error | Redirect mismatch or multi-replica deployment without shared Redis | Match provider registration and configure Redis for replicas |
 | WebAuthn/passkey failure | `rp_origin` does not match the real HTTPS origin | Fix `webauthn.rp_origin` and `webauthn.rp_id` |
+| Slow video startup or steadily increasing live-stream latency | Nginx is caching or buffering upstream responses | Disable `proxy_cache` and `proxy_buffering` as shown in [Nginx Reverse Proxy](../../install/nginx/) |
 | Range seek or proxy playback failure | Provider headers are incomplete or upstream lacks Range | Check Provider headers and upstream `Accept-Ranges` |
 | Intermittent HLS 404 in multi-replica mode | Publisher node unreachable or HLS storage model mismatch | Use publisher-node proxy, `shared_file`, or S3 |
 

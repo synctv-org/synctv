@@ -57,6 +57,7 @@ kubectl -n synctv logs deploy/synctv -f
 | WebSocket 401/403 | token/ticket 失效、不是房间成员或 origin 被拒绝 | 重新申请 ticket，确认成员和 origin |
 | OAuth2 callback/state 错误 | redirect 不一致或多副本没有共享 Redis | 对齐 provider 注册值，多副本配置 Redis |
 | WebAuthn/passkey 失败 | `rp_origin` 和真实 HTTPS origin 不一致 | 修正 `webauthn.rp_origin` 和 `webauthn.rp_id` |
+| 视频首帧很慢或实时流延迟持续增加 | Nginx 正在缓存或缓冲后端响应 | 按 [Nginx 反向代理](../../install/nginx/)关闭 `proxy_cache` 和 `proxy_buffering` |
 | Range seek 或代理播放失败 | Provider header 不完整或上游不支持 Range | 检查 Provider header 和上游 `Accept-Ranges` |
 | 多副本 HLS 间歇 404 | publisher 节点不可达或 HLS 存储模型不一致 | 使用 publisher-node proxy、`shared_file` 或 S3 |
 

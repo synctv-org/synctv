@@ -1,0 +1,104 @@
+---
+title: Nginx Reverse Proxy
+description: Proxy SyncTV HTTP APIs, Web UI, media responses, and WebSocket through Nginx without proxy caching or response buffering.
+---
+
+This configuration limits Nginx to TLS termination, HTTP forwarding, and WebSocket upgrades. Every HTTP response, including APIs, Web UI, HLS, and media proxy responses, flows directly from SyncTV to the client. Nginx does not add a second response cache or buffer upstream responses.
+
+The example assumes:
+
+- SyncTV listens on `127.0.0.1:8080`.
+- The public hostname is `synctv.example.com`.
+- TLS certificates exist under `/etc/nginx/tls/`.
+
+When Nginx runs in a container, replace the upstream address with the SyncTV service name on the same container network, such as `synctv:8080`.
+
+## Configuration
+
+```nginx
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+upstream synctv_http {
+    server 127.0.0.1:8080;
+    keepalive 32;
+}
+
+server {
+    listen 80;
+    server_name synctv.example.com;
+
+    return 308 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name synctv.example.com;
+
+    ssl_certificate     /etc/nginx/tls/fullchain.pem;
+    ssl_certificate_key /etc/nginx/tls/privkey.pem;
+
+    # SyncTV owns response caching. Nginx must stream upstream responses
+    # immediately and must not create a second cache layer.
+    proxy_cache off;
+    proxy_buffering off;
+
+    # Long-lived media responses must not be terminated by the proxy while
+    # SyncTV is still serving data.
+    proxy_read_timeout 24h;
+    proxy_send_timeout 24h;
+
+    location ^~ /ws/ {
+        proxy_pass http://synctv_http;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade           $http_upgrade;
+        proxy_set_header Connection        $connection_upgrade;
+    }
+
+    location / {
+        proxy_pass http://synctv_http;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection        "";
+    }
+}
+```
+
+`proxy_cache off` overrides proxy caching inherited from the Nginx `http` block or another parent configuration. `proxy_buffering off` forwards bytes as Nginx receives them, preventing live streams and large media responses from entering Nginx response buffers or temporary files first.
+
+Do not hide or replace the `Cache-Control` header returned by SyncTV. That header still controls browser and client caching. The configuration above disables only Nginx's own proxy cache.
+
+`proxy_request_buffering` controls client request bodies, not upstream responses. Keep its default value to avoid tying up SyncTV connections for slow uploads. Set `proxy_request_buffering off` separately only when a deployment explicitly requires streaming large request bodies into SyncTV.
+
+## Trusted Proxies
+
+When Nginx and SyncTV run on the same host, trust only loopback addresses:
+
+```yaml
+server:
+  trusted_proxies:
+    - "127.0.0.1/32"
+    - "::1/128"
+```
+
+For a container network, replace these entries with the actual Nginx container subnet. Do not configure `0.0.0.0/0` or `::/0`.
+
+## Validate and Reload
+
+```bash
+nginx -t
+systemctl reload nginx
+```
+
+After reloading, verify sign-in, room WebSocket connections, HLS playback, low-latency media playback, and seeking in large files. Media responses should reach the client as soon as the backend starts sending them.

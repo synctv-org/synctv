@@ -132,6 +132,7 @@ export default defineConfig({
             { label: '用户支持', translations: { en: 'User Support' }, slug: 'support' },
             { label: '选择部署方式', translations: { en: 'Choose a Deployment' }, slug: 'install/choose-path' },
             { label: 'Docker Compose 安装', translations: { en: 'Install with Docker Compose' }, slug: 'install/docker-compose' },
+            { label: 'Nginx 反向代理', translations: { en: 'Nginx Reverse Proxy' }, slug: 'install/nginx' },
             { label: 'Helm 部署', translations: { en: 'Helm Deployment' }, slug: 'install/helm' },
             { label: '生产部署清单', translations: { en: 'Production Checklist' }, slug: 'install/production-checklist' },
           ],

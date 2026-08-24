@@ -1,0 +1,104 @@
+---
+title: Nginx 反向代理
+description: 使用 Nginx 代理 SyncTV HTTP API、Web UI、媒体响应和 WebSocket，并关闭代理缓存与响应缓冲。
+---
+
+这份配置让 Nginx 只负责 TLS 终止、HTTP 转发和 WebSocket Upgrade。所有 HTTP 响应，包括 API、Web UI、HLS 和媒体代理，都直接从 SyncTV 流向客户端。Nginx 不建立第二层响应缓存，也不缓冲后端响应。
+
+示例假设：
+
+- SyncTV 监听 `127.0.0.1:8080`。
+- 公网域名是 `synctv.example.com`。
+- TLS 证书已经存在于 `/etc/nginx/tls/`。
+
+Nginx 在容器中运行时，将 upstream 地址改为同一容器网络中的 SyncTV 服务名，例如 `synctv:8080`。
+
+## 配置
+
+```nginx
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+upstream synctv_http {
+    server 127.0.0.1:8080;
+    keepalive 32;
+}
+
+server {
+    listen 80;
+    server_name synctv.example.com;
+
+    return 308 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name synctv.example.com;
+
+    ssl_certificate     /etc/nginx/tls/fullchain.pem;
+    ssl_certificate_key /etc/nginx/tls/privkey.pem;
+
+    # SyncTV owns response caching. Nginx must stream upstream responses
+    # immediately and must not create a second cache layer.
+    proxy_cache off;
+    proxy_buffering off;
+
+    # Long-lived media responses must not be terminated by the proxy while
+    # SyncTV is still serving data.
+    proxy_read_timeout 24h;
+    proxy_send_timeout 24h;
+
+    location ^~ /ws/ {
+        proxy_pass http://synctv_http;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade           $http_upgrade;
+        proxy_set_header Connection        $connection_upgrade;
+    }
+
+    location / {
+        proxy_pass http://synctv_http;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection        "";
+    }
+}
+```
+
+`proxy_cache off` 会覆盖从 Nginx `http` 或其他上层配置继承的代理缓存。`proxy_buffering off` 让 Nginx 收到后端数据后立即向客户端发送，避免实时流和大媒体响应先进入 Nginx 内存缓冲区或临时文件。
+
+不要隐藏或重写 SyncTV 返回的 `Cache-Control`。该响应头仍负责浏览器和客户端缓存行为；上面的配置只关闭 Nginx 自身的代理缓存。
+
+`proxy_request_buffering` 控制客户端请求体，不控制后端响应。保持其默认值可以避免慢速上传长时间占用 SyncTV 连接。只有明确需要把大请求体边接收边传给 SyncTV 时，才单独设置 `proxy_request_buffering off`。
+
+## 可信代理
+
+Nginx 与 SyncTV 在同一主机时，只信任 loopback 地址：
+
+```yaml
+server:
+  trusted_proxies:
+    - "127.0.0.1/32"
+    - "::1/128"
+```
+
+使用容器网络时，将这些值替换为实际 Nginx 容器网段。不要配置 `0.0.0.0/0` 或 `::/0`。
+
+## 检查并重载
+
+```bash
+nginx -t
+systemctl reload nginx
+```
+
+重载后验证登录、WebSocket 房间连接、HLS 播放、低延迟媒体播放和大文件拖动。媒体响应应该在后端开始发送后立即到达客户端。

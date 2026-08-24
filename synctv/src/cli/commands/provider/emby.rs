@@ -27,7 +27,7 @@ pub enum ProviderEmbySubcommand {
 #[derive(Debug, Args)]
 #[command(group(
     ArgGroup::new("emby_login_credential")
-        .args(["password", "api_key"])
+        .args(["password", "no_password", "api_key"])
         .required(true)
         .multiple(false)
 ))]
@@ -43,11 +43,15 @@ pub struct ProviderEmbyLoginArgs {
     #[arg(long)]
     pub account_username: String,
 
-    /// Emby/Jellyfin account password. Conflicts with --api-key.
+    /// Emby/Jellyfin account password. Conflicts with --no-password and --api-key.
     #[arg(long, group = "emby_login_credential")]
     pub password: Option<String>,
 
-    /// Emby/Jellyfin API key. Conflicts with --password.
+    /// Authenticate an Emby/Jellyfin account that has no password.
+    #[arg(long, group = "emby_login_credential")]
+    pub no_password: bool,
+
+    /// Emby/Jellyfin API key. Conflicts with --password and --no-password.
     #[arg(long, group = "emby_login_credential")]
     pub api_key: Option<String>,
 
@@ -63,12 +67,17 @@ pub(in crate::cli) fn emby_login_credential(
             synctv_proto::providers::emby::login_request::Credential::Password(password.clone()),
         );
     }
+    if args.no_password {
+        return Ok(
+            synctv_proto::providers::emby::login_request::Credential::Password(String::new()),
+        );
+    }
     if let Some(api_key) = &args.api_key {
         return Ok(
             synctv_proto::providers::emby::login_request::Credential::ApiKey(api_key.clone()),
         );
     }
-    bail!("Emby login requires --password or --api-key")
+    bail!("Emby login requires --password, --no-password, or --api-key")
 }
 
 #[derive(Debug, Args)]

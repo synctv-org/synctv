@@ -22,7 +22,7 @@ message LoginReq {
   string host = 1;
   string username = 2;
   oneof credential {
-    string password = 3;
+    string password = 3; // Empty explicitly requests passwordless account authentication.
     string api_key = 4;
   }
 }

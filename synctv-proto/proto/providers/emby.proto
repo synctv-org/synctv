@@ -18,7 +18,7 @@ message LoginRequest {
   string host = 1 [(buf.validate.field).string.min_len = 1];
   string username = 2 [(buf.validate.field).string.min_len = 1]; // Target Emby username to bind and validate
   oneof credential {
-    string password = 3; // SECURITY: Plaintext password - requires TLS in transit.
+    string password = 3; // Plaintext password; empty explicitly selects passwordless login. Requires TLS in transit.
     string api_key = 4; // SECURITY: Plaintext credential - requires TLS in transit.
   }
   string instance_name = 5; // Optional provider instance name

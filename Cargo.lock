@@ -7859,6 +7859,7 @@ dependencies = [
  "synctv-proxy",
  "synctv-realtime",
  "synctv-web-ui",
+ "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tokio-stream",

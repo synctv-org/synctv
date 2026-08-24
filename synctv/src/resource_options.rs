@@ -625,6 +625,7 @@ pub fn api_runtime_settings(config: &AppConfig) -> ApiRuntimeSettings {
         server: ApiServerSettings {
             bind_address: config.api_address(),
             project_url: config.server.project_url.clone(),
+            web_ui_directory: config.server.web_ui_directory.clone(),
             apple_app_ids: config.webauthn.apple_app_ids.clone(),
             android_apps: config
                 .webauthn

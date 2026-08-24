@@ -510,6 +510,14 @@ impl AppConfig {
         if let Err(error) = validate_project_url(&self.server.project_url) {
             errors.push(error);
         }
+        if self
+            .server
+            .web_ui_directory
+            .as_ref()
+            .is_some_and(|path| path.as_os_str().is_empty())
+        {
+            errors.push("server.web_ui_directory must not be empty when configured".to_string());
+        }
 
         if self.metrics.enabled {
             match self.metrics.auth.mode {
@@ -1417,6 +1425,18 @@ mod tests {
         for value in ["", "synctv-org/synctv", "file:///tmp/synctv", "https://"] {
             assert!(validate_project_url(value).is_err(), "value: {value}");
         }
+    }
+
+    #[test]
+    fn web_ui_directory_rejects_an_empty_path() {
+        let mut config = AppConfig::default();
+        config.server.web_ui_directory = Some(std::path::PathBuf::new());
+
+        let errors = config.validate().expect_err("empty Web UI path must fail");
+
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("server.web_ui_directory must not be empty")));
     }
 
     #[test]

@@ -25,6 +25,7 @@ impl Default for AccessLogSettings {
 pub struct ApiServerSettings {
     pub bind_address: String,
     pub project_url: String,
+    pub web_ui_directory: Option<std::path::PathBuf>,
     pub apple_app_ids: Vec<String>,
     pub android_apps: Vec<AndroidAppAssociationSettings>,
     pub trusted_proxies: Vec<String>,
@@ -39,6 +40,7 @@ impl Default for ApiServerSettings {
         Self {
             bind_address: "0.0.0.0:8080".to_string(),
             project_url: DEFAULT_PROJECT_URL.to_string(),
+            web_ui_directory: None,
             apple_app_ids: Vec::new(),
             android_apps: Vec::new(),
             trusted_proxies: Vec::new(),

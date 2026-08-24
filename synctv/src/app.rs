@@ -2059,6 +2059,7 @@ mod tests {
                 host: "127.0.0.1".to_string(),
                 port: 8080,
                 project_url: synctv_api::DEFAULT_PROJECT_URL.to_string(),
+                web_ui_directory: None,
                 enable_reflection: false,
                 grpc_max_message_size_bytes: 16 * 1024 * 1024,
                 grpc_compression_enabled: true,

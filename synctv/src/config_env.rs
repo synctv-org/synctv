@@ -413,6 +413,9 @@ pub(crate) fn apply_env_overrides_with(
 
     env_override_str("SYNCTV_SERVER_HOST", &mut config.server.host);
     env_override_parse("SYNCTV_SERVER_PORT", &mut config.server.port)?;
+    if let Some(path) = get_env("SYNCTV_SERVER_WEB_UI_DIRECTORY") {
+        config.server.web_ui_directory = Some(PathBuf::from(path));
+    }
     env_override_bool(
         "SYNCTV_SERVER_ENABLE_REFLECTION",
         &mut config.server.enable_reflection,
@@ -1365,6 +1368,20 @@ mod tests {
 
     const EMAIL_OUTBOX_KEY: &str =
         "5757575757575757575757575757575757575757575757575757575757575757";
+
+    #[test]
+    fn web_ui_directory_accepts_environment_override() {
+        let mut config = Config::default();
+        let env = HashMap::from([("SYNCTV_SERVER_WEB_UI_DIRECTORY", "web-ui/dist".to_string())]);
+
+        apply_env_overrides_with(&mut config, &|name| env.get(name).cloned())
+            .expect("environment override should apply");
+
+        assert_eq!(
+            config.server.web_ui_directory,
+            Some(PathBuf::from("web-ui/dist"))
+        );
+    }
 
     #[test]
     fn email_outbox_key_accepts_direct_environment_override() {

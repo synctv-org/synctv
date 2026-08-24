@@ -12,6 +12,7 @@ Most variables map directly from the configuration path:
 | Configuration field | Environment variable |
 | --- | --- |
 | `server.host` | `SYNCTV_SERVER_HOST` |
+| `server.web_ui_directory` | `SYNCTV_SERVER_WEB_UI_DIRECTORY` |
 | `database.url` | `SYNCTV_DATABASE_URL` |
 | `security.opaque_server_setup_secret` | `SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET` |
 | `proxy_slice_cache.enabled` | `SYNCTV_PROXY_SLICE_CACHE_ENABLED` |
@@ -334,6 +335,7 @@ SYNCTV_FILE_STORAGE_BACKENDS='{"s3_public":{"type":"s3","endpoint":"https://s3.e
 | `SYNCTV_SERVER_PORT` | `server.port` |
 | `SYNCTV_SERVER_SHUTDOWN_DRAIN_TIMEOUT_SECONDS` | `server.shutdown_drain_timeout_seconds` |
 | `SYNCTV_SERVER_TRUSTED_PROXIES` | `server.trusted_proxies` |
+| `SYNCTV_SERVER_WEB_UI_DIRECTORY` | `server.web_ui_directory` |
 | `SYNCTV_TIME_TIMEZONE` | `time.timezone` |
 | `SYNCTV_TIME_CLOCK_SYNC_ENABLED` | `time.clock_sync.enabled` |
 | `SYNCTV_TIME_CLOCK_SYNC_PROVIDER_TYPE` | `time.clock_sync.provider.type` |

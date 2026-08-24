@@ -49,6 +49,18 @@ Default: `false`.
 
 Enables public gRPC reflection. It is disabled by default; enable it explicitly for local development or controlled internal debugging, and keep it disabled on public production endpoints.
 
+### `server.web_ui_directory`
+
+Default: unset.
+
+When set on a server built with the `web-ui-dynamic` or `web-ui` feature, SyncTV reads frontend files from this directory on every request. Replacing the distribution takes effect without rebuilding or restarting the backend. Dynamic files use `Cache-Control: no-store`, and a missing `index.html` returns `503`. Relative paths resolve from the server process working directory.
+
+```bash
+SYNCTV_SERVER_WEB_UI_DIRECTORY=/path/to/dist
+```
+
+The dynamic directory takes precedence over assets embedded in the binary. Only place trusted frontend build output in this directory.
+
 ### `server.grpc_max_message_size_bytes`
 
 Default: `16777216`, which is 16 MiB.

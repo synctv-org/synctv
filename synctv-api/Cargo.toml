@@ -8,6 +8,7 @@ license.workspace = true
 [features]
 default = ["tls-aws-lc", "tls-webpki-roots"]
 web-ui = ["synctv-api-http/web-ui"]
+web-ui-dynamic = ["synctv-api-http/web-ui-dynamic"]
 openapi = ["synctv-api-common/openapi", "synctv-api-http/openapi"]
 k8s = [
     "synctv-api-common/k8s",

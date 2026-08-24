@@ -48,7 +48,11 @@ pub(crate) async fn find_hls_generation_state(
             .get(&stream_key)
             .map(|entry| Arc::clone(entry.value()))
         {
-            if !state.read().playlist.segments.is_empty() {
+            let ready = {
+                let playlist = &state.read().playlist;
+                !playlist.segments.is_empty() || playlist.is_ended()
+            };
+            if ready {
                 return Some(state);
             }
             if !wait_for_ready {

@@ -80,7 +80,7 @@ fn runtime_settings_patch_from_admin_proto_with_oauth2(
             .map(|patch| oauth2_settings_patch_from_admin_proto(patch, current_oauth2))
             .transpose()?,
         rtmp: settings.rtmp.map(|patch| RtmpSettingsPatch {
-            custom_publish_host: patch.custom_publish_host.map(OptionalConfigPatch::Set),
+            advertise_address: patch.advertise_address.map(OptionalConfigPatch::Set),
             ts_disguised_as_png: patch.ts_disguised_as_png,
         }),
         email: settings.email.map(email_settings_patch_from_admin_proto),
@@ -217,8 +217,8 @@ pub fn runtime_settings_replacement_patch_from_admin_proto(
             allowed_redirect_urls: Some(oauth2.allowed_redirect_urls),
         }),
         rtmp: Some(RtmpSettingsPatch {
-            custom_publish_host: Some(match rtmp.custom_publish_host {
-                Some(host) => OptionalConfigPatch::Set(host),
+            advertise_address: Some(match rtmp.advertise_address {
+                Some(address) => OptionalConfigPatch::Set(address),
                 None => OptionalConfigPatch::Clear,
             }),
             ts_disguised_as_png: Some(rtmp.ts_disguised_as_png),
@@ -365,7 +365,7 @@ fn select_runtime_settings_patch(
             "oauth2.allowedRedirectUrls" | "oauth2.allowed_redirect_urls" => {
                 select_required!(oauth2, allowed_redirect_urls, path);
             }
-            "rtmp.custom_publish_host" => select_optional!(rtmp, custom_publish_host),
+            "rtmp.advertise_address" => select_optional!(rtmp, advertise_address),
             "rtmp.ts_disguised_as_png" => {
                 select_required!(rtmp, ts_disguised_as_png, path);
             }

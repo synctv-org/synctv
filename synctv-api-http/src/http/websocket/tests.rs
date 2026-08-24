@@ -277,6 +277,40 @@ fn test_websocket_json_uses_integer_enum_values() -> TestResult {
 }
 
 #[test]
+fn test_websocket_json_ignores_fields_from_newer_clients() -> TestResult {
+    let message = decode_client_message_json(
+        r#"{
+            "observeResource": {
+                "observeId": "playback",
+                "playback": {
+                    "playbackClientProfile": {
+                        "profileVersion": 2,
+                        "supportsP2pMediaLoader": true
+                    }
+                }
+            }
+        }"#,
+    )
+    .map_err(test_error)?;
+
+    let Some(synctv_proto::client::client_message::Message::ObserveResource(observe)) =
+        message.message
+    else {
+        return Err(test_error("expected observe resource message"));
+    };
+    let Some(synctv_proto::client::observe_resource::Resource::Playback(playback)) =
+        observe.resource
+    else {
+        return Err(test_error("expected playback observation"));
+    };
+    let Some(profile) = playback.playback_client_profile else {
+        return Err(test_error("expected playback client profile"));
+    };
+    assert_eq!(profile.profile_version, 2);
+    Ok(())
+}
+
+#[test]
 fn test_notification_requires_state_resync() {
     let message = ServerMessage {
         message: Some(synctv_proto::client::server_message::Message::Notification(

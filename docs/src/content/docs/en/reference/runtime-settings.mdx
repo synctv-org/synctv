@@ -159,10 +159,10 @@ User-level 2FA and notification preferences are user preferences. Provider insta
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `rtmp.customPublishHost` | string/null | `null` | Optional custom publish host returned to stream publishers |
+| `rtmp.advertiseAddress` | string/null | `null` | Public RTMP or RTMPS address containing only the scheme, host, and optional port; the server appends the room path |
 | `rtmp.tsDisguisedAsPng` | bool | `false` | Disguise TS segments as PNG paths or responses |
 
-Set it with `{"settings":{"rtmp":{"customPublishHost":"rtmp://live.example.com"}},"updateMask":"rtmp.customPublishHost"}`. Clear it with `{"settings":{"rtmp":{}},"updateMask":"rtmp.customPublishHost"}`.
+Set it with `{"settings":{"rtmp":{"advertiseAddress":"rtmps://live.example.com:443"}},"updateMask":"rtmp.advertiseAddress"}`. Clear it with `{"settings":{"rtmp":{}},"updateMask":"rtmp.advertiseAddress"}`. The address cannot contain credentials, a path, a query, or a fragment.
 
 ### Email
 

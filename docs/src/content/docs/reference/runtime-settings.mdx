@@ -159,10 +159,10 @@ Apple 原生授权使用 `native=true`，省略 `redirectUrl`，由 iOS 和 Mac 
 
 | Key | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `rtmp.customPublishHost` | string/null | `null` | 可选的自定义发布 host |
+| `rtmp.advertiseAddress` | string/null | `null` | 对外展示的 RTMP 或 RTMPS 地址，仅包含协议、主机和可选端口；服务器会追加房间业务路径 |
 | `rtmp.tsDisguisedAsPng` | bool | `false` | 是否把 TS 片段伪装为 PNG 路径或响应形式 |
 
-设置请求使用 `{"settings":{"rtmp":{"customPublishHost":"rtmp://live.example.com"}},"updateMask":"rtmp.customPublishHost"}`。清除请求使用 `{"settings":{"rtmp":{}},"updateMask":"rtmp.customPublishHost"}`。
+设置请求使用 `{"settings":{"rtmp":{"advertiseAddress":"rtmps://live.example.com:443"}},"updateMask":"rtmp.advertiseAddress"}`。清除请求使用 `{"settings":{"rtmp":{}},"updateMask":"rtmp.advertiseAddress"}`。该地址不能包含凭据、路径、查询参数或片段。
 
 ### Email
 

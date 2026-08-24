@@ -122,7 +122,7 @@ fn test_runtime_settings() -> synctv_core::service::RuntimeSettings {
             allowed_redirect_urls: Vec::new(),
         },
         rtmp: synctv_core::service::RtmpRuntimeSettings {
-            custom_publish_host: None,
+            advertise_address: None,
             ts_disguised_as_png: false,
         },
         email: synctv_core::service::EmailRuntimeSettings {
@@ -2955,28 +2955,28 @@ fn test_runtime_settings_snapshot_replacement_round_trips_all_sections() -> Test
 }
 
 #[test]
-fn test_optional_rtmp_publish_host_supports_set_and_clear() -> TestResult {
+fn test_optional_rtmp_advertise_address_supports_set_and_clear() -> TestResult {
     let current = test_runtime_settings();
     let set_patch = crate::admin_settings_mapping::runtime_settings_patch_from_admin_proto(
         runtime_settings_request(
             synctv_proto::admin::RuntimeSettingsPatch {
                 rtmp: Some(synctv_proto::admin::RtmpSettingsPatch {
-                    custom_publish_host: Some("rtmp://live.example.com".to_string()),
+                    advertise_address: Some("rtmps://live.example.com".to_string()),
                     ..Default::default()
                 }),
                 ..Default::default()
             },
-            &["rtmp.custom_publish_host"],
+            &["rtmp.advertise_address"],
         ),
     )
     .map_err(|error| test_error(format!("{error:?}")))?;
     let set_result = AdminApiImpl::apply_runtime_settings_patch(current, set_patch)
         .map_err(|error| test_error(format!("{error:?}")))?;
     assert_eq!(
-        set_result.settings.rtmp.custom_publish_host.as_deref(),
-        Some("rtmp://live.example.com")
+        set_result.settings.rtmp.advertise_address.as_deref(),
+        Some("rtmps://live.example.com")
     );
-    assert!(set_result.update_mask.rtmp.custom_publish_host);
+    assert!(set_result.update_mask.rtmp.advertise_address);
 
     let clear_patch = crate::admin_settings_mapping::runtime_settings_patch_from_admin_proto(
         runtime_settings_request(
@@ -2984,14 +2984,14 @@ fn test_optional_rtmp_publish_host_supports_set_and_clear() -> TestResult {
                 rtmp: Some(synctv_proto::admin::RtmpSettingsPatch::default()),
                 ..Default::default()
             },
-            &["rtmp.custom_publish_host"],
+            &["rtmp.advertise_address"],
         ),
     )
     .map_err(|error| test_error(format!("{error:?}")))?;
     let clear_result = AdminApiImpl::apply_runtime_settings_patch(set_result.settings, clear_patch)
         .map_err(|error| test_error(format!("{error:?}")))?;
-    assert_eq!(clear_result.settings.rtmp.custom_publish_host, None);
-    assert!(clear_result.update_mask.rtmp.custom_publish_host);
+    assert_eq!(clear_result.settings.rtmp.advertise_address, None);
+    assert!(clear_result.update_mask.rtmp.advertise_address);
     Ok(())
 }
 

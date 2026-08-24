@@ -5203,7 +5203,7 @@ message GetPublicSettingsResponse {
 
   // RTMP settings
   bool ts_disguised_as_png = 18;
-  optional string custom_publish_host = 19;
+  optional string advertise_address = 19;
 
   // Email settings
   bool email_whitelist_enabled = 20;

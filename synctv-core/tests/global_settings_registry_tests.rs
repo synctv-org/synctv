@@ -86,14 +86,14 @@ fn test_cors_allowed_origins_updates() {
 }
 
 #[test]
-fn test_public_settings_skips_empty_custom_publish_host() {
+fn test_public_settings_skips_empty_rtmp_advertise_address() {
     let defaults = PublicSettings::defaults();
     let json = ok(
         serde_json::to_string(&defaults),
         "public settings should serialize",
     );
 
-    assert!(!json.contains("custom_publish_host"));
+    assert!(!json.contains("advertise_address"));
     assert_eq!(defaults.max_pinned_chat_messages_per_room, 20);
     assert!(json.contains("max_pinned_chat_messages_per_room"));
 }

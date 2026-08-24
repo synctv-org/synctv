@@ -108,10 +108,41 @@ pub(crate) fn ensure_room_accepts_live_publish(room: &Room) -> Result<(), ApiErr
     Ok(())
 }
 
-fn build_publish_rtmp_url(runtime_settings: &crate::ApiRuntimeSettings, room_id: &str) -> String {
+fn build_publish_rtmp_url(
+    runtime_settings: &crate::ApiRuntimeSettings,
+    advertise_address: Option<&str>,
+    room_id: &str,
+) -> Result<String, ApiError> {
+    if let Some(address) = advertise_address {
+        let mut url =
+            synctv_core::service::parse_rtmp_advertise_address(address).map_err(ApiError::from)?;
+        url.path_segments_mut()
+            .map_err(|()| {
+                ApiError::InvalidInput(
+                    "rtmp.advertise_address must support path segments".to_string(),
+                )
+            })?
+            .pop_if_empty()
+            .push(room_id);
+        return Ok(url.to_string());
+    }
+
     let rtmp_host = runtime_settings.public_rtmp_host();
     let rtmp_port = runtime_settings.livestream.rtmp_port;
-    format!("rtmp://{rtmp_host}:{rtmp_port}/{room_id}")
+    Ok(format!("rtmp://{rtmp_host}:{rtmp_port}/{room_id}"))
+}
+
+pub(crate) fn rtmp_advertise_address(
+    settings: Option<&synctv_core::service::RuntimeSettingsStore>,
+) -> Result<Option<String>, ApiError> {
+    settings.map_or(Ok(None), |settings| {
+        settings
+            .rtmp
+            .advertise_address
+            .get()
+            .map(|value| value.0)
+            .map_err(ApiError::from)
+    })
 }
 
 async fn filter_usable_stream_media_ids(
@@ -158,44 +189,74 @@ pub(crate) fn publish_key_options(
     }))
 }
 
-pub(crate) fn issue_room_publish_key(
-    publish_key_service: &dyn synctv_core::service::StreamingPublishKeyService,
-    runtime_settings: &crate::ApiRuntimeSettings,
-    public_id_codec: &synctv_adapter::PublicIdCodec,
-    room_id: RoomId,
-    media_id: MediaId,
-    actor_user_id: &UserId,
-    options: Option<PublishKeyOptions>,
-) -> Result<CreateRoomPublishKeyResponse, ApiError> {
-    let publish_key = match options {
-        Some(options) => publish_key_service.generate_publish_key_with_options(
-            &room_id,
-            &media_id,
-            actor_user_id,
-            options,
-        ),
-        None => publish_key_service.generate_publish_key(&room_id, &media_id, actor_user_id),
-    }
-    .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
-    let room_id = public_id_codec
-        .encode_room_id(room_id)
-        .map_err(|error| ApiError::Internal(format!("Failed to encode room id: {error}")))?;
-    let media_id = public_id_codec
-        .encode_media_id(media_id)
-        .map_err(|error| ApiError::Internal(format!("Failed to encode media id: {error}")))?;
-    let stream_key = format!("{media_id}?token={}", publish_key.token);
+pub(crate) struct RoomPublishKeyIssuer<'a> {
+    publish_key_service: &'a dyn synctv_core::service::StreamingPublishKeyService,
+    runtime_settings: &'a crate::ApiRuntimeSettings,
+    advertise_address: Option<&'a str>,
+    public_id_codec: &'a synctv_adapter::PublicIdCodec,
+}
 
-    Ok(CreateRoomPublishKeyResponse {
-        publish_key: publish_key.token,
-        rtmp_url: build_publish_rtmp_url(runtime_settings, &room_id),
-        stream_key,
-        expires_at: publish_key.expires_at,
-        r#type: match publish_key.key_type {
-            CorePublishKeyType::SingleUse => PublishKeyType::SingleUse as i32,
-            CorePublishKeyType::Expiring => PublishKeyType::Expiring as i32,
-            CorePublishKeyType::Permanent => PublishKeyType::Permanent as i32,
-        },
-    })
+impl<'a> RoomPublishKeyIssuer<'a> {
+    pub(crate) const fn new(
+        publish_key_service: &'a dyn synctv_core::service::StreamingPublishKeyService,
+        runtime_settings: &'a crate::ApiRuntimeSettings,
+        advertise_address: Option<&'a str>,
+        public_id_codec: &'a synctv_adapter::PublicIdCodec,
+    ) -> Self {
+        Self {
+            publish_key_service,
+            runtime_settings,
+            advertise_address,
+            public_id_codec,
+        }
+    }
+
+    pub(crate) fn issue(
+        &self,
+        room_id: RoomId,
+        media_id: MediaId,
+        actor_user_id: &UserId,
+        options: Option<PublishKeyOptions>,
+    ) -> Result<CreateRoomPublishKeyResponse, ApiError> {
+        let publish_key = match options {
+            Some(options) => self.publish_key_service.generate_publish_key_with_options(
+                &room_id,
+                &media_id,
+                actor_user_id,
+                options,
+            ),
+            None => {
+                self.publish_key_service
+                    .generate_publish_key(&room_id, &media_id, actor_user_id)
+            }
+        }
+        .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
+        let room_id = self
+            .public_id_codec
+            .encode_room_id(room_id)
+            .map_err(|error| ApiError::Internal(format!("Failed to encode room id: {error}")))?;
+        let media_id = self
+            .public_id_codec
+            .encode_media_id(media_id)
+            .map_err(|error| ApiError::Internal(format!("Failed to encode media id: {error}")))?;
+        let stream_key = format!("{media_id}?token={}", publish_key.token);
+
+        Ok(CreateRoomPublishKeyResponse {
+            publish_key: publish_key.token,
+            rtmp_url: build_publish_rtmp_url(
+                self.runtime_settings,
+                self.advertise_address,
+                &room_id,
+            )?,
+            stream_key,
+            expires_at: publish_key.expires_at,
+            r#type: match publish_key.key_type {
+                CorePublishKeyType::SingleUse => PublishKeyType::SingleUse as i32,
+                CorePublishKeyType::Expiring => PublishKeyType::Expiring as i32,
+                CorePublishKeyType::Permanent => PublishKeyType::Permanent as i32,
+            },
+        })
+    }
 }
 
 pub async fn fetch_stream_info(
@@ -280,15 +341,14 @@ impl ClientApiImpl {
             .publish_key_service
             .as_deref()
             .ok_or_else(publish_key_service_unavailable_error)?;
-        issue_room_publish_key(
+        let advertise_address = rtmp_advertise_address(self.runtime_settings_store.as_deref())?;
+        RoomPublishKeyIssuer::new(
             publish_key_service,
             &self.runtime_settings,
+            advertise_address.as_deref(),
             &self.public_id_codec,
-            rid,
-            media_id,
-            &uid,
-            options,
         )
+        .issue(rid, media_id, &uid, options)
     }
 
     pub async fn list_room_streams(
@@ -414,8 +474,8 @@ impl ClientApiImpl {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_room_streams_request, build_room_streams_response, ensure_room_accepts_live_publish,
-        filter_usable_stream_media_ids, publish_key_options,
+        build_publish_rtmp_url, build_room_streams_request, build_room_streams_response,
+        ensure_room_accepts_live_publish, filter_usable_stream_media_ids, publish_key_options,
     };
     use crate::impls::ApiError;
 
@@ -564,6 +624,35 @@ mod tests {
         ))?;
 
         assert!(error.is_invalid_argument(), "{error:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn publish_url_prefers_runtime_advertise_address() -> TestResult {
+        let runtime_settings = crate::ApiRuntimeSettings::default();
+        let url = api_ok(build_publish_rtmp_url(
+            &runtime_settings,
+            Some("rtmps://live.example.com:443"),
+            "room_AbC123",
+        ))?;
+
+        assert_eq!(url, "rtmps://live.example.com:443/room_AbC123");
+        Ok(())
+    }
+
+    #[test]
+    fn publish_url_falls_back_to_static_livestream_address() -> TestResult {
+        let mut runtime_settings = crate::ApiRuntimeSettings::default();
+        runtime_settings.livestream.public_rtmp_host = "live.internal".to_string();
+        runtime_settings.livestream.rtmp_port = 1936;
+
+        let url = api_ok(build_publish_rtmp_url(
+            &runtime_settings,
+            None,
+            "room_AbC123",
+        ))?;
+
+        assert_eq!(url, "rtmp://live.internal:1936/room_AbC123");
         Ok(())
     }
 

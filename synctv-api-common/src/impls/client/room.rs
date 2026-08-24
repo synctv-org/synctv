@@ -2093,7 +2093,7 @@ impl ClientApiImpl {
             webauthn_signup_need_review: s.webauthn_signup_need_review,
             enable_guest: s.enable_guest,
             ts_disguised_as_png: s.ts_disguised_as_png,
-            custom_publish_host: s.custom_publish_host,
+            advertise_address: s.advertise_address,
             email_whitelist_enabled: s.email_whitelist_enabled,
             email_whitelist_domains: s.email_whitelist_domains,
         })

@@ -69,7 +69,7 @@ pub struct OAuth2SettingsPatch {
 
 #[derive(Debug, Clone, Default)]
 pub struct RtmpSettingsPatch {
-    pub custom_publish_host: Option<OptionalConfigPatch<String>>,
+    pub advertise_address: Option<OptionalConfigPatch<String>>,
     pub ts_disguised_as_png: Option<bool>,
 }
 
@@ -590,7 +590,7 @@ impl AdminApiImpl {
                     .collect(),
             }),
             rtmp: Some(synctv_proto::admin::RtmpSettings {
-                custom_publish_host: settings.rtmp.custom_publish_host,
+                advertise_address: settings.rtmp.advertise_address,
                 ts_disguised_as_png: settings.rtmp.ts_disguised_as_png,
             }),
             email: Some(synctv_proto::admin::EmailSettings {
@@ -744,12 +744,12 @@ impl AdminApiImpl {
         }
 
         if let Some(rtmp) = patch.rtmp {
-            if let Some(patch) = rtmp.custom_publish_host {
-                current.rtmp.custom_publish_host = match patch {
+            if let Some(patch) = rtmp.advertise_address {
+                current.rtmp.advertise_address = match patch {
                     OptionalConfigPatch::Set(value) => Some(value),
                     OptionalConfigPatch::Clear => None,
                 };
-                update_mask.rtmp.custom_publish_host = true;
+                update_mask.rtmp.advertise_address = true;
             }
             if let Some(value) = rtmp.ts_disguised_as_png {
                 current.rtmp.ts_disguised_as_png = value;

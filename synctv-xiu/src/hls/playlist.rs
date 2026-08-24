@@ -47,6 +47,11 @@ impl HlsPlaylist {
     }
 
     #[must_use]
+    pub fn is_ended(&self) -> bool {
+        self.ended
+    }
+
+    #[must_use]
     pub fn generate_m3u8<F>(&self, mut gen_ts_url: F) -> String
     where
         F: FnMut(&str) -> String,

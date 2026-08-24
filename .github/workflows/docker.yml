@@ -5,8 +5,14 @@ on:
     branches: ['**']
     tags:
       - "v*"
+    paths-ignore:
+      - ".github/workflows/docs.yml"
+      - "docs/**"
   pull_request:
     branches: ['**']
+    paths-ignore:
+      - ".github/workflows/docs.yml"
+      - "docs/**"
   schedule:
     - cron: '0 0 * * *'
   workflow_dispatch:

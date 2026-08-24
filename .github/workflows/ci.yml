@@ -3,8 +3,14 @@ name: CI Pipeline
 on:
   push:
     branches: ['**']
+    paths-ignore:
+      - ".github/workflows/docs.yml"
+      - "docs/**"
   pull_request:
     branches: ['**']
+    paths-ignore:
+      - ".github/workflows/docs.yml"
+      - "docs/**"
   schedule:
     # Run security audit daily at 00:00 UTC
     - cron: '0 0 * * *'

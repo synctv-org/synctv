@@ -8,9 +8,7 @@ on:
       - ".github/workflows/helm.yml"
       - "Cargo.toml"
       - "docker-compose.yml"
-      - "docs/src/lib/project.ts"
       - "helm/**"
-      - "docs/src/content/docs/**/install/helm.mdx"
       - "scripts/validate-helm.sh"
       - "scripts/test-helm-secret-bootstrap.sh"
   pull_request:
@@ -20,9 +18,7 @@ on:
       - ".github/workflows/helm.yml"
       - "Cargo.toml"
       - "docker-compose.yml"
-      - "docs/src/lib/project.ts"
       - "helm/**"
-      - "docs/src/content/docs/**/install/helm.mdx"
       - "scripts/validate-helm.sh"
       - "scripts/test-helm-secret-bootstrap.sh"
   workflow_dispatch:

@@ -3030,9 +3030,16 @@ impl DynamicPlaylistProvider for EmbyProvider {
                 break;
             }
 
-            let item = self
+            let item = match self
                 .fetch_item(&resolved, &current_id, ctx.request_context())
-                .await?;
+                .await
+            {
+                Ok(item) => item,
+                Err(error) if emby_browse_path_can_end_at_missing_ancestor(&error, &segments) => {
+                    break;
+                }
+                Err(error) => return Err(error),
+            };
             segments.push(DynamicBrowsePathSegment {
                 name: item.name,
                 target: Self::encode_target(&current_id)?,
@@ -3047,6 +3054,13 @@ impl DynamicPlaylistProvider for EmbyProvider {
         segments.reverse();
         Ok(segments)
     }
+}
+
+fn emby_browse_path_can_end_at_missing_ancestor(
+    error: &ProviderError,
+    resolved_segments: &[DynamicBrowsePathSegment],
+) -> bool {
+    !resolved_segments.is_empty() && matches!(error, ProviderError::NotFound)
 }
 
 #[cfg(test)]
@@ -3090,6 +3104,27 @@ mod tests {
             Some(ItemType::Playlist)
         );
         assert!(EmbyProvider::emby_list_item_from_item(item).is_folder);
+    }
+
+    #[test]
+    fn browse_path_stops_only_when_an_ancestor_is_missing() {
+        let resolved = vec![DynamicBrowsePathSegment {
+            name: "Visible folder".to_string(),
+            target: crate::models::ProviderTarget::emby("visible-folder".to_string()),
+        }];
+
+        assert!(emby_browse_path_can_end_at_missing_ancestor(
+            &ProviderError::NotFound,
+            &resolved,
+        ));
+        assert!(!emby_browse_path_can_end_at_missing_ancestor(
+            &ProviderError::NotFound,
+            &[],
+        ));
+        assert!(!emby_browse_path_can_end_at_missing_ancestor(
+            &ProviderError::Authentication("expired".to_string()),
+            &resolved,
+        ));
     }
 
     #[test]

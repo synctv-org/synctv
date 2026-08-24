@@ -148,12 +148,18 @@ impl From<synctv_media_providers::ProviderClientError> for ProviderError {
         use synctv_media_providers::ProviderClientError;
         match error {
             ProviderClientError::Network(msg) => Self::NetworkError(msg),
+            ProviderClientError::Api { code: 404, .. } => Self::NotFound,
             ProviderClientError::Api { message, .. } => Self::ApiError(message),
             ProviderClientError::Parse(msg) | ProviderClientError::InvalidHeader(msg) => {
                 Self::ParseError(msg)
             }
             ProviderClientError::Auth(msg) => Self::Authentication(msg),
             ProviderClientError::InvalidConfig(msg) => Self::InvalidConfig(msg),
+            ProviderClientError::Http { status, .. }
+                if status == reqwest::StatusCode::NOT_FOUND =>
+            {
+                Self::NotFound
+            }
             ProviderClientError::Http { status, url, .. } => Self::UpstreamHttp {
                 status: status.as_u16(),
                 url,

@@ -200,6 +200,7 @@ fn test_core_api_impls(
             synctv_api_common::impls::AdminApiImpl::new_with_runtime(
                 synctv_api_common::impls::AdminApiOptions {
                     room_service,
+                    chat_service: None,
                     user_service: user_service.clone(),
                     read_services: synctv_api_common::test_support::admin_read_services(
                         user_service.as_ref(),

@@ -1,6 +1,7 @@
 pub(crate) mod audit;
 pub(crate) mod ban;
 pub mod chat;
+pub mod chat_moderation;
 pub(crate) mod content_report;
 pub(crate) mod email_bind;
 pub mod email_outbox;
@@ -45,8 +46,13 @@ pub use ban::{
     BanRecordListQuery, BanRecordPage, BanRecordRepository, BanRecordRow, BanRecordTargetType,
 };
 pub use chat::{
-    ChatMessageOperationIdempotency, ChatRepository, DeleteChatMessageEventRequest,
-    EditChatMessageEventRequest, PinChatMessageEventRequest, UnpinChatMessageEventRequest,
+    ChatMessageOperationIdempotency, ChatModerationProgress, ChatRepository,
+    DeleteChatMessageEventRequest, EditChatMessageEventRequest, PinChatMessageEventRequest,
+    UnpinChatMessageEventRequest,
+};
+pub use chat_moderation::{
+    ChatModerationJob, ChatModerationJobPhase, ChatModerationJobRepository,
+    ChatModerationJobStatus, NewChatModerationJob,
 };
 pub use content_report::{
     ContentReportListQuery, ContentReportListScope, ContentReportPage, ContentReportRepository,

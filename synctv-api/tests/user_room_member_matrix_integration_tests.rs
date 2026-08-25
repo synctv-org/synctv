@@ -148,6 +148,7 @@ async fn make_admin_api(pool: sqlx::PgPool) -> AdminApiImpl {
     AdminApiImpl::new_with_runtime(
         AdminApiOptions {
             room_service: Arc::new(room_service),
+            chat_service: None,
             read_services: support::admin_read_services(user_service.as_ref()),
             user_service,
             settings_service,

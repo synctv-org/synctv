@@ -7,6 +7,7 @@ pub(crate) mod admin_client;
 mod app;
 pub mod app_config;
 mod bootstrap;
+mod chat_moderation_dispatcher;
 pub mod cli;
 mod config_env;
 mod config_loader;

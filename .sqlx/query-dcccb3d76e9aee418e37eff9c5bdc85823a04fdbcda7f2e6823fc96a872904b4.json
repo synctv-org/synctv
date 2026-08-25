@@ -1,0 +1,353 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            WITH picked AS (\n                SELECT id\n                FROM chat_moderation_jobs\n                WHERE status = 1\n                  AND next_attempt_at <= NOW()\n                ORDER BY updated_at, id\n                LIMIT $1\n                FOR UPDATE SKIP LOCKED\n            )\n            UPDATE chat_moderation_jobs AS job\n            SET status = 2,\n                locked_by = $2,\n                locked_at = NOW(),\n                lock_version = lock_version + 1,\n                updated_at = NOW()\n            FROM picked\n            WHERE job.id = picked.id\n            RETURNING job.id,\n                      job.room_id AS \"room_id!: RoomId\",\n                      job.target_user_id AS \"target_user_id!: UserId\",\n                      job.actor_user_id AS \"actor_user_id!: UserId\",\n                      job.actor_username,\n                      job.actor_role,\n                      job.message_id,\n                      job.explicit_message_done,\n                      job.ban_user,\n                      job.ban_done,\n                      job.delete_all_messages,\n                      job.delete_all_reactions,\n                      job.reason,\n                      job.phase AS \"phase!\",\n                      job.status AS \"status!\",\n                      job.snapshot_at,\n                      job.message_cursor_created_at,\n                      job.message_cursor_id,\n                      job.reaction_cursor_created_at,\n                      job.reaction_cursor_id,\n                      job.hidden_reaction_cursor_created_at,\n                      job.hidden_reaction_cursor_id,\n                      job.hidden_reaction_cursor_key,\n                      job.deleted_messages,\n                      job.deleted_reactions,\n                      job.attempts,\n                      job.lock_version,\n                      job.last_error\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_moderation_jobs",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "room_id!: RoomId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_moderation_jobs",
+            "name": "room_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "target_user_id!: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_moderation_jobs",
+            "name": "target_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "actor_user_id!: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_moderation_jobs",
+            "name": "actor_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "actor_username",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_moderation_jobs",
+            "name": "actor_username"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "actor_role",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "chat_moderation_jobs",
+            "name": "actor_role"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "message_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_moderation_jobs",
+            "name": "message_id"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "explicit_message_done",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "chat_moderation_jobs",
+            "name": "explicit_message_done"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "ban_user",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "chat_moderation_jobs",
+            "name": "ban_user"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "ban_done",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "chat_moderation_jobs",
+            "name": "ban_done"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "delete_all_messages",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "chat_moderation_jobs",
+            "name": "delete_all_messages"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "delete_all_reactions",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "chat_moderation_jobs",
+            "name": "delete_all_reactions"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "reason",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_moderation_jobs",
+            "name": "reason"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "phase!",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "chat_moderation_jobs",
+            "name": "phase"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "status!",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "chat_moderation_jobs",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "snapshot_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "chat_moderation_jobs",
+            "name": "snapshot_at"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
+        "name": "message_cursor_created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "chat_moderation_jobs",
+            "name": "message_cursor_created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 17,
+        "name": "message_cursor_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_moderation_jobs",
+            "name": "message_cursor_id"
+          }
+        }
+      },
+      {
+        "ordinal": 18,
+        "name": "reaction_cursor_created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "chat_moderation_jobs",
+            "name": "reaction_cursor_created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 19,
+        "name": "reaction_cursor_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_moderation_jobs",
+            "name": "reaction_cursor_id"
+          }
+        }
+      },
+      {
+        "ordinal": 20,
+        "name": "hidden_reaction_cursor_created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "chat_moderation_jobs",
+            "name": "hidden_reaction_cursor_created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 21,
+        "name": "hidden_reaction_cursor_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_moderation_jobs",
+            "name": "hidden_reaction_cursor_id"
+          }
+        }
+      },
+      {
+        "ordinal": 22,
+        "name": "hidden_reaction_cursor_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_moderation_jobs",
+            "name": "hidden_reaction_cursor_key"
+          }
+        }
+      },
+      {
+        "ordinal": 23,
+        "name": "deleted_messages",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_moderation_jobs",
+            "name": "deleted_messages"
+          }
+        }
+      },
+      {
+        "ordinal": 24,
+        "name": "deleted_reactions",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_moderation_jobs",
+            "name": "deleted_reactions"
+          }
+        }
+      },
+      {
+        "ordinal": 25,
+        "name": "attempts",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "chat_moderation_jobs",
+            "name": "attempts"
+          }
+        }
+      },
+      {
+        "ordinal": 26,
+        "name": "lock_version",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_moderation_jobs",
+            "name": "lock_version"
+          }
+        }
+      },
+      {
+        "ordinal": 27,
+        "name": "last_error",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_moderation_jobs",
+            "name": "last_error"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "dcccb3d76e9aee418e37eff9c5bdc85823a04fdbcda7f2e6823fc96a872904b4"
+}

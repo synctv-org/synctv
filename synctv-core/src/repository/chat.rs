@@ -39,6 +39,17 @@ pub struct InsertChatMessageEvent<'a> {
     pub occurred_at: DateTime<Utc>,
 }
 
+/// Lease identity used when a moderation worker mutates chat data.
+///
+/// The progress update is performed in the same transaction as the data
+/// mutation, so an expired worker lease rolls back the mutation as well.
+#[derive(Clone, Copy)]
+pub struct ChatModerationProgress<'a> {
+    pub job_id: &'a str,
+    pub worker_id: &'a str,
+    pub lock_version: i64,
+}
+
 struct ChatHistoryCursorRequest<'a> {
     room_id: &'a RoomId,
     cursor: Option<ChatHistoryCursor>,
@@ -78,6 +89,13 @@ struct ChatMessageRow {
     deleted_by: Option<UserId>,
     delete_reason: Option<String>,
     created_at: DateTime<Utc>,
+}
+
+#[derive(sqlx::FromRow)]
+struct HiddenReactionCleanupRow {
+    message_id: i64,
+    message_created_at: DateTime<Utc>,
+    reaction_key: String,
 }
 
 impl TryFrom<ChatMessageRow> for ChatMessage {
@@ -381,6 +399,7 @@ impl ChatRepository {
                         event,
                         inserted: false,
                         pin_event: None,
+                        deleted_reactions: 0,
                     });
                 }
             }
@@ -433,6 +452,7 @@ impl ChatRepository {
             event: logged,
             inserted: true,
             pin_event: None,
+            deleted_reactions: 0,
         })
     }
 
@@ -960,6 +980,7 @@ impl ChatRepository {
             event: logged,
             inserted: true,
             pin_event,
+            deleted_reactions: 0,
         })
     }
 
@@ -2196,6 +2217,446 @@ impl ChatRepository {
         })
     }
 
+    /// Lists one bounded page of active messages authored by a user for
+    /// server-side moderation. The keyset cursor remains valid while earlier
+    /// rows are deleted by the moderation loop.
+    pub async fn list_active_messages_for_user_page(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        cursor: Option<(DateTime<Utc>, i64)>,
+        created_before: DateTime<Utc>,
+        limit: i64,
+    ) -> Result<Vec<ChatMessage>> {
+        let limit = limit.clamp(1, 100);
+        let rows = if let Some((created_at, id)) = cursor {
+            sqlx::query_as!(
+                ChatMessageRow,
+                r#"
+                SELECT id AS "id!",
+                       room_id AS "room_id!: RoomId",
+                       user_id AS "user_id?: UserId",
+                       client_message_id,
+                       content AS "content!",
+                       message_type AS "message_type!: ChatMessageType",
+                       status AS "status!: ChatMessageStatus",
+                       version AS "version!",
+                       reply_to_message_id,
+                       reply_to_message_created_at,
+                       metadata AS "metadata?: ChatMetadata",
+                       edited_at,
+                       deleted_at,
+                       deleted_by AS "deleted_by?: UserId",
+                       delete_reason,
+                       created_at AS "created_at!"
+                FROM chat_messages
+                WHERE room_id = $1
+                  AND user_id = $2
+                  AND status <> $3
+                  AND deletion_source IS DISTINCT FROM $4
+                  AND created_at <= $5
+                  AND (created_at, id) > ($6, $7)
+                ORDER BY created_at ASC, id ASC
+                LIMIT $8
+                "#,
+                room_id.as_i64(),
+                user_id.as_i64(),
+                i16::from(ChatMessageStatus::Deleted),
+                DeletionSource::Account as DeletionSource,
+                created_before,
+                created_at,
+                id,
+                limit
+            )
+            .fetch_all(self.pool())
+            .await?
+        } else {
+            sqlx::query_as!(
+                ChatMessageRow,
+                r#"
+                SELECT id AS "id!",
+                       room_id AS "room_id!: RoomId",
+                       user_id AS "user_id?: UserId",
+                       client_message_id,
+                       content AS "content!",
+                       message_type AS "message_type!: ChatMessageType",
+                       status AS "status!: ChatMessageStatus",
+                       version AS "version!",
+                       reply_to_message_id,
+                       reply_to_message_created_at,
+                       metadata AS "metadata?: ChatMetadata",
+                       edited_at,
+                       deleted_at,
+                       deleted_by AS "deleted_by?: UserId",
+                       delete_reason,
+                       created_at AS "created_at!"
+                FROM chat_messages
+                WHERE room_id = $1
+                  AND user_id = $2
+                  AND status <> $3
+                  AND deletion_source IS DISTINCT FROM $4
+                  AND created_at <= $5
+                ORDER BY created_at ASC, id ASC
+                LIMIT $6
+                "#,
+                room_id.as_i64(),
+                user_id.as_i64(),
+                i16::from(ChatMessageStatus::Deleted),
+                DeletionSource::Account as DeletionSource,
+                created_before,
+                limit
+            )
+            .fetch_all(self.pool())
+            .await?
+        };
+
+        chat_messages_from_rows(rows)
+    }
+
+    pub async fn delete_reactions_by_user_with_events_page(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        actor_user_id: &UserId,
+        occurred_at: DateTime<Utc>,
+        created_before: DateTime<Utc>,
+        cursor: Option<(DateTime<Utc>, i64)>,
+        limit: i64,
+        moderation_progress: Option<ChatModerationProgress<'_>>,
+    ) -> Result<(
+        u64,
+        Vec<ChatMessageEvent>,
+        Vec<ChatPinEvent>,
+        Option<(DateTime<Utc>, i64)>,
+    )> {
+        let limit = limit.clamp(1, 100);
+        let mut tx = self.pool().begin().await?;
+        let rows = if let Some((created_at, id)) = cursor {
+            sqlx::query_as!(
+                ChatMessageRow,
+                r#"
+            SELECT m.id AS "id!",
+                   m.room_id AS "room_id!: RoomId",
+                   m.user_id AS "user_id?: UserId",
+                   m.client_message_id,
+                   m.content AS "content!",
+                   m.message_type AS "message_type!: ChatMessageType",
+                   m.status AS "status!: ChatMessageStatus",
+                   m.version AS "version!",
+                   m.reply_to_message_id,
+                   m.reply_to_message_created_at,
+                   m.metadata AS "metadata?: ChatMetadata",
+                   m.edited_at,
+                   m.deleted_at,
+                   m.deleted_by AS "deleted_by?: UserId",
+                   m.delete_reason,
+                   m.created_at AS "created_at!"
+            FROM chat_messages m
+            WHERE m.room_id = $1
+              AND m.status <> $3
+              AND m.deletion_source IS DISTINCT FROM $4
+              AND m.created_at <= $5
+              AND EXISTS (
+                  SELECT 1 FROM chat_message_reactions r
+                  WHERE r.room_id = m.room_id
+                    AND r.message_id = m.id
+                    AND r.message_created_at = m.created_at
+                    AND r.user_id = $2
+                    AND r.created_at <= $6
+              )
+              AND (m.created_at, m.id) > ($7, $8)
+            ORDER BY m.created_at ASC, m.id ASC
+            LIMIT $9
+            FOR UPDATE
+            "#,
+                room_id.as_i64(),
+                user_id.as_i64(),
+                i16::from(ChatMessageStatus::Deleted),
+                DeletionSource::Account as DeletionSource,
+                created_before,
+                created_before,
+                created_at,
+                id,
+                limit
+            )
+            .fetch_all(&mut *tx)
+            .await?
+        } else {
+            sqlx::query_as!(
+                ChatMessageRow,
+                r#"
+            SELECT m.id AS "id!",
+                   m.room_id AS "room_id!: RoomId",
+                   m.user_id AS "user_id?: UserId",
+                   m.client_message_id,
+                   m.content AS "content!",
+                   m.message_type AS "message_type!: ChatMessageType",
+                   m.status AS "status!: ChatMessageStatus",
+                   m.version AS "version!",
+                   m.reply_to_message_id,
+                   m.reply_to_message_created_at,
+                   m.metadata AS "metadata?: ChatMetadata",
+                   m.edited_at,
+                   m.deleted_at,
+                   m.deleted_by AS "deleted_by?: UserId",
+                   m.delete_reason,
+                   m.created_at AS "created_at!"
+            FROM chat_messages m
+            WHERE m.room_id = $1
+              AND m.status <> $3
+              AND m.deletion_source IS DISTINCT FROM $4
+              AND m.created_at <= $5
+              AND EXISTS (
+                  SELECT 1 FROM chat_message_reactions r
+                  WHERE r.room_id = m.room_id
+                    AND r.message_id = m.id
+                    AND r.message_created_at = m.created_at
+                    AND r.user_id = $2
+                    AND r.created_at <= $6
+              )
+            ORDER BY m.created_at ASC, m.id ASC
+            LIMIT $7
+            FOR UPDATE
+        "#,
+                room_id.as_i64(),
+                user_id.as_i64(),
+                i16::from(ChatMessageStatus::Deleted),
+                DeletionSource::Account as DeletionSource,
+                created_before,
+                created_before,
+                limit
+            )
+            .fetch_all(&mut *tx)
+            .await?
+        };
+        let messages = chat_messages_from_rows(rows)?;
+        if messages.is_empty() {
+            tx.commit().await?;
+            return Ok((0, Vec::new(), Vec::new(), None));
+        }
+        let message_ids: Vec<i64> = messages.iter().map(|message| message.id).collect();
+        let message_created_ats: Vec<DateTime<Utc>> =
+            messages.iter().map(|message| message.created_at).collect();
+        let result = sqlx::query!(
+            r#"
+            DELETE FROM chat_message_reactions AS r
+            WHERE r.room_id = $1
+              AND r.user_id = $2
+              AND r.created_at <= $5
+              AND EXISTS (
+                  SELECT 1
+                  FROM unnest($3::bigint[], $4::timestamptz[])
+                       AS selected(message_id, message_created_at)
+                  WHERE selected.message_id = r.message_id
+                    AND selected.message_created_at = r.message_created_at
+              )
+            "#,
+            room_id.as_i64(),
+            user_id.as_i64(),
+            &message_ids,
+            &message_created_ats,
+            created_before,
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        let mut events = Vec::with_capacity(messages.len());
+        let mut pin_events = Vec::new();
+        for message in &messages {
+            let payload = self
+                .message_event_payload_in_tx(&mut tx, room_id, &message, Some(actor_user_id))
+                .await?;
+            let pin = payload.pin.clone();
+            let event = ChatMessageEvent {
+                event_id: synctv_common::snanoid!(16),
+                sequence: 0,
+                room_id: *room_id,
+                actor_user_id: *actor_user_id,
+                kind: ChatEventKind::ReactionsChanged,
+                message: payload,
+                occurred_at,
+            };
+            let logged = self.insert_event_in_tx(&mut tx, &event).await?;
+            events.push(logged.event.clone());
+            if let Some(pin) = pin {
+                pin_events.push(
+                    self.insert_pin_event_in_tx(
+                        &mut tx,
+                        &ChatPinEvent {
+                            event_id: synctv_common::snanoid!(16),
+                            sequence: 0,
+                            room_id: *room_id,
+                            actor_user_id: *actor_user_id,
+                            kind: ChatPinEventKind::MessageUpdated,
+                            message: logged.event.message,
+                            pin: Some(pin),
+                            occurred_at,
+                        },
+                    )
+                    .await?
+                    .event,
+                );
+            }
+        }
+        if let Some(progress) = moderation_progress {
+            self.update_moderation_progress_in_tx(
+                &mut tx,
+                progress,
+                0,
+                i64::try_from(result.rows_affected()).map_err(|_| {
+                    Error::Internal("Deleted reaction count exceeds i64::MAX".to_string())
+                })?,
+            )
+            .await?;
+        }
+        tx.commit().await?;
+        let next_cursor = messages
+            .last()
+            .map(|message| (message.created_at, message.id));
+        Ok((result.rows_affected(), events, pin_events, next_cursor))
+    }
+
+    /// Removes a bounded page of reactions on messages that are already hidden
+    /// from normal chat history. These rows do not emit message events because
+    /// their messages are no longer visible to chat clients.
+    pub async fn delete_hidden_reactions_by_user_page(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        created_before: DateTime<Utc>,
+        cursor: Option<(DateTime<Utc>, i64, String)>,
+        limit: i64,
+        moderation_progress: Option<ChatModerationProgress<'_>>,
+    ) -> Result<(
+        u64,
+        Vec<(i64, DateTime<Utc>)>,
+        Option<(DateTime<Utc>, i64, String)>,
+    )> {
+        let limit = limit.clamp(1, 100);
+        let mut tx = self.pool().begin().await?;
+        let rows = if let Some((created_at, message_id, reaction_key)) = cursor {
+            sqlx::query_as!(
+                HiddenReactionCleanupRow,
+                r#"
+                SELECT r.message_id AS "message_id!",
+                       r.message_created_at AS "message_created_at!",
+                       r.reaction_key AS "reaction_key!"
+                FROM chat_message_reactions r
+                JOIN chat_messages m
+                  ON m.room_id = r.room_id
+                 AND m.id = r.message_id
+                 AND m.created_at = r.message_created_at
+                WHERE r.room_id = $1
+                  AND r.user_id = $2
+                  AND (m.status = $3 OR m.deletion_source = $4)
+                  AND m.created_at <= $5
+                  AND r.created_at <= $5
+                  AND (m.created_at, r.message_id, r.reaction_key) > ($6, $7, $8)
+                ORDER BY m.created_at ASC, r.message_id ASC, r.reaction_key ASC
+                LIMIT $9
+                FOR UPDATE OF r
+                "#,
+                room_id.as_i64(),
+                user_id.as_i64(),
+                i16::from(ChatMessageStatus::Deleted),
+                DeletionSource::Account as DeletionSource,
+                created_before,
+                created_at,
+                message_id,
+                reaction_key,
+                limit
+            )
+            .fetch_all(&mut *tx)
+            .await?
+        } else {
+            sqlx::query_as!(
+                HiddenReactionCleanupRow,
+                r#"
+                SELECT r.message_id AS "message_id!",
+                       r.message_created_at AS "message_created_at!",
+                       r.reaction_key AS "reaction_key!"
+                FROM chat_message_reactions r
+                JOIN chat_messages m
+                  ON m.room_id = r.room_id
+                 AND m.id = r.message_id
+                 AND m.created_at = r.message_created_at
+                WHERE r.room_id = $1
+                  AND r.user_id = $2
+                  AND (m.status = $3 OR m.deletion_source = $4)
+                  AND m.created_at <= $5
+                  AND r.created_at <= $5
+                ORDER BY m.created_at ASC, r.message_id ASC, r.reaction_key ASC
+                LIMIT $6
+                FOR UPDATE OF r
+                "#,
+                room_id.as_i64(),
+                user_id.as_i64(),
+                i16::from(ChatMessageStatus::Deleted),
+                DeletionSource::Account as DeletionSource,
+                created_before,
+                limit
+            )
+            .fetch_all(&mut *tx)
+            .await?
+        };
+        if rows.is_empty() {
+            tx.commit().await?;
+            return Ok((0, Vec::new(), None));
+        }
+
+        let message_ids: Vec<i64> = rows.iter().map(|row| row.message_id).collect();
+        let message_created_ats: Vec<DateTime<Utc>> =
+            rows.iter().map(|row| row.message_created_at).collect();
+        let reaction_keys: Vec<String> = rows.iter().map(|row| row.reaction_key.clone()).collect();
+        let result = sqlx::query!(
+            r#"
+            DELETE FROM chat_message_reactions AS r
+            USING unnest($3::bigint[], $4::timestamptz[], $5::text[])
+                  AS selected(message_id, message_created_at, reaction_key)
+            WHERE r.room_id = $1
+              AND r.user_id = $2
+              AND r.message_id = selected.message_id
+              AND r.message_created_at = selected.message_created_at
+              AND r.reaction_key = selected.reaction_key
+            "#,
+            room_id.as_i64(),
+            user_id.as_i64(),
+            &message_ids,
+            &message_created_ats,
+            &reaction_keys
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        if let Some(progress) = moderation_progress {
+            self.update_moderation_progress_in_tx(
+                &mut tx,
+                progress,
+                0,
+                i64::try_from(result.rows_affected()).map_err(|_| {
+                    Error::Internal("Deleted reaction count exceeds i64::MAX".to_string())
+                })?,
+            )
+            .await?;
+        }
+
+        let mut message_keys: Vec<(i64, DateTime<Utc>)> = rows
+            .iter()
+            .map(|row| (row.message_id, row.message_created_at))
+            .collect();
+        message_keys.sort_unstable();
+        message_keys.dedup();
+        let next_cursor = rows.last().map(|row| {
+            (
+                row.message_created_at,
+                row.message_id,
+                row.reaction_key.clone(),
+            )
+        });
+        tx.commit().await?;
+        Ok((result.rows_affected(), message_keys, next_cursor))
+    }
+
     pub async fn search_messages_for_viewer(
         &self,
         query: &ChatSearchMessagesQuery,
@@ -2821,6 +3282,7 @@ impl ChatRepository {
                     event,
                     inserted: false,
                     pin_event: None,
+                    deleted_reactions: 0,
                 }));
             }
         }
@@ -2929,6 +3391,7 @@ impl ChatRepository {
             event: logged,
             inserted: true,
             pin_event,
+            deleted_reactions: 0,
         }))
     }
 
@@ -2952,6 +3415,7 @@ impl ChatRepository {
                     event,
                     inserted: false,
                     pin_event: None,
+                    deleted_reactions: 0,
                 }));
             }
         }
@@ -2962,7 +3426,7 @@ impl ChatRepository {
         );
         builder.push_bind(i16::from(ChatMessageStatus::Deleted));
         builder.push(", version = version + 1, deleted_at = NOW(), deletion_source = ");
-        builder.push_bind(DeletionSource::User);
+        builder.push_bind(request.deletion_source);
         builder.push(", deleted_by = ");
         builder.push_bind(request.deleted_by.as_i64());
         builder.push(", delete_reason = ");
@@ -3004,6 +3468,26 @@ impl ChatRepository {
             tx.commit().await?;
             return Ok(None);
         };
+
+        // Reactions belong to the message lifecycle. Once a message is deleted,
+        // remove the reaction rows as well so moderation does not retain stale data.
+        let deleted_reactions = sqlx::query_scalar!(
+            r#"
+            WITH deleted AS (
+                DELETE FROM chat_message_reactions
+                WHERE room_id = $1 AND message_id = $2 AND message_created_at = $3
+                RETURNING user_id
+            )
+            SELECT COUNT(*) FILTER (WHERE user_id = $4) AS "count!"
+            FROM deleted
+            "#,
+            request.room_id.as_i64(),
+            message.id,
+            message.created_at,
+            request.reaction_user_id.map(|user_id| user_id.as_i64()),
+        )
+        .fetch_one(&mut *tx)
+        .await?;
         let pin = self
             .pin_for_message_in_tx(&mut tx, request.room_id, message.id, message.created_at)
             .await?;
@@ -3057,12 +3541,52 @@ impl ChatRepository {
             )
             .await?;
         }
+        if let Some(progress) = request.moderation_progress {
+            self.update_moderation_progress_in_tx(&mut tx, progress, 1, deleted_reactions)
+                .await?;
+        }
         tx.commit().await?;
         Ok(Some(IdempotentChatEventInsert {
             event: logged,
             inserted: true,
             pin_event,
+            deleted_reactions: deleted_reactions as u64,
         }))
+    }
+
+    async fn update_moderation_progress_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        progress: ChatModerationProgress<'_>,
+        deleted_messages: i64,
+        deleted_reactions: i64,
+    ) -> Result<()> {
+        let result = sqlx::query!(
+            r#"
+            UPDATE chat_moderation_jobs
+            SET deleted_messages = deleted_messages + $4,
+                deleted_reactions = deleted_reactions + $5,
+                locked_at = NOW(),
+                updated_at = NOW()
+            WHERE id = $1
+              AND locked_by = $2
+              AND lock_version = $3
+              AND status = 2
+            "#,
+            progress.job_id,
+            progress.worker_id,
+            progress.lock_version,
+            deleted_messages,
+            deleted_reactions,
+        )
+        .execute(&mut **tx)
+        .await?;
+        if result.rows_affected() != 1 {
+            return Err(Error::LockConflict(
+                "Chat moderation worker lease is no longer valid".to_string(),
+            ));
+        }
+        Ok(())
     }
 
     pub async fn delete(&self, message_id: i64, created_at: DateTime<Utc>) -> Result<bool> {
@@ -4591,6 +5115,11 @@ pub struct DeleteChatMessageEventRequest<'a> {
     pub event_id: &'a str,
     pub occurred_at: DateTime<Utc>,
     pub operation: Option<&'a ChatMessageOperationIdempotency<'a>>,
+    /// Optional user whose reactions should be counted as part of message deletion.
+    pub reaction_user_id: Option<&'a UserId>,
+    /// Optional moderation job progress to update in the deletion transaction.
+    pub moderation_progress: Option<ChatModerationProgress<'a>>,
+    pub deletion_source: DeletionSource,
 }
 
 pub struct PinChatMessageEventRequest<'a> {
@@ -4626,6 +5155,7 @@ pub struct IdempotentChatEventInsert {
     pub event: ChatMessageEventLog,
     pub inserted: bool,
     pub pin_event: Option<ChatPinEventLog>,
+    pub deleted_reactions: u64,
 }
 
 pub struct IdempotentChatPinEventInsert {

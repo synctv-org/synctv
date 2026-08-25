@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            DELETE FROM chat_message_reactions AS r\n            USING unnest($3::bigint[], $4::timestamptz[], $5::text[])\n                  AS selected(message_id, message_created_at, reaction_key)\n            WHERE r.room_id = $1\n              AND r.user_id = $2\n              AND r.message_id = selected.message_id\n              AND r.message_created_at = selected.message_created_at\n              AND r.reaction_key = selected.reaction_key\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8Array",
+        "TimestamptzArray",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2f77b78d7c18981223a11f8bc707c08893387d6a4277b7200eaa2b2f9c4dd07e"
+}

@@ -25,6 +25,7 @@ pub mod playback_lifecycle;
 pub mod playlist;
 mod report;
 mod room;
+pub(crate) use room::build_get_chat_history_request;
 pub use room::{
     build_search_chat_messages_query, parse_optional_room_category_id,
     parse_proto_chat_attachments, parse_room_label_ids,

@@ -73,7 +73,10 @@ pub use auth::{
 pub use ban_record::{
     BanRecordListQuery, BanRecordPage, BanRecordRow, BanRecordService, BanRecordTargetType,
 };
-pub use chat::{ChatDependencies, ChatRuntime, ChatService};
+pub use chat::{
+    ChatDependencies, ChatReactionModerationPageOutcome, ChatRuntime, ChatService,
+    ChatUserModerationOutcome, ChatUserModerationPageOutcome,
+};
 pub use cleanup::{CleanupConfig, CleanupResult, CleanupService, CleanupServiceOptions};
 pub use content_filter::{ContentFilter, ContentFilterError};
 pub use content_report::{

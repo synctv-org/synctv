@@ -30,13 +30,13 @@ use synctv_proto::admin::{
     ListRoomCreationReviewsRequest, ListRoomCreationReviewsResponse, ListRoomJoinReviewsRequest,
     ListRoomJoinReviewsResponse, ListRoomLabelsRequest, ListRoomLabelsResponse, ListRoomsRequest,
     ListRoomsResponse, ListUserRegistrationReviewsRequest, ListUserRegistrationReviewsResponse,
-    ListUsersRequest, ListUsersResponse, PurgeSliceCacheRequest, PurgeSliceCacheResponse,
-    RejectRoomCreationReviewRequest, RejectRoomJoinReviewRequest,
-    RejectUserRegistrationReviewRequest, RemoveAdminRequest, RemoveAdminResponse,
-    ResetRoomSettingsRequest, RestoreUserRequest, RestoreUserResponse, Room, RoomCreationReview,
-    RoomJoinReview, RuntimeSettingsSnapshot, SendTestEmailRequest, SendTestEmailResponse,
-    SetUserPasswordRequest, SetUserPasswordResponse, UnbanRoomRequest, UnbanUserRequest,
-    UpdateContentReportStatusRequest, UpdateContentReportStatusResponse,
+    ListUsersRequest, ListUsersResponse, ModerateRoomChatUserRequest, ModerateRoomChatUserResponse,
+    PurgeSliceCacheRequest, PurgeSliceCacheResponse, RejectRoomCreationReviewRequest,
+    RejectRoomJoinReviewRequest, RejectUserRegistrationReviewRequest, RemoveAdminRequest,
+    RemoveAdminResponse, ResetRoomSettingsRequest, RestoreUserRequest, RestoreUserResponse, Room,
+    RoomCreationReview, RoomJoinReview, RuntimeSettingsSnapshot, SendTestEmailRequest,
+    SendTestEmailResponse, SetUserPasswordRequest, SetUserPasswordResponse, UnbanRoomRequest,
+    UnbanUserRequest, UpdateContentReportStatusRequest, UpdateContentReportStatusResponse,
     UpdateMemberDisplayTagRequest, UpdateMemberPermissionsRequest, UpdateMemberRemarkNameRequest,
     UpdateRoomPasswordRequest, UpdateRoomPasswordResponse, UpdateRoomSettingsRequest,
     UpdateRoomTaxonomyRequest, UpdateSettingsRequest, UpdateUserPreferencesRequest,
@@ -420,6 +420,18 @@ impl AdminService for AdminServiceImpl {
         self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
             synctv_api_common::impls::validate_proto_request(&req)?;
             api.unban_user(req, &validated.user_id, &ctx).await
+        })
+        .await
+    }
+
+    async fn moderate_room_chat_user(
+        &self,
+        request: Request<ModerateRoomChatUserRequest>,
+    ) -> Result<Response<ModerateRoomChatUserResponse>, Status> {
+        self.execute_admin_rpc(request, move |api, validated, _, req| async move {
+            synctv_api_common::impls::validate_proto_request(&req)?;
+            api.moderate_room_chat_user(req, &validated.user_id, validated.role)
+                .await
         })
         .await
     }

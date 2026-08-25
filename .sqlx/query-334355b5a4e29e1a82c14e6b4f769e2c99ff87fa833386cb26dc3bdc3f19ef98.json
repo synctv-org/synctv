@@ -1,0 +1,57 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                SELECT r.message_id AS \"message_id!\",\n                       r.message_created_at AS \"message_created_at!\",\n                       r.reaction_key AS \"reaction_key!\"\n                FROM chat_message_reactions r\n                JOIN chat_messages m\n                  ON m.room_id = r.room_id\n                 AND m.id = r.message_id\n                 AND m.created_at = r.message_created_at\n                WHERE r.room_id = $1\n                  AND r.user_id = $2\n                  AND (m.status = $3 OR m.deletion_source = $4)\n                  AND m.created_at <= $5\n                  AND r.created_at <= $5\n                ORDER BY m.created_at ASC, r.message_id ASC, r.reaction_key ASC\n                LIMIT $6\n                FOR UPDATE OF r\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "message_id!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_message_reactions",
+            "name": "message_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "message_created_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "chat_message_reactions",
+            "name": "message_created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "reaction_key!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_message_reactions",
+            "name": "reaction_key"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int2",
+        "Int2",
+        "Timestamptz",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "334355b5a4e29e1a82c14e6b4f769e2c99ff87fa833386cb26dc3bdc3f19ef98"
+}

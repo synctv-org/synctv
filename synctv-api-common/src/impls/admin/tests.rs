@@ -722,6 +722,7 @@ async fn make_admin_api_for_delete_user_test_with_runtime(
         AdminApiImpl::new_with_runtime(
             AdminApiOptions {
                 room_service,
+                chat_service: None,
                 read_services: crate::test_support::admin_read_services(user_service.as_ref()),
                 user_service,
                 settings_service,
@@ -837,6 +838,7 @@ async fn make_admin_api_with_livestream_for_test(
         AdminApiImpl::new_with_runtime(
             AdminApiOptions {
                 room_service,
+                chat_service: None,
                 read_services: crate::test_support::admin_read_services(user_service.as_ref()),
                 user_service,
                 settings_service,
@@ -3291,6 +3293,7 @@ async fn test_update_settings_persists_when_global_cache_invalidation_fanout_fai
     let admin_api = AdminApiImpl::new_with_runtime(
         AdminApiOptions {
             room_service: admin_api.room_service.clone(),
+            chat_service: admin_api.chat_service.clone(),
             user_service: admin_api.user_service.clone(),
             read_services: AdminReadServices {
                 system_stats_service: admin_api.system_stats_service.clone(),

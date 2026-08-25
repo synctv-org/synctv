@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT reaction_key\n        FROM chat_message_reactions\n        WHERE room_id = $1\n          AND message_id = $2\n          AND message_created_at = $3\n          AND user_id = $4\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "reaction_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_message_reactions",
+            "name": "reaction_key"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Timestamptz",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "ff3d40d7e27aee6f9dd6edd766be86b78aa37ce875006e84caa98343d3de8df5"
+}

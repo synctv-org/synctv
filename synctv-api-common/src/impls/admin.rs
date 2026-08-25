@@ -2,9 +2,9 @@
 
 use std::sync::Arc;
 use synctv_core::service::{
-    AuditService, BanRecordService, ContentReportService, EmailService, RemoteProviderManager,
-    ReviewService, RoomService, RuntimeSettingsStore, SettingsService, SystemStatsService,
-    UserService,
+    AuditService, BanRecordService, ChatService, ContentReportService, EmailService,
+    RemoteProviderManager, ReviewService, RoomService, RuntimeSettingsStore, SettingsService,
+    SystemStatsService, UserService,
 };
 use synctv_livestream::LiveStreamingInfrastructure;
 use synctv_realtime::fanout::RealtimeFanoutService;
@@ -20,6 +20,7 @@ use super::client::convert::{
 };
 use super::client::user_notification_preferences_to_proto;
 use super::ApiError;
+use crate::chat_event_dispatcher::ChatEventDispatcher;
 use crate::fanout::{default_room_settings_fanout_service, RoomSettingsFanoutService};
 use crate::impls::client::media::{
     prepare_delete_entries_outbox_fanout, PrepareDeleteEntriesOutboxFanout,
@@ -51,6 +52,7 @@ mod audit;
 mod auth;
 mod bans;
 mod batch;
+mod chat_moderation;
 mod common;
 mod lifecycle;
 mod livestream;
@@ -89,6 +91,7 @@ pub use synctv_core::models::LOCAL_MANAGEMENT_ACTOR_USER_ID;
 #[derive(Clone)]
 pub struct AdminApiOptions {
     pub room_service: Arc<RoomService>,
+    pub chat_service: Option<Arc<ChatService>>,
     pub user_service: Arc<UserService>,
     pub read_services: AdminReadServices,
     pub settings_service: Arc<SettingsService>,
@@ -153,6 +156,7 @@ impl AdminApiRuntime {
 pub struct AdminApiImpl {
     pub clock: Arc<dyn synctv_core::Clock>,
     pub room_service: Arc<RoomService>,
+    pub chat_service: Option<Arc<ChatService>>,
     pub user_service: Arc<UserService>,
     pub system_stats_service: Arc<synctv_core::service::SystemStatsService>,
     pub review_service: Arc<ReviewService>,
@@ -177,6 +181,7 @@ pub struct AdminApiImpl {
     pub realtime_lifecycle: Arc<dyn RealtimeLifecycleService>,
     pub room_lifecycle_fanout: Arc<dyn RoomLifecycleFanoutService>,
     pub realtime_event_service: Arc<dyn RealtimeEventService>,
+    pub chat_event_dispatcher: Arc<dyn ChatEventDispatcher>,
     pub audit_service: Arc<AuditService>,
     pub provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver>,
     pub provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
@@ -191,6 +196,7 @@ impl AdminApiImpl {
     pub fn new_with_runtime(options: AdminApiOptions, runtime: AdminApiRuntime) -> Self {
         let AdminApiOptions {
             room_service,
+            chat_service,
             user_service,
             read_services,
             settings_service,
@@ -214,6 +220,9 @@ impl AdminApiImpl {
         let clock = runtime.clock;
         let realtime_fanout = runtime.realtime_fanout;
         let realtime_event_service = runtime.realtime_event_service;
+        let chat_event_dispatcher = crate::chat_event_dispatcher::default_chat_event_dispatcher(
+            realtime_event_service.clone(),
+        );
         let room_settings_fanout = default_room_settings_fanout_service(realtime_fanout.clone());
         let membership_event_fanout = default_membership_event_fanout_service(
             realtime_fanout.clone(),
@@ -235,6 +244,7 @@ impl AdminApiImpl {
         Self {
             clock,
             room_service,
+            chat_service,
             user_service,
             system_stats_service,
             review_service,
@@ -259,6 +269,7 @@ impl AdminApiImpl {
             realtime_lifecycle,
             room_lifecycle_fanout,
             realtime_event_service,
+            chat_event_dispatcher,
             audit_service,
             provider_stores: runtime.provider_stores,
             provider_access_service: runtime.provider_access_service,

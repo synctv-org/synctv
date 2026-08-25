@@ -20,21 +20,22 @@ use crate::{
         ChatPinEvent, ChatPinnedMessage, ChatPlaybackMessagesQuery, ChatReactionUsersCursor,
         ChatReactionUsersPage, ChatReadStateWithUnread, ChatSearchMessagesPage,
         ChatSearchMessagesQuery, CompleteFileUploadSession, CompleteFileUploadSessionResult,
-        CreateChatAttachmentUploadSession, DeleteChatMessage, EditChatMessage, FileObjectDownload,
-        FileRangeRequest, FileUploadRange, FileUploadSessionCreateResult, GetFileObject,
-        MarkChatRead, PinChatMessage, RoomId, SendChatMessage, SetChatReaction, StoreFileUpload,
-        StoreFileUploadResult, SubmittedFileReference, SubmittedFileReferenceKind,
+        CreateChatAttachmentUploadSession, DeleteChatMessage, DeletionSource, EditChatMessage,
+        FileObjectDownload, FileRangeRequest, FileUploadRange, FileUploadSessionCreateResult,
+        GetFileObject, MarkChatRead, PinChatMessage, RoomId, SendChatMessage, SetChatReaction,
+        StoreFileUpload, StoreFileUploadResult, SubmittedFileReference, SubmittedFileReferenceKind,
         UnpinChatMessage, UserId, CHAT_PIN_NOTE_MAX_CHARS,
     },
     repository::{
-        ChatMessageOperationIdempotency, ChatRepository, DeleteChatMessageEventRequest,
-        EditChatMessageEventRequest, PinChatMessageEventRequest, UnpinChatMessageEventRequest,
+        ChatMessageOperationIdempotency, ChatModerationJobRepository, ChatModerationProgress,
+        ChatRepository, DeleteChatMessageEventRequest, EditChatMessageEventRequest,
+        PinChatMessageEventRequest, UnpinChatMessageEventRequest,
     },
     service::{
         audit::{AuditEventParams, AuditService},
         notification::NotificationService,
-        ContentFilter, PermissionService, RateLimitConfig, RequestRateLimiterService,
-        RoomSettingsService, UserService,
+        AuthorizedAdminActor, ContentFilter, PermissionService, RateLimitConfig,
+        RequestRateLimiterService, RoomSettingsService, UserService,
     },
     Clock, Error, Result,
 };
@@ -50,6 +51,8 @@ pub const MAX_CHAT_MESSAGE_CHARS: usize = 500;
 pub const MAX_CHAT_ATTACHMENTS_PER_MESSAGE: usize = 10;
 const CHAT_REACTION_DETAIL_CACHE_TTL_SECS: u64 = 5;
 const CHAT_REACTION_DETAIL_CACHE_CAPACITY: u64 = 1024;
+const CHAT_MODERATION_PAGE_SIZE: i64 = 100;
+const CHAT_REACTION_CLEANUP_PAGE_SIZE: i64 = 100;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ChatReactionDetailCacheKey {
@@ -78,6 +81,7 @@ pub struct ChatService {
     /// Local room event bus for chat/domain notifications
     notification_service: NotificationService,
     runtime_settings_store: Option<Arc<crate::service::RuntimeSettingsStore>>,
+    moderation_job_repository: ChatModerationJobRepository,
     reaction_detail_cache: AsyncCache<ChatReactionDetailCacheKey, ChatReactionUsersPage>,
 }
 
@@ -86,6 +90,29 @@ pub struct ChatMessageEventOutcome {
     pub event: ChatMessageEvent,
     pub inserted: bool,
     pub pin_event: Option<ChatPinEvent>,
+    pub deleted_reactions: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChatUserModerationOutcome {
+    pub deleted_messages: u64,
+    pub deleted_reactions: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChatUserModerationPageOutcome {
+    pub outcome: ChatUserModerationOutcome,
+    pub next_cursor: Option<(DateTime<Utc>, i64)>,
+    pub done: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChatReactionModerationPageOutcome {
+    pub deleted_reactions: u64,
+    pub next_cursor: Option<(DateTime<Utc>, i64)>,
+    pub hidden_next_cursor: Option<(DateTime<Utc>, i64, String)>,
+    pub visible_done: bool,
+    pub hidden_done: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -182,7 +209,7 @@ impl ChatService {
                 chat_repository.pool().clone(),
                 file_storage_service.clone(),
             ),
-            chat_repository,
+            chat_repository: chat_repository.clone(),
             rate_limiter,
             rate_limit_config,
             content_filter,
@@ -193,6 +220,9 @@ impl ChatService {
             audit_service,
             notification_service,
             runtime_settings_store,
+            moderation_job_repository: ChatModerationJobRepository::new(
+                chat_repository.pool().clone(),
+            ),
             reaction_detail_cache: AsyncCache::builder()
                 .max_capacity(CHAT_REACTION_DETAIL_CACHE_CAPACITY)
                 .time_to_live(Duration::from_secs(CHAT_REACTION_DETAIL_CACHE_TTL_SECS))
@@ -204,6 +234,11 @@ impl ChatService {
     #[must_use]
     pub fn file_storage_service(&self) -> Arc<dyn FileStorageService> {
         self.file_storage_service.clone()
+    }
+
+    #[must_use]
+    pub const fn moderation_job_repository(&self) -> &ChatModerationJobRepository {
+        &self.moderation_job_repository
     }
 
     pub async fn create_attachment_upload_session(
@@ -377,6 +412,7 @@ impl ChatService {
                     event,
                     inserted: false,
                     pin_event: None,
+                    deleted_reactions: 0,
                 });
             }
         }
@@ -491,6 +527,7 @@ impl ChatService {
             event,
             inserted: created.inserted,
             pin_event: created.pin_event.map(|event| event.event),
+            deleted_reactions: created.deleted_reactions,
         })
     }
 
@@ -883,6 +920,7 @@ impl ChatService {
                     event: event.event,
                     inserted: false,
                     pin_event: None,
+                    deleted_reactions: 0,
                 });
             }
         }
@@ -926,6 +964,7 @@ impl ChatService {
                         event,
                         inserted: false,
                         pin_event: None,
+                        deleted_reactions: 0,
                     });
                 }
                 return Err(Error::OptimisticLockConflict);
@@ -979,6 +1018,7 @@ impl ChatService {
                         event,
                         inserted: false,
                         pin_event: None,
+                        deleted_reactions: 0,
                     });
                 }
             }
@@ -989,6 +1029,7 @@ impl ChatService {
             event: updated.event.event,
             inserted: updated.inserted,
             pin_event: updated.pin_event.map(|event| event.event),
+            deleted_reactions: updated.deleted_reactions,
         })
     }
 
@@ -999,9 +1040,342 @@ impl ChatService {
         Ok(self.delete_message_event_outcome(request).await?.event)
     }
 
+    pub async fn validate_moderation_message_anchor(
+        &self,
+        room_id: &RoomId,
+        message_id: i64,
+        expected_author_id: &UserId,
+    ) -> Result<()> {
+        let message = self
+            .chat_repository
+            .get_by_room_and_id_from_primary(room_id, message_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("Message not found".to_string()))?;
+        if message.user_id.as_ref() != Some(expected_author_id) {
+            return Err(Error::InvalidInput(
+                "Message does not belong to the moderated user".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub async fn moderate_user_messages_page<F>(
+        &self,
+        room_id: &RoomId,
+        target_user_id: &UserId,
+        actor: &AuthorizedAdminActor,
+        reason: Option<&str>,
+        created_before: DateTime<Utc>,
+        cursor: Option<(DateTime<Utc>, i64)>,
+        moderation_progress: Option<ChatModerationProgress<'_>>,
+        mut on_event: F,
+    ) -> Result<ChatUserModerationPageOutcome>
+    where
+        F: FnMut(&ChatMessageEvent, Option<&ChatPinEvent>) + Send,
+    {
+        let messages = self
+            .chat_repository
+            .list_active_messages_for_user_page(
+                room_id,
+                target_user_id,
+                cursor,
+                created_before,
+                CHAT_MODERATION_PAGE_SIZE,
+            )
+            .await?;
+        let page_len = messages.len();
+        let mut next_cursor = None;
+        let mut outcome = ChatUserModerationOutcome {
+            deleted_messages: 0,
+            deleted_reactions: 0,
+        };
+        for message in messages {
+            next_cursor = Some((message.created_at, message.id));
+            let deleted = self
+                .delete_message_event_outcome_with_reaction_user_and_permission(
+                    DeleteChatMessage {
+                        room_id: *room_id,
+                        message_id: message.id,
+                        user_id: *actor.user_id(),
+                        client_operation_id: None,
+                        reason: reason.map(str::to_owned),
+                        expected_version: None,
+                    },
+                    Some(target_user_id),
+                    false,
+                    DeletionSource::Admin,
+                    Some(actor.username()),
+                    moderation_progress,
+                )
+                .await?;
+            if deleted.inserted {
+                outcome.deleted_messages = outcome
+                    .deleted_messages
+                    .checked_add(1)
+                    .ok_or_else(|| Error::Internal("Deleted message count overflow".to_string()))?;
+                outcome.deleted_reactions = outcome
+                    .deleted_reactions
+                    .checked_add(deleted.deleted_reactions)
+                    .ok_or_else(|| {
+                        Error::Internal("Deleted reaction count overflow".to_string())
+                    })?;
+                on_event(&deleted.event, deleted.pin_event.as_ref());
+            }
+        }
+        Ok(ChatUserModerationPageOutcome {
+            outcome,
+            next_cursor,
+            done: page_len < CHAT_MODERATION_PAGE_SIZE as usize,
+        })
+    }
+
+    pub async fn remove_user_reactions_page<F>(
+        &self,
+        room_id: &RoomId,
+        target_user_id: &UserId,
+        actor_user_id: &UserId,
+        created_before: DateTime<Utc>,
+        cursor: Option<(DateTime<Utc>, i64)>,
+        hidden_cursor: Option<(DateTime<Utc>, i64, String)>,
+        moderation_progress: Option<ChatModerationProgress<'_>>,
+        mut on_event: F,
+    ) -> Result<ChatReactionModerationPageOutcome>
+    where
+        F: FnMut(&ChatMessageEvent, Option<&ChatPinEvent>) + Send,
+    {
+        let (deleted, events, pin_events, next_cursor) = if hidden_cursor.is_none() {
+            self.chat_repository
+                .delete_reactions_by_user_with_events_page(
+                    room_id,
+                    target_user_id,
+                    actor_user_id,
+                    self.clock.now(),
+                    created_before,
+                    cursor,
+                    CHAT_REACTION_CLEANUP_PAGE_SIZE,
+                    moderation_progress,
+                )
+                .await?
+        } else {
+            (0, Vec::new(), Vec::new(), cursor)
+        };
+        for event in &events {
+            let pin_event = pin_events
+                .iter()
+                .find(|pin| pin.message.message.id == event.message.message.id);
+            self.invalidate_reaction_detail_cache_for_message(room_id, event.message.message.id)
+                .await;
+            on_event(event, pin_event);
+        }
+        let visible_done = events.is_empty();
+        if !visible_done {
+            return Ok(ChatReactionModerationPageOutcome {
+                deleted_reactions: deleted,
+                next_cursor,
+                hidden_next_cursor: hidden_cursor,
+                visible_done: false,
+                hidden_done: false,
+            });
+        }
+
+        let (hidden_deleted, message_keys, hidden_next_cursor) = self
+            .chat_repository
+            .delete_hidden_reactions_by_user_page(
+                room_id,
+                target_user_id,
+                created_before,
+                hidden_cursor,
+                CHAT_REACTION_CLEANUP_PAGE_SIZE,
+                moderation_progress,
+            )
+            .await?;
+        for (message_id, _) in message_keys {
+            self.invalidate_reaction_detail_cache_for_message(room_id, message_id)
+                .await;
+        }
+        Ok(ChatReactionModerationPageOutcome {
+            deleted_reactions: deleted
+                .checked_add(hidden_deleted)
+                .ok_or_else(|| Error::Internal("Deleted reaction count overflow".to_string()))?,
+            next_cursor,
+            hidden_done: hidden_deleted == 0,
+            hidden_next_cursor,
+            visible_done: true,
+        })
+    }
+
+    pub async fn delete_message_event_outcome_for_author(
+        &self,
+        request: DeleteChatMessage,
+        expected_author_id: &UserId,
+    ) -> Result<ChatMessageEventOutcome> {
+        self.delete_message_event_outcome_for_author_with_permission(
+            request,
+            expected_author_id,
+            true,
+            DeletionSource::User,
+            None,
+            None,
+        )
+        .await
+    }
+
+    pub async fn delete_message_event_outcome_for_author_as_admin(
+        &self,
+        request: DeleteChatMessage,
+        expected_author_id: &UserId,
+        actor: &AuthorizedAdminActor,
+    ) -> Result<ChatMessageEventOutcome> {
+        self.delete_message_event_outcome_for_author_as_admin_with_progress(
+            request,
+            expected_author_id,
+            actor,
+            None,
+        )
+        .await
+    }
+
+    pub async fn delete_message_event_outcome_for_author_as_admin_with_progress(
+        &self,
+        request: DeleteChatMessage,
+        expected_author_id: &UserId,
+        actor: &AuthorizedAdminActor,
+        moderation_progress: Option<ChatModerationProgress<'_>>,
+    ) -> Result<ChatMessageEventOutcome> {
+        if request.user_id != *actor.user_id() {
+            return Err(Error::Authorization(
+                "Delete actor does not match authorized admin actor".to_string(),
+            ));
+        }
+        self.delete_message_event_outcome_for_author_with_permission(
+            request,
+            expected_author_id,
+            false,
+            DeletionSource::Admin,
+            Some(actor.username()),
+            moderation_progress,
+        )
+        .await
+    }
+
+    /// Deletes the message that anchored an accepted moderation command.
+    ///
+    /// Once accepted, later edits do not invalidate the command and a
+    /// concurrently deleted anchor is considered complete so the remaining
+    /// actions can run.
+    pub async fn delete_moderation_message_event_outcome_as_admin_with_progress(
+        &self,
+        room_id: &RoomId,
+        message_id: i64,
+        expected_author_id: &UserId,
+        actor: &AuthorizedAdminActor,
+        reason: Option<&str>,
+        moderation_progress: Option<ChatModerationProgress<'_>>,
+    ) -> Result<Option<ChatMessageEventOutcome>> {
+        let Some(current) = self
+            .chat_repository
+            .get_by_room_and_id_from_primary(room_id, message_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        if current.user_id.as_ref() != Some(expected_author_id) {
+            return Err(Error::InvalidInput(
+                "Message does not belong to the moderated user".to_string(),
+            ));
+        }
+        if current.status == ChatMessageStatus::Deleted {
+            return Ok(None);
+        }
+
+        let request = DeleteChatMessage {
+            room_id: *room_id,
+            message_id,
+            user_id: *actor.user_id(),
+            client_operation_id: None,
+            reason: reason.map(str::to_owned),
+            expected_version: None,
+        };
+        match self
+            .delete_message_event_outcome_for_author_with_permission(
+                request.clone(),
+                expected_author_id,
+                false,
+                DeletionSource::Admin,
+                Some(actor.username()),
+                moderation_progress,
+            )
+            .await
+        {
+            Ok(outcome) => Ok(Some(outcome)),
+            Err(error @ (Error::Conflict(_) | Error::OptimisticLockConflict)) => {
+                let current = self
+                    .chat_repository
+                    .get_by_room_and_id_from_primary(room_id, message_id)
+                    .await?;
+                if current.is_none_or(|message| message.status == ChatMessageStatus::Deleted) {
+                    Ok(None)
+                } else {
+                    Err(error)
+                }
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn delete_message_event_outcome_for_author_with_permission(
+        &self,
+        request: DeleteChatMessage,
+        expected_author_id: &UserId,
+        check_permission: bool,
+        deletion_source: DeletionSource,
+        actor_username: Option<&str>,
+        moderation_progress: Option<ChatModerationProgress<'_>>,
+    ) -> Result<ChatMessageEventOutcome> {
+        let message = self
+            .chat_repository
+            .get_by_room_and_id_from_primary(&request.room_id, request.message_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("Message not found".to_string()))?;
+        if message.user_id.as_ref() != Some(expected_author_id) {
+            return Err(Error::InvalidInput(
+                "Message does not belong to the moderated user".to_string(),
+            ));
+        }
+        self.delete_message_event_outcome_with_reaction_user_and_permission(
+            request,
+            Some(expected_author_id),
+            check_permission,
+            deletion_source,
+            actor_username,
+            moderation_progress,
+        )
+        .await
+    }
+
     pub async fn delete_message_event_outcome(
         &self,
         request: DeleteChatMessage,
+    ) -> Result<ChatMessageEventOutcome> {
+        self.delete_message_event_outcome_with_reaction_user_and_permission(
+            request,
+            None,
+            true,
+            DeletionSource::User,
+            None,
+            None,
+        )
+        .await
+    }
+
+    async fn delete_message_event_outcome_with_reaction_user_and_permission(
+        &self,
+        request: DeleteChatMessage,
+        reaction_user_id: Option<&UserId>,
+        check_permission: bool,
+        deletion_source: DeletionSource,
+        actor_username: Option<&str>,
+        moderation_progress: Option<ChatModerationProgress<'_>>,
     ) -> Result<ChatMessageEventOutcome> {
         let current_with_attachments = self
             .chat_repository
@@ -1011,7 +1385,12 @@ impl ChatService {
         let current = &current_with_attachments.message;
 
         let is_sender = current.user_id.as_ref() == Some(&request.user_id);
-        if !is_sender {
+        let deletion_source = if !is_sender && check_permission {
+            DeletionSource::Admin
+        } else {
+            deletion_source
+        };
+        if !is_sender && check_permission {
             self.permission_service
                 .check_permission(
                     &request.room_id,
@@ -1038,6 +1417,7 @@ impl ChatService {
                     event: event.event,
                     inserted: false,
                     pin_event: None,
+                    deleted_reactions: 0,
                 });
             }
         }
@@ -1047,6 +1427,7 @@ impl ChatService {
                     event,
                     inserted: false,
                     pin_event: None,
+                    deleted_reactions: 0,
                 });
             }
             return Err(Error::Conflict(
@@ -1082,6 +1463,9 @@ impl ChatService {
                 event_id: &synctv_common::snanoid!(16),
                 occurred_at: self.clock.now(),
                 operation: operation.as_ref(),
+                reaction_user_id,
+                moderation_progress,
+                deletion_source,
             })
             .await?;
         let Some(deleted) = deleted else {
@@ -1095,6 +1479,7 @@ impl ChatService {
                     event,
                     inserted: false,
                     pin_event: None,
+                    deleted_reactions: 0,
                 });
             }
             if current.status == ChatMessageStatus::Deleted {
@@ -1106,9 +1491,16 @@ impl ChatService {
         };
 
         if deleted.inserted {
+            self.invalidate_reaction_detail_cache_for_message(&request.room_id, request.message_id)
+                .await;
             if !is_sender {
-                self.audit_chat_management_delete(&request, current, &deleted.event.event)
-                    .await;
+                self.audit_chat_management_delete(
+                    &request,
+                    current,
+                    &deleted.event.event,
+                    actor_username,
+                )
+                .await;
             }
 
             let attachment_file_references = current_with_attachments
@@ -1137,6 +1529,7 @@ impl ChatService {
             event: deleted.event.event,
             inserted: deleted.inserted,
             pin_event: deleted.pin_event.map(|event| event.event),
+            deleted_reactions: deleted.deleted_reactions,
         })
     }
 
@@ -1350,6 +1743,7 @@ impl ChatService {
             event: inserted.event.event,
             inserted: inserted.inserted,
             pin_event: inserted.pin_event.map(|event| event.event),
+            deleted_reactions: inserted.deleted_reactions,
         })
     }
 
@@ -1415,6 +1809,23 @@ impl ChatService {
                 key.room_id == room_id
                     && key.message_id == message_id
                     && key.reaction_key == reaction_key
+            })
+        {
+            debug!(%error, "Failed to invalidate chat reaction detail cache");
+        }
+        self.reaction_detail_cache.run_pending_tasks().await;
+    }
+
+    async fn invalidate_reaction_detail_cache_for_message(
+        &self,
+        room_id: &RoomId,
+        message_id: i64,
+    ) {
+        let room_id = *room_id;
+        if let Err(error) = self
+            .reaction_detail_cache
+            .invalidate_entries_if(move |key, _| {
+                key.room_id == room_id && key.message_id == message_id
             })
         {
             debug!(%error, "Failed to invalidate chat reaction detail cache");
@@ -1621,31 +2032,39 @@ impl ChatService {
         request: &DeleteChatMessage,
         original: &ChatMessage,
         event: &ChatMessageEvent,
+        actor_username_snapshot: Option<&str>,
     ) {
         let Some(audit) = &self.audit_service else {
             return;
         };
 
-        let actor_username = match self.user_service.get_username(&request.user_id).await {
-            Ok(Some(username)) => username,
-            Ok(None) => {
-                warn!(
-                    room_id = %request.room_id,
-                    message_id = %request.message_id,
-                    actor_user_id = %request.user_id,
-                    "skipped chat delete audit because actor user was not found"
-                );
-                return;
-            }
-            Err(error) => {
-                warn!(
-                    room_id = %request.room_id,
-                    message_id = %request.message_id,
-                    actor_user_id = %request.user_id,
-                    error = %error,
-                    "skipped chat delete audit because actor username lookup failed"
-                );
-                return;
+        let actor_username = if let Some(username) = actor_username_snapshot
+            .map(str::trim)
+            .filter(|username| !username.is_empty())
+        {
+            username.to_string()
+        } else {
+            match self.user_service.get_username(&request.user_id).await {
+                Ok(Some(username)) => username,
+                Ok(None) => {
+                    warn!(
+                        room_id = %request.room_id,
+                        message_id = %request.message_id,
+                        actor_user_id = %request.user_id,
+                        "skipped chat delete audit because actor user was not found"
+                    );
+                    return;
+                }
+                Err(error) => {
+                    warn!(
+                        room_id = %request.room_id,
+                        message_id = %request.message_id,
+                        actor_user_id = %request.user_id,
+                        error = %error,
+                        "skipped chat delete audit because actor username lookup failed"
+                    );
+                    return;
+                }
             }
         };
         let target_id = format!("{}:{}", request.room_id, request.message_id);

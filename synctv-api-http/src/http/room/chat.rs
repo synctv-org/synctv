@@ -34,7 +34,7 @@ pub struct GetChatHistoryQuery {
 }
 
 impl GetChatHistoryQuery {
-    pub(super) fn into_request(self) -> AppResult<GetChatHistoryRequest> {
+    pub(crate) fn into_request(self) -> AppResult<GetChatHistoryRequest> {
         Ok(GetChatHistoryRequest {
             limit: self.limit,
             cursor: self.cursor,
@@ -77,7 +77,7 @@ pub struct GetChatMessageContextQuery {
 }
 
 impl GetChatMessageContextQuery {
-    fn into_request(self, message_id: String) -> GetChatMessageContextRequest {
+    pub(crate) fn into_request(self, message_id: String) -> GetChatMessageContextRequest {
         GetChatMessageContextRequest {
             message_id,
             before_limit: self.before_limit,

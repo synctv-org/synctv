@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE chat_moderation_jobs\n            SET phase = $4,\n                status = CASE\n                    WHEN $16 THEN 2::SMALLINT\n                    ELSE 1::SMALLINT\n                END,\n                message_cursor_created_at = $5,\n                message_cursor_id = $6,\n                reaction_cursor_created_at = $7,\n                reaction_cursor_id = $8,\n                hidden_reaction_cursor_created_at = $9,\n                hidden_reaction_cursor_id = $10,\n                hidden_reaction_cursor_key = $11,\n                deleted_messages = $12,\n                deleted_reactions = $13,\n                explicit_message_done = $14,\n                ban_done = $15,\n                snapshot_at = $17,\n                locked_by = CASE WHEN $16 THEN locked_by ELSE NULL END,\n                locked_at = CASE WHEN $16 THEN NOW() ELSE NULL END,\n                updated_at = NOW(),\n                last_error = NULL,\n                lock_version = lock_version + 1\n            WHERE id = $1 AND locked_by = $2 AND lock_version = $3 AND status = 2\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int8",
+        "Int2",
+        "Timestamptz",
+        "Int8",
+        "Timestamptz",
+        "Int8",
+        "Timestamptz",
+        "Int8",
+        "Text",
+        "Int8",
+        "Int8",
+        "Bool",
+        "Bool",
+        "Bool",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8b64a5fa8a5b92c7f7d0da86132febda77d4312bf83f9b08ac5f6d610e235ff3"
+}

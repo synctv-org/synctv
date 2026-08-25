@@ -30,6 +30,7 @@ pub(crate) use chat::{
     list_pinned_chat_messages, mark_chat_read, pin_chat_message, search_chat_messages,
     send_chat_message, set_chat_reaction, unpin_chat_message,
 };
+pub(crate) use chat::{GetChatHistoryQuery, GetChatMessageContextQuery};
 pub(crate) use execute::execute_room_actor_endpoint;
 use execute::request_metadata;
 #[cfg(feature = "openapi")]

@@ -1,5 +1,3 @@
-#![recursion_limit = "256"]
-
 //! SyncTV server library.
 //!
 //! This crate provides the main server implementation for SyncTV.

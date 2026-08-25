@@ -1,5 +1,3 @@
-#![recursion_limit = "256"]
-
 pub mod grpc;
 pub mod grpc_support;
 pub(crate) mod providers;

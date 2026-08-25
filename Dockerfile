@@ -98,6 +98,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     fi; \
     cargo \
         rustc $build_flags \
+        -p synctv \
         --bin synctv \
         -- \
         -Clink-arg=-fuse-ld=lld \

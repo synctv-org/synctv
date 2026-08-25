@@ -63,6 +63,8 @@ jobs:
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: proto-freshness
 
       - name: Run Clippy
         timeout-minutes: 60
@@ -86,6 +88,8 @@ jobs:
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: proto-freshness
 
       - name: Build
         run: make build-workspace
@@ -107,6 +111,8 @@ jobs:
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: proto-freshness
 
       - name: Check generated proto artifacts
         run: make proto-freshness
@@ -129,6 +135,8 @@ jobs:
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: proto-freshness
 
       - name: Check SQLx offline metadata
         run: make check-all-targets
@@ -173,6 +181,8 @@ jobs:
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: proto-freshness
 
       - name: Run non-ignored tests with nextest
         timeout-minutes: 60
@@ -210,6 +220,8 @@ jobs:
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: proto-freshness
 
       - name: Run ignored tests with nextest
         timeout-minutes: 60
@@ -286,6 +298,11 @@ jobs:
 
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler nasm libclang-dev
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: proto-freshness
 
       - name: Install cargo-udeps
         run: make install-cargo-udeps

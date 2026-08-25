@@ -40,6 +40,7 @@ service AdminService {
   rpc UpdateUserRole(UpdateUserRoleRequest) returns (AdminUser);
   rpc BanUser(BanUserRequest) returns (AdminUser);
   rpc UnbanUser(UnbanUserRequest) returns (AdminUser);
+  rpc ModerateRoomChatUser(ModerateRoomChatUserRequest) returns (ModerateRoomChatUserResponse);
   rpc GetUserRooms(GetUserRoomsRequest) returns (GetUserRoomsResponse);
 
   // =========================
@@ -824,6 +825,26 @@ message UnbanUserRequest {
     pattern: "^usr_[A-Za-z0-9]+$"
   }];
 }
+
+message ModerateRoomChatUserRequest {
+  string room_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^room_[A-Za-z0-9]+$"
+  }];
+  string user_id = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^usr_[A-Za-z0-9]+$"
+  }];
+  bool delete_all_messages = 3;
+  bool ban_user = 4;
+  string reason = 5 [(buf.validate.field).string.max_len = 500];
+  bool delete_all_reactions = 6;
+  string message_id = 7;
+}
+
+message ModerateRoomChatUserResponse {}
 
 message GetUserRoomsRequest {
   string user_id = 1 [(buf.validate.field).string = {

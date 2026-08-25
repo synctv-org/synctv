@@ -36,6 +36,19 @@ pub(crate) struct RoomMemberTargetPath {
     user_id: String,
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AdminRoomPath {
+    room_id: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AdminChatMessagePath {
+    room_id: String,
+    message_id: String,
+}
+
 #[derive(Debug, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
@@ -221,6 +234,15 @@ pub(crate) fn create_admin_router() -> Router<AppState> {
         )
         .route("/rooms/{roomId}/ban", post(ban_room))
         .route("/rooms/{roomId}/unban", post(unban_room))
+        .route(
+            "/rooms/{roomId}/chat/users/{userId}/moderate",
+            post(moderate_room_chat_user),
+        )
+        .route("/rooms/{roomId}/chat/history", get(get_room_chat_history))
+        .route(
+            "/rooms/{roomId}/chat/messages/{messageId}/context",
+            get(get_room_chat_message_context),
+        )
         .route(
             "/rooms/{roomId}/settings",
             get(get_room_settings).post(set_room_settings),
@@ -1426,6 +1448,127 @@ pub(crate) async fn ban_user(
         move |api, validated, rctx| async move {
             api.ban_user(req, &validated.user_id, validated.role, &rctx)
                 .await
+        },
+    )
+    .await?;
+    Ok(Json(resp))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/rooms/{roomId}/chat/users/{userId}/moderate",
+        tag = "Admin",
+        params(
+            ("roomId" = String, Path, description = "Room ID"),
+            ("userId" = String, Path, description = "User ID")
+        ),
+        request_body = admin::ModerateRoomChatUserRequest,
+        responses(
+            (status = 202, description = "Chat user moderation accepted", body = admin::ModerateRoomChatUserResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn moderate_room_chat_user(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<RoomMemberTargetPath>,
+    Json(mut req): Json<admin::ModerateRoomChatUserRequest>,
+) -> AppResult<(
+    axum::http::StatusCode,
+    Json<admin::ModerateRoomChatUserResponse>,
+)> {
+    req.room_id = path.room_id;
+    req.user_id = path.user_id;
+    synctv_api_common::impls::validate_proto_request(&req).map_err(super::error::map_api_error)?;
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, validated, _| async move {
+            api.moderate_room_chat_user(req, &validated.user_id, validated.role)
+                .await
+        },
+    )
+    .await?;
+    Ok((axum::http::StatusCode::ACCEPTED, Json(resp)))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/admin/rooms/{roomId}/chat/history",
+        tag = "Admin",
+        params(
+            ("roomId" = String, Path, description = "Room ID"),
+            crate::http::room::GetChatHistoryQuery
+        ),
+        responses(
+            (status = 200, description = "Chat history", body = client::GetChatHistoryResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Room not found", body = crate::openapi::GoogleRpcStatusSchema)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn get_room_chat_history(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<AdminRoomPath>,
+    ProtoQuery(query): ProtoQuery<crate::http::room::GetChatHistoryQuery>,
+) -> AppResult<Json<client::GetChatHistoryResponse>> {
+    let req = query.into_request()?;
+    let room_id = path.room_id;
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, _validated, _ctx| async move { api.get_room_chat_history(&room_id, req).await },
+    )
+    .await?;
+    Ok(Json(resp))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/admin/rooms/{roomId}/chat/messages/{messageId}/context",
+        tag = "Admin",
+        params(
+            ("roomId" = String, Path, description = "Room ID"),
+            ("messageId" = String, Path, description = "Chat message ID"),
+            crate::http::room::GetChatMessageContextQuery
+        ),
+        responses(
+            (status = 200, description = "Chat message context", body = client::GetChatMessageContextResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Message or room not found", body = crate::openapi::GoogleRpcStatusSchema)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn get_room_chat_message_context(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<AdminChatMessagePath>,
+    ProtoQuery(query): ProtoQuery<crate::http::room::GetChatMessageContextQuery>,
+) -> AppResult<Json<client::GetChatMessageContextResponse>> {
+    let req = query.into_request(path.message_id);
+    let room_id = path.room_id;
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, _validated, _ctx| async move {
+            api.get_room_chat_message_context(&room_id, req).await
         },
     )
     .await?;

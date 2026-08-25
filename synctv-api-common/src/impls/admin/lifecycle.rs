@@ -54,16 +54,65 @@ impl AdminApiImpl {
         caller_role: UserRole,
         reason: Option<String>,
     ) -> Result<synctv_core::models::User, ApiError> {
-        let user = self
-            .user_service
-            .get_user(target_user_id)
-            .await
-            .map_err(ApiError::from)?;
+        self.ban_user_with_cleanup_inner(
+            target_user_id,
+            admin_user_id,
+            caller_role,
+            reason,
+            false,
+            true,
+        )
+        .await?
+        .ok_or_else(|| ApiError::InvalidInput("User is already banned".to_string()))
+    }
 
-        check_role_hierarchy(caller_role, user.role, "ban")?;
+    /// Completes a moderation command that was authorized before it was queued.
+    /// The target role is intentionally read without re-checking hierarchy so a
+    /// later role change cannot leave an already-authorized command half-done.
+    pub(in crate::impls::admin) async fn ensure_persisted_user_banned_with_cleanup(
+        &self,
+        target_user_id: &UserId,
+        admin_user_id: &UserId,
+        caller_role: UserRole,
+        reason: Option<String>,
+    ) -> Result<bool, ApiError> {
+        Ok(self
+            .ban_user_with_cleanup_inner(
+                target_user_id,
+                admin_user_id,
+                caller_role,
+                reason,
+                true,
+                false,
+            )
+            .await?
+            .is_some())
+    }
 
-        if user.is_banned {
-            return Err(ApiError::InvalidInput("User is already banned".to_string()));
+    async fn ban_user_with_cleanup_inner(
+        &self,
+        target_user_id: &UserId,
+        admin_user_id: &UserId,
+        caller_role: UserRole,
+        reason: Option<String>,
+        allow_already_banned: bool,
+        validate_target_role: bool,
+    ) -> Result<Option<synctv_core::models::User>, ApiError> {
+        let target_user = if validate_target_role {
+            self.validate_user_action_target(target_user_id, caller_role, "ban")
+                .await?
+        } else {
+            self.user_service
+                .get_user(target_user_id)
+                .await
+                .map_err(ApiError::from)?
+        };
+        if target_user.is_banned {
+            return if allow_already_banned {
+                Ok(None)
+            } else {
+                Err(ApiError::InvalidInput("User is already banned".to_string()))
+            };
         }
 
         let (affected_room_ids, owned_room_ids) = tokio::try_join!(
@@ -130,7 +179,7 @@ impl AdminApiImpl {
             }) as synctv_core::service::RealtimeOutboxOwnedMediaKickEventFactory
         };
 
-        let updated = self
+        let updated = match self
             .room_service
             .ban_user_and_reset_owned_playback_with_outbox_and_media_kicks(
                 target_user_id,
@@ -141,7 +190,20 @@ impl AdminApiImpl {
                 Some(owned_media_kick_events_factory),
             )
             .await
-            .map_err(ApiError::from)?;
+        {
+            Ok(updated) => updated,
+            Err(_error)
+                if allow_already_banned
+                    && self
+                        .user_service
+                        .is_user_banned(target_user_id)
+                        .await
+                        .map_err(ApiError::from)? =>
+            {
+                return Ok(None);
+            }
+            Err(error) => return Err(ApiError::from(error)),
+        };
 
         prepared_playback_reset.publish_after_outbox_commit();
 
@@ -179,8 +241,24 @@ impl AdminApiImpl {
             .disconnect_user(target_user_id, "user_banned")
             .await;
 
-        Ok(updated)
+        Ok(Some(updated))
     }
+
+    pub(in crate::impls::admin) async fn validate_user_action_target(
+        &self,
+        target_user_id: &UserId,
+        caller_role: UserRole,
+        action: &str,
+    ) -> Result<synctv_core::models::User, ApiError> {
+        let user = self
+            .user_service
+            .get_user(target_user_id)
+            .await
+            .map_err(ApiError::from)?;
+        check_role_hierarchy(caller_role, user.role, action)?;
+        Ok(user)
+    }
+
     pub(in crate::impls::admin) async fn list_owned_room_ids(
         &self,
         user_id: &UserId,

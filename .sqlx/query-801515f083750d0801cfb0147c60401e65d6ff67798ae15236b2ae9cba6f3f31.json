@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE chat_moderation_jobs\n            SET status = $4::SMALLINT,\n                attempts = $5,\n                next_attempt_at = CASE\n                    WHEN $4::SMALLINT = 1 THEN NOW() + ($7::DOUBLE PRECISION * INTERVAL '1 second')\n                    ELSE next_attempt_at\n                END,\n                locked_by = NULL,\n                locked_at = NULL,\n                last_error = $6,\n                updated_at = NOW()\n            WHERE id = $1 AND locked_by = $2 AND lock_version = $3 AND status = 2\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int8",
+        "Int2",
+        "Int4",
+        "Text",
+        "Float8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "801515f083750d0801cfb0147c60401e65d6ff67798ae15236b2ae9cba6f3f31"
+}

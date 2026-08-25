@@ -27,6 +27,7 @@ use super::media::{
 use super::{ClientApiImpl, RoomActor};
 
 mod support;
+pub(crate) use support::build_get_chat_history_request;
 use support::*;
 pub use support::{
     build_search_chat_messages_query, parse_optional_room_category_id,

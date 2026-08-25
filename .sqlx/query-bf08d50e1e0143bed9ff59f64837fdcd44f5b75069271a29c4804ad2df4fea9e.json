@@ -117,14 +117,14 @@
       ]
     },
     "nullable": [
-      true,
-      true,
+      false,
+      false,
       null,
-      true,
+      false,
       null,
       null,
-      true,
-      true,
+      false,
+      false,
       true,
       true,
       true

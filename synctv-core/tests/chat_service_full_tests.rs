@@ -21,15 +21,16 @@ use synctv_core::{
         SendChatMessage, SubmittedFileReference, User, UserId, UserRole, UserStatus,
     },
     repository::{
-        ChatRepository, FileStorageRepository, RoomMemberRepository, RoomRepository,
-        RoomSettingsRepository, UpsertFileBlob, UpsertFileObject, UserRepository,
+        ChatModerationJobRepository, ChatModerationProgress, ChatRepository, FileStorageRepository,
+        NewChatModerationJob, RoomMemberRepository, RoomRepository, RoomSettingsRepository,
+        UpsertFileBlob, UpsertFileObject, UserRepository,
     },
     service::{
-        AuditService, BruteForceProtection, ChatDependencies, ChatRuntime, ChatService,
-        ContentFilter, DisabledFileStorageService, FileStorageCleanupOrigin, FileStorageService,
-        InMemoryTokenBlacklistStore, JwtService, NotificationService, PermissionService,
-        RateLimitConfig, RateLimiter, RequestRateLimiterService, RoomService, RoomSettingsService,
-        UserService,
+        AuditService, AuthorizedAdminActor, BruteForceProtection, ChatDependencies, ChatRuntime,
+        ChatService, ContentFilter, DisabledFileStorageService, FileStorageCleanupOrigin,
+        FileStorageService, InMemoryTokenBlacklistStore, JwtService, NotificationService,
+        PermissionService, RateLimitConfig, RateLimiter, RequestRateLimiterService, RoomService,
+        RoomSettingsService, UserService,
     },
     Error,
 };
@@ -2225,6 +2226,234 @@ async fn test_delete_message_event_soft_deletes_and_checks_expected_version() {
         .await
         .failed("second delete should conflict");
     assert!(matches!(stale, Error::Conflict(_)));
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_admin_moderation_delete_rejects_expired_worker_lease() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(&pool);
+
+    let target = user_repo
+        .create(&make_user("moderation_lease_target"))
+        .await
+        .checked("target should be created");
+    let mut actor = make_user("moderation_lease_admin");
+    actor.role = UserRole::Admin;
+    let actor = user_repo
+        .create(&actor)
+        .await
+        .checked("actor should be created");
+    username_cache
+        .set(&target.id, &target.username)
+        .await
+        .checked("target username should be cached");
+    let room = room_service
+        .create_room(
+            "Moderation Lease Room".to_string(),
+            String::new(),
+            target.id,
+            None,
+            None,
+        )
+        .await
+        .checked("room should be created");
+    let message = chat_service
+        .send_message(room.id, target.id, "keep after stale lease".to_string())
+        .await
+        .checked("message should be created");
+
+    let job_repository = ChatModerationJobRepository::new(pool.clone());
+    job_repository
+        .insert(&NewChatModerationJob {
+            id: "service-expired-moderation-lease".to_string(),
+            room_id: room.id,
+            target_user_id: target.id,
+            actor_user_id: actor.id,
+            actor_username: actor.username.clone(),
+            actor_role: actor.role,
+            message_id: Some(message.id),
+            ban_user: false,
+            delete_all_messages: false,
+            delete_all_reactions: false,
+            reason: Some("test".to_string()),
+            snapshot_at: Utc::now(),
+        })
+        .await
+        .checked("job should be inserted");
+    let claimed = job_repository
+        .claim_batch("expired-service-worker", 1)
+        .await
+        .checked("job should be claimed")
+        .pop()
+        .checked("one job should be claimed");
+    sqlx::query!(
+        r#"
+        UPDATE chat_moderation_jobs
+        SET locked_at = NOW() - INTERVAL '1 hour'
+        WHERE id = $1
+        "#,
+        &claimed.id,
+    )
+    .execute(&pool)
+    .await
+    .checked("lease should be expired");
+    assert_eq!(
+        job_repository
+            .requeue_stale_processing(1)
+            .await
+            .checked("stale job should be requeued"),
+        1
+    );
+
+    let actor = AuthorizedAdminActor::for_persisted_job(actor.id, actor.username);
+    let error = chat_service
+        .delete_message_event_outcome_for_author_as_admin_with_progress(
+            DeleteChatMessage {
+                room_id: room.id,
+                message_id: message.id,
+                user_id: *actor.user_id(),
+                client_operation_id: None,
+                reason: Some("test".to_string()),
+                expected_version: Some(message.version),
+            },
+            &target.id,
+            &actor,
+            Some(ChatModerationProgress {
+                job_id: &claimed.id,
+                worker_id: "expired-service-worker",
+                lock_version: claimed.lock_version,
+            }),
+        )
+        .await
+        .failed("expired worker must not delete the message");
+    assert!(matches!(error, Error::LockConflict(_)));
+    let stored = ChatRepository::new(pool)
+        .get_by_room_and_id_from_primary(&room.id, message.id)
+        .await
+        .checked("message should be readable")
+        .checked("message should exist");
+    assert_eq!(stored.status, ChatMessageStatus::Active);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_admin_moderation_anchor_remains_idempotent_after_enqueue() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(&pool);
+
+    let target = user_repo
+        .create(&make_user("moderation_anchor_target"))
+        .await
+        .checked("target should be created");
+    let mut first_admin = make_user("moderation_anchor_admin_one");
+    first_admin.role = UserRole::Admin;
+    let first_admin = user_repo
+        .create(&first_admin)
+        .await
+        .checked("first admin should be created");
+    let mut second_admin = make_user("moderation_anchor_admin_two");
+    second_admin.role = UserRole::Admin;
+    let second_admin = user_repo
+        .create(&second_admin)
+        .await
+        .checked("second admin should be created");
+    username_cache
+        .set(&target.id, &target.username)
+        .await
+        .checked("target username should be cached");
+    let room = room_service
+        .create_room(
+            "Moderation Anchor Room".to_string(),
+            String::new(),
+            target.id,
+            None,
+            None,
+        )
+        .await
+        .checked("room should be created");
+    let edited_after_enqueue = chat_service
+        .send_message(room.id, target.id, "edited after enqueue".to_string())
+        .await
+        .checked("message should be created");
+
+    chat_service
+        .validate_moderation_message_anchor(&room.id, edited_after_enqueue.id, &target.id)
+        .await
+        .checked("anchor should be valid when the command is accepted");
+    sqlx::query(
+        r"
+        UPDATE chat_messages
+        SET version = version + 1,
+            content = 'edited while moderation was queued'
+        WHERE room_id = $1 AND id = $2 AND created_at = $3
+        ",
+    )
+    .bind(room.id.as_i64())
+    .bind(edited_after_enqueue.id)
+    .bind(edited_after_enqueue.created_at)
+    .execute(&pool)
+    .await
+    .checked("message should be edited");
+    chat_service
+        .validate_moderation_message_anchor(&room.id, edited_after_enqueue.id, &target.id)
+        .await
+        .checked("editing the anchor must not prevent moderation");
+
+    let first_actor =
+        AuthorizedAdminActor::for_persisted_job(first_admin.id, first_admin.username.clone());
+    let deleted = chat_service
+        .delete_moderation_message_event_outcome_as_admin_with_progress(
+            &room.id,
+            edited_after_enqueue.id,
+            &target.id,
+            &first_actor,
+            Some("queued moderation"),
+            None,
+        )
+        .await
+        .checked("an edit after enqueue must not cancel the accepted command")
+        .checked("the active anchor should be deleted");
+    assert!(deleted.inserted);
+
+    let deleted_by_another_admin = chat_service
+        .send_message(room.id, target.id, "deleted by another admin".to_string())
+        .await
+        .checked("second message should be created");
+    let second_actor =
+        AuthorizedAdminActor::for_persisted_job(second_admin.id, second_admin.username.clone());
+    chat_service
+        .delete_message_event_outcome_for_author_as_admin(
+            DeleteChatMessage {
+                room_id: room.id,
+                message_id: deleted_by_another_admin.id,
+                user_id: second_admin.id,
+                client_operation_id: None,
+                reason: Some("other moderation".to_string()),
+                expected_version: None,
+            },
+            &target.id,
+            &second_actor,
+        )
+        .await
+        .checked("second admin should delete the anchor");
+
+    let already_deleted = chat_service
+        .delete_moderation_message_event_outcome_as_admin_with_progress(
+            &room.id,
+            deleted_by_another_admin.id,
+            &target.id,
+            &first_actor,
+            Some("queued moderation"),
+            None,
+        )
+        .await
+        .checked("an already deleted anchor should be treated as complete");
+    assert!(already_deleted.is_none());
 }
 
 #[tokio::test]

@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE chat_moderation_jobs\n            SET deleted_messages = deleted_messages + $4,\n                deleted_reactions = deleted_reactions + $5,\n                locked_at = NOW(),\n                updated_at = NOW()\n            WHERE id = $1\n              AND locked_by = $2\n              AND lock_version = $3\n              AND status = 2\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "111bd2fa647923737ec9f2592f2d118499b8bc60ef5bd98c187d5f468164947d"
+}

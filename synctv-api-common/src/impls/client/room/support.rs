@@ -712,7 +712,7 @@ pub fn build_create_websocket_ticket_request(
     crate::impls::proto_validated_room_id(req.room_id.clone(), public_id_codec)
 }
 
-pub(super) type ChatHistoryCursor = (chrono::DateTime<chrono::Utc>, i64);
+pub(crate) type ChatHistoryCursor = (chrono::DateTime<chrono::Utc>, i64);
 pub(super) type ChatReactionUsersCursor = (chrono::DateTime<chrono::Utc>, UserId);
 
 fn parse_chat_history_cursor(cursor: &str) -> Result<Option<ChatHistoryCursor>, ApiError> {
@@ -730,7 +730,7 @@ fn parse_chat_history_cursor(cursor: &str) -> Result<Option<ChatHistoryCursor>, 
     Ok(Some((ts, id)))
 }
 
-pub(super) fn build_get_chat_history_request(
+pub(crate) fn build_get_chat_history_request(
     req: &synctv_proto::client::GetChatHistoryRequest,
 ) -> Result<(i32, Option<ChatHistoryCursor>, ChatMessageSelection), ApiError> {
     crate::impls::validate_proto_request(req)?;

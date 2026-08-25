@@ -3074,6 +3074,7 @@ mod tests {
         let admin_api = Arc::new(AdminApiImpl::new_with_runtime(
             AdminApiOptions {
                 room_service: context.room_service.clone(),
+                chat_service: None,
                 user_service: context.user_service.clone(),
                 read_services: synctv_api_common::test_support::admin_read_services(
                     context.user_service.as_ref(),

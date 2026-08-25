@@ -43,6 +43,7 @@ use synctv_realtime::sync::RealtimeEvent;
 use crate::app_config::{AppConfig as Config, MetricsTlsConfig};
 use crate::bootstrap::cluster::ClusterNodeActivator;
 use crate::bootstrap::DatabasePools;
+use crate::chat_moderation_dispatcher::start_chat_moderation_dispatcher;
 use crate::management_runtime::{
     ManagementAcfunRuntime, ManagementAdminRuntime, ManagementAlistRuntime,
     ManagementBilibiliRuntime, ManagementCctvRuntime, ManagementCloudreveRuntime,
@@ -365,7 +366,7 @@ fn build_core_api_impls(
             live_streaming_infrastructure: live_streaming_infrastructure.clone(),
             runtime_settings_store: runtime_settings_store.clone(),
             public_id_codec: public_id_codec.clone(),
-            chat_service,
+            chat_service: chat_service.clone(),
             provider_stores: provider_stores.clone(),
             email_api: email.clone(),
             passkey_service,
@@ -394,6 +395,7 @@ fn build_core_api_impls(
         Some(Arc::new(synctv_api::AdminApiImpl::new_with_runtime(
             synctv_api::AdminApiOptions {
                 room_service,
+                chat_service: chat_service.clone(),
                 user_service: user_service.clone(),
                 read_services: build_admin_read_services(user_service.as_ref(), read_pool),
                 settings_service,
@@ -1824,6 +1826,20 @@ impl SyncTvServer {
             synctv_core::service::ServerStateService::refresh_interval().as_secs()
         );
 
+        if let Some(admin_api) = shared_http_app_state.shared_api_runtime.admin_api.clone() {
+            let cancel = coordinator.register_token("chat_moderation_dispatcher");
+            let worker_id = format!(
+                "{}:{}",
+                self.services.realtime_event_service.node_id(),
+                synctv_common::snanoid!(8)
+            );
+            coordinator.register_task(
+                "chat_moderation_dispatcher",
+                start_chat_moderation_dispatcher(admin_api, worker_id, cancel),
+            );
+            info!("Chat moderation dispatcher started");
+        }
+
         // Start unified API server (single listener for REST + gRPC)
         let api_handle = match self
             .start_api_server(
@@ -2296,6 +2312,7 @@ impl SyncTvServer {
         coordinator.cancel_tokens(&[
             "realtime_outbox_dispatcher",
             "email_outbox_dispatcher",
+            "chat_moderation_dispatcher",
             "room_notification_bridge",
             "playback_background_tasks",
         ]);
@@ -2304,6 +2321,7 @@ impl SyncTvServer {
                 &[
                     "realtime_outbox_dispatcher",
                     "email_outbox_dispatcher",
+                    "chat_moderation_dispatcher",
                     "room_notification_bridge",
                     "playback_auto_advance",
                     "playback_duration_probe",

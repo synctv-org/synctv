@@ -12,6 +12,16 @@ pub struct AuthorizedAdminActor {
 }
 
 impl AuthorizedAdminActor {
+    /// Builds the internal actor used to finish an already-authorized job.
+    ///
+    /// Persisted jobs must remain executable when the admin account is later
+    /// deleted or demoted. The job row is created only after the request-level
+    /// authorization check, so the worker does not re-authorize it here.
+    #[must_use]
+    pub fn for_persisted_job(user_id: UserId, username: String) -> Self {
+        Self { user_id, username }
+    }
+
     pub fn new(user_id: UserId, username: String, role: UserRole) -> Result<Self> {
         if !role.is_admin_or_above() {
             return Err(Error::Authorization(

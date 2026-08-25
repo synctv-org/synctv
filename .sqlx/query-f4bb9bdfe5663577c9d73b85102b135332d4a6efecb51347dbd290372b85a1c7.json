@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE chat_moderation_jobs\n        SET status = 3,\n            phase = 3,\n            updated_at = CASE\n                WHEN id = 'expired-terminal-job' THEN NOW() - INTERVAL '2 hours'\n                ELSE NOW()\n            END,\n            completed_at = NOW()\n        WHERE id IN ('expired-terminal-job', 'recent-terminal-job')\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "f4bb9bdfe5663577c9d73b85102b135332d4a6efecb51347dbd290372b85a1c7"
+}

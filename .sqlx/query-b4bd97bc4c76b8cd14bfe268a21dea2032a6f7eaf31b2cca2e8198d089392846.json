@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            DELETE FROM chat_moderation_jobs\n            WHERE status IN (3, 4)\n              AND updated_at < NOW() - ($1::DOUBLE PRECISION * INTERVAL '1 second')\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Float8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b4bd97bc4c76b8cd14bfe268a21dea2032a6f7eaf31b2cca2e8198d089392846"
+}

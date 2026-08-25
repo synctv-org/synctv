@@ -75,7 +75,8 @@ pub use ban_record::{
 };
 pub use chat::{
     ChatDependencies, ChatReactionModerationPageOutcome, ChatRuntime, ChatService,
-    ChatUserModerationOutcome, ChatUserModerationPageOutcome,
+    ChatUserModerationOutcome, ChatUserModerationPageOutcome, ChatUserModerationPageRequest,
+    ChatUserReactionModerationPageRequest,
 };
 pub use cleanup::{CleanupConfig, CleanupResult, CleanupService, CleanupServiceOptions};
 pub use content_filter::{ContentFilter, ContentFilterError};

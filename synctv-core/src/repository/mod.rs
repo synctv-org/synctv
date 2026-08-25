@@ -47,8 +47,8 @@ pub use ban::{
 };
 pub use chat::{
     ChatMessageOperationIdempotency, ChatModerationProgress, ChatRepository,
-    DeleteChatMessageEventRequest, EditChatMessageEventRequest, PinChatMessageEventRequest,
-    UnpinChatMessageEventRequest,
+    DeleteChatMessageEventRequest, DeleteChatReactionsPageRequest, EditChatMessageEventRequest,
+    PinChatMessageEventRequest, UnpinChatMessageEventRequest,
 };
 pub use chat_moderation::{
     ChatModerationJob, ChatModerationJobPhase, ChatModerationJobRepository,

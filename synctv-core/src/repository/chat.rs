@@ -50,6 +50,17 @@ pub struct ChatModerationProgress<'a> {
     pub lock_version: i64,
 }
 
+pub struct DeleteChatReactionsPageRequest<'a> {
+    pub room_id: &'a RoomId,
+    pub user_id: &'a UserId,
+    pub actor_user_id: &'a UserId,
+    pub occurred_at: DateTime<Utc>,
+    pub created_before: DateTime<Utc>,
+    pub cursor: Option<(DateTime<Utc>, i64)>,
+    pub limit: i64,
+    pub moderation_progress: Option<ChatModerationProgress<'a>>,
+}
+
 struct ChatHistoryCursorRequest<'a> {
     room_id: &'a RoomId,
     cursor: Option<ChatHistoryCursor>,
@@ -2315,20 +2326,23 @@ impl ChatRepository {
 
     pub async fn delete_reactions_by_user_with_events_page(
         &self,
-        room_id: &RoomId,
-        user_id: &UserId,
-        actor_user_id: &UserId,
-        occurred_at: DateTime<Utc>,
-        created_before: DateTime<Utc>,
-        cursor: Option<(DateTime<Utc>, i64)>,
-        limit: i64,
-        moderation_progress: Option<ChatModerationProgress<'_>>,
+        request: DeleteChatReactionsPageRequest<'_>,
     ) -> Result<(
         u64,
         Vec<ChatMessageEvent>,
         Vec<ChatPinEvent>,
         Option<(DateTime<Utc>, i64)>,
     )> {
+        let DeleteChatReactionsPageRequest {
+            room_id,
+            user_id,
+            actor_user_id,
+            occurred_at,
+            created_before,
+            cursor,
+            limit,
+            moderation_progress,
+        } = request;
         let limit = limit.clamp(1, 100);
         let mut tx = self.pool().begin().await?;
         let rows = if let Some((created_at, id)) = cursor {
@@ -2464,7 +2478,7 @@ impl ChatRepository {
         let mut pin_events = Vec::new();
         for message in &messages {
             let payload = self
-                .message_event_payload_in_tx(&mut tx, room_id, &message, Some(actor_user_id))
+                .message_event_payload_in_tx(&mut tx, room_id, message, Some(actor_user_id))
                 .await?;
             let pin = payload.pin.clone();
             let event = ChatMessageEvent {
@@ -3484,7 +3498,7 @@ impl ChatRepository {
             request.room_id.as_i64(),
             message.id,
             message.created_at,
-            request.reaction_user_id.map(|user_id| user_id.as_i64()),
+            request.reaction_user_id.map(UserId::as_i64),
         )
         .fetch_one(&mut *tx)
         .await?;
@@ -3550,7 +3564,7 @@ impl ChatRepository {
             event: logged,
             inserted: true,
             pin_event,
-            deleted_reactions: deleted_reactions as u64,
+            deleted_reactions: deleted_reactions.cast_unsigned(),
         }))
     }
 

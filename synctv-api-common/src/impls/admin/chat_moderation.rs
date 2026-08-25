@@ -380,13 +380,15 @@ impl AdminApiImpl {
             ChatModerationJobPhase::Messages if job.delete_all_messages => {
                 let page = chat_service
                     .moderate_user_messages_page(
-                        &job.room_id,
-                        &job.target_user_id,
-                        &actor,
-                        job.reason.as_deref(),
-                        snapshot_at,
-                        message_cursor,
-                        Some(moderation_progress),
+                        synctv_core::service::ChatUserModerationPageRequest {
+                            room_id: &job.room_id,
+                            target_user_id: &job.target_user_id,
+                            actor: &actor,
+                            reason: job.reason.as_deref(),
+                            created_before: snapshot_at,
+                            cursor: message_cursor,
+                            moderation_progress: Some(moderation_progress),
+                        },
                         move |event, pin_event| {
                             dispatcher.dispatch(event);
                             if let Some(pin_event) = pin_event {
@@ -432,13 +434,15 @@ impl AdminApiImpl {
                 let dispatcher = self.chat_event_dispatcher.clone();
                 let page = chat_service
                     .remove_user_reactions_page(
-                        &job.room_id,
-                        &job.target_user_id,
-                        actor.user_id(),
-                        snapshot_at,
-                        reaction_cursor,
-                        hidden_reaction_cursor,
-                        Some(moderation_progress),
+                        synctv_core::service::ChatUserReactionModerationPageRequest {
+                            room_id: &job.room_id,
+                            target_user_id: &job.target_user_id,
+                            actor_user_id: actor.user_id(),
+                            created_before: snapshot_at,
+                            cursor: reaction_cursor,
+                            hidden_cursor: hidden_reaction_cursor,
+                            moderation_progress: Some(moderation_progress),
+                        },
                         move |event, pin_event| {
                             dispatcher.dispatch(event);
                             if let Some(pin_event) = pin_event {
@@ -477,18 +481,7 @@ impl AdminApiImpl {
         if phase == ChatModerationJobPhase::Done {
             let updated = chat_service
                 .moderation_job_repository()
-                .update_progress(
-                    &next,
-                    worker_id,
-                    phase,
-                    message_cursor,
-                    reaction_cursor,
-                    hidden_reaction_cursor,
-                    deleted_messages,
-                    deleted_reactions,
-                    explicit_message_done,
-                    ban_done,
-                )
+                .update_progress(&next, worker_id)
                 .await
                 .map_err(ApiError::from)?;
             if !updated {
@@ -506,18 +499,7 @@ impl AdminApiImpl {
         } else {
             let updated = chat_service
                 .moderation_job_repository()
-                .update_progress(
-                    &next,
-                    worker_id,
-                    phase,
-                    message_cursor,
-                    reaction_cursor,
-                    hidden_reaction_cursor,
-                    deleted_messages,
-                    deleted_reactions,
-                    explicit_message_done,
-                    ban_done,
-                )
+                .update_progress(&next, worker_id)
                 .await
                 .map_err(ApiError::from)?;
             if !updated {

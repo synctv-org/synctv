@@ -28,8 +28,8 @@ use crate::{
     },
     repository::{
         ChatMessageOperationIdempotency, ChatModerationJobRepository, ChatModerationProgress,
-        ChatRepository, DeleteChatMessageEventRequest, EditChatMessageEventRequest,
-        PinChatMessageEventRequest, UnpinChatMessageEventRequest,
+        ChatRepository, DeleteChatMessageEventRequest, DeleteChatReactionsPageRequest,
+        EditChatMessageEventRequest, PinChatMessageEventRequest, UnpinChatMessageEventRequest,
     },
     service::{
         audit::{AuditEventParams, AuditService},
@@ -115,6 +115,26 @@ pub struct ChatReactionModerationPageOutcome {
     pub hidden_done: bool,
 }
 
+pub struct ChatUserModerationPageRequest<'a> {
+    pub room_id: &'a RoomId,
+    pub target_user_id: &'a UserId,
+    pub actor: &'a AuthorizedAdminActor,
+    pub reason: Option<&'a str>,
+    pub created_before: DateTime<Utc>,
+    pub cursor: Option<(DateTime<Utc>, i64)>,
+    pub moderation_progress: Option<ChatModerationProgress<'a>>,
+}
+
+pub struct ChatUserReactionModerationPageRequest<'a> {
+    pub room_id: &'a RoomId,
+    pub target_user_id: &'a UserId,
+    pub actor_user_id: &'a UserId,
+    pub created_before: DateTime<Utc>,
+    pub cursor: Option<(DateTime<Utc>, i64)>,
+    pub hidden_cursor: Option<(DateTime<Utc>, i64, String)>,
+    pub moderation_progress: Option<ChatModerationProgress<'a>>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ChatPinEventOutcome {
     pub event: ChatPinEvent,
@@ -182,6 +202,7 @@ impl std::fmt::Debug for ChatService {
 impl ChatService {
     /// Create a new chat service
     #[must_use]
+    #[allow(clippy::needless_pass_by_value)]
     pub fn new(
         chat_repository: Arc<ChatRepository>,
         runtime: ChatRuntime,
@@ -1061,18 +1082,21 @@ impl ChatService {
 
     pub async fn moderate_user_messages_page<F>(
         &self,
-        room_id: &RoomId,
-        target_user_id: &UserId,
-        actor: &AuthorizedAdminActor,
-        reason: Option<&str>,
-        created_before: DateTime<Utc>,
-        cursor: Option<(DateTime<Utc>, i64)>,
-        moderation_progress: Option<ChatModerationProgress<'_>>,
+        request: ChatUserModerationPageRequest<'_>,
         mut on_event: F,
     ) -> Result<ChatUserModerationPageOutcome>
     where
         F: FnMut(&ChatMessageEvent, Option<&ChatPinEvent>) + Send,
     {
+        let ChatUserModerationPageRequest {
+            room_id,
+            target_user_id,
+            actor,
+            reason,
+            created_before,
+            cursor,
+            moderation_progress,
+        } = request;
         let messages = self
             .chat_repository
             .list_active_messages_for_user_page(
@@ -1125,36 +1149,39 @@ impl ChatService {
         Ok(ChatUserModerationPageOutcome {
             outcome,
             next_cursor,
-            done: page_len < CHAT_MODERATION_PAGE_SIZE as usize,
+            done: page_len < usize::try_from(CHAT_MODERATION_PAGE_SIZE).unwrap_or(usize::MAX),
         })
     }
 
     pub async fn remove_user_reactions_page<F>(
         &self,
-        room_id: &RoomId,
-        target_user_id: &UserId,
-        actor_user_id: &UserId,
-        created_before: DateTime<Utc>,
-        cursor: Option<(DateTime<Utc>, i64)>,
-        hidden_cursor: Option<(DateTime<Utc>, i64, String)>,
-        moderation_progress: Option<ChatModerationProgress<'_>>,
+        request: ChatUserReactionModerationPageRequest<'_>,
         mut on_event: F,
     ) -> Result<ChatReactionModerationPageOutcome>
     where
         F: FnMut(&ChatMessageEvent, Option<&ChatPinEvent>) + Send,
     {
+        let ChatUserReactionModerationPageRequest {
+            room_id,
+            target_user_id,
+            actor_user_id,
+            created_before,
+            cursor,
+            hidden_cursor,
+            moderation_progress,
+        } = request;
         let (deleted, events, pin_events, next_cursor) = if hidden_cursor.is_none() {
             self.chat_repository
-                .delete_reactions_by_user_with_events_page(
+                .delete_reactions_by_user_with_events_page(DeleteChatReactionsPageRequest {
                     room_id,
-                    target_user_id,
+                    user_id: target_user_id,
                     actor_user_id,
-                    self.clock.now(),
+                    occurred_at: self.clock.now(),
                     created_before,
                     cursor,
-                    CHAT_REACTION_CLEANUP_PAGE_SIZE,
+                    limit: CHAT_REACTION_CLEANUP_PAGE_SIZE,
                     moderation_progress,
-                )
+                })
                 .await?
         } else {
             (0, Vec::new(), Vec::new(), cursor)

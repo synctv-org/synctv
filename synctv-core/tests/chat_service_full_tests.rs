@@ -2386,12 +2386,12 @@ async fn test_admin_moderation_anchor_remains_idempotent_after_enqueue() {
         .await
         .checked("anchor should be valid when the command is accepted");
     sqlx::query(
-        r#"
+        r"
         UPDATE chat_messages
         SET version = version + 1,
             content = 'edited while moderation was queued'
         WHERE room_id = $1 AND id = $2 AND created_at = $3
-        "#,
+        ",
     )
     .bind(room.id.as_i64())
     .bind(edited_after_enqueue.id)

@@ -349,19 +349,7 @@ impl ChatModerationJobRepository {
         rows.into_iter().map(TryInto::try_into).collect()
     }
 
-    pub async fn update_progress(
-        &self,
-        job: &ChatModerationJob,
-        worker_id: &str,
-        phase: ChatModerationJobPhase,
-        message_cursor: Option<(DateTime<Utc>, i64)>,
-        reaction_cursor: Option<(DateTime<Utc>, i64)>,
-        hidden_reaction_cursor: Option<(DateTime<Utc>, i64, String)>,
-        deleted_messages: i64,
-        deleted_reactions: i64,
-        explicit_message_done: bool,
-        ban_done: bool,
-    ) -> Result<bool> {
+    pub async fn update_progress(&self, job: &ChatModerationJob, worker_id: &str) -> Result<bool> {
         let result = sqlx::query!(
             r#"
             UPDATE chat_moderation_jobs
@@ -392,21 +380,21 @@ impl ChatModerationJobRepository {
             &job.id,
             worker_id,
             job.lock_version,
-            phase as i16,
-            message_cursor.map(|(at, _)| at),
-            message_cursor.map(|(_, id)| id),
-            reaction_cursor.map(|(at, _)| at),
-            reaction_cursor.map(|(_, id)| id),
-            hidden_reaction_cursor.as_ref().map(|(at, _, _)| *at),
-            hidden_reaction_cursor.as_ref().map(|(_, id, _)| *id),
-            hidden_reaction_cursor
+            job.phase as i16,
+            job.message_cursor.map(|(at, _)| at),
+            job.message_cursor.map(|(_, id)| id),
+            job.reaction_cursor.map(|(at, _)| at),
+            job.reaction_cursor.map(|(_, id)| id),
+            job.hidden_reaction_cursor.as_ref().map(|(at, _, _)| *at),
+            job.hidden_reaction_cursor.as_ref().map(|(_, id, _)| *id),
+            job.hidden_reaction_cursor
                 .as_ref()
                 .map(|(_, _, key)| key.as_str()),
-            deleted_messages,
-            deleted_reactions,
-            explicit_message_done,
-            ban_done,
-            phase == ChatModerationJobPhase::Done,
+            job.deleted_messages,
+            job.deleted_reactions,
+            job.explicit_message_done,
+            job.ban_done,
+            job.phase == ChatModerationJobPhase::Done,
             job.snapshot_at,
         )
         .execute(&self.pool)
@@ -454,8 +442,11 @@ impl ChatModerationJobRepository {
     ) -> Result<bool> {
         let attempts = job.attempts.saturating_add(1);
         let status = if attempts >= 10 { 4 } else { 1 };
-        let retry_delay_seconds =
-            f64::from(2_i32.saturating_pow(attempts.min(10) as u32).min(3600));
+        let retry_delay_seconds = f64::from(
+            2_i32
+                .saturating_pow(attempts.min(10).cast_unsigned())
+                .min(3600),
+        );
         let result = sqlx::query!(
             r#"
             UPDATE chat_moderation_jobs
@@ -484,6 +475,7 @@ impl ChatModerationJobRepository {
         Ok(result.rows_affected() == 1)
     }
 
+    #[allow(clippy::cast_precision_loss)]
     pub async fn requeue_stale_processing(&self, stale_after_seconds: i64) -> Result<u64> {
         let result = sqlx::query!(
             r#"
@@ -508,6 +500,7 @@ impl ChatModerationJobRepository {
         Ok(result.rows_affected())
     }
 
+    #[allow(clippy::cast_precision_loss)]
     pub async fn delete_terminal_before(&self, retention_seconds: i64) -> Result<u64> {
         let result = sqlx::query!(
             r#"

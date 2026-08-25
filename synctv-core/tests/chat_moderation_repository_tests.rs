@@ -9,7 +9,7 @@ use synctv_core::{
     repository::{
         ChatModerationJobPhase, ChatModerationJobRepository, ChatModerationJobStatus,
         ChatModerationProgress, ChatRepository, DeleteChatMessageEventRequest,
-        NewChatModerationJob, RoomRepository, UserRepository,
+        DeleteChatReactionsPageRequest, NewChatModerationJob, RoomRepository, UserRepository,
     },
 };
 use synctv_core_testing::create_test_pool;
@@ -63,19 +63,12 @@ async fn moderation_job_releases_each_incomplete_page_and_keeps_actor_snapshot()
     assert_eq!(claimed.status, ChatModerationJobStatus::Processing);
 
     let cursor = Some((Utc::now(), 1_i64));
+    let mut progress = claimed.clone();
+    progress.message_cursor = cursor;
+    progress.deleted_messages = 100;
+    progress.deleted_reactions = 100;
     assert!(repository
-        .update_progress(
-            claimed,
-            "worker-1",
-            ChatModerationJobPhase::Messages,
-            cursor,
-            None,
-            None,
-            100,
-            100,
-            false,
-            false,
-        )
+        .update_progress(&progress, "worker-1")
         .await
         .expect("incomplete progress should be persisted"));
 
@@ -93,23 +86,24 @@ async fn moderation_job_releases_each_incomplete_page_and_keeps_actor_snapshot()
         .expect("next worker should claim the next page");
     assert_eq!(reclaimed.len(), 1);
     let reclaimed = &reclaimed[0];
-    assert_eq!(reclaimed.message_cursor, cursor);
+    assert_eq!(
+        reclaimed.message_cursor.map(|(_, id)| id),
+        cursor.map(|(_, id)| id)
+    );
+    assert_eq!(
+        reclaimed
+            .message_cursor
+            .map(|(at, _)| at.timestamp_micros()),
+        cursor.map(|(at, _)| at.timestamp_micros())
+    );
 
     let mut completed_progress = reclaimed.clone();
+    completed_progress.phase = ChatModerationJobPhase::Done;
     completed_progress.snapshot_at = reclaimed.snapshot_at + chrono::Duration::seconds(1);
+    completed_progress.explicit_message_done = true;
+    completed_progress.ban_done = true;
     assert!(repository
-        .update_progress(
-            &completed_progress,
-            "worker-2",
-            ChatModerationJobPhase::Done,
-            reclaimed.message_cursor,
-            None,
-            None,
-            100,
-            100,
-            true,
-            true,
-        )
+        .update_progress(&completed_progress, "worker-2")
         .await
         .expect("completion progress should be persisted"));
     let persisted = repository
@@ -327,7 +321,7 @@ async fn moderation_delete_rolls_back_when_worker_lease_is_invalid() {
         1
     );
 
-    let error = match chat_repository
+    let Err(error) = chat_repository
         .soft_delete_with_event(DeleteChatMessageEventRequest {
             room_id: &room.id,
             message_id: message.id,
@@ -347,9 +341,8 @@ async fn moderation_delete_rolls_back_when_worker_lease_is_invalid() {
             deletion_source: DeletionSource::Admin,
         })
         .await
-    {
-        Ok(_) => panic!("expired worker must not delete chat data"),
-        Err(error) => error,
+    else {
+        panic!("expired worker must not delete chat data");
     };
     assert!(matches!(error, synctv_core::Error::LockConflict(_)));
 
@@ -432,16 +425,16 @@ async fn reaction_cleanup_preserves_reactions_created_after_the_snapshot() {
     .expect("reactions should be created");
 
     let (deleted, _, _, _) = chat_repository
-        .delete_reactions_by_user_with_events_page(
-            &room.id,
-            &user.id,
-            &user.id,
-            Utc::now(),
-            snapshot_at,
-            None,
-            100,
-            None,
-        )
+        .delete_reactions_by_user_with_events_page(DeleteChatReactionsPageRequest {
+            room_id: &room.id,
+            user_id: &user.id,
+            actor_user_id: &user.id,
+            occurred_at: Utc::now(),
+            created_before: snapshot_at,
+            cursor: None,
+            limit: 100,
+            moderation_progress: None,
+        })
         .await
         .expect("reaction cleanup should succeed");
     assert_eq!(deleted, 1);

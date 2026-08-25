@@ -291,8 +291,6 @@ impl AdminApiImpl {
         let mut phase = job.phase;
         let mut deleted_messages = job.deleted_messages;
         let mut deleted_reactions = job.deleted_reactions;
-        let mut explicit_message_done = job.explicit_message_done;
-        let mut ban_done = job.ban_done;
         let mut snapshot_at = job.snapshot_at;
         let (message_cursor, reaction_cursor, hidden_reaction_cursor) = (
             job.message_cursor,
@@ -308,7 +306,7 @@ impl AdminApiImpl {
             lock_version: job.lock_version,
         };
 
-        if let Some(message_id) = job.message_id.filter(|_| !explicit_message_done) {
+        if let Some(message_id) = job.message_id.filter(|_| !job.explicit_message_done) {
             let outcome = chat_service
                 .delete_moderation_message_event_outcome_as_admin_with_progress(
                     &job.room_id,
@@ -336,10 +334,10 @@ impl AdminApiImpl {
                     dispatcher.dispatch_pin(pin_event);
                 }
             }
-            explicit_message_done = true;
+            next.explicit_message_done = true;
         }
 
-        if job.ban_user && !ban_done {
+        if job.ban_user && !job.ban_done {
             let newly_banned = self
                 .ensure_persisted_user_banned_with_cleanup(
                     &job.target_user_id,
@@ -372,7 +370,7 @@ impl AdminApiImpl {
                     tracing::error!(error = %error, job_id = %job.id, "Failed to write async chat moderation ban audit log");
                 }
             }
-            ban_done = true;
+            next.ban_done = true;
             snapshot_at = self.clock.now();
         }
 

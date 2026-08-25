@@ -370,102 +370,89 @@ impl PullStream {
                 .with_grpc_max_message_size(grpc_max_message_size_bytes)
                 .with_grpc_compression(grpc_compression_enabled);
 
-                // Track relay duration via histogram (stream_type = "rtmp" for gRPC RTMP relay)
-                let timer = synctv_core::metrics::stream::STREAM_RELAY_DURATION
-                    .with_label_values(&["rtmp"])
-                    .start_timer();
-                synctv_core::metrics::stream::ACTIVE_RELAY_STREAMS.inc();
-
                 // Race the puller against cancellation and periodic lease_epoch re-validation
                 let mut epoch_interval =
                     tokio::time::interval(retry_policy.epoch_revalidation_interval);
                 // Skip the first immediate tick
                 epoch_interval.tick().await;
 
-                let run_result = tokio::select! {
-                    r = grpc_puller.run(&data_sender) => r,
-                    () = child_token.cancelled() => {
-                        info!("gRPC puller task cancelled for {} / {}", room_id, media_id);
-                        timer.observe_duration();
-                        synctv_core::metrics::stream::ACTIVE_RELAY_STREAMS.dec();
-                        break Ok(());
-                    }
-                    () = async {
-                        loop {
-                            epoch_interval.tick().await;
-                            match registry
-                                .validate_lease(
-                                    &room_id,
-                                    &media_id,
-                                    &source_generation_id,
-                                    lease_epoch,
-                                )
-                                .await
-                            {
-                                Ok(true) => {
-                                    // Reset failure counter on success.
-                                    consecutive_epoch_failures = 0;
-                                    debug!(
-                                        "Periodic lease_epoch {} still valid for {}/{}",
-                                        lease_epoch, room_id, media_id
-                                    );
-                                }
-                                Ok(false) => {
-                                    warn!(
-                                        "Periodic lease_epoch re-validation: lease_epoch {} is stale for {}/{}, publisher changed",
-                                        lease_epoch, room_id, media_id
-                                    );
-                                    return;
-                                }
-                                Err(e) => {
-                                    // Track consecutive failures instead of unconditional fail-open.
-                                    consecutive_epoch_failures += 1;
-                                    if consecutive_epoch_failures >= retry_policy.max_consecutive_epoch_failures {
-                                        error!(
-                                            "Epoch validation failed {} consecutive times for {}/{}: {}. \
-                                             Terminating pull stream (publisher may be stale). \
-                                             Stream will reconnect when Redis is available.",
-                                            consecutive_epoch_failures, room_id, media_id, e
+                let run_result = {
+                    let _relay_metrics = synctv_core::metrics::stream::track_relay(
+                        synctv_core::metrics::stream::RelayProtocol::Rtmp,
+                    );
+
+                    tokio::select! {
+                        r = grpc_puller.run(&data_sender) => r,
+                        () = child_token.cancelled() => {
+                            info!("gRPC puller task cancelled for {} / {}", room_id, media_id);
+                            break Ok(());
+                        }
+                        () = async {
+                            loop {
+                                epoch_interval.tick().await;
+                                match registry
+                                    .validate_lease(
+                                        &room_id,
+                                        &media_id,
+                                        &source_generation_id,
+                                        lease_epoch,
+                                    )
+                                    .await
+                                {
+                                    Ok(true) => {
+                                        // Reset failure counter on success.
+                                        consecutive_epoch_failures = 0;
+                                        debug!(
+                                            "Periodic lease_epoch {} still valid for {}/{}",
+                                            lease_epoch, room_id, media_id
+                                        );
+                                    }
+                                    Ok(false) => {
+                                        warn!(
+                                            "Periodic lease_epoch re-validation: lease_epoch {} is stale for {}/{}, publisher changed",
+                                            lease_epoch, room_id, media_id
                                         );
                                         return;
                                     }
-                                    warn!(
-                                        "Periodic lease_epoch re-validation failed for {}/{}: {} ({}/{} consecutive failures). Continuing.",
-                                        room_id, media_id, e, consecutive_epoch_failures, retry_policy.max_consecutive_epoch_failures
-                                    );
+                                    Err(e) => {
+                                        // Track consecutive failures instead of unconditional fail-open.
+                                        consecutive_epoch_failures += 1;
+                                        if consecutive_epoch_failures >= retry_policy.max_consecutive_epoch_failures {
+                                            error!(
+                                                "Epoch validation failed {} consecutive times for {}/{}: {}. \
+                                                 Terminating pull stream (publisher may be stale). \
+                                                 Stream will reconnect when Redis is available.",
+                                                consecutive_epoch_failures, room_id, media_id, e
+                                            );
+                                            return;
+                                        }
+                                        warn!(
+                                            "Periodic lease_epoch re-validation failed for {}/{}: {} ({}/{} consecutive failures). Continuing.",
+                                            room_id, media_id, e, consecutive_epoch_failures, retry_policy.max_consecutive_epoch_failures
+                                        );
+                                    }
                                 }
                             }
+                        } => {
+                            warn!(
+                                "Stale lease_epoch detected during streaming for {}/{}; stopping pull stream",
+                                room_id, media_id
+                            );
+                            break Err(anyhow::anyhow!(
+                                "Stale lease_epoch detected during streaming: publisher changed for {room_id} / {media_id}"
+                            ));
                         }
-                    } => {
-                        warn!(
-                            "Stale lease_epoch detected during streaming for {}/{}; stopping pull stream",
-                            room_id, media_id
-                        );
-                        timer.observe_duration();
-                        synctv_core::metrics::stream::ACTIVE_RELAY_STREAMS.dec();
-                        break Err(anyhow::anyhow!(
-                            "Stale lease_epoch detected during streaming: publisher changed for {room_id} / {media_id}"
-                        ));
                     }
                 };
-
-                timer.observe_duration();
-                synctv_core::metrics::stream::ACTIVE_RELAY_STREAMS.dec();
 
                 match run_result {
                     Ok(()) => break Ok(()),
                     Err(e) => {
                         let err_str = e.to_string();
-                        let error_type = if err_str.contains("timeout") {
-                            "timeout"
-                        } else if err_str.contains("connection") {
-                            "connection"
-                        } else {
-                            "other"
-                        };
-                        synctv_core::metrics::stream::STREAM_ERRORS
-                            .with_label_values(&["rtmp", error_type])
-                            .inc();
+                        synctv_core::metrics::stream::record_error(
+                            synctv_core::metrics::stream::RelayProtocol::Rtmp,
+                            &err_str,
+                        );
 
                         rebuild_count += 1;
                         if rebuild_count > retry_policy.max_rebuilds {

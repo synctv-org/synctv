@@ -70,25 +70,23 @@ impl ClusterService for ClusterServer {
 
         match result {
             Ok(nodes) => {
-                let elapsed = start.elapsed().as_secs_f64();
-                synctv_core::metrics::remote_transport::REMOTE_TRANSPORT_REQUEST_DURATION
-                    .with_label_values(&["cluster", "get_nodes", "ok"])
-                    .observe(elapsed);
-                synctv_core::metrics::remote_transport::REMOTE_TRANSPORT_REQUESTS_TOTAL
-                    .with_label_values(&["cluster", "get_nodes", "ok"])
-                    .inc();
+                synctv_core::metrics::remote_transport::record(
+                    "cluster",
+                    "get_nodes",
+                    "ok",
+                    start.elapsed(),
+                );
                 let proto_nodes = nodes.iter().map(Self::discovery_to_proto_node).collect();
 
                 Ok(Response::new(GetNodesResponse { nodes: proto_nodes }))
             }
             Err(error) => {
-                let elapsed = start.elapsed().as_secs_f64();
-                synctv_core::metrics::remote_transport::REMOTE_TRANSPORT_REQUEST_DURATION
-                    .with_label_values(&["cluster", "get_nodes", "error"])
-                    .observe(elapsed);
-                synctv_core::metrics::remote_transport::REMOTE_TRANSPORT_REQUESTS_TOTAL
-                    .with_label_values(&["cluster", "get_nodes", "error"])
-                    .inc();
+                synctv_core::metrics::remote_transport::record(
+                    "cluster",
+                    "get_nodes",
+                    "error",
+                    start.elapsed(),
+                );
                 tracing::error!("Failed to get nodes from cluster registry: {error}");
                 Err(Status::unavailable(error.to_string()))
             }

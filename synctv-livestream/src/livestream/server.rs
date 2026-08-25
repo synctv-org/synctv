@@ -1201,29 +1201,18 @@ impl LivestreamServer {
             )
             .with_active_publishers_source(active_publishers_source);
 
-            let timer = synctv_core::metrics::stream::STREAM_RELAY_DURATION
-                .with_label_values(&["hls"])
-                .start_timer();
-            synctv_core::metrics::stream::ACTIVE_RELAY_STREAMS.inc();
+            let _relay_metrics = synctv_core::metrics::stream::track_relay(
+                synctv_core::metrics::stream::RelayProtocol::Hls,
+            );
 
             if let Err(e) = remuxer.run().await {
                 error!("HLS remuxer error: {}", e);
 
-                let err_str = e.to_string();
-                let error_type = if err_str.contains("timeout") {
-                    "timeout"
-                } else if err_str.contains("connection") {
-                    "connection"
-                } else {
-                    "other"
-                };
-                synctv_core::metrics::stream::STREAM_ERRORS
-                    .with_label_values(&["hls", error_type])
-                    .inc();
+                synctv_core::metrics::stream::record_error(
+                    synctv_core::metrics::stream::RelayProtocol::Hls,
+                    &e.to_string(),
+                );
             }
-
-            timer.observe_duration();
-            synctv_core::metrics::stream::ACTIVE_RELAY_STREAMS.dec();
         });
 
         info!("HLS remuxer started (in-process, no standalone HTTP server)");

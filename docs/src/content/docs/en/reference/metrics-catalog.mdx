@@ -19,6 +19,13 @@ curl -fsS \
 Disabled or unused features may not emit their metrics. Do not expose the metrics listener directly to the public internet.
 </Aside>
 
+## Instrumentation Contract
+
+- SyncTV registers every metric definition when the metrics listener starts. Invalid or duplicate definitions stop startup instead of producing a partial registry.
+- Labels use bounded values. HTTP `path` is an Axum route template such as `/api/rooms/{room_id}`; resource IDs, query strings, and raw error messages are excluded.
+- Existing metric names and label sets are compatibility-sensitive. Review dashboards and alerts before changing them.
+- A vector metric may remain absent until its feature records the first labeled sample.
+
 ## HTTP And WebSocket
 
 | Metric | Type | Labels | Meaning |
@@ -38,11 +45,28 @@ Disabled or unused features may not emit their metrics. Do not expose the metric
 | --- | --- | --- | --- |
 | `db_connections_active` | gauge | none | Active DB connections |
 | `db_connections_idle` | gauge | none | Idle DB connections |
+| `db_pool_size_max` | gauge | none | Configured maximum DB pool size across pools |
 | `db_pool_utilization_ratio` | gauge | `pool` | Pool utilization, from 0 to 1 |
 | `cache_hits_total` | counter | `cache_type`, `level` | Cache hits |
 | `cache_misses_total` | counter | `cache_type`, `level` | Cache misses |
 | `cache_evictions_total` | counter | `cache_type` | Cache evictions |
 | `cache_errors_total` | counter | `cache_type`, `operation` | Cache operation errors |
+| `cache_invalidations_total` | counter | `cache_type` | Cache invalidations |
+| `cache_operation_duration_seconds` | histogram | `operation` | Cache operation duration |
+| `cache_lag_flush_total` | counter | `component` | Full L1 flushes after invalidation-channel lag |
+| `cache_fence_operations_total` | counter | `domain`, `operation`, `result` | Version-fence operations |
+| `cache_db_fallback_total` | counter | `domain`, `reason` | Strong reads that fell back to PostgreSQL |
+| `cache_stale_write_reject_total` | counter | `cache_type`, `level` | Rejected stale cache writes |
+| `cache_fence_pending` | gauge | `domain` | Domains with a pending version fence |
+| `cache_fence_repair_total` | counter | `domain`, `result` | Read-time fence repair outcomes |
+| `cache_fence_db_compare` | gauge | `domain`, `relation` | Latest DB-to-fence patrol comparison |
+
+## Remote Transport
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `grpc_requests_total` | counter | `service`, `method`, `status` | Completed gRPC requests |
+| `grpc_request_duration_seconds` | histogram | `service`, `method`, `status` | gRPC request duration |
 
 ## Business And Rate Limits
 
@@ -56,6 +80,7 @@ Disabled or unused features may not emit their metrics. Do not expose the metric
 | `webrtc_peers_active` | gauge | none | Active WebRTC peers |
 | `active_connections` | gauge | none | Active connections |
 | `spawned_task_panics_total` | counter | `task_name` | Background task panics caught by `spawn_monitored` |
+| `logging_dropped_lines_total` | counter | `component` | Log lines dropped by full non-blocking queues |
 | `email_delivery_queue_depth` | gauge | none | Email jobs awaiting delivery in the PostgreSQL outbox |
 | `email_delivery_in_flight` | gauge | none | Email jobs being delivered by this instance |
 | `email_delivery_jobs_total` | counter | `kind`, `status` | Email job outcomes: `sent`, `retry`, `dead`, `superseded`, `fenced`, `persist_failed`, or `ack_failed` |
@@ -76,6 +101,10 @@ Disabled or unused features may not emit their metrics. Do not expose the metric
 | `synctv_cluster_leader_election_epoch` | gauge | none | Current leader epoch |
 | `synctv_cluster_leader_election_consecutive_failures` | gauge | none | Consecutive leader election failures |
 | `synctv_cluster_epoch_mismatch_quarantine` | gauge | none | Epoch mismatch quarantine state |
+| `synctv_cluster_leader_election_mode` | gauge | none | Election mode: 0 standalone, 1 Redis, 2 Kubernetes Lease |
+| `synctv_cluster_distributed_counter_ttl_refreshes_total` | counter | `result` | Distributed counter TTL refresh outcomes |
+| `synctv_cluster_distributed_counter_ttl_keys_refreshed` | gauge | none | Keys refreshed in the latest TTL cycle |
+| `synctv_cluster_distributed_counter_ttl_consecutive_failures` | gauge | none | Consecutive TTL refresh failures |
 
 ## Media And Livestream
 
@@ -85,6 +114,8 @@ Disabled or unused features may not emit their metrics. Do not expose the metric
 | `active_relay_streams` | gauge | none | Active relay streams |
 | `stream_errors_total` | counter | `stream_type`, `error_type` | Stream errors |
 | `streamhub_restarts_total` | counter | `reason` | StreamHub event loop restarts |
+| `streams_active` | gauge | none | Active tracked streams |
+| `synctv_publisher_heartbeat_failures_total` | counter | none | Publisher cleanups after heartbeat failure |
 | `livestream_active_publishers` | gauge | none | Active livestream publishers |
 | `livestream_active_viewers` | gauge | none | Active livestream viewers |
 | `livestream_relay_frame_drops_total` | counter | none | Relay frame drops caused by backpressure |

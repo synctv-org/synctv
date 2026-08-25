@@ -550,12 +550,7 @@ fn grpc_access_log_level(
 
 fn record_grpc_metrics(route: &str, grpc_code: i32, grpc_status: &str, elapsed: Duration) {
     let (service, method) = grpc_metric_labels(route, grpc_code);
-    metrics::REMOTE_TRANSPORT_REQUESTS_TOTAL
-        .with_label_values(&[service, method, grpc_status])
-        .inc();
-    metrics::REMOTE_TRANSPORT_REQUEST_DURATION
-        .with_label_values(&[service, method, grpc_status])
-        .observe(elapsed.as_secs_f64());
+    metrics::record_remote_transport_request(service, method, grpc_status, elapsed);
 }
 
 fn grpc_metric_labels(route: &str, grpc_code: i32) -> (&str, &str) {

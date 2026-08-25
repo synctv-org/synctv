@@ -2936,9 +2936,7 @@ impl StreamMessageHandler {
         self.room_service.touch_room_activity(self.room_id).await;
 
         // Track chat message metric
-        synctv_core::metrics::application::CHAT_MESSAGES_TOTAL
-            .with_label_values(&[] as &[&str])
-            .inc();
+        synctv_core::metrics::application::CHAT_MESSAGES_TOTAL.inc();
 
         if outcome.inserted {
             self.chat_event_dispatcher.dispatch(&outcome.event);

@@ -19,6 +19,13 @@ curl -fsS \
 没有启用的功能可能不会产生对应指标。不要把 metrics listener 直接暴露公网。
 </Aside>
 
+## 埋点契约
+
+- metrics listener 启动时会注册全部指标定义。无效或重复定义会中止启动，避免暴露不完整的 registry。
+- Label 只能使用有限集合。HTTP `path` 使用 Axum 路由模板，例如 `/api/rooms/{room_id}`；不得包含资源 ID、query string 或原始错误消息。
+- 现有指标名和 label 集合属于兼容接口。修改前必须检查 dashboard 和 alert。
+- vector 指标可能在对应功能首次记录带 label 的样本前保持缺失。
+
 ## HTTP 和 WebSocket
 
 | 指标 | 类型 | Labels | 含义 |
@@ -38,11 +45,28 @@ curl -fsS \
 | --- | --- | --- | --- |
 | `db_connections_active` | gauge | none | 活跃数据库连接 |
 | `db_connections_idle` | gauge | none | 空闲数据库连接 |
+| `db_pool_size_max` | gauge | none | 所有数据库连接池配置的最大连接数 |
 | `db_pool_utilization_ratio` | gauge | `pool` | 连接池利用率，取值 0 到 1 |
 | `cache_hits_total` | counter | `cache_type`, `level` | 缓存命中数 |
 | `cache_misses_total` | counter | `cache_type`, `level` | 缓存未命中数 |
 | `cache_evictions_total` | counter | `cache_type` | 缓存淘汰数 |
 | `cache_errors_total` | counter | `cache_type`, `operation` | 缓存操作错误数 |
+| `cache_invalidations_total` | counter | `cache_type` | 缓存失效次数 |
+| `cache_operation_duration_seconds` | histogram | `operation` | 缓存操作耗时 |
+| `cache_lag_flush_total` | counter | `component` | 失效 channel 延迟触发的 L1 全量清理次数 |
+| `cache_fence_operations_total` | counter | `domain`, `operation`, `result` | version fence 操作次数 |
+| `cache_db_fallback_total` | counter | `domain`, `reason` | 强一致读取回退 PostgreSQL 的次数 |
+| `cache_stale_write_reject_total` | counter | `cache_type`, `level` | 被拒绝的过期缓存写入次数 |
+| `cache_fence_pending` | gauge | `domain` | 存在待处理 version fence 的 domain |
+| `cache_fence_repair_total` | counter | `domain`, `result` | 读取时 fence 修复结果 |
+| `cache_fence_db_compare` | gauge | `domain`, `relation` | 最近一次 DB 与 fence 巡检比较结果 |
+
+## 远程传输
+
+| 指标 | 类型 | Labels | 含义 |
+| --- | --- | --- | --- |
+| `grpc_requests_total` | counter | `service`, `method`, `status` | 已完成 gRPC 请求数 |
+| `grpc_request_duration_seconds` | histogram | `service`, `method`, `status` | gRPC 请求耗时 |
 
 ## 业务和限流
 
@@ -56,6 +80,7 @@ curl -fsS \
 | `webrtc_peers_active` | gauge | none | 活跃 WebRTC peer |
 | `active_connections` | gauge | none | 活跃连接 |
 | `spawned_task_panics_total` | counter | `task_name` | `spawn_monitored` 捕获的后台任务 panic |
+| `logging_dropped_lines_total` | counter | `component` | 非阻塞日志队列满时丢弃的日志行数 |
 | `email_delivery_queue_depth` | gauge | none | PostgreSQL outbox 中等待投递的邮件任务数 |
 | `email_delivery_in_flight` | gauge | none | 当前实例正在投递的邮件任务数 |
 | `email_delivery_jobs_total` | counter | `kind`, `status` | 邮件任务结果数；状态包括 `sent`、`retry`、`dead`、`superseded`、`fenced`、`persist_failed` 和 `ack_failed` |
@@ -76,6 +101,10 @@ curl -fsS \
 | `synctv_cluster_leader_election_epoch` | gauge | none | 当前 leader epoch |
 | `synctv_cluster_leader_election_consecutive_failures` | gauge | none | 连续选主失败数 |
 | `synctv_cluster_epoch_mismatch_quarantine` | gauge | none | epoch mismatch 隔离状态 |
+| `synctv_cluster_leader_election_mode` | gauge | none | 选主模式：0 standalone、1 Redis、2 Kubernetes Lease |
+| `synctv_cluster_distributed_counter_ttl_refreshes_total` | counter | `result` | 分布式计数器 TTL 刷新结果 |
+| `synctv_cluster_distributed_counter_ttl_keys_refreshed` | gauge | none | 最近一轮 TTL 刷新的 key 数 |
+| `synctv_cluster_distributed_counter_ttl_consecutive_failures` | gauge | none | 连续 TTL 刷新失败数 |
 
 ## 媒体和直播
 
@@ -85,6 +114,8 @@ curl -fsS \
 | `active_relay_streams` | gauge | none | 活跃 relay stream |
 | `stream_errors_total` | counter | `stream_type`, `error_type` | stream 错误数 |
 | `streamhub_restarts_total` | counter | `reason` | StreamHub event loop 重启次数 |
+| `streams_active` | gauge | none | 当前被跟踪的活跃 stream |
+| `synctv_publisher_heartbeat_failures_total` | counter | none | heartbeat 失败后清理 publisher 的次数 |
 | `livestream_active_publishers` | gauge | none | 活跃直播 publisher |
 | `livestream_active_viewers` | gauge | none | 活跃直播 viewer |
 | `livestream_relay_frame_drops_total` | counter | none | backpressure 导致的 relay 丢帧 |

@@ -37,6 +37,7 @@ pub fn create_health_router() -> Router<AppState> {
 
 /// Dedicated metrics router.
 pub fn create_metrics_router() -> Router<AppState> {
+    metrics::initialize();
     Router::new().route("/metrics", get(prometheus_metrics))
 }
 
@@ -595,14 +596,28 @@ pub async fn prometheus_metrics(
         }
     }
 
-    (
-        [(
-            axum::http::header::CONTENT_TYPE,
-            "text/plain; version=0.0.4; charset=utf-8",
-        )],
-        metrics::gather_metrics(),
-    )
-        .into_response()
+    match metrics::gather_metrics() {
+        Ok(body) => (
+            [(
+                axum::http::header::CONTENT_TYPE,
+                "text/plain; version=0.0.4; charset=utf-8",
+            )],
+            body,
+        )
+            .into_response(),
+        Err(error) => {
+            tracing::error!(%error, "Failed to gather Prometheus metrics");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(
+                    axum::http::header::CONTENT_TYPE,
+                    "text/plain; charset=utf-8",
+                )],
+                "Internal Server Error".to_string(),
+            )
+                .into_response()
+        }
+    }
 }
 
 #[cfg(test)]

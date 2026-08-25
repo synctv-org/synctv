@@ -18,6 +18,8 @@ Production deployments should enable metrics but avoid exposing them publicly.
 
 Linux builds also register process-level metrics in the same Prometheus registry, including CPU, memory, file descriptors, and process start time. They are exposed through `/metrics` together with application metrics and need no extra configuration.
 
+All metric definitions are validated and registered when the metrics listener starts. A duplicate or invalid definition stops startup so the endpoint cannot silently expose a partial registry. A scrape-time encoding failure returns HTTP `500`; configure scrape-failure alerts in Prometheus.
+
 ## Common Examples
 
 Bearer token:

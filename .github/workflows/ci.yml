@@ -64,7 +64,8 @@ jobs:
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: proto-freshness
+          cache-on-failure: true
+          cache-workspace-crates: true
 
       - name: Run Clippy
         timeout-minutes: 60
@@ -89,7 +90,8 @@ jobs:
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: proto-freshness
+          cache-on-failure: true
+          cache-workspace-crates: true
 
       - name: Build
         run: make build-workspace
@@ -111,8 +113,6 @@ jobs:
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: proto-freshness
 
       - name: Check generated proto artifacts
         run: make proto-freshness
@@ -136,7 +136,8 @@ jobs:
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: proto-freshness
+          cache-on-failure: true
+          cache-workspace-crates: true
 
       - name: Check SQLx offline metadata
         run: make check-all-targets
@@ -182,7 +183,8 @@ jobs:
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: proto-freshness
+          cache-on-failure: true
+          cache-workspace-crates: true
 
       - name: Run non-ignored tests with nextest
         timeout-minutes: 60
@@ -221,7 +223,8 @@ jobs:
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: proto-freshness
+          cache-on-failure: true
+          cache-workspace-crates: true
 
       - name: Run ignored tests with nextest
         timeout-minutes: 60
@@ -302,7 +305,8 @@ jobs:
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: proto-freshness
+          cache-on-failure: true
+          cache-workspace-crates: true
 
       - name: Install cargo-udeps
         run: make install-cargo-udeps

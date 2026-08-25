@@ -55,7 +55,9 @@ jobs:
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: proto-freshness
+          shared-key: build
+          cache-on-failure: true
+          cache-workspace-crates: true
 
       - name: Validate chart
         run: make validate-helm

@@ -1,5 +1,6 @@
 //! Tests for the SliceCache range-request caching system.
 
+#![recursion_limit = "256"]
 #![allow(clippy::unwrap_used)]
 
 use std::collections::HashMap;

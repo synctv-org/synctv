@@ -348,7 +348,7 @@ run_rendered_synctv_config_validation() {
   [ -z "${RUSTUP_HOME:-}" ] || validation_env+=("RUSTUP_HOME=$RUSTUP_HOME")
   [ -z "${CARGO_TARGET_DIR:-}" ] || validation_env+=("CARGO_TARGET_DIR=$CARGO_TARGET_DIR")
   env -i "${validation_env[@]}" \
-    cargo run -q -p synctv --bin synctv -- --no-dotenv --config "$rendered_config" config validate --strict
+    cargo run -p synctv --bin synctv -- --no-dotenv --config "$rendered_config" config validate --strict
 }
 
 validate_rendered_synctv_config() {

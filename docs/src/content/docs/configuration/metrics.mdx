@@ -14,6 +14,8 @@ metrics:
 
 生产环境可以开启，但不要直接暴露公网。Linux 构建会把进程级指标和业务指标放在同一个 registry 中暴露。
 
+metrics listener 启动时会校验并注册全部指标定义。重复或无效定义会中止启动，避免端点静默暴露不完整的 registry。抓取时发生编码错误会返回 HTTP `500`；应在 Prometheus 中配置抓取失败告警。
+
 ## 常用示例
 
 Bearer token：

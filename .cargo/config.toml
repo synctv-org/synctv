@@ -1,2 +1,3 @@
 [build]
-rustflags = ["-Zthreads=8", "-Zshare-generics=y"]
+# The nightly global next solver exceeds CI memory on synctv-api-http; see rust-lang/rust#161748.
+rustflags = ["-Zthreads=8", "-Zshare-generics=y", "-Znext-solver=coherence"]

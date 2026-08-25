@@ -55,56 +55,6 @@ use synctv_realtime::sync::ConnectionRuntime;
 const SLOW_CLIENT_DROP_THRESHOLD: u32 = 10;
 const WEBSOCKET_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 
-// MetricsGuard - RAII guard for WebSocket metrics
-
-/// RAII guard that increments WebSocket metrics on creation and decrements on drop.
-///
-/// This ensures metrics are correctly maintained even if the connection handling
-/// panics or returns early. Without this guard, metrics would leak in error paths.
-///
-/// # Example
-///
-/// ```text
-/// async fn handle_socket() {
-/// let _guard = MetricsGuard::new();
-///
-/// // Even if this panics, metrics will be decremented
-/// // when _guard is dropped
-/// do_work().await;
-/// }
-/// ```
-pub struct MetricsGuard {
-    /// Track if we've already decremented (to prevent double-decrement)
-    decremented: bool,
-}
-
-impl MetricsGuard {
-    /// Create a new guard, incrementing WebSocket connection metrics.
-    #[must_use = "MetricsGuard must be held for metrics to be tracked correctly"]
-    pub fn new() -> Self {
-        synctv_core::metrics::http::WEBSOCKET_CONNECTIONS_ACTIVE.inc();
-        synctv_core::metrics::http::WEBSOCKET_CONNECTIONS_TOTAL
-            .with_label_values(&["success"])
-            .inc();
-
-        Self { decremented: false }
-    }
-}
-
-impl Default for MetricsGuard {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Drop for MetricsGuard {
-    fn drop(&mut self) {
-        if !self.decremented {
-            synctv_core::metrics::http::WEBSOCKET_CONNECTIONS_ACTIVE.dec();
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RealtimeTransportFormat {
     Json,
@@ -958,9 +908,7 @@ impl synctv_api_common::impls::messaging::MessageSender for WebSocketMessageSend
                         message_type = msg_type,
                         "Critical WebSocket message rejected: critical queue full (slow client)"
                     );
-                    synctv_core::metrics::http::WEBSOCKET_ERRORS_TOTAL
-                        .with_label_values(&["message_dropped_critical"])
-                        .inc();
+                    synctv_core::metrics::http::record_websocket_error("message_dropped_critical");
                     return Err(format!(
                         "Critical message (type={msg_type}) rejected: critical queue full after {drops} consecutive drops (slow client)"
                     ));
@@ -984,9 +932,7 @@ impl synctv_api_common::impls::messaging::MessageSender for WebSocketMessageSend
                     message_type = msg_type,
                     "WebSocket message dropped: channel full (slow client)"
                 );
-                synctv_core::metrics::http::WEBSOCKET_ERRORS_TOTAL
-                    .with_label_values(&["message_dropped"])
-                    .inc();
+                synctv_core::metrics::http::record_websocket_error("message_dropped");
                 if requires_resync || drops >= SLOW_CLIENT_DROP_THRESHOLD {
                     // Too many consecutive drops: disconnect the slow client gracefully
                     Err(format!(
@@ -1326,7 +1272,7 @@ async fn handle_socket(
 
     let event_service = state.event_service.clone();
 
-    let _metrics_guard = MetricsGuard::new();
+    let _metrics_guard = synctv_core::metrics::http::track_websocket_connection();
 
     // Use the shared rate limiter from app state
     let rate_limiter = state.rate_limiter.clone();

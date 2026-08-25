@@ -373,7 +373,7 @@ clippy: ## Apply Clippy fixes, then require a clean workspace lint pass.
 	SQLX_OFFLINE=true $(CARGO) clippy $(CARGO_WORKSPACE_ALL_TARGETS_BUILD_ARGS) --fix --allow-dirty
 
 clippy-check: ## Run locked workspace Clippy checks without modifying files.
-	SQLX_OFFLINE=true $(CARGO) clippy $(CARGO_WORKSPACE_ALL_TARGETS_BUILD_ARGS)
+	SQLX_OFFLINE=true $(CARGO) clippy $(CARGO_WORKSPACE_ALL_TARGETS_BUILD_ARGS) -- -D warnings
 
 install-cargo-audit: ## Install cargo-audit for CI security checks.
 	$(CARGO) install cargo-audit $(CARGO_LOCKED)

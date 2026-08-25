@@ -39,7 +39,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-08-21
+          toolchain: nightly-2026-08-25
           components: rustfmt
 
       - name: Check formatting
@@ -55,7 +55,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-08-21
+          toolchain: nightly-2026-08-25
           components: clippy
 
       - name: Install build dependencies
@@ -63,6 +63,9 @@ jobs:
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          cache-workspace-crates: true
 
       - name: Run Clippy
         timeout-minutes: 60
@@ -79,13 +82,16 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-08-21
+          toolchain: nightly-2026-08-25
 
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler nasm libclang-dev
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          cache-workspace-crates: true
 
       - name: Build
         run: make build-workspace
@@ -100,7 +106,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-08-21
+          toolchain: nightly-2026-08-25
 
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler nasm libclang-dev
@@ -122,13 +128,16 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-08-21
+          toolchain: nightly-2026-08-25
 
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler nasm libclang-dev
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          cache-workspace-crates: true
 
       - name: Check SQLx offline metadata
         run: make check-all-targets
@@ -150,7 +159,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-08-21
+          toolchain: nightly-2026-08-25
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
@@ -173,6 +182,9 @@ jobs:
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          cache-workspace-crates: true
 
       - name: Run non-ignored tests with nextest
         timeout-minutes: 60
@@ -199,7 +211,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-08-21
+          toolchain: nightly-2026-08-25
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
@@ -210,6 +222,9 @@ jobs:
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          cache-workspace-crates: true
 
       - name: Run ignored tests with nextest
         timeout-minutes: 60
@@ -225,7 +240,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-08-21
+          toolchain: nightly-2026-08-25
 
       - name: Install cargo-audit
         run: make install-cargo-audit
@@ -248,7 +263,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-08-21
+          toolchain: nightly-2026-08-25
 
       - name: Install cargo-deny
         run: make install-cargo-deny
@@ -282,10 +297,16 @@ jobs:
       - name: Install Rust nightly
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-08-21
+          toolchain: nightly-2026-08-25
 
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler nasm libclang-dev
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          cache-workspace-crates: true
 
       - name: Install cargo-udeps
         run: make install-cargo-udeps

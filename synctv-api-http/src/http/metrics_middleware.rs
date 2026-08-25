@@ -9,21 +9,6 @@ use std::time::Instant;
 
 use synctv_api_common::observability::metrics;
 
-struct InFlightRequestGuard;
-
-impl InFlightRequestGuard {
-    fn new() -> Self {
-        metrics::HTTP_REQUESTS_IN_FLIGHT.inc();
-        Self
-    }
-}
-
-impl Drop for InFlightRequestGuard {
-    fn drop(&mut self) {
-        metrics::HTTP_REQUESTS_IN_FLIGHT.dec();
-    }
-}
-
 /// Middleware that records HTTP request count, duration, and in-flight gauge.
 pub async fn metrics_layer(request: Request, next: Next) -> Response {
     let method = request.method().to_string();
@@ -32,20 +17,12 @@ pub async fn metrics_layer(request: Request, next: Next) -> Response {
         |path| path.as_str().to_string(),
     );
 
-    let _in_flight = InFlightRequestGuard::new();
+    let _in_flight = metrics::start_request();
     let start = Instant::now();
 
     let response = next.run(request).await;
 
-    let duration = start.elapsed().as_secs_f64();
-    let status = response.status().as_u16().to_string();
-
-    metrics::HTTP_REQUESTS_TOTAL
-        .with_label_values(&[&method, &path, &status])
-        .inc();
-    metrics::HTTP_REQUEST_DURATION_SECONDS
-        .with_label_values(&[&method, &path])
-        .observe(duration);
+    metrics::record_request(&method, &path, response.status().as_u16(), start.elapsed());
 
     response
 }
@@ -77,7 +54,8 @@ mod tests {
             .expect("request should complete");
         assert_eq!(response.status(), StatusCode::OK);
 
-        let output = synctv_api_common::observability::metrics::gather_metrics();
+        let output = synctv_api_common::observability::metrics::gather_metrics()
+            .expect("metrics should encode");
         assert!(output.contains(
             "http_requests_total{method=\"GET\",path=\"/items/{item_id}\",status=\"200\"}"
         ));

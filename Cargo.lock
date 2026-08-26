@@ -4470,7 +4470,7 @@ dependencies = [
  "md-5 0.11.0",
  "mea",
  "percent-encoding",
- "quick-xml",
+ "quick-xml 0.41.0",
  "reqsign-core",
  "serde",
  "serde_json",
@@ -4540,7 +4540,7 @@ dependencies = [
  "log",
  "md-5 0.11.0",
  "opendal-core",
- "quick-xml",
+ "quick-xml 0.41.0",
  "reqsign-aws-v4",
  "reqsign-core",
  "reqsign-file-read-tokio",
@@ -5664,6 +5664,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "quick-xml"
+version = "0.42.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41b1177fdf999d2321d3fb46ff47159d9c1fb9ad66a4879f8c50a0b504615e9b"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "quinn"
 version = "0.11.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5980,7 +5989,7 @@ dependencies = [
  "http",
  "log",
  "percent-encoding",
- "quick-xml",
+ "quick-xml 0.41.0",
  "reqsign-core",
  "rust-ini",
  "serde",
@@ -5998,7 +6007,7 @@ dependencies = [
  "bytes",
  "http",
  "log",
- "quick-xml",
+ "quick-xml 0.41.0",
  "reqsign-aws-core",
  "reqsign-core",
  "serde",
@@ -8151,7 +8160,7 @@ dependencies = [
  "percent-encoding",
  "prost",
  "prost-types",
- "quick-xml",
+ "quick-xml 0.42.0",
  "rand 0.10.2",
  "regex",
  "reqwest",
@@ -8281,7 +8290,7 @@ dependencies = [
  "moka",
  "percent-encoding",
  "prost",
- "quick-xml",
+ "quick-xml 0.42.0",
  "rayon",
  "reqwest",
  "serde",

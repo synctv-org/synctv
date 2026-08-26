@@ -270,7 +270,7 @@ regex = "=1.13.1"
 oxc_allocator = "=0.144.0"
 oxc_ast = "=0.144.0"
 oxc_parser = "=0.144.0"
-oxc_span = "=0.144.0"
+oxc_span = "=0.146.0"
 boa_engine = { version = "=0.21.1", default-features = false }
 paste = "=1.0.15"
 byteorder = "=1.5.0"

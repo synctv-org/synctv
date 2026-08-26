@@ -1,6 +1,8 @@
 use super::{
     apply_live_stream_generation, apply_static_direct_url_thumbnail, build_playback_state_update,
-    build_start_playback_request, static_media_source_provider, PlaybackBuildActor,
+    build_start_playback_request, filter_unavailable_live_whep, generation_supports_whep,
+    remove_unavailable_live_whep, retain_live_whep_if_enabled, static_media_source_provider,
+    PlaybackBuildActor,
 };
 use synctv_core::models::{
     Media, MediaId, PlaybackDirectUrlMedia, PlaybackInfo, PlaybackMedia, PlaybackMediaProvider,
@@ -42,6 +44,46 @@ fn live_generation(ready: bool) -> synctv_livestream::StreamGeneration {
         ended_at: None,
         lease_epoch: 1,
         generation_id: "generation-live".to_string(),
+        supports_rtp: false,
+    }
+}
+
+fn live_playback_result(default_mode: &str, modes: &[&str]) -> PlaybackResult {
+    let media_id = MediaId::expect_positive(1);
+    let room_id = RoomId::expect_positive(2);
+    let playback_infos = modes
+        .iter()
+        .map(|mode| {
+            (
+                (*mode).to_string(),
+                PlaybackInfo {
+                    thumbnail: None,
+                    medias: Vec::new(),
+                    default_media_index: None,
+                    subtitles: Vec::new(),
+                    default_subtitle_index: None,
+                    danmakus: Vec::new(),
+                    default_danmaku_index: None,
+                },
+            )
+        })
+        .collect();
+    PlaybackResult {
+        id: Some(media_id),
+        playlist_id: None,
+        room_id,
+        name: "live".to_string(),
+        provider: SourceProvider::Rtmp,
+        provider_instance_name: None,
+        position: 0.0,
+        playback_infos,
+        default_mode: default_mode.to_string(),
+        duration_seconds: None,
+        playback_kind: synctv_core::models::PlaybackKind::Live,
+        target: None,
+        metadata: Some(synctv_core::models::PlaybackMetadata::Live(
+            synctv_core::models::LivePlaybackMetadata { media_id, room_id },
+        )),
     }
 }
 
@@ -88,6 +130,108 @@ fn live_stream_generation_maps_to_authoritative_playback_availability() {
         synctv_proto::client::LiveStreamAvailability::Live as i32
     );
     assert_eq!(metadata.stream_generation_id, "generation-live");
+}
+
+#[test]
+fn whep_requires_a_ready_rtp_generation() {
+    let mut generation = live_generation(true);
+    assert!(!generation_supports_whep(Some(&generation)));
+
+    generation.supports_rtp = true;
+    assert!(generation_supports_whep(Some(&generation)));
+
+    generation.ready_at = None;
+    assert!(!generation_supports_whep(Some(&generation)));
+    assert!(!generation_supports_whep(None));
+}
+
+#[test]
+fn unavailable_whep_falls_back_to_hls_deterministically() -> TestResult {
+    let mut result = live_playback_result("whep", &["whep", "flv", "hls"]);
+
+    api_ok(remove_unavailable_live_whep(&mut result))?;
+
+    assert!(!result.playback_infos.contains_key("whep"));
+    assert_eq!(result.default_mode, "hls");
+    Ok(())
+}
+
+#[test]
+fn unavailable_whep_rejects_a_webrtc_only_client_result() -> TestResult {
+    let mut result = live_playback_result("whep", &["whep"]);
+
+    let error = api_err(remove_unavailable_live_whep(&mut result))?;
+
+    assert!(matches!(
+        error,
+        crate::impls::ApiError::ClientIncompatible { .. }
+    ));
+    Ok(())
+}
+
+#[test]
+fn disabled_webrtc_removes_whep_before_provider_specific_filtering() -> TestResult {
+    for provider in [SourceProvider::Rtmp, SourceProvider::LiveProxy] {
+        let mut result = live_playback_result("whep", &["whep", "hls"]);
+        result.provider = provider;
+
+        assert!(!api_ok(retain_live_whep_if_enabled(&mut result, false))?);
+        assert!(!result.playback_infos.contains_key("whep"));
+        assert_eq!(result.default_mode, "hls");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn live_generation_is_resolved_for_clients_without_whep() -> TestResult {
+    let mut result = live_playback_result("hls", &["hls", "flv"]);
+    let room_id = result.room_id.to_string();
+    let media_id = result
+        .id
+        .ok_or_else(|| test_error("live playback result is missing media id"))?
+        .to_string();
+    let registry = synctv_livestream::local_stream_registry();
+    let generation_id = "00000000-0000-4000-8000-000000000001";
+    assert!(
+        registry
+            .try_activate_generation(
+                &room_id,
+                &media_id,
+                "node-live",
+                "user-live",
+                "127.0.0.1:50051",
+                generation_id,
+            )
+            .await?
+    );
+    let generation = registry
+        .get_active_generation(&room_id, &media_id)
+        .await?
+        .ok_or_else(|| test_error("active generation is missing"))?;
+    assert!(
+        registry
+            .mark_generation_ready(&room_id, &media_id, generation_id, generation.lease_epoch,)
+            .await?
+    );
+
+    let (event_sender, _event_receiver) = tokio::sync::mpsc::channel(8);
+    let infrastructure = std::sync::Arc::new(synctv_livestream::LiveStreamingInfrastructure::new(
+        registry,
+        event_sender,
+        std::sync::Arc::new(synctv_livestream::StreamTracker::new()),
+        "node-live".to_string(),
+        synctv_common::ssrf::SsrfGuard::disabled(),
+    )?);
+
+    let generation =
+        api_ok(filter_unavailable_live_whep(Some(&infrastructure), &mut result).await)?
+            .ok_or_else(|| test_error("active generation was not resolved"))?;
+
+    assert_eq!(generation.generation_id, generation_id);
+    assert!(generation.ready_at.is_some());
+    assert_eq!(result.default_mode, "hls");
+    assert!(!result.playback_infos.contains_key("whep"));
+    Ok(())
 }
 
 fn proto_alist_target(relative_path: &str) -> Option<synctv_proto::client::ProviderTarget> {

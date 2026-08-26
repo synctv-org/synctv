@@ -472,6 +472,9 @@ config:
     ## If empty, SyncTV uses only the local bind host fallback and does not
     ## reuse internal Pod IPs or server.advertise_host.
     publicRtmpHost: ""
+    ## Optional public HTTP(S) origin for absolute WHIP publish URLs. Leave empty
+    ## to return origin-relative URLs that follow the API request origin.
+    publicWebRtcBaseUrl: ""
     logging:
       level: info
       format: text
@@ -499,6 +502,23 @@ config:
       basePath: "hls/"
     flvMaxConnectionDurationSeconds: 86400
     flvWriteTimeoutSeconds: 30
+    ## Standards-based WHIP/WHEP livestream transport on the main HTTP Service.
+    ## With no ICE servers, peers receive host candidates only. Configure TURN
+    ## for clients behind restrictive NAT. credentialFile is resolved by the
+    ## application and should refer to a Secret-mounted file.
+    webrtc:
+      enabled: true
+      iceServers: []
+      # iceServers:
+      #   - urls:
+      #       - "stun:stun.example.com:3478"
+      #       - "turn:turn.example.com:3478?transport=udp"
+      #     username: "synctv"
+      #     credentialFile: "/run/secrets/livestream-turn/credential"
+      iceGatheringTimeoutSeconds: 10
+      maxSdpBytes: 262144
+      maxSessions: 1000
+      maxSessionDurationSeconds: 86400
 
   ## FileStorageConfig
   ## The built-in "disabled" backend always exists. Database backends store

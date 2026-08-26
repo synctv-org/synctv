@@ -31,8 +31,8 @@ SyncTV is a Rust implementation of a real-time synchronized video watching platf
 
 - Synchronized room playback with real-time state updates.
 - Media providers for Bilibili, Twitch, YouTube, Douyin, TikTok, Huya, Douyu, AcFun, CCTV, Alist, Cloudreve, Emby/Jellyfin, FNOS, QNAP, Synology, Nextcloud, Seafile, TrueNAS, direct URLs, and livestream sources.
-- RTMP push/pull, HLS, and HTTP-FLV livestream support.
-- RTSP external pull with TCP/UDP transport and live HLS/HTTP-FLV remuxing.
+- WHIP and RTMP publishing with WHEP, HLS, and HTTP-FLV playback.
+- External WHEP, RTSP, RTMP, and HTTP-FLV pull with cross-node live relay.
 - HTTP REST, public gRPC, WebSocket, management gRPC, metrics, RTMP, and STUN runtime surfaces.
 - PostgreSQL-backed durable storage with optional Redis shared state, cache, rate limiting, and cluster coordination.
 - Docker Compose and Helm deployment templates.

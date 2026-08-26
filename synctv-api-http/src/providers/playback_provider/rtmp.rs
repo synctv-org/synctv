@@ -66,8 +66,8 @@ impl PlaybackProviderHttpResponse for RtmpHlsSegmentResponse {
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/{roomId}/rtmp/{version}/flv-stream",
-        tag = "RTMP Playback Provider",
+        path = "/api/playback-providers/{roomId}/live/{version}/flv-stream",
+        tag = "Live Playback Provider",
         params(
             ("roomId" = String, Path),
             ("version" = String, Path),
@@ -96,8 +96,8 @@ pub fn get_rtmp_flv_stream(
     feature = "openapi",
     utoipa::path(
         head,
-        path = "/api/playback-providers/{roomId}/rtmp/{version}/flv-stream",
-        tag = "RTMP Playback Provider",
+        path = "/api/playback-providers/{roomId}/live/{version}/flv-stream",
+        tag = "Live Playback Provider",
         params(
             ("roomId" = String, Path),
             ("version" = String, Path),
@@ -165,8 +165,8 @@ async fn rtmp_flv_stream(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/{roomId}/rtmp/{version}/hls-master",
-        tag = "RTMP Playback Provider",
+        path = "/api/playback-providers/{roomId}/live/{version}/hls-master",
+        tag = "Live Playback Provider",
         params(
             ("roomId" = String, Path),
             ("version" = String, Path),
@@ -221,8 +221,8 @@ pub async fn get_rtmp_hls_master(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/{roomId}/rtmp/{version}/hls/{generationId}/index.m3u8",
-        tag = "RTMP Playback Provider",
+        path = "/api/playback-providers/{roomId}/live/{version}/hls/{generationId}/index.m3u8",
+        tag = "Live Playback Provider",
         params(
             ("roomId" = String, Path),
             ("version" = String, Path),
@@ -279,8 +279,8 @@ pub async fn get_rtmp_hls_playlist(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/{roomId}/rtmp/{version}/hls/{generationId}/{segmentName}",
-        tag = "RTMP Playback Provider",
+        path = "/api/playback-providers/{roomId}/live/{version}/hls/{generationId}/{segmentName}",
+        tag = "Live Playback Provider",
         params(
             ("roomId" = String, Path),
             ("version" = String, Path),
@@ -318,8 +318,8 @@ pub fn get_rtmp_hls_segment(
     feature = "openapi",
     utoipa::path(
         head,
-        path = "/api/playback-providers/{roomId}/rtmp/{version}/hls/{generationId}/{segmentName}",
-        tag = "RTMP Playback Provider",
+        path = "/api/playback-providers/{roomId}/live/{version}/hls/{generationId}/{segmentName}",
+        tag = "Live Playback Provider",
         params(
             ("roomId" = String, Path),
             ("version" = String, Path),

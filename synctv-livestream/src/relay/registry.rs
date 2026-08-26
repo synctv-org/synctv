@@ -9,7 +9,8 @@ use synctv_xiu::hls::DEFAULT_HLS_GENERATION_RETENTION;
 use tracing::{debug, info};
 
 use super::registry_trait::{
-    ActiveStreamGeneration, LeaseRefreshOutcome, LeaseRefreshRequest, PUBLISHER_REFRESH_BATCH_SIZE,
+    ActiveStreamGeneration, LeaseRefreshOutcome, LeaseRefreshRequest, StreamGenerationRegistration,
+    PUBLISHER_REFRESH_BATCH_SIZE,
 };
 use crate::util::{
     validate_publisher_cluster_address, validate_stream_generation_id,
@@ -42,6 +43,7 @@ const REDIS_OPERATION_TIMEOUT_SECS: u64 = 5;
 const LEASE_EPOCH_KEY_PREFIX: &str = "stream:lease_epoch";
 const ACTIVE_GENERATION_KEY_PREFIX: &str = "stream:active_generation";
 const GENERATION_KEY_PREFIX: &str = "stream:generation";
+const WEBRTC_SESSION_KEY_PREFIX: &str = "stream:webrtc_session";
 pub(crate) const HLS_GENERATION_RETENTION: Duration = DEFAULT_HLS_GENERATION_RETENTION;
 const USER_ACTIVE_STREAMS_KEY_PREFIX: &str = "stream:user_active_streams";
 const NODE_ACTIVE_STREAMS_KEY_PREFIX: &str = "stream:node_active_streams";
@@ -215,6 +217,56 @@ static MARK_GENERATION_READY_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| 
 
         parsed.ready_at = ARGV[3]
         redis.call('SET', KEYS[2], cjson.encode(parsed), 'KEEPTTL')
+        return 1
+        ",
+    )
+});
+
+static SET_GENERATION_RTP_CAPABILITY_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r"
+        local active_generation_id = redis.call('GET', KEYS[1])
+        if not active_generation_id then
+            return 0
+        end
+        if active_generation_id ~= ARGV[1] then
+            return -1
+        end
+
+        local info_json = redis.call('GET', KEYS[2])
+        if not info_json then
+            return 0
+        end
+        local ok, parsed = pcall(cjson.decode, info_json)
+        if not ok or not parsed then
+            return 0
+        end
+        if tonumber(parsed.lease_epoch or 0) ~= tonumber(ARGV[2]) then
+            return -1
+        end
+
+        parsed.supports_rtp = tonumber(ARGV[3]) == 1
+        redis.call('SET', KEYS[2], cjson.encode(parsed), 'KEEPTTL')
+        return 1
+        ",
+    )
+});
+
+static UNREGISTER_WEBRTC_SESSION_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r"
+        local owner_json = redis.call('GET', KEYS[1])
+        if not owner_json then
+            return 0
+        end
+        local ok, parsed = pcall(cjson.decode, owner_json)
+        if not ok or not parsed then
+            return 0
+        end
+        if (parsed.node_id or '') ~= ARGV[1] then
+            return -1
+        end
+        redis.call('DEL', KEYS[1])
         return 1
         ",
     )
@@ -407,6 +459,9 @@ pub struct StreamGeneration {
     pub lease_epoch: u64,
     /// Stable StreamHub publication generation used by public HLS URLs.
     pub generation_id: String,
+    /// Whether this generation exposes raw RTP packets for WHEP subscribers.
+    #[serde(default)]
+    pub supports_rtp: bool,
 }
 
 impl StreamGeneration {
@@ -423,6 +478,22 @@ impl StreamGeneration {
         }
         Ok(&self.cluster_address)
     }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WebRtcSessionKind {
+    Whip,
+    Whep,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WebRtcSessionOwner {
+    pub node_id: String,
+    pub cluster_address: String,
+    pub room_id: String,
+    pub media_id: String,
+    pub kind: WebRtcSessionKind,
 }
 
 /// Publisher Registry for tracking active publishers via Redis.
@@ -481,6 +552,10 @@ impl StreamRegistry {
         self.prefixed(&format!(
             "{GENERATION_KEY_PREFIX}:{room_id}:{media_id}:{generation_id}"
         ))
+    }
+
+    fn webrtc_session_key(&self, session_id: &str) -> String {
+        self.prefixed(&format!("{WEBRTC_SESSION_KEY_PREFIX}:{session_id}"))
     }
 
     fn generation_key_prefix(&self, room_id: &str, media_id: &str) -> String {
@@ -649,6 +724,30 @@ impl StreamRegistry {
         cluster_address: &str,
         generation_id: &str,
     ) -> anyhow::Result<bool> {
+        self.try_activate_generation_with_capabilities(StreamGenerationRegistration::new(
+            room_id,
+            media_id,
+            node_id,
+            user_id,
+            cluster_address,
+            generation_id,
+        ))
+        .await
+    }
+
+    pub(crate) async fn try_activate_generation_with_capabilities(
+        &self,
+        registration: StreamGenerationRegistration<'_>,
+    ) -> anyhow::Result<bool> {
+        let StreamGenerationRegistration {
+            room_id,
+            media_id,
+            node_id,
+            user_id,
+            cluster_address,
+            generation_id,
+            supports_rtp,
+        } = registration;
         validate_stream_ids(room_id, media_id)?;
         validate_stream_generation_id(generation_id)?;
         validate_publisher_cluster_address(cluster_address, node_id, room_id, media_id)?;
@@ -669,6 +768,7 @@ impl StreamRegistry {
             ended_at: None,
             lease_epoch: 0, // Placeholder, will be replaced by actual lease_epoch in Lua script
             generation_id: generation_id.to_string(),
+            supports_rtp,
         };
         let info_json = serde_json::to_string(&info)?;
 
@@ -761,6 +861,114 @@ impl StreamRegistry {
                 .invoke_async(&mut conn)
                 .await
                 .map_err(|error| anyhow!("Generation readiness script failed: {error}"))?;
+            Ok(status == 1)
+        })
+        .await
+    }
+
+    pub async fn set_generation_supports_rtp(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        generation_id: &str,
+        expected_lease_epoch: u64,
+        supports_rtp: bool,
+    ) -> Result<bool> {
+        validate_stream_ids(room_id, media_id)?;
+        validate_stream_generation_id(generation_id)?;
+        let lease_epoch = i64::try_from(expected_lease_epoch)
+            .map_err(|_| anyhow!("Lease epoch {expected_lease_epoch} exceeds Redis range"))?;
+        let active_generation_key = self.active_generation_key(room_id, media_id);
+        let generation_key = self.generation_key(room_id, media_id, generation_id);
+
+        with_redis_timeout(|| async {
+            let mut conn = self.conn().await?;
+            let status: i64 = SET_GENERATION_RTP_CAPABILITY_SCRIPT
+                .key(active_generation_key)
+                .key(generation_key)
+                .arg(generation_id)
+                .arg(lease_epoch)
+                .arg(i64::from(supports_rtp))
+                .invoke_async(&mut conn)
+                .await
+                .map_err(|error| anyhow!("Generation RTP capability script failed: {error}"))?;
+            Ok(status == 1)
+        })
+        .await
+    }
+
+    pub async fn try_register_webrtc_session(
+        &self,
+        session_id: &str,
+        owner: &WebRtcSessionOwner,
+        ttl: Duration,
+    ) -> Result<bool> {
+        validate_stream_generation_id(session_id)?;
+        validate_stream_ids(&owner.room_id, &owner.media_id)?;
+        validate_publisher_cluster_address(
+            &owner.cluster_address,
+            &owner.node_id,
+            &owner.room_id,
+            &owner.media_id,
+        )?;
+        let ttl_seconds = ttl.as_secs().max(1);
+        let owner_json = serde_json::to_string(owner)?;
+        let key = self.webrtc_session_key(session_id);
+
+        with_redis_timeout(|| async {
+            let mut conn = self.conn().await?;
+            let registered: Option<String> = redis::cmd("SET")
+                .arg(key)
+                .arg(owner_json)
+                .arg("NX")
+                .arg("EX")
+                .arg(ttl_seconds)
+                .query_async(&mut conn)
+                .await
+                .map_err(|error| anyhow!("WebRTC session registration failed: {error}"))?;
+            Ok(registered.is_some())
+        })
+        .await
+    }
+
+    pub async fn get_webrtc_session_owner(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<WebRtcSessionOwner>> {
+        validate_stream_generation_id(session_id)?;
+        let key = self.webrtc_session_key(session_id);
+        with_redis_timeout(|| async {
+            let mut conn = self.conn().await?;
+            let owner_json: Option<String> = redis::cmd("GET")
+                .arg(key)
+                .query_async(&mut conn)
+                .await
+                .map_err(|error| anyhow!("WebRTC session lookup failed: {error}"))?;
+            owner_json
+                .map(|value| {
+                    serde_json::from_str(&value)
+                        .map_err(|error| anyhow!("Invalid WebRTC session owner record: {error}"))
+                })
+                .transpose()
+        })
+        .await
+    }
+
+    pub async fn unregister_webrtc_session(
+        &self,
+        session_id: &str,
+        expected_node_id: &str,
+    ) -> Result<bool> {
+        validate_stream_generation_id(session_id)?;
+        let key = self.webrtc_session_key(session_id);
+        with_redis_timeout(|| async {
+            let mut conn = self.conn().await?;
+            let status: i64 = UNREGISTER_WEBRTC_SESSION_SCRIPT
+                .key(key)
+                .arg(expected_node_id)
+                .invoke_async(&mut conn)
+                .await
+                .map_err(|error| anyhow!("WebRTC session cleanup failed: {error}"))?;
             Ok(status == 1)
         })
         .await
@@ -1227,6 +1435,32 @@ mod tests {
         )
     }
 
+    #[test]
+    fn older_generation_records_default_to_no_rtp_capability() -> TestResult {
+        let generation = StreamGeneration {
+            node_id: "node1".to_string(),
+            cluster_address: "localhost:50051".to_string(),
+            app_name: "live".to_string(),
+            user_id: "user1".to_string(),
+            started_at: synctv_core::SystemClock.now(),
+            ready_at: Some(synctv_core::SystemClock.now()),
+            ended_at: None,
+            lease_epoch: 1,
+            generation_id: TEST_GENERATION_ID.to_string(),
+            supports_rtp: true,
+        };
+        let mut value = serde_json::to_value(generation)?;
+        value
+            .as_object_mut()
+            .ok_or_else(|| test_error("generation JSON must be an object"))?
+            .remove("supports_rtp");
+
+        let decoded: StreamGeneration = serde_json::from_value(value)?;
+
+        assert!(!decoded.supports_rtp);
+        Ok(())
+    }
+
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_register_publisher_success() -> TestResult {
@@ -1559,6 +1793,106 @@ mod tests {
         registry
             .deactivate_current_generation("room123", "media456")
             .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn redis_rtp_capability_update_is_lease_fenced() -> TestResult {
+        let (_container, _client, redis, prefix) = setup_redis().await;
+        let registry = test_registry(redis, prefix);
+        assert!(
+            registry
+                .try_activate_generation_with_capabilities(StreamGenerationRegistration::new(
+                    "room123",
+                    "media456",
+                    "node1",
+                    "user1",
+                    "localhost:50051",
+                    TEST_GENERATION_ID,
+                ),)
+                .await?
+        );
+        let generation = require_publisher(
+            registry
+                .get_active_generation("room123", "media456")
+                .await?,
+        )?;
+        assert!(
+            !registry
+                .set_generation_supports_rtp(
+                    "room123",
+                    "media456",
+                    TEST_GENERATION_ID,
+                    generation.lease_epoch + 1,
+                    true,
+                )
+                .await?
+        );
+        assert!(
+            registry
+                .set_generation_supports_rtp(
+                    "room123",
+                    "media456",
+                    TEST_GENERATION_ID,
+                    generation.lease_epoch,
+                    true,
+                )
+                .await?
+        );
+        assert!(
+            require_publisher(
+                registry
+                    .get_active_generation("room123", "media456")
+                    .await?,
+            )?
+            .supports_rtp
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn redis_webrtc_session_owner_registration_is_node_fenced() -> TestResult {
+        let (_container, _client, redis, prefix) = setup_redis().await;
+        let registry = test_registry(redis, prefix);
+        let owner = WebRtcSessionOwner {
+            node_id: "node1".to_string(),
+            cluster_address: "localhost:50051".to_string(),
+            room_id: "room123".to_string(),
+            media_id: "media456".to_string(),
+            kind: WebRtcSessionKind::Whip,
+        };
+        assert!(
+            registry
+                .try_register_webrtc_session(TEST_GENERATION_ID, &owner, Duration::from_secs(30),)
+                .await?
+        );
+        assert!(
+            !registry
+                .try_register_webrtc_session(TEST_GENERATION_ID, &owner, Duration::from_secs(30),)
+                .await?
+        );
+        assert!(
+            !registry
+                .unregister_webrtc_session(TEST_GENERATION_ID, "node2")
+                .await?
+        );
+        assert_eq!(
+            registry
+                .get_webrtc_session_owner(TEST_GENERATION_ID)
+                .await?,
+            Some(owner)
+        );
+        assert!(
+            registry
+                .unregister_webrtc_session(TEST_GENERATION_ID, "node1")
+                .await?
+        );
+        assert!(registry
+            .get_webrtc_session_owner(TEST_GENERATION_ID)
+            .await?
+            .is_none());
         Ok(())
     }
 

@@ -133,6 +133,7 @@ pub struct MetricsRuntimeSettings {
 pub struct LivestreamRuntimeSettings {
     pub rtmp_port: u16,
     pub public_rtmp_host: String,
+    pub public_webrtc_base_url: String,
     pub flv_max_connection_duration_seconds: u64,
     pub flv_write_timeout_seconds: u64,
 }
@@ -142,6 +143,7 @@ impl Default for LivestreamRuntimeSettings {
         Self {
             rtmp_port: 1935,
             public_rtmp_host: String::new(),
+            public_webrtc_base_url: String::new(),
             flv_max_connection_duration_seconds: 86400,
             flv_write_timeout_seconds: 30,
         }

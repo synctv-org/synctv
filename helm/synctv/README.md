@@ -4,7 +4,7 @@ Helm chart for deploying SyncTV. By default it installs one SyncTV Deployment pl
 
 ## Features
 
-- Single-process deployment for HTTP, gRPC, RTMP, STUN, and the management endpoint
+- Single-process deployment for HTTP, gRPC, RTMP, WHIP/WHEP, STUN, and the management endpoint
 - Independent HTTP and gRPC Kubernetes Services, even though both target the same process port
 - Built-in PostgreSQL and Redis by default, with no extra dependency chart required
 - Optional KubeBlocks-backed or external database modes
@@ -235,7 +235,7 @@ The application uses split database/Redis configuration so credentials can stay 
 | `config.cluster` | Cluster coordination and discovery settings |
 | `config.jwt` | Token durations; signing secret comes from a secret |
 | `config.bootstrap` | Bootstrap root-user settings |
-| `config.livestream` | RTMP/HLS/pull timeout, cache, and logging settings |
+| `config.livestream` | RTMP, WHIP/WHEP, HLS, pull timeout, cache, ICE, and logging settings |
 | `config.fileStorage` | Uploaded file storage backends and product-level backend routing |
 | `config.cache` | Business L1/L2 cache settings |
 | `config.proxySliceCache` | Startup-only media proxy Range-slice cache settings |
@@ -249,10 +249,15 @@ The application uses split database/Redis configuration so credentials can stay 
 The chart creates separate Services for application traffic:
 
 - `{{ release-name }}` exposes HTTP/REST.
+- WHIP and WHEP signaling use `{{ release-name }}`; set `config.livestream.publicWebRtcBaseUrl` to its public HTTPS origin when clients cannot derive it from the API request.
 - `{{ release-name }}-rtmp` exposes RTMP ingest when `rtmpService.enabled=true`.
 - `{{ release-name }}-stun` exposes the built-in UDP STUN listener when `stunService.enabled=true` and `config.webrtc.enableBuiltinStun=true`; it is disabled by default because a ClusterIP STUN Service is not reachable by public WebRTC clients.
 - `{{ release-name }}-metrics` exposes metrics when `metrics.enabled=true`.
 - `{{ release-name }}-grpc` exposes gRPC only and targets the same container port as HTTP.
+
+WebRTC media uses dynamic ICE UDP ports. The chart does not create a fixed media UDP Service. Configure `config.livestream.webrtc.iceServers` with a TURN service reachable from pods and clients for Kubernetes or NAT deployments. `stunService` exposes address discovery only and cannot relay media. Mount TURN credentials with `extraVolumes` and `extraVolumeMounts`, then reference the mounted file through `credentialFile`.
+
+WHIP and upstream WHEP keep raw RTP for local or cross-node WHEP playback. The same streams also produce frames for HLS and HTTP-FLV. RTMP, RTSP, and HTTP-FLV inputs have frame data only, so their playback paths use HLS or HTTP-FLV.
 
 Important transport defaults:
 

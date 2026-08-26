@@ -310,6 +310,7 @@ fn supports_secret_file_reference(current_path: &str, base_key: &str) -> bool {
             | "bootstrap.root_password"
     ) || (current_path.starts_with("file_storage.backends.")
         && matches!(base_key, "access_key_id" | "secret_access_key"))
+        || (current_path.starts_with("livestream.webrtc.ice_servers.") && base_key == "credential")
         || (current_path.starts_with("media_providers.") && is_secret_like_provider_key(base_key))
 }
 

@@ -10,7 +10,10 @@ use crate::{
     error::StreamResult,
     livestream::external_puller::ExternalStreamPuller,
     livestream::managed_stream::{ManagedStream, StreamLifecycle, StreamPool},
-    relay::{registry::HEARTBEAT_INTERVAL_SECS, registry_trait::StreamRegistryTrait},
+    relay::{
+        registry::HEARTBEAT_INTERVAL_SECS,
+        registry_trait::{StreamGenerationRegistration, StreamRegistryTrait},
+    },
 };
 use futures::StreamExt as _;
 use std::sync::atomic::Ordering;
@@ -18,11 +21,12 @@ use std::sync::Arc;
 use std::time::Duration;
 use synctv_common::ssrf::SsrfGuard;
 use synctv_xiu::streamhub::define::StreamHubEventSender;
+use synctv_xiu::webrtc::WebRtcConfig;
 use tracing::{debug, error, info, warn};
 
 const DEFAULT_MAX_CONCURRENT_STREAMS: usize = 100;
 const STOP_UNREGISTER_CONCURRENCY: usize = 16;
-const START_CONFIRM_TIMEOUT: Duration = Duration::from_secs(15);
+const START_CONFIRM_TIMEOUT: Duration = Duration::from_secs(60);
 const EXTERNAL_PUBLISHER_USER_ID: &str = "";
 
 async fn await_start_confirmation(
@@ -71,6 +75,7 @@ pub(crate) struct ExternalPublishManager {
     http_client: reqwest::Client,
     /// Explicit SSRF policy injected by the application layer.
     ssrf_guard: SsrfGuard,
+    webrtc_config: WebRtcConfig,
     /// Maximum number of concurrent pull streams.
     /// Prevents memory exhaustion from unlimited stream creation.
     max_concurrent_streams: usize,
@@ -124,6 +129,12 @@ impl ExternalPublishManager {
         self
     }
 
+    #[must_use]
+    pub(crate) fn with_webrtc_config(mut self, config: WebRtcConfig) -> Self {
+        self.webrtc_config = config;
+        self
+    }
+
     pub(crate) fn with_timeouts(
         registry: Arc<dyn StreamRegistryTrait>,
         local_node_id: String,
@@ -161,6 +172,7 @@ impl ExternalPublishManager {
             stream_hub_event_sender,
             http_client,
             ssrf_guard,
+            webrtc_config: WebRtcConfig::default(),
             max_concurrent_streams: DEFAULT_MAX_CONCURRENT_STREAMS,
             creation_capacity_lock: tokio::sync::Mutex::new(()),
             max_flv_tag_size_bytes: ExternalStreamPuller::DEFAULT_MAX_FLV_TAG_SIZE_BYTES,
@@ -328,6 +340,7 @@ impl ExternalPublishManager {
             stream_hub_event_sender: self.stream_hub_event_sender.clone(),
             http_client: self.http_client.clone(),
             ssrf_guard: self.ssrf_guard.clone(),
+            webrtc_config: self.webrtc_config.clone(),
             max_flv_tag_size_bytes: self.max_flv_tag_size_bytes,
         }));
 
@@ -370,7 +383,12 @@ impl ExternalPublishManager {
         let registry_timeout = std::time::Duration::from_secs(5);
         let register_result = tokio::time::timeout(
             registry_timeout,
-            self.register_external_publisher(room_id, media_id, stream.generation_id),
+            self.register_external_publisher(
+                room_id,
+                media_id,
+                stream.generation_id,
+                stream.supports_rtp(),
+            ),
         )
         .await
         .map_err(|_| {
@@ -391,7 +409,12 @@ impl ExternalPublishManager {
                     .await?
                 {
                     let retry_result = self
-                        .register_external_publisher(room_id, media_id, stream.generation_id)
+                        .register_external_publisher(
+                            room_id,
+                            media_id,
+                            stream.generation_id,
+                            stream.supports_rtp(),
+                        )
                         .await;
                     match retry_result {
                         Ok(registration) if registration.registered => {
@@ -551,6 +574,7 @@ impl ExternalPublishManager {
             stream_hub_event_sender: self.stream_hub_event_sender.clone(),
             http_client: self.http_client.clone(),
             ssrf_guard: self.ssrf_guard.clone(),
+            webrtc_config: self.webrtc_config.clone(),
             max_flv_tag_size_bytes: self.max_flv_tag_size_bytes,
         }));
         stream.lifecycle().set_running();
@@ -569,16 +593,20 @@ impl ExternalPublishManager {
         room_id: &str,
         media_id: &str,
         generation_id: synctv_xiu::streamhub::utils::Uuid,
+        supports_rtp: bool,
     ) -> StreamResult<ExternalRegistration> {
         let registered = self
             .registry
-            .try_activate_generation(
-                room_id,
-                media_id,
-                &self.local_node_id,
-                EXTERNAL_PUBLISHER_USER_ID,
-                &self.local_cluster_address,
-                &generation_id.to_string(),
+            .try_activate_generation_with_capabilities(
+                StreamGenerationRegistration::new(
+                    room_id,
+                    media_id,
+                    &self.local_node_id,
+                    EXTERNAL_PUBLISHER_USER_ID,
+                    &self.local_cluster_address,
+                    &generation_id.to_string(),
+                )
+                .with_rtp_support(supports_rtp),
             )
             .await
             .map_err(|e| {
@@ -680,7 +708,12 @@ impl ExternalPublishManager {
         }
 
         let registration = self
-            .register_external_publisher(room_id, media_id, stream.generation_id)
+            .register_external_publisher(
+                room_id,
+                media_id,
+                stream.generation_id,
+                stream.supports_rtp(),
+            )
             .await?;
         if registration.registered {
             stream.set_registration_lease_epoch(registration.lease_epoch);
@@ -846,6 +879,7 @@ pub(crate) struct ExternalPublishStream {
     /// Shared HTTP client for FLV connections (supports TLS via rustls).
     http_client: reqwest::Client,
     ssrf_guard: SsrfGuard,
+    webrtc_config: WebRtcConfig,
     max_flv_tag_size_bytes: usize,
 }
 
@@ -856,6 +890,7 @@ struct ExternalPublishStreamParams {
     stream_hub_event_sender: StreamHubEventSender,
     http_client: reqwest::Client,
     ssrf_guard: SsrfGuard,
+    webrtc_config: WebRtcConfig,
     max_flv_tag_size_bytes: usize,
 }
 
@@ -887,6 +922,7 @@ impl ExternalPublishStream {
             stream_hub_event_sender,
             http_client,
             ssrf_guard,
+            webrtc_config,
             max_flv_tag_size_bytes,
         } = params;
         Self {
@@ -899,8 +935,16 @@ impl ExternalPublishStream {
             registration_lease_epoch: std::sync::atomic::AtomicU64::new(0),
             http_client,
             ssrf_guard,
+            webrtc_config,
             max_flv_tag_size_bytes,
         }
+    }
+
+    fn supports_rtp(&self) -> bool {
+        matches!(
+            self.source,
+            synctv_core::models::ExternalLiveSourceConfig::Whep { .. }
+        )
     }
 
     /// Start the external puller task.
@@ -918,6 +962,7 @@ impl ExternalPublishStream {
         let stream_hub_sender = self.stream_hub_event_sender.clone();
         let http_client = self.http_client.clone();
         let ssrf_guard = self.ssrf_guard.clone();
+        let webrtc_config = self.webrtc_config.clone();
         let max_flv_tag_size_bytes = self.max_flv_tag_size_bytes;
         let generation_id = self.generation_id;
         // Clone the is_running flag so the task can mark itself unhealthy on exit
@@ -943,6 +988,7 @@ impl ExternalPublishStream {
                     .with_generation_id(generation_id)
                     .with_confirm(confirm_tx)
                     .with_http_client(http_client)
+                    .with_webrtc_config(webrtc_config)
                     .with_max_flv_tag_size_bytes(max_flv_tag_size_bytes),
                 Err(e) => {
                     let msg = format!("Failed to create puller for {room_id}/{media_id}: {e}");
@@ -1316,12 +1362,13 @@ mod tests {
             stream_hub_event_sender: sender,
             http_client: reqwest::Client::new(),
             ssrf_guard: SsrfGuard::disabled(),
+            webrtc_config: WebRtcConfig::default(),
             max_flv_tag_size_bytes: ExternalStreamPuller::DEFAULT_MAX_FLV_TAG_SIZE_BYTES,
         }));
         stream.lifecycle().set_running();
 
         let registered = manager
-            .register_external_publisher("room1", "media1", stream.generation_id)
+            .register_external_publisher("room1", "media1", stream.generation_id, false)
             .await?;
         assert!(registered.registered);
         stream.set_registration_lease_epoch(registered.lease_epoch);
@@ -1580,6 +1627,7 @@ mod tests {
             stream_hub_event_sender: sender,
             http_client: reqwest::Client::new(),
             ssrf_guard: SsrfGuard::disabled(),
+            webrtc_config: WebRtcConfig::default(),
             max_flv_tag_size_bytes: ExternalStreamPuller::DEFAULT_MAX_FLV_TAG_SIZE_BYTES,
         });
 

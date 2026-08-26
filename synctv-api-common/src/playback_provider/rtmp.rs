@@ -113,7 +113,7 @@ pub async fn get_rtmp_hls_master(
                     signature_user_id,
                     signature_room_id,
                     signature_expires_at,
-                    route_provider: "rtmp".to_string(),
+                    route_provider: synctv_core::provider::RtmpProvider::PUBLIC_NAME.to_string(),
                     external_source: None,
                 },
             )
@@ -159,7 +159,7 @@ pub async fn get_rtmp_hls_playlist(
                     signature_user_id,
                     signature_room_id,
                     signature_expires_at,
-                    route_provider: "rtmp".to_string(),
+                    route_provider: synctv_core::provider::RtmpProvider::PUBLIC_NAME.to_string(),
                 },
             )
             .await?

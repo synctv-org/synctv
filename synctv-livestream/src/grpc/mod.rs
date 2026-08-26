@@ -8,9 +8,11 @@ mod connection_pool;
 mod hls_proxy;
 pub(crate) mod stream_puller;
 mod stream_relay_service;
+mod webrtc_session_router;
 
 pub(crate) use connection_pool::GrpcConnectionPool;
 
 pub(crate) use hls_proxy::{HlsProxyClient, HlsRelayRoute};
 pub use proto::stream_relay_service_server::StreamRelayServiceServer;
 pub use stream_relay_service::StreamRelayServiceImpl;
+pub(crate) use webrtc_session_router::WebRtcSessionRouter;

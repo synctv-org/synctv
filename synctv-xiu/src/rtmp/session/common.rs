@@ -814,7 +814,7 @@ impl TStreamHandler for RtmpStreamHandler {
                         }
                     }
                 }
-                SubscribeType::RtmpRelay => {}
+                SubscribeType::RtmpRelay | SubscribeType::WhepPull => {}
             }
         }
 

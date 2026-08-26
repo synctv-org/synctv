@@ -890,6 +890,79 @@ impl AppConfig {
                 "livestream.cleanup_check_interval_seconds must be greater than 0".to_string(),
             );
         }
+        if !self.livestream.public_webrtc_base_url.trim().is_empty() {
+            match url::Url::parse(&self.livestream.public_webrtc_base_url) {
+                Ok(url)
+                    if matches!(url.scheme(), "http" | "https")
+                        && url.host_str().is_some()
+                        && matches!(url.path(), "" | "/")
+                        && url.query().is_none()
+                        && url.fragment().is_none() => {}
+                _ => errors.push(
+                    "livestream.public_webrtc_base_url must be an http(s) origin without a path, query, or fragment"
+                        .to_string(),
+                ),
+            }
+        }
+        if self.livestream.webrtc.ice_gathering_timeout_seconds == 0 {
+            errors.push(
+                "livestream.webrtc.ice_gathering_timeout_seconds must be greater than 0"
+                    .to_string(),
+            );
+        }
+        if self.livestream.webrtc.max_sdp_bytes == 0 {
+            errors.push("livestream.webrtc.max_sdp_bytes must be greater than 0".to_string());
+        }
+        if self.livestream.webrtc.max_sessions == 0 {
+            errors.push("livestream.webrtc.max_sessions must be greater than 0".to_string());
+        }
+        if self.livestream.webrtc.max_session_duration_seconds == 0 {
+            errors.push(
+                "livestream.webrtc.max_session_duration_seconds must be greater than 0".to_string(),
+            );
+        }
+        for (server_index, server) in self.livestream.webrtc.ice_servers.iter().enumerate() {
+            let path = format!("livestream.webrtc.ice_servers[{server_index}]");
+            if server.urls.is_empty() {
+                errors.push(format!("{path}.urls must contain at least one ICE URL"));
+            }
+            let credentials_are_paired =
+                server.username.trim().is_empty() == server.credential.trim().is_empty();
+            if !credentials_are_paired {
+                errors.push(format!(
+                    "{path}.username and {path}.credential must be set together"
+                ));
+            }
+            let mut contains_turn_url = false;
+            for (url_index, ice_url) in server.urls.iter().enumerate() {
+                let url_path = format!("{path}.urls[{url_index}]");
+                let trimmed_url = ice_url.trim();
+                if trimmed_url != ice_url || trimmed_url.chars().any(char::is_whitespace) {
+                    errors.push(format!("{url_path} must not contain whitespace"));
+                    continue;
+                }
+                let Some((scheme, address)) = trimmed_url.split_once(':') else {
+                    errors.push(format!(
+                        "{url_path} must use a stun:, stuns:, turn:, or turns: URL"
+                    ));
+                    continue;
+                };
+                if address.is_empty() || !matches!(scheme, "stun" | "stuns" | "turn" | "turns") {
+                    errors.push(format!(
+                        "{url_path} must use a stun:, stuns:, turn:, or turns: URL"
+                    ));
+                    continue;
+                }
+                contains_turn_url |= matches!(scheme, "turn" | "turns");
+            }
+            if contains_turn_url
+                && (server.username.trim().is_empty() || server.credential.trim().is_empty())
+            {
+                errors.push(format!(
+                    "{path} must include username and credential for TURN URLs"
+                ));
+            }
+        }
 
         Self::validate_local_provider_http_config(
             "media_providers.alist",

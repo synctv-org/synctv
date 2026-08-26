@@ -15,8 +15,8 @@ use synctv_xiu::rtmp::session::common::RtmpStreamHandler;
 use synctv_xiu::streamhub::stream::StreamIdentifier;
 use synctv_xiu::streamhub::{
     define::{
-        FrameDataSender, NotifyInfo, PublishType, PublisherInfo, StreamHubEvent,
-        StreamHubEventSender,
+        FrameDataSender, NotifyInfo, PacketDataSender, PubDataType, PublishType, PublisherInfo,
+        StreamHubEvent, StreamHubEventSender,
     },
     send_event_with_backpressure_timeout_for, spawn_event_delivery_with_backpressure_timeout_for,
     utils::Uuid,
@@ -26,6 +26,11 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 const STREAMHUB_EVENT_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+struct LocalRelayPublication {
+    frame_sender: FrameDataSender,
+    packet_sender: Option<PacketDataSender>,
+}
 
 #[derive(Clone, Copy)]
 struct RelayRetryPolicy {
@@ -182,11 +187,18 @@ impl PullStream {
         self
     }
 
-    async fn publish_to_local_stream_hub(&self) -> StreamResult<FrameDataSender> {
+    async fn publish_to_local_stream_hub(
+        &self,
+        supports_rtp: bool,
+    ) -> StreamResult<LocalRelayPublication> {
         let publisher_info = PublisherInfo {
             id: self.local_generation_id,
             pub_type: PublishType::RtmpRelay,
-            pub_data_type: synctv_xiu::streamhub::define::PubDataType::Frame,
+            pub_data_type: if supports_rtp {
+                PubDataType::Both
+            } else {
+                PubDataType::Frame
+            },
             notify_info: NotifyInfo {
                 request_url: format!(
                     "grpc://{}/{}/{}",
@@ -235,6 +247,12 @@ impl PullStream {
                 "Local relay publication returned no frame sender".to_string(),
             )
         })?;
+        let packet_sender = result.1;
+        if supports_rtp && packet_sender.is_none() {
+            return Err(crate::error::StreamError::StreamHubError(
+                "Local RTP relay publication returned no packet sender".to_string(),
+            ));
+        }
 
         self.local_publication_active.store(true, Ordering::Release);
         info!(
@@ -242,7 +260,10 @@ impl PullStream {
             media_id = %self.media_id,
             "Published gRPC relay stream to local StreamHub"
         );
-        Ok(data_sender)
+        Ok(LocalRelayPublication {
+            frame_sender: data_sender,
+            packet_sender,
+        })
     }
 
     async fn unpublish_local_stream_hub(
@@ -329,7 +350,24 @@ impl PullStream {
             }
         }
 
-        let data_sender = self.publish_to_local_stream_hub().await?;
+        let capability_probe = GrpcStreamPuller::new(
+            self.room_id.clone(),
+            self.media_id.clone(),
+            self.publisher_address.clone(),
+            self.source_generation_id.clone(),
+            self.lease_epoch,
+            self.connection_pool.clone(),
+            false,
+        )
+        .with_cluster_secret(self.cluster_secret.clone())
+        .with_grpc_max_message_size(self.grpc_max_message_size_bytes)
+        .with_grpc_compression(self.grpc_compression_enabled);
+        let supports_rtp = capability_probe.supports_rtp().await.map_err(|error| {
+            crate::error::StreamError::GrpcError(format!(
+                "Failed to determine remote RTP capability: {error}"
+            ))
+        })?;
+        let publication = self.publish_to_local_stream_hub(supports_rtp).await?;
 
         self.lifecycle.set_running();
         self.lifecycle.update_last_active_time();
@@ -382,7 +420,10 @@ impl PullStream {
                     );
 
                     tokio::select! {
-                        r = grpc_puller.run(&data_sender) => r,
+                        r = grpc_puller.run(
+                            &publication.frame_sender,
+                            publication.packet_sender.as_ref(),
+                        ) => r,
                         () = child_token.cancelled() => {
                             info!("gRPC puller task cancelled for {} / {}", room_id, media_id);
                             break Ok(());
@@ -609,8 +650,9 @@ mod tests {
     use super::*;
     use crate::grpc::proto::{
         stream_relay_service_server::{StreamRelayService, StreamRelayServiceServer},
-        FrameType, GetHlsPlaylistRequest, GetHlsPlaylistResponse, GetHlsSegmentRequest,
-        GetHlsSegmentResponse, PullRtmpStreamRequest, RtmpPacket,
+        DeleteWebRtcSessionRequest, DeleteWebRtcSessionResponse, FrameType, GetHlsPlaylistRequest,
+        GetHlsPlaylistResponse, GetHlsSegmentRequest, GetHlsSegmentResponse, PullRtmpStreamRequest,
+        RtmpPacket, RtpPacket,
     };
     use crate::grpc::StreamRelayServiceImpl;
     use crate::relay::TestStreamRegistry;
@@ -632,6 +674,8 @@ mod tests {
     type TestResult<T = ()> = anyhow::Result<T>;
     type RelayResponseStream =
         Pin<Box<dyn Stream<Item = Result<RtmpPacket, Status>> + Send + 'static>>;
+    type RtpRelayResponseStream =
+        Pin<Box<dyn Stream<Item = Result<RtpPacket, Status>> + Send + 'static>>;
 
     #[derive(Clone)]
     struct TestRelayService {
@@ -661,6 +705,15 @@ mod tests {
             Ok(Response::new(Box::pin(response_stream)))
         }
 
+        type PullRtpStreamStream = RtpRelayResponseStream;
+
+        async fn pull_rtp_stream(
+            &self,
+            _request: Request<PullRtmpStreamRequest>,
+        ) -> Result<Response<Self::PullRtpStreamStream>, Status> {
+            Err(Status::unimplemented("RTP is outside this relay test"))
+        }
+
         async fn get_hls_playlist(
             &self,
             _request: Request<GetHlsPlaylistRequest>,
@@ -673,6 +726,13 @@ mod tests {
             _request: Request<GetHlsSegmentRequest>,
         ) -> Result<Response<GetHlsSegmentResponse>, Status> {
             Err(Status::unimplemented("HLS is outside this relay test"))
+        }
+
+        async fn delete_web_rtc_session(
+            &self,
+            _request: Request<DeleteWebRtcSessionRequest>,
+        ) -> Result<Response<DeleteWebRtcSessionResponse>, Status> {
+            Err(Status::unimplemented("WebRTC is outside this relay test"))
         }
     }
 
@@ -1332,7 +1392,7 @@ mod tests {
         );
         timeout(
             Duration::from_secs(2),
-            pull_stream.publish_to_local_stream_hub(),
+            pull_stream.publish_to_local_stream_hub(false),
         )
         .await??;
         responder.await??;

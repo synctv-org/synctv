@@ -228,6 +228,7 @@ Top-level `logging` receives logs from the database, Redis, caches, proxies, rea
 | --- | --- | --- | --- |
 | `livestream.rtmp_port` | port | `1935` | RTMP ingest port |
 | `livestream.public_rtmp_host` | string | `""` | Public RTMP host returned to publishers |
+| `livestream.public_webrtc_base_url` | HTTP(S) origin or empty | `""` | Public WHIP origin in publish-key responses; empty returns a relative URL |
 | `livestream.gop_cache_size` | integer | `2` | Number of GOPs cached per stream |
 | `livestream.stream_timeout_seconds` | seconds | `300` | Pull-stream idle timeout |
 | `livestream.cleanup_check_interval_seconds` | seconds | `60` | Cleanup check interval |
@@ -247,6 +248,12 @@ Top-level `logging` receives logs from the database, Redis, caches, proxies, rea
 | `livestream.hls_storage.base_path` | string | `hls/` | Object key prefix inside the bucket |
 | `livestream.flv_max_connection_duration_seconds` | seconds | `86400` | Maximum HTTP-FLV connection duration |
 | `livestream.flv_write_timeout_seconds` | seconds | `30` | HTTP-FLV write timeout |
+| `livestream.webrtc.enabled` | boolean | `true` | Enable WHIP/WHEP livestream sessions |
+| `livestream.webrtc.ice_servers` | ICE server list | `[]` | STUN/TURN servers used by livestream PeerConnections |
+| `livestream.webrtc.ice_gathering_timeout_seconds` | seconds | `10` | Time allowed to gather local ICE candidates |
+| `livestream.webrtc.max_sdp_bytes` | bytes | `262144` | Limit for WHIP/WHEP SDP requests and upstream WHEP SDP responses |
+| `livestream.webrtc.max_sessions` | integer | `1000` | Total WHIP/WHEP session limit on one node |
+| `livestream.webrtc.max_session_duration_seconds` | seconds | `86400` | Maximum lifetime of one WHIP/WHEP session |
 
 ## `file_storage`
 

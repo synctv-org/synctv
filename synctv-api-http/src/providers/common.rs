@@ -68,7 +68,7 @@ fn source_provider_param(value: Option<&str>) -> Result<i32, super::super::AppEr
         "bilibili" => "bilibili",
         "alist" => "alist",
         "emby" => "emby",
-        "rtmp" => "rtmp",
+        "live" | "rtmp" => "rtmp",
         "liveproxy" => "live_proxy",
         _ => raw,
     };
@@ -81,6 +81,7 @@ pub(crate) fn register_common_routes() -> Router<AppState> {
     Router::new()
         .route("/prepare/direct-url", post(prepare_direct_url))
         .route("/prepare/live-proxy", post(prepare_live_proxy))
+        .route("/prepare/live", post(prepare_rtmp))
         .route("/prepare/rtmp", post(prepare_rtmp))
         .route(
             "/playback-proxy-policy",

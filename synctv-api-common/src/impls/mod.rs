@@ -812,6 +812,7 @@ pub fn find_livestream_stream_error<'a>(
 #[must_use]
 pub fn map_livestream_stream_error(stream_error: &StreamError) -> ApiError {
     match stream_error {
+        StreamError::InvalidInput(message) => ApiError::InvalidInput(message.clone()),
         StreamError::NoPublisher(_)
         | StreamError::StreamNotFound(_)
         | StreamError::InvalidStreamKey(_) => {

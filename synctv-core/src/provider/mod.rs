@@ -183,6 +183,12 @@ pub(crate) fn playback_media_requirements(
             None,
             Some(PlaybackAudioCodec::Aac),
         ),
+        "whep" | "webrtc" => (
+            PlaybackMediaTransport::WebRtc,
+            None,
+            Some(PlaybackVideoCodec::H264),
+            Some(PlaybackAudioCodec::Opus),
+        ),
         "ts" | "mpegts" | "mpeg-ts" => (
             PlaybackMediaTransport::MpegTs,
             None,
@@ -980,6 +986,31 @@ pub fn provider_requires_credential_repo(provider_name: &str) -> bool {
 #[must_use]
 pub fn build_live_playback(media_id: MediaId, room_id: RoomId) -> PlaybackResult {
     build_live_playback_with_flv(media_id, room_id, true)
+}
+
+pub(crate) fn add_whep_playback(result: &mut PlaybackResult, media_id: MediaId, room_id: RoomId) {
+    result.playback_infos.insert(
+        "whep".to_string(),
+        PlaybackInfo {
+            thumbnail: None,
+            medias: vec![PlaybackMedia {
+                name: "WebRTC".to_string(),
+                format: "whep".to_string(),
+                expire_at: None,
+                metadata: None,
+                p2p_swarm_id: None,
+                provider: PlaybackMediaProvider::Rtmp(PlaybackRtmpMedia::WhepEndpoint {
+                    room_id,
+                    media_id,
+                }),
+            }],
+            default_media_index: None,
+            subtitles: Vec::new(),
+            default_subtitle_index: None,
+            danmakus: Vec::new(),
+            default_danmaku_index: None,
+        },
+    );
 }
 
 fn build_live_playback_with_flv(
@@ -2272,6 +2303,18 @@ mod playback_transport_expiry_tests {
 
     fn live_playback() -> PlaybackResult {
         build_live_playback(MediaId::new(), RoomId::new())
+    }
+
+    #[test]
+    fn adding_whep_keeps_the_compatible_live_default() {
+        let media_id = MediaId::new();
+        let room_id = RoomId::new();
+        let mut playback = build_live_playback(media_id, room_id);
+
+        add_whep_playback(&mut playback, media_id, room_id);
+
+        assert!(playback.playback_infos.contains_key("whep"));
+        assert_eq!(playback.default_mode, "hls");
     }
 
     #[tokio::test]

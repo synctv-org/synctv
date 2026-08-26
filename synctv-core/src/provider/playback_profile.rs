@@ -82,6 +82,7 @@ impl PlaybackContainer {
 pub enum PlaybackLiveTransport {
     Hls,
     Flv,
+    Whep,
 }
 
 impl PlaybackLiveTransport {
@@ -90,6 +91,7 @@ impl PlaybackLiveTransport {
         match self {
             Self::Hls => "hls",
             Self::Flv => "flv",
+            Self::Whep => "whep",
         }
     }
 }
@@ -137,6 +139,7 @@ pub enum PlaybackMediaTransport {
     Dash,
     Flv,
     MpegTs,
+    WebRtc,
 }
 
 impl PlaybackMediaTransport {
@@ -148,6 +151,7 @@ impl PlaybackMediaTransport {
             Self::Dash => "dash",
             Self::Flv => "flv",
             Self::MpegTs => "mpeg_ts",
+            Self::WebRtc => "web_rtc",
         }
     }
 }
@@ -303,6 +307,9 @@ impl PlaybackClientProfile {
             PlaybackMediaTransport::Flv | PlaybackMediaTransport::MpegTs => self
                 .supported_live_transports
                 .contains(&PlaybackLiveTransport::Flv),
+            PlaybackMediaTransport::WebRtc => self
+                .supported_live_transports
+                .contains(&PlaybackLiveTransport::Whep),
         }
     }
 

@@ -26,6 +26,7 @@ metadata:
 {{- $livestream := .Values.config.livestream | default dict }}
 {{- $hlsStorage := $livestream.hlsStorage | default dict }}
 {{- $hlsStorageType := $hlsStorage.type | default "memory" }}
+{{- $livestreamWebRtc := $livestream.webrtc | default dict }}
 data:
   synctv.yaml: |
     {{ if .Values.config.dataDir }}
@@ -251,6 +252,7 @@ data:
     livestream:
       rtmp_port: {{ .Values.config.livestream.rtmpPort }}
       public_rtmp_host: {{ .Values.config.livestream.publicRtmpHost | default "" | quote }}
+      public_webrtc_base_url: {{ .Values.config.livestream.publicWebRtcBaseUrl | default "" | quote }}
       logging:
         level: {{ $livestream.logging.level | default "info" | quote }}
         format: {{ $livestream.logging.format | default "text" | quote }}
@@ -293,6 +295,29 @@ data:
         {{ end }}
       flv_max_connection_duration_seconds: {{ $livestream.flvMaxConnectionDurationSeconds | default 86400 }}
       flv_write_timeout_seconds: {{ $livestream.flvWriteTimeoutSeconds | default 30 }}
+      webrtc:
+        enabled: {{ if hasKey $livestreamWebRtc "enabled" }}{{ $livestreamWebRtc.enabled }}{{ else }}true{{ end }}
+        {{- if $livestreamWebRtc.iceServers }}
+        ice_servers:
+          {{- range $server := $livestreamWebRtc.iceServers }}
+          - urls:
+              {{- range $server.urls }}
+              - {{ . | quote }}
+              {{- end }}
+            username: {{ $server.username | default "" | quote }}
+            {{- if $server.credentialFile }}
+            credential_file: {{ $server.credentialFile | quote }}
+            {{- else }}
+            credential: {{ $server.credential | default "" | quote }}
+            {{- end }}
+          {{- end }}
+        {{- else }}
+        ice_servers: []
+        {{- end }}
+        ice_gathering_timeout_seconds: {{ $livestreamWebRtc.iceGatheringTimeoutSeconds | default 10 }}
+        max_sdp_bytes: {{ printf "%d" (int64 ($livestreamWebRtc.maxSdpBytes | default 262144)) }}
+        max_sessions: {{ $livestreamWebRtc.maxSessions | default 1000 }}
+        max_session_duration_seconds: {{ $livestreamWebRtc.maxSessionDurationSeconds | default 86400 }}
 
     file_storage:
       default_backend: {{ $fileStorage.defaultBackend | default "disabled" | quote }}

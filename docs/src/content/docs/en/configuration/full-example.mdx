@@ -330,6 +330,7 @@ jwt:
 livestream:
   rtmp_port: 1935
   public_rtmp_host: "stream.example.com"
+  public_webrtc_base_url: "https://live.example.com"
   logging:
     level: "info"
     format: "text"
@@ -348,6 +349,18 @@ livestream:
     memory_max_mb: 0
   flv_max_connection_duration_seconds: 86400
   flv_write_timeout_seconds: 30
+  webrtc:
+    enabled: true
+    ice_servers:
+      - urls:
+          - "stun:stun.example.com:3478"
+          - "turn:turn.example.com:3478?transport=udp"
+        username: "synctv"
+        credential_file: "/run/secrets/livestream_turn_credential"
+    ice_gathering_timeout_seconds: 10
+    max_sdp_bytes: 262144
+    max_sessions: 1000
+    max_session_duration_seconds: 86400
 
 file_storage:
   default_backend: "disabled"

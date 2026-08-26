@@ -45,7 +45,7 @@ fn publisher_entry_with_generation(
     lease_epoch: u64,
     generation_id: Uuid,
 ) -> Arc<PublisherEntry> {
-    let entry = PublisherEntry::with_registration(user_id, lease_epoch);
+    let entry = PublisherEntry::with_registration(user_id, lease_epoch, false);
     assert!(entry.bind_publisher(generation_id));
     Arc::new(entry)
 }
@@ -582,6 +582,7 @@ impl RecreateOnReregisterRegistry {
                 ended_at: None,
                 lease_epoch: 1,
                 generation_id: generation_id.to_string(),
+                supports_rtp: false,
             })),
             next_epoch: AtomicU64::new(2),
             expire_before_next_try_register: AtomicBool::new(false),
@@ -624,6 +625,7 @@ impl StreamRegistryTrait for RecreateOnReregisterRegistry {
                 ended_at: None,
                 lease_epoch,
                 generation_id: generation_id.to_string(),
+                supports_rtp: false,
             });
             return Ok(false);
         }
@@ -643,6 +645,7 @@ impl StreamRegistryTrait for RecreateOnReregisterRegistry {
             ended_at: None,
             lease_epoch,
             generation_id: generation_id.to_string(),
+            supports_rtp: false,
         });
         Ok(true)
     }
@@ -1995,6 +1998,7 @@ async fn test_start_stops_heartbeat_and_sync_when_broadcast_channel_closes() -> 
                 ended_at: None,
                 lease_epoch: 1,
                 generation_id: TEST_GENERATION_ID.to_string(),
+                supports_rtp: false,
             },
         )]),
     ));

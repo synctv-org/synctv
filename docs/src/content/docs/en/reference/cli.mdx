@@ -374,6 +374,7 @@ Media:
 synctv media list <ROOM_ID>
 synctv media add-url <ROOM_ID> --username alice "https://example.com/video.mp4" --name "Video"
 synctv media add <ROOM_ID> --username alice --source-provider direct-url --source-config-json '{"medias":[{"url":"https://example.com/video.mp4"}]}' --name "Video"
+synctv media add <ROOM_ID> --username alice --source-provider live --source-config-json '{"mode":"default"}' --name "Livestream"
 synctv media update <ROOM_ID> <MEDIA_ID> --name "New Name"
 synctv media move <ROOM_ID> <MEDIA_ID> --after-media-id <OTHER_MEDIA_ID>
 synctv media delete <ROOM_ID> <MEDIA_ID>

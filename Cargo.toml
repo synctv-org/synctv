@@ -224,6 +224,10 @@ iana-time-zone = "=0.1.65"
 
 # Streaming (consolidated xiu crate)
 synctv-xiu = { path = "synctv-xiu", default-features = false }
+webrtc = "=0.17.2"
+sdp = "=0.17.2"
+opus = "=0.4.0"
+fdk-aac = "=0.8.0"
 retina = "=0.4.20"
 rust_h265 = "=0.1.0"
 rusty_aac = { version = "=0.5.0", default-features = false }

@@ -3,8 +3,8 @@ use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::http::{
-    admin, auth, email, notifications, oauth2, public, room, room_extra, ticket, user, webrtc,
-    websocket, AppState,
+    admin, auth, email, livestream_webrtc, notifications, oauth2, public, room, room_extra, ticket,
+    user, webrtc, websocket, AppState,
 };
 use crate::providers::{
     acfun, alist, bilibili, cctv, cloudreve, common, douyin, douyu, emby, fnos, huya, nextcloud,
@@ -315,6 +315,12 @@ pub struct GoogleRpcStatusSchema {
         playback_provider_live_proxy::get_live_proxy_hls_playlist,
         playback_provider_live_proxy::get_live_proxy_hls_segment,
         playback_provider_live_proxy::head_live_proxy_hls_segment,
+        livestream_webrtc::create_whip_session,
+        livestream_webrtc::delete_whip_session,
+        livestream_webrtc::create_live_whep_session,
+        livestream_webrtc::delete_live_whep_session,
+        livestream_webrtc::create_live_proxy_whep_session,
+        livestream_webrtc::delete_live_proxy_whep_session,
         websocket::websocket_room_connect_doc,
         room::create_room,
         room::discover_rooms,
@@ -1003,7 +1009,7 @@ pub struct GoogleRpcStatusSchema {
             synctv_proto::providers::common::ProviderInstance
         )
     ),
-    modifiers(&SecurityAddon),
+    modifiers(&SecurityAddon, &CompatibilityPathsAddon),
     tags(
         (name = "Health", description = "Health and readiness endpoints"),
         (name = "Public", description = "Unauthenticated public endpoints"),
@@ -1019,7 +1025,7 @@ pub struct GoogleRpcStatusSchema {
         (name = "Alist Playback Provider", description = "Alist playback transport endpoints"),
         (name = "Emby Playback Provider", description = "Emby playback transport endpoints"),
         (name = "Bilibili Playback Provider", description = "Bilibili playback and danmaku transport endpoints"),
-        (name = "RTMP Playback Provider", description = "RTMP live playback transport endpoints"),
+        (name = "Live Playback Provider", description = "SyncTV-managed live playback transport endpoints"),
         (name = "LiveProxy Playback Provider", description = "LiveProxy playback transport endpoints"),
         (name = "User", description = "Current-user profile and ownership endpoints"),
         (name = "Room", description = "Core room lifecycle, membership, media, playback and playlist endpoints"),
@@ -1046,6 +1052,82 @@ impl utoipa::Modify for SecurityAddon {
             ),
         );
     }
+}
+
+struct CompatibilityPathsAddon;
+
+impl utoipa::Modify for CompatibilityPathsAddon {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        const ALIASES: &[(&str, &str)] = &[
+            (
+                "/api/rooms/{roomId}/streams/{mediaId}/publish-key",
+                "/api/playback-providers/{roomId}/rtmp/{mediaId}/publish-key",
+            ),
+            (
+                "/api/rooms/{roomId}/streams/{mediaId}/whip",
+                "/api/playback-providers/{roomId}/rtmp/{mediaId}/whip",
+            ),
+            (
+                "/api/rooms/{roomId}/streams/{mediaId}/whip/{sessionId}",
+                "/api/playback-providers/{roomId}/rtmp/{mediaId}/whip/{sessionId}",
+            ),
+            (
+                "/api/playback-providers/{roomId}/live/{mediaId}/whep",
+                "/api/rooms/{roomId}/streams/{mediaId}/whep",
+            ),
+            (
+                "/api/playback-providers/{roomId}/live/{mediaId}/whep/{sessionId}",
+                "/api/rooms/{roomId}/streams/{mediaId}/whep/{sessionId}",
+            ),
+            (
+                "/api/playback-providers/{roomId}/live/{version}/flv-stream",
+                "/api/playback-providers/{roomId}/rtmp/{version}/flv-stream",
+            ),
+            (
+                "/api/playback-providers/{roomId}/live/{version}/hls-master",
+                "/api/playback-providers/{roomId}/rtmp/{version}/hls-master",
+            ),
+            (
+                "/api/playback-providers/{roomId}/live/{version}/hls/{generationId}/index.m3u8",
+                "/api/playback-providers/{roomId}/rtmp/{version}/hls/{generationId}/index.m3u8",
+            ),
+            (
+                "/api/playback-providers/{roomId}/live/{version}/hls/{generationId}/{segmentName}",
+                "/api/playback-providers/{roomId}/rtmp/{version}/hls/{generationId}/{segmentName}",
+            ),
+        ];
+
+        for (canonical, legacy) in ALIASES {
+            let Some(mut path_item) = openapi.paths.paths.get(*canonical).cloned() else {
+                continue;
+            };
+            mark_path_item_deprecated(&mut path_item);
+            openapi.paths.paths.insert((*legacy).to_string(), path_item);
+        }
+    }
+}
+
+fn mark_path_item_deprecated(path_item: &mut utoipa::openapi::path::PathItem) {
+    use utoipa::openapi::{path::Operation, Deprecated};
+
+    fn mark(operation: &mut Option<Operation>) {
+        if let Some(operation) = operation {
+            operation.deprecated = Some(Deprecated::True);
+            operation.operation_id = operation
+                .operation_id
+                .take()
+                .map(|operation_id| format!("legacy_{operation_id}"));
+        }
+    }
+
+    mark(&mut path_item.get);
+    mark(&mut path_item.put);
+    mark(&mut path_item.post);
+    mark(&mut path_item.delete);
+    mark(&mut path_item.options);
+    mark(&mut path_item.head);
+    mark(&mut path_item.patch);
+    mark(&mut path_item.trace);
 }
 
 pub fn router() -> Router<AppState> {
@@ -1993,8 +2075,8 @@ mod tests {
     fn openapi_marks_publish_key_body_optional() -> TestResult {
         let doc = openapi_json()?;
 
-        let request_body = &doc["paths"]
-            ["/api/playback-providers/{roomId}/rtmp/{mediaId}/publish-key"]["post"]["requestBody"];
+        let request_body = &doc["paths"]["/api/rooms/{roomId}/streams/{mediaId}/publish-key"]
+            ["post"]["requestBody"];
         assert!(
             request_body.is_object(),
             "publish-key creation should document its request body schema"
@@ -2004,6 +2086,33 @@ mod tests {
             Some(true),
             "legacy publish-key creation may omit the request body"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn openapi_marks_livestream_compatibility_paths_deprecated() -> TestResult {
+        let doc = openapi_json()?;
+        for (path, method) in [
+            (
+                "/api/playback-providers/{roomId}/rtmp/{mediaId}/publish-key",
+                "post",
+            ),
+            (
+                "/api/playback-providers/{roomId}/rtmp/{mediaId}/whip",
+                "post",
+            ),
+            ("/api/rooms/{roomId}/streams/{mediaId}/whep", "post"),
+            (
+                "/api/playback-providers/{roomId}/rtmp/{version}/hls-master",
+                "get",
+            ),
+        ] {
+            assert_eq!(
+                doc["paths"][path][method]["deprecated"].as_bool(),
+                Some(true),
+                "compatibility operation {method} {path} should be deprecated"
+            );
+        }
         Ok(())
     }
 

@@ -398,6 +398,7 @@ pub(in crate::cli) struct HumanBanRecord {
 pub(in crate::cli) struct HumanCreatePublishKeyResponse {
     publish_key: String,
     rtmp_url: String,
+    whip_url: String,
     stream_key: String,
     expires_at: Option<String>,
     key_type: String,
@@ -1991,6 +1992,7 @@ impl ToHuman for synctv_proto::client::CreateRoomPublishKeyResponse {
         HumanCreatePublishKeyResponse {
             publish_key: self.publish_key.clone(),
             rtmp_url: self.rtmp_url.clone(),
+            whip_url: self.whip_url.clone(),
             stream_key: self.stream_key.clone(),
             expires_at: self.expires_at.map(humanize_timestamp),
             key_type: match self.r#type() {

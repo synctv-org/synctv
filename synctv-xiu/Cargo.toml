@@ -35,6 +35,10 @@ tokio-util.workspace = true
 futures.workspace = true
 async-trait.workspace = true
 retina.workspace = true
+webrtc.workspace = true
+sdp.workspace = true
+opus.workspace = true
+fdk-aac.workspace = true
 
 # Logging
 tracing.workspace = true

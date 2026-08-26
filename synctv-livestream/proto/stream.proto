@@ -10,11 +10,37 @@ service StreamRelayService {
     // Live-frame relay used by a puller on another node.
     rpc PullRtmpStream(PullRtmpStreamRequest) returns (stream RtmpPacket);
 
+    // Pull raw RTP packets for WHIP/WHEP publications. Frame-only sources
+    // return FAILED_PRECONDITION so callers can expose an explicit capability error.
+    rpc PullRtpStream(PullRtmpStreamRequest) returns (stream RtpPacket);
+
     // Get HLS M3U8 playlist from publisher node (proxy for non-publisher nodes)
     rpc GetHlsPlaylist(GetHlsPlaylistRequest) returns (GetHlsPlaylistResponse);
 
     // Get HLS TS segment from publisher node (proxy for non-publisher nodes)
     rpc GetHlsSegment(GetHlsSegmentRequest) returns (GetHlsSegmentResponse);
+
+    // Delete a WHIP/WHEP resource on the node that owns its peer connection.
+    rpc DeleteWebRtcSession(DeleteWebRtcSessionRequest) returns (DeleteWebRtcSessionResponse);
+}
+
+enum WebRtcSessionKind {
+    WEB_RTC_SESSION_KIND_UNSPECIFIED = 0;
+    WEB_RTC_SESSION_KIND_WHIP = 1;
+    WEB_RTC_SESSION_KIND_WHEP = 2;
+}
+
+message DeleteWebRtcSessionRequest {
+    string session_id = 1;
+    string room_id = 2;
+    string media_id = 3;
+    WebRtcSessionKind kind = 4;
+    // Required only for WHIP resources; the owner validates it in constant time.
+    string publish_token = 5;
+}
+
+message DeleteWebRtcSessionResponse {
+    bool deleted = 1;
 }
 
 // Pull RTMP stream from publisher node
@@ -45,6 +71,18 @@ enum FrameType {
     FRAME_TYPE_VIDEO = 1;
     FRAME_TYPE_AUDIO = 2;
     FRAME_TYPE_METADATA = 3;
+}
+
+message RtpPacket {
+    bytes data = 1;
+    uint32 timestamp = 2;
+    RtpPacketType packet_type = 3;
+}
+
+enum RtpPacketType {
+    RTP_PACKET_TYPE_UNSPECIFIED = 0;
+    RTP_PACKET_TYPE_VIDEO = 1;
+    RTP_PACKET_TYPE_AUDIO = 2;
 }
 
 // HLS proxy messages for cross-node HLS streaming

@@ -167,6 +167,30 @@ pub async fn init_livestream(
             hls_storage_path: config.livestream.hls_storage.path().to_string(),
             hls_s3: hls_s3_options(&config.livestream.hls_storage),
             ssrf_guard: config.security.ssrf_guard(),
+            webrtc_session: synctv_livestream::WebRtcSessionConfig {
+                enabled: config.livestream.webrtc.enabled,
+                peer: synctv_livestream::WebRtcConfig {
+                    ice_servers: config
+                        .livestream
+                        .webrtc
+                        .ice_servers
+                        .iter()
+                        .map(|server| synctv_livestream::WebRtcIceServer {
+                            urls: server.urls.clone(),
+                            username: server.username.clone(),
+                            credential: server.credential.clone(),
+                        })
+                        .collect(),
+                    ice_gathering_timeout: std::time::Duration::from_secs(
+                        config.livestream.webrtc.ice_gathering_timeout_seconds,
+                    ),
+                    max_sdp_bytes: config.livestream.webrtc.max_sdp_bytes,
+                },
+                max_sessions: config.livestream.webrtc.max_sessions,
+                max_session_duration: std::time::Duration::from_secs(
+                    config.livestream.webrtc.max_session_duration_seconds,
+                ),
+            },
         },
         publisher_registry,
         user_stream_tracker.clone(),

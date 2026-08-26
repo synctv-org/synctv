@@ -307,6 +307,10 @@ fn core_live_proxy_config(
         Some(Source::HttpFlv(config)) => synctv_core::models::ExternalLiveSourceConfig::HttpFlv {
             url: config.url.clone(),
         },
+        Some(Source::Whep(config)) => synctv_core::models::ExternalLiveSourceConfig::Whep {
+            url: config.url.clone(),
+            authorization: config.authorization.clone(),
+        },
         None => {
             return Err(ApiError::InvalidInput(
                 "LiveProxy source protocol is required".to_string(),
@@ -490,6 +494,16 @@ impl ProviderCommonApiImpl {
                 (
                     Source::HttpFlv(synctv_proto::source_config::HttpFlvPullSourceConfig {
                         url: url.clone(),
+                    }),
+                    url,
+                )
+            }
+            Some(Intent::Whep(intent)) => {
+                let url = intent.url.trim().to_string();
+                (
+                    Source::Whep(synctv_proto::source_config::WhepPullSourceConfig {
+                        url: url.clone(),
+                        authorization: intent.authorization,
                     }),
                     url,
                 )

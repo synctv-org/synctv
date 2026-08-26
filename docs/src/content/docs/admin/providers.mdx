@@ -5,7 +5,7 @@ description: 创建、启停、更新、重连和删除远程 Provider gRPC inst
 
 Provider instance 是 SyncTV 连接远程 Provider gRPC 服务的实例配置，只保存 `endpoint`、TLS、JWT secret、custom CA、timeout 和该远程服务声明支持的 Provider type。上游媒体源账号、token、cookie、UA 或特定后端参数属于用户 Provider 凭据或远程 Provider 服务自己的部署配置，不属于这里的 instance 配置。
 
-远程 Provider instance 的 `--provider` 接受 CLI 支持的全部 Provider type：`direct-url`、`bilibili`、`alist`、`emby`、`rtmp`、`live-proxy`、`cloudreve`、`twitch`、`huya`、`douyu`、`douyin`、`acfun`、`cctv`、`fnos`、`qnap`、`synology`、`nextcloud`、`seafile`、`truenas`、`youtube` 和 `tiktok`。远程服务实际启用的类型由其自身部署决定。
+远程 Provider instance 的 `--provider` 接受 CLI 支持的全部 Provider type：`direct-url`、`bilibili`、`alist`、`emby`、`live`、`live-proxy`、`cloudreve`、`twitch`、`huya`、`douyu`、`douyin`、`acfun`、`cctv`、`fnos`、`qnap`、`synology`、`nextcloud`、`seafile`、`truenas`、`youtube` 和 `tiktok`。`rtmp` 是 `live` 的兼容别名。远程服务实际启用的类型由其自身部署决定。
 
 ## 常见操作
 

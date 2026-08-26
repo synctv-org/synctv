@@ -1,7 +1,9 @@
 flowchart LR
-  Publisher[推流端<br/>OBS / RTMP 客户端]
-  RTMP[RTMP 入口<br/>认证 + 发布注册]
-  Hub[StreamHub<br/>直播包分发]
+  Publisher[推流端<br/>OBS / WHIP / RTMP]
+  Ingest[WHIP 或 RTMP 入口<br/>认证 + 发布注册]
+  External[外部拉流<br/>WHEP / RTSP / HTTP-FLV]
+  Hub[StreamHub<br/>RTP + remux frame]
+  WHEP[WHEP 会话<br/>WebRTC 播放]
   FLV[HTTP-FLV 会话<br/>低延迟]
   Remux[HLS remuxer<br/>分片 + playlist 状态]
   Storage[(HLS 存储<br/>memory / file / S3)]
@@ -9,16 +11,22 @@ flowchart LR
   Segment[HLS segment 路由]
   Viewer[观看客户端]
   Registry[(publisher registry<br/>单机内存 / 集群 Redis)]
-  Remote[远端节点<br/>HLS/FLV 请求]
+  Remote[远端节点<br/>WHEP/HLS/FLV 请求]
+  RTPRelay[发布节点<br/>RTP gRPC relay]
   HLSProxy[发布节点<br/>HLS gRPC 代理]
 
-  Publisher --> RTMP --> Hub
-  RTMP --> Registry
+  Publisher --> Ingest --> Hub
+  External --> Hub
+  Ingest --> Registry
+  External --> Registry
+  Hub --> WHEP --> Viewer
   Hub --> FLV --> Viewer
   Hub --> Remux --> Storage
   Viewer --> Playlist --> Storage
   Viewer --> Segment --> Storage
   Remote -. 查找 publisher .-> Registry
-  Remote -. FLV relay .-> Hub
+  Remote -. frame relay .-> Hub
+  Remote -. RTP relay .-> RTPRelay
+  RTPRelay -. RTP 包 .-> Hub
   Remote -. playlist/segment 代理 .-> HLSProxy
   HLSProxy -. 本地读取 .-> Storage

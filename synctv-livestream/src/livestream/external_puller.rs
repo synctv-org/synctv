@@ -1,6 +1,6 @@
 //! External Stream Puller
 //!
-//! Pulls live streams from external RTMP, RTSP, or HTTP-FLV URLs and publishes them
+//! Pulls live streams from external RTMP, RTSP, HTTP-FLV, or WHEP endpoints and publishes them
 //! to the local `StreamHub` under the local stream identity (`live/{room_id}/{media_id}`).
 //!
 //! Supports:
@@ -15,8 +15,11 @@
 //! - **RTSP**: Uses Retina for DESCRIBE/SETUP/PLAY, RTP transport, authentication,
 //!   and codec depacketization. H.264, H.265, and AAC are converted to FLV tag
 //!   bodies and published through the same local stream identity.
+//! - **WHEP**: Negotiates an H.264/Opus WebRTC session, preserves RTP for local
+//!   WHEP subscribers, and remuxes frames for HLS and HTTP-FLV subscribers.
 //!
-//! Both modes include bounded retry logic for established streams.
+//! Frame-based sources retry established connections. WHEP disconnects end the
+//! current publication because a new peer connection starts a new RTP timeline.
 
 use std::sync::Arc;
 
@@ -35,13 +38,14 @@ use synctv_xiu::rtmp::utils::RtmpUrlParser;
 use synctv_xiu::rtsp::{RtspPullConfig, RtspPullSession, RtspTrackSelection, RtspTransport};
 use synctv_xiu::streamhub::{
     define::{
-        FrameData, FrameDataSender, NotifyInfo, PublishType, PublisherInfo, StreamHubEvent,
-        StreamHubEventSender,
+        FrameData, FrameDataSender, NotifyInfo, PacketDataSender, PubDataType, PublishType,
+        PublisherInfo, StreamHubEvent, StreamHubEventSender,
     },
     send_event_with_backpressure_timeout_for, spawn_event_delivery_with_backpressure_timeout_for,
     stream::StreamIdentifier,
     utils::Uuid,
 };
+use synctv_xiu::webrtc::{create_whep_client_session, WebRtcConfig};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
@@ -59,6 +63,10 @@ const MAX_FLV_BUFFER_SIZE: usize = 50 * 1024 * 1024;
 const HTTP_FLV_REQUEST_START_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(1);
 /// Per-chunk read timeout: if no data arrives for 30s, the stream is dead.
 const HTTP_FLV_CHUNK_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const WHEP_REQUEST_START_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+const WHEP_RESPONSE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+const WHEP_CONNECTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+const WHEP_DELETE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// Maximum time between decoded RTSP media frames before reconnecting.
 const RTSP_FRAME_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const FRAME_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -67,6 +75,12 @@ const STREAMHUB_EVENT_SEND_TIMEOUT: std::time::Duration = std::time::Duration::f
 #[derive(Debug, thiserror::Error)]
 #[error("{0} source ended and requires reconnect")]
 struct ReconnectRequired(&'static str);
+
+struct LocalPublication {
+    generation_id: Uuid,
+    frame_sender: FrameDataSender,
+    packet_sender: Option<PacketDataSender>,
+}
 
 // FLV format constants
 const FLV_HEADER_SIZE: usize = 9;
@@ -133,14 +147,21 @@ pub(crate) enum ExternalSourceType {
     Rtsp,
     /// HTTP-FLV URL (e.g., <http://live.example.com/app/stream.flv>)
     HttpFlv,
+    /// WHEP endpoint (HTTP or HTTPS).
+    Whep,
 }
 
 impl ExternalSourceType {
+    const fn can_reconnect_in_place(&self) -> bool {
+        !matches!(self, Self::Whep)
+    }
+
     fn from_config(config: &ExternalLiveSourceConfig) -> Result<Self> {
         let (source_type, expected_scheme) = match config {
             ExternalLiveSourceConfig::Rtmp { .. } => (Self::Rtmp, "rtmp"),
             ExternalLiveSourceConfig::Rtsp { .. } => (Self::Rtsp, "rtsp"),
             ExternalLiveSourceConfig::HttpFlv { .. } => (Self::HttpFlv, "http or https"),
+            ExternalLiveSourceConfig::Whep { .. } => (Self::Whep, "http or https"),
         };
         let parsed = Url::parse(config.url())?;
         let valid = match source_type {
@@ -148,6 +169,12 @@ impl ExternalSourceType {
             Self::Rtsp => parsed.scheme() == "rtsp",
             Self::HttpFlv => {
                 matches!(parsed.scheme(), "http" | "https") && parsed.path().ends_with(".flv")
+            }
+            Self::Whep => {
+                matches!(parsed.scheme(), "http" | "https")
+                    && parsed.username().is_empty()
+                    && parsed.password().is_none()
+                    && parsed.fragment().is_none()
             }
         };
         anyhow::ensure!(
@@ -194,6 +221,8 @@ pub(crate) struct ExternalStreamPuller {
     source_type: ExternalSourceType,
     rtmp_mode: RtmpStreamMode,
     rtsp_options: Option<(RtspTransport, RtspTrackSelection, RtspTrackSelection)>,
+    whep_authorization: Option<String>,
+    webrtc_config: WebRtcConfig,
     stream_hub_event_sender: StreamHubEventSender,
     generation_id: Uuid,
     /// Optional one-shot channel to signal that the first connection succeeded.
@@ -274,6 +303,10 @@ impl ExternalStreamPuller {
             ExternalLiveSourceConfig::Rtmp { mode, .. } => map_rtmp_mode(*mode),
             _ => RtmpStreamMode::Default,
         };
+        let whep_authorization = match &source {
+            ExternalLiveSourceConfig::Whep { authorization, .. } => authorization.clone(),
+            _ => None,
+        };
 
         // Resolve hostname and validate IPs against SSRF ACL.
         // For RTMP: the DNS resolver can't be injected, so we check IPs explicitly.
@@ -284,7 +317,7 @@ impl ExternalStreamPuller {
         let default_port = match source_type {
             ExternalSourceType::Rtmp => 1935,
             ExternalSourceType::Rtsp => 554,
-            ExternalSourceType::HttpFlv => {
+            ExternalSourceType::HttpFlv | ExternalSourceType::Whep => {
                 if parsed.scheme() == "https" {
                     443
                 } else {
@@ -328,6 +361,8 @@ impl ExternalStreamPuller {
             source_type,
             rtmp_mode,
             rtsp_options,
+            whep_authorization,
+            webrtc_config: WebRtcConfig::default(),
             stream_hub_event_sender,
             generation_id: Uuid::new(),
             confirm_tx: None,
@@ -369,17 +404,29 @@ impl ExternalStreamPuller {
         self
     }
 
+    #[must_use]
+    pub(crate) fn with_webrtc_config(mut self, config: WebRtcConfig) -> Self {
+        self.webrtc_config = config;
+        self
+    }
+
     /// Run the puller with bounded retry logic.
     ///
     /// Startup failures are reported to the caller immediately. After the first
-    /// successful connection, interrupted streams retry with exponential backoff
-    /// up to `MAX_RETRIES`.
+    /// successful connection, frame-based sources retry with exponential backoff
+    /// up to `MAX_RETRIES`. A disconnected WHEP source ends its RTP publication so
+    /// a later request can establish a new generation with a new RTP timeline.
     /// If the cancellation token is triggered, the loop exits cleanly and returns `Ok(())`.
     pub(crate) async fn run(mut self) -> Result<()> {
+        let source_url_for_logs = if matches!(self.source_type, ExternalSourceType::Whep) {
+            "<redacted-whep-url>".to_string()
+        } else {
+            redact_source_url_for_logs(&self.source_url)
+        };
         info!(
             room_id = %self.room_id,
             media_id = %self.media_id,
-            source_url = %redact_source_url_for_logs(&self.source_url),
+            source_url = %source_url_for_logs,
             source_type = ?self.source_type,
             "Starting external stream puller"
         );
@@ -388,7 +435,7 @@ impl ExternalStreamPuller {
             return Ok(());
         }
 
-        let (generation_id, data_sender) = match self.publish_to_local_stream_hub().await {
+        let publication = match self.publish_to_local_stream_hub().await {
             Ok(publication) => publication,
             Err(error) => {
                 if let Some(tx) = self.confirm_tx.take() {
@@ -404,19 +451,28 @@ impl ExternalStreamPuller {
         let unpublish_guard = UnpublishGuard::new(
             self.room_id.clone(),
             self.media_id.clone(),
-            generation_id,
+            publication.generation_id,
             self.stream_hub_event_sender.clone(),
         );
 
-        let result = self.run_upstream_connections(&data_sender).await;
+        let result = self
+            .run_upstream_connections(
+                &publication.frame_sender,
+                publication.packet_sender.as_ref(),
+            )
+            .await;
 
         unpublish_guard.disarm();
         drop(unpublish_guard);
-        self.unpublish_from_local_stream_hub(generation_id);
+        self.unpublish_from_local_stream_hub(publication.generation_id);
         result
     }
 
-    async fn run_upstream_connections(&mut self, data_sender: &FrameDataSender) -> Result<()> {
+    async fn run_upstream_connections(
+        &mut self,
+        data_sender: &FrameDataSender,
+        packet_sender: Option<&PacketDataSender>,
+    ) -> Result<()> {
         let mut attempt = 0_u32;
         loop {
             if self.cancel_token.is_cancelled() {
@@ -428,6 +484,13 @@ impl ExternalStreamPuller {
                 ExternalSourceType::Rtmp => self.connect_and_stream_rtmp(data_sender).await,
                 ExternalSourceType::Rtsp => self.connect_and_stream_rtsp(data_sender).await,
                 ExternalSourceType::HttpFlv => self.connect_and_stream_flv(data_sender).await,
+                ExternalSourceType::Whep => {
+                    let packet_sender = packet_sender.ok_or_else(|| {
+                        anyhow::anyhow!("WHEP publication did not provide an RTP packet channel")
+                    })?;
+                    self.connect_and_stream_whep(data_sender, packet_sender)
+                        .await
+                }
             };
             let startup_confirmation_pending = self.confirm_tx.is_some();
             let reconnect_required = result
@@ -457,6 +520,12 @@ impl ExternalStreamPuller {
                             );
                         }
                         return Err(error);
+                    }
+
+                    if reconnect_required && !self.source_type.can_reconnect_in_place() {
+                        return Err(anyhow::anyhow!(
+                            "WHEP source disconnected; ending the current publication: {error}"
+                        ));
                     }
 
                     if attempt >= MAX_RETRIES {
@@ -698,6 +767,112 @@ impl ExternalStreamPuller {
         }
     }
 
+    async fn connect_and_stream_whep(
+        &mut self,
+        frame_sender: &FrameDataSender,
+        packet_sender: &PacketDataSender,
+    ) -> Result<()> {
+        let addr = self.resolved_addr.ok_or_else(|| {
+            anyhow::anyhow!("Resolved WHEP address is unavailable after source validation")
+        })?;
+        let client = build_pinned_http_client(&self.source_url, addr, &self.ssrf_guard, "WHEP")?;
+        let authorization = self
+            .whep_authorization
+            .as_deref()
+            .map(reqwest::header::HeaderValue::try_from)
+            .transpose()
+            .map_err(|_| anyhow::anyhow!("WHEP Authorization header is invalid"))?;
+        let session = create_whep_client_session(
+            frame_sender.clone(),
+            packet_sender.clone(),
+            &self.webrtc_config,
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!("Failed to create WHEP client session: {error}"))?;
+
+        let mut request = client
+            .post(&self.source_url)
+            .header(reqwest::header::CONTENT_TYPE, "application/sdp")
+            .header(reqwest::header::ACCEPT, "application/sdp")
+            .body(session.offer_sdp.clone());
+        if let Some(value) = authorization.as_ref() {
+            request = request.header(reqwest::header::AUTHORIZATION, value.clone());
+        }
+
+        let response = tokio::select! {
+            () = self.cancel_token.cancelled() => {
+                let _ = session.close().await;
+                return Ok(());
+            }
+            result = tokio::time::timeout(WHEP_REQUEST_START_TIMEOUT, request.send()) => {
+                match result {
+                    Ok(Ok(response)) => response,
+                    Ok(Err(error)) => {
+                        let _ = session.close().await;
+                        return Err(anyhow::anyhow!(
+                            "WHEP request failed: {}",
+                            error.without_url()
+                        ));
+                    }
+                    Err(_) => {
+                        let _ = session.close().await;
+                        anyhow::bail!(
+                            "WHEP endpoint did not respond within {}s",
+                            WHEP_REQUEST_START_TIMEOUT.as_secs()
+                        );
+                    }
+                }
+            }
+        };
+
+        if response.status() != reqwest::StatusCode::CREATED {
+            let status = response.status();
+            let _ = session.close().await;
+            anyhow::bail!("WHEP endpoint returned {status}; expected 201 Created");
+        }
+        if !response_has_sdp_content_type(&response) {
+            let _ = session.close().await;
+            anyhow::bail!("WHEP endpoint response Content-Type must be application/sdp");
+        }
+        let session_url = match resolve_whep_session_url(&self.source_url, &response) {
+            Ok(url) => url,
+            Err(error) => {
+                let _ = session.close().await;
+                return Err(error);
+            }
+        };
+
+        let stream_result = async {
+            let answer = read_limited_whep_answer(
+                response,
+                self.webrtc_config.max_sdp_bytes,
+                &self.cancel_token,
+            )
+            .await?;
+            session
+                .apply_answer(&answer)
+                .await
+                .map_err(|error| anyhow::anyhow!("Invalid WHEP answer: {error}"))?;
+            session
+                .wait_connected(WHEP_CONNECTION_TIMEOUT)
+                .await
+                .map_err(|error| anyhow::anyhow!("WHEP media transport failed: {error}"))?;
+            self.send_confirm_ok();
+
+            tokio::select! {
+                () = self.cancel_token.cancelled() => Ok(()),
+                () = session.wait_closed() => Err(ReconnectRequired("WHEP").into()),
+            }
+        }
+        .await;
+
+        delete_whep_resource(&client, &session_url, authorization.as_ref()).await;
+        if let Err(error) = session.close().await {
+            debug!(%error, "failed to close local WHEP peer connection");
+        }
+        stream_result
+    }
+
     /// Connect to remote HTTP-FLV source and stream frames to local `StreamHub`.
     ///
     /// Performs HTTP GET on the FLV URL, reads the response body in chunks, and
@@ -721,7 +896,8 @@ impl ExternalStreamPuller {
             )
         })?;
 
-        let client = build_http_flv_client(&self.source_url, addr, &self.ssrf_guard)?;
+        let client =
+            build_pinned_http_client(&self.source_url, addr, &self.ssrf_guard, "HTTP-FLV")?;
 
         let mut response =
             send_http_flv_request(&client, &self.source_url, HTTP_FLV_REQUEST_START_TIMEOUT)
@@ -895,19 +1071,29 @@ impl ExternalStreamPuller {
     ///
     /// Sends a `StreamHubEvent::Publish` to register this stream in the local `StreamHub`,
     /// then receives back a `FrameDataSender` that can be used to push frames into the stream.
-    async fn publish_to_local_stream_hub(&mut self) -> Result<(Uuid, FrameDataSender)> {
+    async fn publish_to_local_stream_hub(&mut self) -> Result<LocalPublication> {
         let generation_id = self.generation_id;
+        let pub_data_type = if matches!(self.source_type, ExternalSourceType::Whep) {
+            PubDataType::Both
+        } else {
+            PubDataType::Frame
+        };
+        let request_url = if matches!(self.source_type, ExternalSourceType::Whep) {
+            "external://whep".to_string()
+        } else {
+            format!(
+                "external://{}",
+                redact_source_url_for_logs(&self.source_url)
+            )
+        };
 
         let publisher_info = PublisherInfo {
             id: generation_id,
             pub_type: PublishType::ExternalPull,
-            pub_data_type: synctv_xiu::streamhub::define::PubDataType::Frame,
+            pub_data_type,
             notify_info: NotifyInfo {
-                request_url: format!(
-                    "external://{}",
-                    redact_source_url_for_logs(&self.source_url)
-                ),
-                remote_addr: redact_source_url_for_logs(&self.source_url),
+                request_url,
+                remote_addr: String::new(),
             },
         };
 
@@ -947,9 +1133,17 @@ impl ExternalStreamPuller {
         let data_sender = result
             .0
             .ok_or_else(|| anyhow::anyhow!("No data sender from publish result"))?;
+        let packet_sender = result.1;
+        if matches!(self.source_type, ExternalSourceType::Whep) && packet_sender.is_none() {
+            anyhow::bail!("No packet sender from WHEP publish result");
+        }
 
         info!("Successfully published external stream to local StreamHub");
-        Ok((generation_id, data_sender))
+        Ok(LocalPublication {
+            generation_id,
+            frame_sender: data_sender,
+            packet_sender,
+        })
     }
 
     /// Unpublish from local `StreamHub`.
@@ -972,15 +1166,16 @@ impl ExternalStreamPuller {
     }
 }
 
-fn build_http_flv_client(
+fn build_pinned_http_client(
     source_url: &str,
     resolved_addr: std::net::SocketAddr,
     ssrf_guard: &SsrfGuard,
+    source_name: &'static str,
 ) -> Result<reqwest::Client> {
     let parsed = reqwest::Url::parse(source_url)?;
     let host = parsed
         .host_str()
-        .ok_or_else(|| anyhow::anyhow!("HTTP-FLV source URL is missing a host"))?;
+        .ok_or_else(|| anyhow::anyhow!("{source_name} source URL is missing a host"))?;
 
     let mut builder = synctv_common::http::SsrfSafeClientBuilder::new()
         .ssrf_guard(ssrf_guard.clone())
@@ -996,7 +1191,134 @@ fn build_http_flv_client(
 
     builder
         .build()
-        .map_err(|e| anyhow::anyhow!("Failed to create HTTP client: {e}"))
+        .map_err(|error| anyhow::anyhow!("Failed to create {source_name} HTTP client: {error}"))
+}
+
+#[cfg(test)]
+fn build_http_flv_client(
+    source_url: &str,
+    resolved_addr: std::net::SocketAddr,
+    ssrf_guard: &SsrfGuard,
+) -> Result<reqwest::Client> {
+    build_pinned_http_client(source_url, resolved_addr, ssrf_guard, "HTTP-FLV")
+}
+
+fn response_has_sdp_content_type(response: &reqwest::Response) -> bool {
+    response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("application/sdp"))
+}
+
+fn resolve_whep_session_url(source_url: &str, response: &reqwest::Response) -> Result<Url> {
+    let location = response
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .ok_or_else(|| anyhow::anyhow!("WHEP endpoint response is missing Location"))?
+        .to_str()
+        .map_err(|_| anyhow::anyhow!("WHEP endpoint returned an invalid Location header"))?;
+    resolve_whep_session_location(source_url, location)
+}
+
+fn resolve_whep_session_location(source_url: &str, location: &str) -> Result<Url> {
+    let source = Url::parse(source_url)?;
+    let session = source
+        .join(location)
+        .map_err(|_| anyhow::anyhow!("WHEP endpoint returned an invalid Location header"))?;
+    let same_origin = source.scheme() == session.scheme()
+        && source.host_str() == session.host_str()
+        && source.port_or_known_default() == session.port_or_known_default();
+    anyhow::ensure!(
+        same_origin,
+        "WHEP endpoint returned a cross-origin Location header"
+    );
+    anyhow::ensure!(
+        matches!(session.scheme(), "http" | "https")
+            && session.username().is_empty()
+            && session.password().is_none()
+            && session.fragment().is_none(),
+        "WHEP endpoint returned an unsafe Location header"
+    );
+    Ok(session)
+}
+
+async fn read_limited_whep_answer(
+    mut response: reqwest::Response,
+    max_bytes: usize,
+    cancel_token: &CancellationToken,
+) -> Result<String> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > max_bytes as u64)
+    {
+        anyhow::bail!("WHEP answer exceeds the configured SDP size limit");
+    }
+    let mut body = Vec::with_capacity(max_bytes.min(16 * 1024));
+    loop {
+        let chunk = tokio::select! {
+            () = cancel_token.cancelled() => {
+                anyhow::bail!("WHEP negotiation was cancelled");
+            }
+            result = tokio::time::timeout(WHEP_RESPONSE_READ_TIMEOUT, response.chunk()) => {
+                match result {
+                    Ok(Ok(chunk)) => chunk,
+                    Ok(Err(error)) => {
+                        return Err(anyhow::anyhow!(
+                            "Failed to read WHEP answer: {}",
+                            error.without_url()
+                        ));
+                    }
+                    Err(_) => anyhow::bail!(
+                        "WHEP answer body stalled for {}s",
+                        WHEP_RESPONSE_READ_TIMEOUT.as_secs()
+                    ),
+                }
+            }
+        };
+        let Some(chunk) = chunk else {
+            break;
+        };
+        anyhow::ensure!(
+            body.len().saturating_add(chunk.len()) <= max_bytes,
+            "WHEP answer exceeds the configured SDP size limit"
+        );
+        body.extend_from_slice(&chunk);
+    }
+    String::from_utf8(body).map_err(|_| anyhow::anyhow!("WHEP answer is not valid UTF-8"))
+}
+
+async fn delete_whep_resource(
+    client: &reqwest::Client,
+    session_url: &Url,
+    authorization: Option<&reqwest::header::HeaderValue>,
+) {
+    let mut request = client.delete(session_url.clone());
+    if let Some(value) = authorization {
+        request = request.header(reqwest::header::AUTHORIZATION, value.clone());
+    }
+    match tokio::time::timeout(WHEP_DELETE_TIMEOUT, request.send()).await {
+        Ok(Ok(response))
+            if response.status().is_success()
+                || matches!(
+                    response.status(),
+                    reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::GONE
+                ) => {}
+        Ok(Ok(response)) => {
+            warn!(
+                status = %response.status(),
+                "WHEP resource deletion returned an unexpected status"
+            );
+        }
+        Ok(Err(error)) => {
+            warn!(
+                error = %error.without_url(),
+                "failed to delete remote WHEP resource"
+            );
+        }
+        Err(_) => warn!("timed out deleting remote WHEP resource"),
+    }
 }
 
 async fn send_http_flv_request(
@@ -1107,6 +1429,13 @@ mod tests {
         }
     }
 
+    fn whep_source(url: &str) -> ExternalLiveSourceConfig {
+        ExternalLiveSourceConfig::Whep {
+            url: url.to_string(),
+            authorization: Some("Bearer upstream-token".to_string()),
+        }
+    }
+
     #[test]
     fn test_source_type_detection() {
         assert!(matches!(
@@ -1137,6 +1466,15 @@ mod tests {
             }),
             Ok(ExternalSourceType::HttpFlv)
         ));
+        assert!(matches!(
+            ExternalSourceType::from_config(&ExternalLiveSourceConfig::Whep {
+                url: "https://live.example.com/whep/stream".to_string(),
+                authorization: Some("Bearer secret".to_string()),
+            }),
+            Ok(ExternalSourceType::Whep)
+        ));
+        assert!(!ExternalSourceType::Whep.can_reconnect_in_place());
+        assert!(ExternalSourceType::Rtmp.can_reconnect_in_place());
         assert!(
             ExternalSourceType::from_config(&ExternalLiveSourceConfig::HttpFlv {
                 url: "https://live.example.com/app/stream/index.m3u8".to_string(),
@@ -1152,6 +1490,53 @@ mod tests {
             })
             .is_err()
         );
+        assert!(
+            ExternalSourceType::from_config(&ExternalLiveSourceConfig::Whep {
+                url: "rtmp://live.example.com/app/stream".to_string(),
+                authorization: None,
+            })
+            .is_err()
+        );
+        for url in [
+            "https://user:password@live.example.com/whep",
+            "https://live.example.com/whep#fragment",
+        ] {
+            assert!(
+                ExternalSourceType::from_config(&ExternalLiveSourceConfig::Whep {
+                    url: url.to_string(),
+                    authorization: None,
+                })
+                .is_err(),
+                "unsafe WHEP source URL was accepted: {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn whep_session_location_accepts_relative_same_origin_urls() -> TestResult {
+        let session = resolve_whep_session_location(
+            "https://media.example.com/live/whep",
+            "/whep/sessions/session-1",
+        )?;
+        assert_eq!(
+            session.as_str(),
+            "https://media.example.com/whep/sessions/session-1"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn whep_session_location_rejects_cross_origin_and_unsafe_urls() {
+        for location in [
+            "https://other.example.com/session-1",
+            "https://user@media.example.com/session-1",
+            "/session-1#fragment",
+        ] {
+            assert!(
+                resolve_whep_session_location("https://media.example.com/whep", location).is_err(),
+                "unsafe WHEP Location was accepted: {location}"
+            );
+        }
     }
 
     #[test]
@@ -1306,6 +1691,8 @@ mod tests {
             source_type: ExternalSourceType::Rtmp,
             rtmp_mode: mode,
             rtsp_options: None,
+            whep_authorization: None,
+            webrtc_config: WebRtcConfig::default(),
             stream_hub_event_sender: sender,
             confirm_tx: Some(confirm_tx),
             http_client: None,
@@ -1743,6 +2130,8 @@ mod tests {
             source_type: ExternalSourceType::HttpFlv,
             rtmp_mode: RtmpStreamMode::Default,
             rtsp_options: None,
+            whep_authorization: None,
+            webrtc_config: WebRtcConfig::default(),
             stream_hub_event_sender: sender,
             confirm_tx: Some(confirm_tx),
             http_client: Some(reqwest::Client::new()),
@@ -2078,6 +2467,8 @@ mod tests {
                 RtspTrackSelection::FirstCompatible,
                 RtspTrackSelection::Disabled,
             )),
+            whep_authorization: None,
+            webrtc_config: WebRtcConfig::default(),
             stream_hub_event_sender: event_sender.clone(),
             confirm_tx: Some(confirm_tx),
             http_client: None,
@@ -2466,6 +2857,76 @@ mod tests {
             puller.resolved_addr,
             Some(std::net::SocketAddr::from(([93, 184, 216, 34], 80)))
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_external_puller_creation_whep_pins_dns_and_keeps_authorization() -> TestResult {
+        let (sender, _) = tokio::sync::mpsc::channel(64);
+        let resolved = std::net::SocketAddr::from(([93, 184, 216, 34], 443));
+        let puller = ExternalStreamPuller::new_async_with_resolver(
+            "room123".to_string(),
+            "media456".to_string(),
+            whep_source("https://media.example.com/whep/channel"),
+            sender,
+            SsrfGuard::strict_policy(),
+            move |host, port| async move {
+                assert_eq!(host, "media.example.com");
+                assert_eq!(port, 443);
+                Ok(vec![resolved])
+            },
+        )
+        .await?;
+
+        assert!(matches!(puller.source_type, ExternalSourceType::Whep));
+        assert_eq!(puller.resolved_addr, Some(resolved));
+        assert_eq!(
+            puller.whep_authorization.as_deref(),
+            Some("Bearer upstream-token")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_whep_response_helpers_accept_standard_response() -> TestResult {
+        let body = "v=0\r\n";
+        let response = format!(
+            "HTTP/1.1 201 Created\r\nContent-Type: application/sdp; charset=utf-8\r\nLocation: /whep/sessions/session-1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .into_bytes();
+        let (addr, server_handle) = spawn_http_response_server(response).await?;
+        let source_url = format!("http://{addr}/whep/channel");
+        let client = build_pinned_http_client(&source_url, addr, &SsrfGuard::disabled(), "WHEP")?;
+        let response = client.post(&source_url).body("offer").send().await?;
+
+        assert_eq!(response.status(), reqwest::StatusCode::CREATED);
+        assert!(response_has_sdp_content_type(&response));
+        assert_eq!(
+            resolve_whep_session_url(&source_url, &response)?.as_str(),
+            format!("http://{addr}/whep/sessions/session-1")
+        );
+        assert_eq!(
+            read_limited_whep_answer(response, 32, &CancellationToken::new()).await?,
+            body
+        );
+        server_handle.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_whep_answer_content_length_enforces_sdp_limit() -> TestResult {
+        let response = b"HTTP/1.1 201 Created\r\nContent-Type: application/sdp\r\nLocation: /session-1\r\nContent-Length: 5\r\nConnection: close\r\n\r\n12345".to_vec();
+        let (addr, server_handle) = spawn_http_response_server(response).await?;
+        let source_url = format!("http://{addr}/whep");
+        let client = build_pinned_http_client(&source_url, addr, &SsrfGuard::disabled(), "WHEP")?;
+        let response = client.post(&source_url).body("offer").send().await?;
+        let error = read_limited_whep_answer(response, 4, &CancellationToken::new())
+            .await
+            .expect_err("oversized WHEP answer must be rejected");
+
+        assert!(error.to_string().contains("SDP size limit"));
+        server_handle.abort();
         Ok(())
     }
 

@@ -29,6 +29,9 @@ pub enum StreamError {
     #[error("Invalid stream key: {0}")]
     InvalidStreamKey(String),
 
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
+
     #[error("Permission denied: {0}")]
     PermissionDenied(String),
 

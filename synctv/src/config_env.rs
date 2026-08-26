@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use config::ConfigError;
@@ -11,6 +10,25 @@ use crate::config_loader::{
     default_data_dir, default_management_unix_socket_path, default_proxy_slice_cache_relative_path,
     default_runtime_socket_relative_path, load_config_string_from_file, resolve_relative_path_from,
 };
+
+fn apply_json_env_override<T>(
+    name: &str,
+    target: &mut T,
+    get_env: &impl Fn(&str) -> Option<String>,
+) -> Result<(), ConfigError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let Some(value) = get_env(name) else {
+        return Ok(());
+    };
+    *target = serde_json::from_str(&value).map_err(|error| {
+        ConfigError::Message(format!(
+            "Invalid JSON value for environment variable {name}: {error}"
+        ))
+    })?;
+    Ok(())
+}
 
 fn apply_redis_url_component_env_overrides(
     config: &mut Config,
@@ -260,31 +278,6 @@ pub(crate) fn apply_env_overrides_with(
             }
         }
     };
-    let env_override_json =
-        |name: &str, target: &mut dyn std::any::Any| -> Result<(), ConfigError> {
-            macro_rules! parse_json_into {
-            ($ty:ty) => {
-                if let Some(target) = target.downcast_mut::<$ty>() {
-                    if let Some(val) = get_env(name) {
-                        let parsed = serde_json::from_str::<$ty>(&val).map_err(|error| {
-                            ConfigError::Message(format!(
-                                "Invalid JSON value for environment variable {name}: {error}"
-                            ))
-                        })?;
-                        *target = parsed;
-                    }
-                    return Ok(());
-                }
-            };
-        }
-            parse_json_into!(HashMap<String, FileStorageBackendConfig>);
-            parse_json_into!(HashMap<String, RateLimitScopeRule>);
-            parse_json_into!(Vec<AndroidAppAssociationConfig>);
-            Err(ConfigError::Message(format!(
-                "Unsupported environment JSON override target type for {name}"
-            )))
-        };
-
     env_override_str("SYNCTV_TIME_TIMEZONE", &mut config.time.timezone);
     env_override_bool(
         "SYNCTV_TIME_CLOCK_SYNC_ENABLED",
@@ -693,9 +686,10 @@ pub(crate) fn apply_env_overrides_with(
         "SYNCTV_WEBAUTHN_APPLE_APP_IDS",
         &mut config.webauthn.apple_app_ids,
     );
-    env_override_json(
+    apply_json_env_override(
         "SYNCTV_WEBAUTHN_ANDROID_APPS",
         &mut config.webauthn.android_apps,
+        get_env,
     )?;
     env_override_bool(
         "SYNCTV_WEBAUTHN_ALLOW_SUBDOMAINS",
@@ -738,6 +732,10 @@ pub(crate) fn apply_env_overrides_with(
     env_override_str(
         "SYNCTV_LIVESTREAM_PUBLIC_RTMP_HOST",
         &mut config.livestream.public_rtmp_host,
+    );
+    env_override_str(
+        "SYNCTV_LIVESTREAM_PUBLIC_WEBRTC_BASE_URL",
+        &mut config.livestream.public_webrtc_base_url,
     );
     env_override_parse(
         "SYNCTV_LIVESTREAM_GOP_CACHE_SIZE",
@@ -859,9 +857,10 @@ pub(crate) fn apply_env_overrides_with(
         "SYNCTV_FILE_STORAGE_UNREFERENCED_OBJECT_RETENTION_SECONDS",
         &mut config.file_storage.unreferenced_object_retention_seconds,
     )?;
-    env_override_json(
+    apply_json_env_override(
         "SYNCTV_FILE_STORAGE_BACKENDS",
         &mut config.file_storage.backends,
+        get_env,
     )?;
 
     env_override_parse(
@@ -871,6 +870,31 @@ pub(crate) fn apply_env_overrides_with(
     env_override_parse(
         "SYNCTV_LIVESTREAM_FLV_WRITE_TIMEOUT_SECONDS",
         &mut config.livestream.flv_write_timeout_seconds,
+    )?;
+    env_override_bool(
+        "SYNCTV_LIVESTREAM_WEBRTC_ENABLED",
+        &mut config.livestream.webrtc.enabled,
+    )?;
+    apply_json_env_override(
+        "SYNCTV_LIVESTREAM_WEBRTC_ICE_SERVERS",
+        &mut config.livestream.webrtc.ice_servers,
+        get_env,
+    )?;
+    env_override_parse(
+        "SYNCTV_LIVESTREAM_WEBRTC_ICE_GATHERING_TIMEOUT_SECONDS",
+        &mut config.livestream.webrtc.ice_gathering_timeout_seconds,
+    )?;
+    env_override_parse(
+        "SYNCTV_LIVESTREAM_WEBRTC_MAX_SDP_BYTES",
+        &mut config.livestream.webrtc.max_sdp_bytes,
+    )?;
+    env_override_parse(
+        "SYNCTV_LIVESTREAM_WEBRTC_MAX_SESSIONS",
+        &mut config.livestream.webrtc.max_sessions,
+    )?;
+    env_override_parse(
+        "SYNCTV_LIVESTREAM_WEBRTC_MAX_SESSION_DURATION_SECONDS",
+        &mut config.livestream.webrtc.max_session_duration_seconds,
     )?;
 
     env_override_parse(
@@ -1186,9 +1210,10 @@ pub(crate) fn apply_env_overrides_with(
         "SYNCTV_REQUEST_RATE_LIMITS_WEBSOCKET_WINDOW_SECONDS",
         &mut config.request_rate_limits.websocket_window_seconds,
     )?;
-    env_override_json(
+    apply_json_env_override(
         "SYNCTV_REQUEST_RATE_LIMITS_SCOPES",
         &mut config.request_rate_limits.scopes,
+        get_env,
     )?;
 
     Ok(())
@@ -1381,6 +1406,44 @@ mod tests {
             config.server.web_ui_directory,
             Some(PathBuf::from("web-ui/dist"))
         );
+    }
+
+    #[test]
+    fn livestream_webrtc_ice_servers_accept_json_environment_override() {
+        let mut config = Config::default();
+        let env = HashMap::from([(
+            "SYNCTV_LIVESTREAM_WEBRTC_ICE_SERVERS",
+            r#"[{"urls":["turn:relay.invalid:3478"],"username":"publisher","credential":"test-credential"}]"#
+                .to_string(),
+        )]);
+
+        apply_env_overrides_with(&mut config, &|name| env.get(name).cloned())
+            .expect("ICE server environment override should apply");
+
+        assert_eq!(
+            config.livestream.webrtc.ice_servers,
+            vec![LivestreamWebRtcIceServerConfig {
+                urls: vec!["turn:relay.invalid:3478".to_string()],
+                username: "publisher".to_string(),
+                credential: "test-credential".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn livestream_webrtc_ice_servers_reject_invalid_json_environment_override() {
+        let mut config = Config::default();
+        let env = HashMap::from([(
+            "SYNCTV_LIVESTREAM_WEBRTC_ICE_SERVERS",
+            "invalid-json".to_string(),
+        )]);
+
+        let error = apply_env_overrides_with(&mut config, &|name| env.get(name).cloned())
+            .expect_err("invalid ICE server JSON should be rejected");
+
+        assert!(error.to_string().contains(
+            "Invalid JSON value for environment variable SYNCTV_LIVESTREAM_WEBRTC_ICE_SERVERS"
+        ));
     }
 
     #[test]

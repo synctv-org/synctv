@@ -318,6 +318,7 @@ fn peer_configuration(config: &WebRtcConfig) -> RTCConfiguration {
 async fn create_peer_connection(
     config: &WebRtcConfig,
 ) -> Result<Arc<RTCPeerConnection>, WebRtcError> {
+    synctv_common::install_process_crypto_provider();
     let mut media_engine = MediaEngine::default();
     register_streaming_codecs(&mut media_engine)?;
     let registry = register_default_interceptors(Registry::new(), &mut media_engine)

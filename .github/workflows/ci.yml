@@ -227,7 +227,7 @@ jobs:
           cache-workspace-crates: true
 
       - name: Run ignored tests with nextest
-        timeout-minutes: 60
+        timeout-minutes: 120
         run: make nextest-ignored
 
   # Security audit

@@ -768,11 +768,9 @@ impl TStreamHandler for RtmpStreamHandler {
     ) -> Result<(), StreamHubError> {
         let sender = match data_sender {
             DataSender::Frame { sender } => sender,
-            DataSender::Packet { sender: _ } => {
-                return Err(StreamHubError {
-                    value: StreamHubErrorValue::NotCorrectDataSenderType,
-                });
-            }
+            // RTP subscribers receive packets from the live fan-out path and
+            // do not use the RTMP frame/GOP cache for prior data.
+            DataSender::Packet { sender: _ } => return Ok(()),
         };
 
         // Read cache reference with minimal lock time
@@ -850,6 +848,17 @@ mod tests {
                 Some(stat_sender),
             )))
             .expect("publish result should be delivered");
+    }
+
+    #[tokio::test]
+    async fn rtmp_stream_handler_accepts_packet_subscribers_without_prior_data() {
+        let handler = RtmpStreamHandler::new();
+        let (sender, _receiver) = mpsc::channel(1);
+
+        handler
+            .send_prior_data(DataSender::Packet { sender }, SubscribeType::WhepPull)
+            .await
+            .expect("packet subscribers do not require RTMP cache data");
     }
 
     fn assert_rtmp_identifier(

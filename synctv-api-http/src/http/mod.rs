@@ -897,14 +897,6 @@ fn register_websocket_routes() -> Router<AppState> {
 fn register_livestream_webrtc_routes() -> Router<AppState> {
     Router::new()
         .route(
-            "/api/rooms/{roomId}/streams/{mediaId}/whip",
-            post(livestream_webrtc::create_whip_session),
-        )
-        .route(
-            "/api/rooms/{roomId}/streams/{mediaId}/whip/{sessionId}",
-            axum::routing::delete(livestream_webrtc::delete_whip_session),
-        )
-        .route(
             "/api/playback-providers/{roomId}/rtmp/{mediaId}/whip",
             post(livestream_webrtc::create_whip_session),
         )
@@ -927,14 +919,6 @@ fn register_livestream_webrtc_routes() -> Router<AppState> {
         .route(
             "/api/playback-providers/{roomId}/live-proxy/{mediaId}/whep/{sessionId}",
             axum::routing::delete(livestream_webrtc::delete_live_proxy_whep_session),
-        )
-        .route(
-            "/api/rooms/{roomId}/streams/{mediaId}/whep",
-            post(livestream_webrtc::create_legacy_whep_session),
-        )
-        .route(
-            "/api/rooms/{roomId}/streams/{mediaId}/whep/{sessionId}",
-            axum::routing::delete(livestream_webrtc::delete_legacy_whep_session),
         )
 }
 
@@ -1527,10 +1511,6 @@ fn register_all_routes() -> Router<AppState> {
             "/api/playback-providers/{roomId}/emby/{version}/subtitles/{modeName}/{subtitleIndex}",
             get(crate::providers::playback_provider::emby::get_emby_subtitle)
                 .options(providers::playback_provider_options_preflight),
-        )
-        .route(
-            "/api/rooms/{roomId}/streams/{mediaId}/publish-key",
-            post(room::create_room_publish_key),
         )
         .route(
             "/api/playback-providers/{roomId}/rtmp/{mediaId}/publish-key",

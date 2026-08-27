@@ -51,8 +51,8 @@ SyncTV 在主 HTTP(S) 服务上实现 WHIP resource 和 WHEP resource。两个�
 
 | 操作 | HTTP 资源 | 鉴权 |
 | --- | --- | --- |
-| 创建 publish key | `POST /api/rooms/{roomId}/streams/{mediaId}/publish-key` | 当前用户 token 与推流权限 |
-| 创建 WHIP 推流 | `POST /api/rooms/{roomId}/streams/{mediaId}/whip` | `Bearer <publish-key>` |
+| 创建 publish key | `POST /api/playback-providers/{roomId}/rtmp/{mediaId}/publish-key` | 当前用户 token 与推流权限 |
+| 创建 WHIP 推流 | `POST /api/playback-providers/{roomId}/rtmp/{mediaId}/whip` | `Bearer <publish-key>` |
 | 删除 WHIP 推流 | `DELETE <POST 响应的 Location>` | 同一个 publish key |
 | 播放 managed live | `POST /api/playback-providers/{roomId}/live/{mediaId}/whep` | 当前用户或游客访问 token |
 | 播放 LiveProxy | `POST /api/playback-providers/{roomId}/live-proxy/{mediaId}/whep` | 当前用户或游客访问 token |
@@ -60,9 +60,9 @@ SyncTV 在主 HTTP(S) 服务上实现 WHIP resource 和 WHEP resource。两个�
 
 POST 请求使用 `Content-Type: application/sdp`。成功响应返回 `201 Created`、SDP answer 和同源 `Location`；客户端停止推流或播放时应发送 DELETE。服务器在连接关闭、会话超时或进程退出时清理本地资源。
 
-公开名称 `live` 表示由 SyncTV 管理的 WHIP/RTMP 推流源；`liveProxy` 表示 SyncTV 拉取的外部 WHEP/RTSP/RTMP/HTTP-FLV 源。旧 `rtmp` source-provider 输入和旧 `/rtmp`、room-stream WHEP URL 仍可用，OpenAPI 将这些 URL 标记为 deprecated；新响应只生成上表中的规范 URL。protobuf wire/source-config oneof 继续使用 `RTMP`/`rtmp` 作为内部兼容表示。
+公开名称 `live` 表示由 SyncTV 管理的 WHIP/RTMP 推流源；`liveProxy` 表示 SyncTV 拉取的外部 WHEP/RTSP/RTMP/HTTP-FLV 源。protobuf wire/source-config oneof 继续使用 `RTMP`/`rtmp` 表示 SyncTV 管理的直播源。
 
-Provider prepare API 使用 `POST /api/providers/prepare/live`；`POST /api/providers/prepare/rtmp` 是兼容别名。HLS 和 HTTP-FLV 播放 URL 同样使用 `/api/playback-providers/{roomId}/live/...`。
+Provider prepare API 使用 `POST /api/providers/prepare/live`。HLS 和 HTTP-FLV 播放 URL 同样使用 `/api/playback-providers/{roomId}/live/...`。
 
 CLI 使用 `live` 创建 managed live 媒体，`rtmp` 仍作为输入别名：
 
@@ -259,10 +259,6 @@ RTSP、外部 RTMP 与内部 RTMP 推流都进入同一个 Live StreamHub。Sync
 5. 观众请求落到非 publisher 节点时，该节点通过共享 registry 找到 publisher owner。gRPC relay 分别传输 frame 和 RTP，并使用 generation ID 与 lease epoch 拒绝过期 publisher。
 6. `shared_file` 的 TS 分片请求由当前节点从共享路径读取；本地 backend 仍使用 publisher-node HLS gRPC proxy 读取远端 playlist/segment。
 </Steps>
-
-<Aside type="note">
-新节点会先探测 publisher 是否提供 RTP。旧版本节点返回 `UNIMPLEMENTED` 时，新节点继续建立 frame-only relay，因此 HLS/HTTP-FLV 保持兼容，WHEP 不可用。任一 frame/RTP relay 断线都会触发同一套重连和 lease fencing。
-</Aside>
 
 ## `livestream.rtmp_port`
 

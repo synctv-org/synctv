@@ -260,14 +260,7 @@ impl GrpcStreamPuller {
                 drop(response);
                 Ok(true)
             }
-            Err(status)
-                if matches!(
-                    status.code(),
-                    tonic::Code::FailedPrecondition | tonic::Code::Unimplemented
-                ) =>
-            {
-                Ok(false)
-            }
+            Err(status) if status.code() == tonic::Code::FailedPrecondition => Ok(false),
             Err(status) => {
                 self.connection_pool
                     .invalidate(&self.publisher_node_addr)

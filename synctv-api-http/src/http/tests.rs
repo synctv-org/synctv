@@ -3003,19 +3003,18 @@ async fn test_streaming_proxy_routes_preserve_options_preflight() -> TestResult 
         "live playback-provider route must handle browser preflight"
     );
 
-    let rtmp_compatibility_request = test_request(
+    let rtmp_alias_request = test_request(
         Request::builder()
             .method("OPTIONS")
             .uri("/api/playback-providers/room/rtmp/ver1/hls-master")
             .header(axum::http::header::ORIGIN, "https://example.com")
             .body(Body::empty()),
     )?;
-    let rtmp_compatibility_preflight =
-        test_response(app.clone().oneshot(rtmp_compatibility_request).await)?;
+    let rtmp_alias_preflight = test_response(app.clone().oneshot(rtmp_alias_request).await)?;
     assert_ne!(
-        rtmp_compatibility_preflight.status(),
+        rtmp_alias_preflight.status(),
         StatusCode::METHOD_NOT_ALLOWED,
-        "RTMP compatibility route must handle browser preflight"
+        "RTMP alias route must handle browser preflight"
     );
 
     let live_proxy_request = test_request(
@@ -3251,16 +3250,18 @@ async fn test_openapi_json_route_is_available() -> TestResult {
     assert!(json["paths"]["/api/providers/alist/login"].is_object());
     assert!(json["paths"]["/api/providers/instances"].is_object());
     assert!(json["paths"]["/api/rooms/{roomId}/streams"].is_object());
-    assert!(json["paths"]["/api/rooms/{roomId}/streams/{mediaId}/publish-key"].is_object());
+    assert!(
+        json["paths"]["/api/playback-providers/{roomId}/rtmp/{mediaId}/publish-key"].is_object()
+    );
     assert!(json["paths"]["/api/playback-providers/{roomId}/live/{mediaId}/whep"].is_object());
     assert!(
         json["paths"]["/api/playback-providers/{roomId}/live-proxy/{mediaId}/whep"].is_object()
     );
-    assert!(json["paths"]["/api/rooms/{roomId}/streams/{mediaId}/whip"].is_object());
+    assert!(json["paths"]["/api/playback-providers/{roomId}/rtmp/{mediaId}/whip"].is_object());
     assert!(json["paths"]["/api/rooms/{roomId}/streams/{mediaId}"].is_object());
-    assert!(
-        json["paths"]["/api/playback-providers/{roomId}/rtmp/{mediaId}/publish-key"].is_object()
-    );
+    assert!(json["paths"]["/api/rooms/{roomId}/streams/{mediaId}/publish-key"].is_null());
+    assert!(json["paths"]["/api/rooms/{roomId}/streams/{mediaId}/whip"].is_null());
+    assert!(json["paths"]["/api/rooms/{roomId}/streams/{mediaId}/whep"].is_null());
     assert!(json["paths"]["/api/providers/rtmp/rooms/{roomId}/publish-key/{mediaId}"].is_null());
     assert!(json["paths"]["/api/providers/rtmp/rooms/{roomId}/info/{mediaId}"].is_null());
     assert_eq!(
@@ -3655,23 +3656,14 @@ async fn test_room_stream_and_live_playback_provider_routes_are_reachable_under_
     let state = test_app_state();
     let app = register_all_routes().with_state(state);
 
-    let api_request = test_request(
-        Request::builder()
-            .method("POST")
-            .uri("/api/rooms/room_AbC123xYz890/streams/med_ZyX098wVu765/publish-key")
-            .body(Body::empty()),
-    )?;
-    let api_response = test_response(app.clone().oneshot(api_request).await)?;
-    assert_eq!(api_response.status(), StatusCode::UNAUTHORIZED);
-
-    let legacy_request = test_request(
+    let request = test_request(
         Request::builder()
             .method("POST")
             .uri("/api/playback-providers/room_AbC123xYz890/rtmp/med_ZyX098wVu765/publish-key")
             .body(Body::empty()),
     )?;
-    let legacy_response = test_response(app.clone().oneshot(legacy_request).await)?;
-    assert_eq!(legacy_response.status(), StatusCode::UNAUTHORIZED);
+    let response = test_response(app.clone().oneshot(request).await)?;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
     let info_request = test_request(
         Request::builder()

@@ -51,8 +51,8 @@ SyncTV serves WHIP and WHEP resources on the main HTTP(S) service. Both protocol
 
 | Operation | HTTP resource | Authentication |
 | --- | --- | --- |
-| Create publish key | `POST /api/rooms/{roomId}/streams/{mediaId}/publish-key` | Current user token and publish permission |
-| Create WHIP publish | `POST /api/rooms/{roomId}/streams/{mediaId}/whip` | `Bearer <publish-key>` |
+| Create publish key | `POST /api/playback-providers/{roomId}/rtmp/{mediaId}/publish-key` | Current user token and publish permission |
+| Create WHIP publish | `POST /api/playback-providers/{roomId}/rtmp/{mediaId}/whip` | `Bearer <publish-key>` |
 | Delete WHIP publish | `DELETE <Location from POST>` | The same publish key |
 | Play managed live | `POST /api/playback-providers/{roomId}/live/{mediaId}/whep` | Current user or guest access token |
 | Play LiveProxy | `POST /api/playback-providers/{roomId}/live-proxy/{mediaId}/whep` | Current user or guest access token |
@@ -60,9 +60,9 @@ SyncTV serves WHIP and WHEP resources on the main HTTP(S) service. Both protocol
 
 POST requests use `Content-Type: application/sdp`. A successful response contains `201 Created`, an SDP answer, and a same-origin `Location`. Send DELETE when the publisher or player stops. SyncTV also cleans local resources after disconnect, session expiry, and server shutdown.
 
-The public name `live` identifies a WHIP/RTMP source managed by SyncTV. `liveProxy` identifies an external WHEP/RTSP/RTMP/HTTP-FLV source pulled by SyncTV. The old `rtmp` source-provider input and old `/rtmp` and room-stream WHEP URLs remain available; OpenAPI marks those URLs as deprecated, and new responses generate only the canonical URLs above. The protobuf wire/source-config oneof retains `RTMP`/`rtmp` as its internal compatibility representation.
+The public name `live` identifies a WHIP/RTMP source managed by SyncTV. `liveProxy` identifies an external WHEP/RTSP/RTMP/HTTP-FLV source pulled by SyncTV. The protobuf wire/source-config oneof uses `RTMP`/`rtmp` for SyncTV-managed live sources.
 
-Use `POST /api/providers/prepare/live` for the Provider prepare API. `POST /api/providers/prepare/rtmp` is a compatibility alias. Generated HLS and HTTP-FLV playback URLs also use `/api/playback-providers/{roomId}/live/...`.
+Use `POST /api/providers/prepare/live` for the Provider prepare API. Generated HLS and HTTP-FLV playback URLs also use `/api/playback-providers/{roomId}/live/...`.
 
 Use `live` to create managed live media from the CLI. `rtmp` remains an input alias:
 
@@ -259,10 +259,6 @@ Typical choices: AWS S3, MinIO, Cloudflare R2, or compatible services. Configure
 5. A non-publisher node locates the owner through the shared registry. Separate gRPC streams relay frames and RTP, and generation ID plus lease epoch fence stale publishers.
 6. With `shared_file`, TS segment requests are read by the current node from the shared path. Local backends still use publisher-node HLS gRPC proxying for remote playlist/segment reads.
 </Steps>
-
-<Aside type="note">
-A new node probes the publisher for RTP support. An older node returns `UNIMPLEMENTED`, so the new node continues with a frame-only relay: HLS and HTTP-FLV remain available, while WHEP does not. A failure in either relay stream triggers the same reconnect and lease-fencing path.
-</Aside>
 
 ## RTMP
 

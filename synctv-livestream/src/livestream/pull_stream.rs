@@ -711,7 +711,9 @@ mod tests {
             &self,
             _request: Request<PullRtmpStreamRequest>,
         ) -> Result<Response<Self::PullRtpStreamStream>, Status> {
-            Err(Status::unimplemented("RTP is outside this relay test"))
+            Err(Status::failed_precondition(
+                "test stream does not provide RTP",
+            ))
         }
 
         async fn get_hls_playlist(

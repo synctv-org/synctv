@@ -122,7 +122,7 @@ impl WhepProvider {
 
 fn whip_session_location(path: &LiveWebRtcPath, session_id: &str) -> String {
     format!(
-        "/api/rooms/{}/streams/{}/whip/{session_id}",
+        "/api/playback-providers/{}/rtmp/{}/whip/{session_id}",
         path.room_id, path.media_id
     )
 }
@@ -162,8 +162,8 @@ fn created_session_response(answer: WebRtcAnswer, location: &str) -> AppResult<R
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/rooms/{roomId}/streams/{mediaId}/whip",
-        tag = "Live Streaming",
+        path = "/api/playback-providers/{roomId}/rtmp/{mediaId}/whip",
+        tag = "RTMP Playback Provider",
         params(
             ("roomId" = String, Path, description = "Room public ID"),
             ("mediaId" = String, Path, description = "Media public ID")
@@ -204,8 +204,8 @@ pub async fn create_whip_session(
     feature = "openapi",
     utoipa::path(
         delete,
-        path = "/api/rooms/{roomId}/streams/{mediaId}/whip/{sessionId}",
-        tag = "Live Streaming",
+        path = "/api/playback-providers/{roomId}/rtmp/{mediaId}/whip/{sessionId}",
+        tag = "RTMP Playback Provider",
         params(
             ("roomId" = String, Path, description = "Room public ID"),
             ("mediaId" = String, Path, description = "Media public ID"),
@@ -281,7 +281,7 @@ pub async fn create_live_whep_session(
     Path(path): Path<LiveWebRtcPath>,
     request: Request,
 ) -> AppResult<Response> {
-    create_whep_session(Some(WhepProvider::Live), request_meta, state, path, request).await
+    create_whep_session(WhepProvider::Live, request_meta, state, path, request).await
 }
 
 #[cfg_attr(
@@ -314,27 +314,11 @@ pub async fn create_live_proxy_whep_session(
     Path(path): Path<LiveWebRtcPath>,
     request: Request,
 ) -> AppResult<Response> {
-    create_whep_session(
-        Some(WhepProvider::LiveProxy),
-        request_meta,
-        state,
-        path,
-        request,
-    )
-    .await
-}
-
-pub async fn create_legacy_whep_session(
-    request_meta: RequestMetadata,
-    State(state): State<AppState>,
-    Path(path): Path<LiveWebRtcPath>,
-    request: Request,
-) -> AppResult<Response> {
-    create_whep_session(None, request_meta, state, path, request).await
+    create_whep_session(WhepProvider::LiveProxy, request_meta, state, path, request).await
 }
 
 async fn create_whep_session(
-    expected_provider: Option<WhepProvider>,
+    expected_provider: WhepProvider,
     request_meta: RequestMetadata,
     state: AppState,
     path: LiveWebRtcPath,
@@ -364,7 +348,7 @@ async fn create_whep_session(
                 } else {
                     WhepProvider::Live
                 };
-                if expected_provider.is_some_and(|expected| expected != provider) {
+                if expected_provider != provider {
                     return Err(synctv_api_common::impls::ApiError::InvalidInput(
                         "Media does not belong to the requested playback provider".to_string(),
                     ));
@@ -422,7 +406,7 @@ pub async fn delete_live_whep_session(
     State(state): State<AppState>,
     Path(path): Path<LiveWebRtcSessionPath>,
 ) -> AppResult<Response> {
-    delete_whep_session(Some(WhepProvider::Live), request_meta, state, path).await
+    delete_whep_session(WhepProvider::Live, request_meta, state, path).await
 }
 
 #[cfg_attr(
@@ -450,19 +434,11 @@ pub async fn delete_live_proxy_whep_session(
     State(state): State<AppState>,
     Path(path): Path<LiveWebRtcSessionPath>,
 ) -> AppResult<Response> {
-    delete_whep_session(Some(WhepProvider::LiveProxy), request_meta, state, path).await
-}
-
-pub async fn delete_legacy_whep_session(
-    request_meta: RequestMetadata,
-    State(state): State<AppState>,
-    Path(path): Path<LiveWebRtcSessionPath>,
-) -> AppResult<Response> {
-    delete_whep_session(None, request_meta, state, path).await
+    delete_whep_session(WhepProvider::LiveProxy, request_meta, state, path).await
 }
 
 async fn delete_whep_session(
-    expected_provider: Option<WhepProvider>,
+    expected_provider: WhepProvider,
     request_meta: RequestMetadata,
     state: AppState,
     path: LiveWebRtcSessionPath,
@@ -486,7 +462,7 @@ async fn delete_whep_session(
             } else {
                 WhepProvider::Live
             };
-            if expected_provider.is_some_and(|expected| expected != provider) {
+            if expected_provider != provider {
                 return Err(synctv_api_common::impls::ApiError::InvalidInput(
                     "Media does not belong to the requested playback provider".to_string(),
                 ));
@@ -556,7 +532,7 @@ mod tests {
 
         assert_eq!(
             whip_session_location(&path, "whip-session"),
-            "/api/rooms/room-public/streams/media-public/whip/whip-session"
+            "/api/playback-providers/room-public/rtmp/media-public/whip/whip-session"
         );
         assert_eq!(
             whep_session_location(&path, WhepProvider::Live, "live-session"),

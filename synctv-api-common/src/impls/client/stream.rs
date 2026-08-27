@@ -144,7 +144,7 @@ fn build_publish_whip_url(
     room_id: &str,
     media_id: &str,
 ) -> Result<String, ApiError> {
-    let path = format!("/api/rooms/{room_id}/streams/{media_id}/whip");
+    let path = format!("/api/playback-providers/{room_id}/rtmp/{media_id}/whip");
     let base_url = runtime_settings.livestream.public_webrtc_base_url.trim();
     if base_url.is_empty() {
         return Ok(path);
@@ -161,7 +161,14 @@ fn build_publish_whip_url(
             )
         })?
         .pop_if_empty()
-        .extend(["api", "rooms", room_id, "streams", media_id, "whip"]);
+        .extend([
+            "api",
+            "playback-providers",
+            room_id,
+            "rtmp",
+            media_id,
+            "whip",
+        ]);
     Ok(url.to_string())
 }
 
@@ -738,7 +745,10 @@ mod tests {
             "med_XyZ789",
         ))?;
 
-        assert_eq!(url, "/api/rooms/room_AbC123/streams/med_XyZ789/whip");
+        assert_eq!(
+            url,
+            "/api/playback-providers/room_AbC123/rtmp/med_XyZ789/whip"
+        );
         Ok(())
     }
 
@@ -755,7 +765,7 @@ mod tests {
 
         assert_eq!(
             url,
-            "https://live.example.com/api/rooms/room_AbC123/streams/med_XyZ789/whip"
+            "https://live.example.com/api/playback-providers/room_AbC123/rtmp/med_XyZ789/whip"
         );
         Ok(())
     }

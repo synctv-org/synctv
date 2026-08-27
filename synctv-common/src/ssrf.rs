@@ -178,6 +178,15 @@ pub struct SsrfGuard {
     inner: Option<Arc<SsrfGuardInner>>,
 }
 
+impl std::fmt::Debug for SsrfGuard {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SsrfGuard")
+            .field("enabled", &self.inner.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
 struct SsrfGuardInner {
     acl: HttpAcl,
     resolver: Arc<dyn Resolve>,
@@ -376,6 +385,18 @@ impl SsrfGuard {
         self.inner
             .as_ref()
             .is_some_and(|inner| inner.policy.is_host_blocked(host))
+    }
+
+    /// Check whether a hostname may be used without policy-aware DNS resolution.
+    ///
+    /// Protocols that cannot inject [`Self::dns_resolver`] must reject arbitrary
+    /// hostnames to prevent DNS rebinding. Disabled policies and explicitly
+    /// allowlisted hosts remain usable.
+    #[must_use]
+    pub fn allows_unresolved_host(&self, host: &str) -> bool {
+        self.inner
+            .as_ref()
+            .is_none_or(|inner| inner.policy.allowed_hosts.contains(&normalize_host(host)))
     }
 
     /// Check if a port is blocked for a concrete IP target.
@@ -799,6 +820,20 @@ mod tests {
         assert!(guard.dns_resolver().is_none());
         assert!(!guard.is_host_blocked("localhost"));
         assert!(!guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::LOCALHOST)));
+        assert!(guard.allows_unresolved_host("peer.local"));
+    }
+
+    #[test]
+    fn test_unresolved_hosts_require_an_explicit_allowlist() {
+        let strict = SsrfGuard::strict_policy();
+        assert!(!strict.allows_unresolved_host("peer.local"));
+        assert!(!strict.allows_unresolved_host("example.com"));
+
+        let allowlisted = SsrfGuard::builder()
+            .extra_allowed_host("ICE.EXAMPLE.COM.".to_string())
+            .build();
+        assert!(allowlisted.allows_unresolved_host("ice.example.com"));
+        assert!(!allowlisted.allows_unresolved_host("other.example.com"));
     }
 
     #[test]

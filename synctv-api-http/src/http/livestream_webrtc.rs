@@ -540,6 +540,14 @@ mod tests {
     }
 
     #[test]
+    fn invalid_publish_key_maps_to_unauthorized() {
+        let error = map_stream_error(&StreamError::Authentication(
+            "invalid publish key".to_string(),
+        ));
+        assert_eq!(error.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
     fn session_locations_use_canonical_routes() {
         let path = LiveWebRtcPath {
             room_id: "room-public".to_string(),

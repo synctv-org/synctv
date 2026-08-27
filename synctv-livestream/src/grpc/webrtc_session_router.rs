@@ -78,6 +78,7 @@ impl WebRtcSessionRouter {
                 StreamError::InvalidInput(message)
             }
             tonic::Code::PermissionDenied => StreamError::PermissionDenied(message),
+            tonic::Code::Unauthenticated => StreamError::Authentication(message),
             tonic::Code::FailedPrecondition | tonic::Code::AlreadyExists | tonic::Code::Aborted => {
                 StreamError::InvalidState(message)
             }
@@ -88,7 +89,6 @@ impl WebRtcSessionRouter {
             }
             tonic::Code::Cancelled
             | tonic::Code::DeadlineExceeded
-            | tonic::Code::Unauthenticated
             | tonic::Code::Unimplemented
             | tonic::Code::Unavailable => StreamError::ConnectionFailed(message),
             tonic::Code::Ok => StreamError::Internal(
@@ -243,7 +243,7 @@ mod tests {
             }
             let request = request.into_inner();
             if request.publish_token == "denied" {
-                return Err(Status::permission_denied(
+                return Err(Status::unauthenticated(
                     "WHIP session credentials do not match",
                 ));
             }
@@ -330,7 +330,7 @@ mod tests {
                 Some("denied"),
             )
             .await;
-        assert!(matches!(denied, Err(StreamError::PermissionDenied(_))));
+        assert!(matches!(denied, Err(StreamError::Authentication(_))));
 
         cancel.cancel();
         tokio::time::timeout(Duration::from_secs(1), server).await???;

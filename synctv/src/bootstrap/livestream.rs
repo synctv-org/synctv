@@ -185,6 +185,7 @@ pub async fn init_livestream(
                         config.livestream.webrtc.ice_gathering_timeout_seconds,
                     ),
                     max_sdp_bytes: config.livestream.webrtc.max_sdp_bytes,
+                    ssrf_guard: config.security.ssrf_guard(),
                 },
                 max_sessions: config.livestream.webrtc.max_sessions,
                 max_session_duration: std::time::Duration::from_secs(

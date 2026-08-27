@@ -35,6 +35,9 @@ pub enum StreamError {
     #[error("Permission denied: {0}")]
     PermissionDenied(String),
 
+    #[error("Authentication failed: {0}")]
+    Authentication(String),
+
     #[error("Invalid state: {0}")]
     InvalidState(String),
 

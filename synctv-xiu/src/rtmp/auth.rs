@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use thiserror::Error;
 
 use crate::streamhub::utils::Uuid;
 
@@ -8,6 +9,22 @@ pub enum RtmpStreamMode {
     Default,
     VideoOnly,
     AudioOnly,
+}
+
+/// Authentication failure returned by a publish-key validator.
+#[derive(Debug, Error)]
+#[error("{message}")]
+pub struct PublishAuthError {
+    message: String,
+}
+
+impl PublishAuthError {
+    #[must_use]
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
 }
 
 /// Optional rewrite of RTMP identifiers returned by [`AuthCallback::on_publish`].

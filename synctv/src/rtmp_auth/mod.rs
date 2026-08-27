@@ -25,7 +25,7 @@ use synctv_adapter::PublicIdCodec;
 use synctv_core::{
     models::{MediaId, Room, RoomId, RoomStatus, UserId, UserStatus},
     service::{RoomService, StreamingPublishKeyService, UserService},
-    RedisConnectionRuntime, SharedStateMode, SharedStateProfile,
+    Error as CoreError, RedisConnectionRuntime, SharedStateMode, SharedStateProfile,
 };
 use synctv_livestream::{
     PublisherControlHandle, PublisherStopOutcome, PublisherStopRequest, StreamRegistryTrait,
@@ -33,11 +33,20 @@ use synctv_livestream::{
 };
 // TTL for the per-user rtmp:user_stream:{user_id} Redis key, matching the publisher TTL.
 use synctv_xiu::rtmp::auth::{
-    AuthCallback, AuthPublishRewrite, RtmpStreamMode as XiuRtmpStreamMode,
+    AuthCallback, AuthPublishRewrite, PublishAuthError, RtmpStreamMode as XiuRtmpStreamMode,
 };
 use synctv_xiu::streamhub::utils::Uuid;
 
 const STREAMHUB_RESTARTING_MESSAGE: &str = "StreamHub is restarting, please retry in a few seconds";
+
+fn map_publish_key_validation_error(error: CoreError) -> Box<dyn std::error::Error + Send + Sync> {
+    match error {
+        error @ CoreError::Authentication(_) => Box::new(PublishAuthError::new(format!(
+            "Invalid stream key: {error}"
+        ))),
+        error => Box::new(error),
+    }
+}
 
 #[async_trait]
 pub trait UserStreamIndex: Send + Sync {
@@ -858,7 +867,9 @@ impl SyncTvRtmpAuth {
         // is reserved for the media binding and must not be overloaded as a token.
         let token_owned: Option<String> = query.and_then(extract_token_from_query);
         let token = token_owned.as_deref().ok_or_else(|| {
-            "Missing token query parameter; RTMP publish must use ?token=<publish_key>".to_string()
+            PublishAuthError::new(
+                "Missing token query parameter; RTMP publish must use ?token=<publish_key>",
+            )
         })?;
 
         // Validate JWT stream_key
@@ -866,7 +877,7 @@ impl SyncTvRtmpAuth {
             .publish_key_service
             .validate_publish_key_for_stream_claims(token, &expected_room_id, &expected_media_id)
             .await
-            .map_err(|e| format!("Invalid stream key: {e}"))?;
+            .map_err(map_publish_key_validation_error)?;
 
         // Re-verify user status at connection time
         let user_id = claims
@@ -1045,6 +1056,23 @@ mod tests {
         local_stream_registry, ActiveStreamGeneration, LeaseRefreshOutcome, StreamGeneration,
         StreamRegistryTrait,
     };
+
+    #[test]
+    fn publish_key_error_mapping_only_marks_authentication_failures() {
+        let authentication = map_publish_key_validation_error(CoreError::Authentication(
+            "publish key expired".to_string(),
+        ));
+        assert!(authentication.downcast_ref::<PublishAuthError>().is_some());
+
+        for error in [
+            CoreError::Authorization("publish key has insufficient scope".to_string()),
+            CoreError::Internal("publish-key store unavailable".to_string()),
+        ] {
+            let mapped = map_publish_key_validation_error(error);
+            assert!(mapped.downcast_ref::<PublishAuthError>().is_none());
+            assert!(mapped.downcast_ref::<CoreError>().is_some());
+        }
+    }
 
     struct FlakyUnregisterRegistry {
         inner: Arc<dyn StreamRegistryTrait>,

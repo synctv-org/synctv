@@ -96,6 +96,7 @@ fn map_webrtc_session_error(error: StreamError) -> Status {
     match error {
         StreamError::InvalidInput(message) => Status::invalid_argument(message),
         StreamError::PermissionDenied(message) => Status::permission_denied(message),
+        StreamError::Authentication(message) => Status::unauthenticated(message),
         StreamError::InvalidState(message) => Status::failed_precondition(message),
         StreamError::ResourceExhausted(message) => Status::resource_exhausted(message),
         StreamError::RegistryError(message) => Status::unavailable(message),

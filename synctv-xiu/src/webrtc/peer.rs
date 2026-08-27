@@ -1,10 +1,11 @@
-use std::{io::Cursor, sync::Arc, time::Duration};
+use std::{io::Cursor, net::IpAddr, sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use sdp::description::session::{
     SessionDescription, ATTR_KEY_INACTIVE, ATTR_KEY_RECV_ONLY, ATTR_KEY_SEND_ONLY,
     ATTR_KEY_SEND_RECV,
 };
+use synctv_common::ssrf::SsrfGuard;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 use webrtc::{
@@ -77,6 +78,7 @@ pub struct WebRtcConfig {
     pub ice_servers: Vec<WebRtcIceServer>,
     pub ice_gathering_timeout: Duration,
     pub max_sdp_bytes: usize,
+    pub ssrf_guard: SsrfGuard,
 }
 
 impl Default for WebRtcConfig {
@@ -85,6 +87,7 @@ impl Default for WebRtcConfig {
             ice_servers: Vec::new(),
             ice_gathering_timeout: Duration::from_secs(10),
             max_sdp_bytes: 256 * 1024,
+            ssrf_guard: SsrfGuard::strict_policy(),
         }
     }
 }
@@ -99,6 +102,10 @@ pub enum WebRtcError {
     InvalidSdp(String),
     #[error("WHIP offer has no H.264 format compatible with the livestream bridge")]
     IncompatibleWhipVideoCodec,
+    #[error(
+        "WHIP offer has no sendable Opus or H.264 media compatible with the livestream bridge"
+    )]
+    NoCompatibleWhipMedia,
     #[error("WebRTC negotiation failed: {0}")]
     Negotiation(String),
     #[error("ICE gathering timed out after {0:?}")]
@@ -118,12 +125,13 @@ pub struct WhepClientSession {
     peer_connection: Arc<RTCPeerConnection>,
     cancel_token: CancellationToken,
     max_sdp_bytes: usize,
+    ssrf_guard: SsrfGuard,
 }
 
 impl WhepClientSession {
     pub async fn apply_answer(&self, answer_sdp: &str) -> Result<(), WebRtcError> {
-        validate_sdp(answer_sdp, self.max_sdp_bytes)?;
-        let answer = RTCSessionDescription::answer(answer_sdp.to_string())
+        let answer_sdp = sanitize_remote_sdp(answer_sdp, self.max_sdp_bytes, &self.ssrf_guard)?;
+        let answer = RTCSessionDescription::answer(answer_sdp)
             .map_err(|error| WebRtcError::InvalidSdp(error.to_string()))?;
         self.peer_connection
             .set_remote_description(answer)
@@ -204,8 +212,68 @@ fn validate_sdp(sdp: &str, max_sdp_bytes: usize) -> Result<(), WebRtcError> {
     Ok(())
 }
 
-fn validate_offer(offer_sdp: &str, config: &WebRtcConfig) -> Result<(), WebRtcError> {
-    validate_sdp(offer_sdp, config.max_sdp_bytes)
+fn candidate_target_allowed(candidate: &str, ssrf_guard: &SsrfGuard) -> Result<bool, WebRtcError> {
+    let fields = candidate.split_whitespace().collect::<Vec<_>>();
+    if fields.len() < 6 {
+        return Err(WebRtcError::InvalidSdp(
+            "ICE candidate has too few fields".to_string(),
+        ));
+    }
+    let address = fields[4];
+    fields[5].parse::<u16>().map_err(|error| {
+        WebRtcError::InvalidSdp(format!("ICE candidate has an invalid port: {error}"))
+    })?;
+    if let Ok(ip) = address.parse::<IpAddr>() {
+        return Ok(!ssrf_guard.is_ip_blocked(&ip));
+    }
+    Ok(!ssrf_guard.is_host_blocked(&address) && ssrf_guard.allows_unresolved_host(&address))
+}
+
+fn filter_remote_candidates(
+    attributes: &mut Vec<sdp::description::common::Attribute>,
+    ssrf_guard: &SsrfGuard,
+) -> Result<(), WebRtcError> {
+    let mut filtered = Vec::with_capacity(attributes.len());
+    for attribute in std::mem::take(attributes) {
+        if !attribute.key.eq_ignore_ascii_case("candidate") {
+            filtered.push(attribute);
+            continue;
+        }
+        let candidate = attribute.value.as_deref().ok_or_else(|| {
+            WebRtcError::InvalidSdp("ICE candidate attribute has no value".to_string())
+        })?;
+        if candidate_target_allowed(candidate, ssrf_guard)? {
+            filtered.push(attribute);
+        }
+    }
+    *attributes = filtered;
+    Ok(())
+}
+
+fn sanitize_remote_sdp(
+    sdp: &str,
+    max_sdp_bytes: usize,
+    ssrf_guard: &SsrfGuard,
+) -> Result<String, WebRtcError> {
+    validate_sdp(sdp, max_sdp_bytes)?;
+    let mut reader = Cursor::new(sdp.as_bytes());
+    let mut session = SessionDescription::unmarshal(&mut reader)
+        .map_err(|error| WebRtcError::InvalidSdp(error.to_string()))?;
+    filter_remote_candidates(&mut session.attributes, ssrf_guard)?;
+    for media in &mut session.media_descriptions {
+        filter_remote_candidates(&mut media.attributes, ssrf_guard)?;
+    }
+    Ok(session.to_string())
+}
+
+fn validate_offer(
+    offer_sdp: &str,
+    config: &WebRtcConfig,
+) -> Result<SessionDescription, WebRtcError> {
+    let sanitized = sanitize_remote_sdp(offer_sdp, config.max_sdp_bytes, &config.ssrf_guard)?;
+    let mut reader = Cursor::new(sanitized.as_bytes());
+    SessionDescription::unmarshal(&mut reader)
+        .map_err(|error| WebRtcError::InvalidSdp(error.to_string()))
 }
 
 fn remote_sends_media(
@@ -261,25 +329,31 @@ fn validate_whip_offer(
     offer_sdp: &str,
     config: &WebRtcConfig,
     media_mode: RtmpStreamMode,
-) -> Result<(), WebRtcError> {
-    validate_offer(offer_sdp, config)?;
-    if !whip_accepts_track(media_mode, RTPCodecType::Video) {
-        return Ok(());
-    }
-    let mut reader = Cursor::new(offer_sdp.as_bytes());
-    let session = SessionDescription::unmarshal(&mut reader)
-        .map_err(|error| WebRtcError::InvalidSdp(error.to_string()))?;
-    for media in session.media_descriptions.iter().filter(|media| {
-        media.media_name.media.eq_ignore_ascii_case("video")
-            && media.media_name.port.value != 0
-            && remote_sends_media(&session, media)
-    }) {
+) -> Result<SessionDescription, WebRtcError> {
+    let session = validate_offer(offer_sdp, config)?;
+    let mut has_compatible_media = false;
+    for media in session
+        .media_descriptions
+        .iter()
+        .filter(|media| media.media_name.port.value != 0 && remote_sends_media(&session, media))
+    {
+        let kind = if media.media_name.media.eq_ignore_ascii_case("audio") {
+            RTPCodecType::Audio
+        } else if media.media_name.media.eq_ignore_ascii_case("video") {
+            RTPCodecType::Video
+        } else {
+            continue;
+        };
+        if !whip_accepts_track(media_mode, kind) {
+            continue;
+        }
         let media_session = SessionDescription {
             media_descriptions: vec![media.clone()],
             ..Default::default()
         };
         let mut offered_h264 = false;
         let mut compatible_h264 = false;
+        let mut compatible_opus = false;
         for payload in &media.media_name.formats {
             let payload_type = payload
                 .parse::<u8>()
@@ -289,14 +363,26 @@ fn validate_whip_offer(
                 .map_err(|error| WebRtcError::InvalidSdp(error.to_string()))?;
             if codec.name.eq_ignore_ascii_case("H264") {
                 offered_h264 = true;
-                compatible_h264 |= h264_fmtp_is_bridge_compatible(&codec.fmtp);
+                compatible_h264 |=
+                    codec.clock_rate == 90_000 && h264_fmtp_is_bridge_compatible(&codec.fmtp);
+            } else if codec.name.eq_ignore_ascii_case("opus") {
+                let channels = codec.encoding_parameters.parse::<u16>().unwrap_or(0);
+                compatible_opus |= codec.clock_rate == 48_000 && matches!(channels, 1 | 2);
             }
         }
-        if offered_h264 && !compatible_h264 {
+        if kind == RTPCodecType::Video && offered_h264 && !compatible_h264 {
             return Err(WebRtcError::IncompatibleWhipVideoCodec);
         }
+        has_compatible_media |= match kind {
+            RTPCodecType::Audio => compatible_opus,
+            RTPCodecType::Video => compatible_h264,
+            RTPCodecType::Unspecified => false,
+        };
     }
-    Ok(())
+    if !has_compatible_media {
+        return Err(WebRtcError::NoCompatibleWhipMedia);
+    }
+    Ok(session)
 }
 
 fn peer_configuration(config: &WebRtcConfig) -> RTCConfiguration {
@@ -529,6 +615,7 @@ pub async fn create_whep_client_session(
         peer_connection: peer,
         cancel_token,
         max_sdp_bytes: config.max_sdp_bytes,
+        ssrf_guard: config.ssrf_guard.clone(),
     })
 }
 
@@ -663,7 +750,7 @@ pub async fn create_whip_session(
     media_mode: RtmpStreamMode,
     config: &WebRtcConfig,
 ) -> Result<PeerSession, WebRtcError> {
-    validate_whip_offer(offer_sdp, config, media_mode)?;
+    let offer_sdp = validate_whip_offer(offer_sdp, config, media_mode)?.to_string();
     let peer = create_peer_connection(config).await?;
     let cancel_token = CancellationToken::new();
     bind_connection_lifecycle(&peer, cancel_token.clone());
@@ -708,7 +795,7 @@ pub async fn create_whip_session(
         })
     }));
 
-    let answer_sdp = match negotiate_answer(&peer, offer_sdp, config).await {
+    let answer_sdp = match negotiate_answer(&peer, &offer_sdp, config).await {
         Ok(answer) => answer,
         Err(error) => {
             cancel_token.cancel();
@@ -798,7 +885,7 @@ pub async fn create_whep_session(
     packet_receiver: PacketDataReceiver,
     config: &WebRtcConfig,
 ) -> Result<PeerSession, WebRtcError> {
-    validate_offer(offer_sdp, config)?;
+    let offer_sdp = validate_offer(offer_sdp, config)?.to_string();
     let peer = create_peer_connection(config).await?;
     let cancel_token = CancellationToken::new();
     bind_connection_lifecycle(&peer, cancel_token.clone());
@@ -826,7 +913,7 @@ pub async fn create_whep_session(
         });
     }
 
-    let answer_sdp = match negotiate_answer(&peer, offer_sdp, config).await {
+    let answer_sdp = match negotiate_answer(&peer, &offer_sdp, config).await {
         Ok(answer) => answer,
         Err(error) => {
             cancel_token.cancel();
@@ -915,6 +1002,68 @@ mod tests {
     }
 
     #[test]
+    fn remote_sdp_filters_candidates_blocked_by_ssrf_policy() {
+        const OFFER: &str = "v=0\r\n\
+o=- 1 1 IN IP4 127.0.0.1\r\n\
+s=-\r\n\
+t=0 0\r\n\
+a=candidate:1 1 UDP 2122260223 127.0.0.1 50000 typ host\r\n\
+m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n\
+a=sendonly\r\n\
+a=rtpmap:111 opus/48000/2\r\n\
+a=candidate:2 1 UDP 2122260222 192.168.1.20 50001 typ host\r\n\
+a=candidate:3 1 UDP 2122260221 peer.local 50002 typ host\r\n\
+a=candidate:4 1 UDP 2122260220 8.8.8.8 50003 typ srflx\r\n";
+
+        let sanitized = sanitize_remote_sdp(
+            OFFER,
+            WebRtcConfig::default().max_sdp_bytes,
+            &SsrfGuard::strict_policy(),
+        )
+        .expect("valid SDP should be sanitized");
+
+        assert!(!sanitized.contains("127.0.0.1 50000"));
+        assert!(!sanitized.contains("192.168.1.20 50001"));
+        assert!(!sanitized.contains("peer.local 50002"));
+        assert!(sanitized.contains("8.8.8.8 50003"));
+    }
+
+    #[test]
+    fn remote_sdp_preserves_private_candidates_when_policy_allows_them() {
+        const OFFER: &str = "v=0\r\n\
+o=- 1 1 IN IP4 127.0.0.1\r\n\
+s=-\r\n\
+t=0 0\r\n\
+m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n\
+a=sendonly\r\n\
+a=rtpmap:111 opus/48000/2\r\n\
+a=candidate:1 1 UDP 2122260223 192.168.1.20 50001 typ host\r\n";
+        let guard = SsrfGuard::builder()
+            .allow_private_network_targets(true)
+            .build();
+
+        let sanitized = sanitize_remote_sdp(OFFER, 256 * 1024, &guard)
+            .expect("explicitly allowed private candidate should be retained");
+        assert!(sanitized.contains("192.168.1.20 50001"));
+    }
+
+    #[test]
+    fn remote_sdp_rejects_malformed_candidates() {
+        const OFFER: &str = "v=0\r\n\
+o=- 1 1 IN IP4 127.0.0.1\r\n\
+s=-\r\n\
+t=0 0\r\n\
+m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n\
+a=rtpmap:111 opus/48000/2\r\n\
+a=candidate:too-short\r\n";
+
+        assert!(matches!(
+            sanitize_remote_sdp(OFFER, 256 * 1024, &SsrfGuard::strict_policy()),
+            Err(WebRtcError::InvalidSdp(_))
+        ));
+    }
+
+    #[test]
     fn whip_offer_rejects_h264_that_cannot_be_relayed_as_the_bridge_profile() {
         const HIGH_PROFILE_OFFER: &str = "v=0\r\n\
 o=- 1 1 IN IP4 127.0.0.1\r\n\
@@ -933,12 +1082,14 @@ a=fmtp:96 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=640c1f
             ),
             Err(WebRtcError::IncompatibleWhipVideoCodec)
         ));
-        assert!(validate_whip_offer(
-            HIGH_PROFILE_OFFER,
-            &WebRtcConfig::default(),
-            RtmpStreamMode::AudioOnly,
-        )
-        .is_ok());
+        assert!(matches!(
+            validate_whip_offer(
+                HIGH_PROFILE_OFFER,
+                &WebRtcConfig::default(),
+                RtmpStreamMode::AudioOnly,
+            ),
+            Err(WebRtcError::NoCompatibleWhipMedia)
+        ));
     }
 
     #[test]
@@ -972,6 +1123,50 @@ a=fmtp:98 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e029
             MULTI_PROFILE_OFFER,
             &WebRtcConfig::default(),
             RtmpStreamMode::Default,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn whip_offer_requires_a_sendable_bridge_codec() {
+        const VP8_ONLY_OFFER: &str = "v=0\r\n\
+o=- 1 1 IN IP4 127.0.0.1\r\n\
+s=-\r\n\
+t=0 0\r\n\
+m=video 9 UDP/TLS/RTP/SAVPF 96\r\n\
+a=sendonly\r\n\
+a=rtpmap:96 VP8/90000\r\n";
+        const INACTIVE_H264_OFFER: &str = "v=0\r\n\
+o=- 1 1 IN IP4 127.0.0.1\r\n\
+s=-\r\n\
+t=0 0\r\n\
+m=video 9 UDP/TLS/RTP/SAVPF 96\r\n\
+a=inactive\r\n\
+a=rtpmap:96 H264/90000\r\n\
+a=fmtp:96 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\n";
+
+        for offer in [VP8_ONLY_OFFER, INACTIVE_H264_OFFER] {
+            assert!(matches!(
+                validate_whip_offer(offer, &WebRtcConfig::default(), RtmpStreamMode::Default,),
+                Err(WebRtcError::NoCompatibleWhipMedia)
+            ));
+        }
+    }
+
+    #[test]
+    fn whip_offer_accepts_sendable_opus_for_audio_mode() {
+        const OPUS_OFFER: &str = "v=0\r\n\
+o=- 1 1 IN IP4 127.0.0.1\r\n\
+s=-\r\n\
+t=0 0\r\n\
+m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n\
+a=sendonly\r\n\
+a=rtpmap:111 opus/48000/2\r\n";
+
+        assert!(validate_whip_offer(
+            OPUS_OFFER,
+            &WebRtcConfig::default(),
+            RtmpStreamMode::AudioOnly,
         )
         .is_ok());
     }
@@ -1103,6 +1298,7 @@ a=fmtp:98 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e029
     async fn whip_to_whep_forwards_rtp_and_emits_avc_frames() -> Result<()> {
         let config = WebRtcConfig {
             ice_gathering_timeout: Duration::from_secs(5),
+            ssrf_guard: SsrfGuard::disabled(),
             ..WebRtcConfig::default()
         };
         let (frame_sender, mut frame_receiver) = mpsc::channel(256);

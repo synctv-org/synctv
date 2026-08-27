@@ -10,7 +10,7 @@ use dashmap::DashMap;
 use subtle::ConstantTimeEq;
 use synctv_xiu::{
     rtmp::{
-        auth::{AuthCallback, RtmpStreamMode},
+        auth::{AuthCallback, PublishAuthError, RtmpStreamMode},
         session::common::RtmpStreamHandler,
     },
     streamhub::{
@@ -193,9 +193,8 @@ impl WebRtcSessionManager {
             WebRtcError::EmptySdp
             | WebRtcError::SdpTooLarge { .. }
             | WebRtcError::InvalidSdp(_)
-            | WebRtcError::IncompatibleWhipVideoCodec => {
-                StreamError::InvalidInput(error.to_string())
-            }
+            | WebRtcError::IncompatibleWhipVideoCodec
+            | WebRtcError::NoCompatibleWhipMedia => StreamError::InvalidInput(error.to_string()),
             WebRtcError::Negotiation(_)
             | WebRtcError::IceGatheringTimeout(_)
             | WebRtcError::MissingLocalDescription => {
@@ -297,7 +296,13 @@ impl WebRtcSessionManager {
         let rewrite = auth
             .on_publish(generation_id, room_id, media_id, Some(&auth_query))
             .await
-            .map_err(|error| StreamError::PermissionDenied(error.to_string()))?;
+            .map_err(|error| {
+                if let Some(auth_error) = error.downcast_ref::<PublishAuthError>() {
+                    StreamError::Authentication(auth_error.to_string())
+                } else {
+                    StreamError::PermissionDenied(error.to_string())
+                }
+            })?;
         let (room_id, media_id, media_mode) = rewrite.map_or_else(
             || {
                 (
@@ -772,7 +777,7 @@ impl WebRtcSessionManager {
             .append_pair("token", token)
             .finish();
         if !bool::from(auth_query.as_bytes().ct_eq(supplied_auth_query.as_bytes())) {
-            return Err(StreamError::PermissionDenied(
+            return Err(StreamError::Authentication(
                 "WHIP session credentials do not match".to_string(),
             ));
         }
@@ -836,6 +841,8 @@ mod tests {
 
     struct VideoOnlyAuth;
 
+    struct InvalidPublishKeyAuth;
+
     #[async_trait::async_trait]
     impl AuthCallback for VideoOnlyAuth {
         async fn on_publish(
@@ -853,6 +860,31 @@ mod tests {
                 stream_name: "canonical-media".to_string(),
                 media_mode: RtmpStreamMode::VideoOnly,
             }))
+        }
+
+        async fn on_play(
+            &self,
+            _app_name: &str,
+            _stream_name: &str,
+            _query: Option<&str>,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            Ok(())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl AuthCallback for InvalidPublishKeyAuth {
+        async fn on_publish(
+            &self,
+            _generation_id: Uuid,
+            _app_name: &str,
+            _stream_name: &str,
+            _query: Option<&str>,
+        ) -> Result<
+            Option<synctv_xiu::rtmp::auth::AuthPublishRewrite>,
+            Box<dyn std::error::Error + Send + Sync>,
+        > {
+            Err(Box::new(PublishAuthError::new("invalid publish key")))
         }
 
         async fn on_play(
@@ -903,5 +935,21 @@ mod tests {
         assert_eq!(media_id, "canonical-media");
         assert_eq!(auth_query, "token=secret");
         assert_eq!(media_mode, RtmpStreamMode::VideoOnly);
+    }
+
+    #[tokio::test]
+    async fn publish_key_errors_remain_authentication_failures() {
+        let (event_sender, _) = tokio::sync::mpsc::channel(1);
+        let manager = WebRtcSessionManager::new(
+            event_sender,
+            Some(Arc::new(InvalidPublishKeyAuth)),
+            WebRtcSessionConfig::default(),
+        );
+
+        let error = manager
+            .authenticate_publish(Uuid::new(), "public-room", "public-media", "invalid")
+            .await
+            .expect_err("invalid publish key should fail authentication");
+        assert!(matches!(error, StreamError::Authentication(_)));
     }
 }

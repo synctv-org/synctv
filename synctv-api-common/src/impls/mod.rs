@@ -821,6 +821,9 @@ pub fn map_livestream_stream_error(stream_error: &StreamError) -> ApiError {
         StreamError::PermissionDenied(_) => {
             ApiError::Authorization(LIVESTREAM_PERMISSION_DENIED_MESSAGE.to_string())
         }
+        StreamError::Authentication(_) => {
+            ApiError::Authentication("Publish key is invalid or expired".to_string())
+        }
         StreamError::ResourceExhausted(_) => {
             ApiError::RateLimited(LIVESTREAM_RATE_LIMITED_MESSAGE.to_string())
         }

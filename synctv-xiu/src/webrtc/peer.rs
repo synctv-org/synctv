@@ -226,7 +226,7 @@ fn candidate_target_allowed(candidate: &str, ssrf_guard: &SsrfGuard) -> Result<b
     if let Ok(ip) = address.parse::<IpAddr>() {
         return Ok(!ssrf_guard.is_ip_blocked(&ip));
     }
-    Ok(!ssrf_guard.is_host_blocked(&address) && ssrf_guard.allows_unresolved_host(&address))
+    Ok(!ssrf_guard.is_host_blocked(address) && ssrf_guard.allows_unresolved_host(address))
 }
 
 fn filter_remote_candidates(

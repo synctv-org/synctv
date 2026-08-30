@@ -174,7 +174,7 @@ jsonwebtoken = { version = "=11.0.0", features = ["rust_crypto"] }
 oauth2 = { version = "=5.0.0", default-features = false }
 webauthn-rs = { version = "=0.6.1-dev", features = ["conditional-ui", "danger-allow-state-serialisation"] }
 webauthn-rs-proto = "=0.6.1-dev"
-aes-gcm = "=0.11.0"
+aes-gcm = "=0.11.1"
 aes = "=0.9.2"
 cbc = { version = "=0.2.1", features = ["alloc", "block-padding"] }
 ammonia = "=4.1.4"
@@ -210,7 +210,7 @@ lru = "=0.18.2"
 
 # IDs & Crypto
 nanoid = "=0.5.0"
-uuid = { version = "=1.24.1", features = ["v4", "v5", "serde"] }
+uuid = { version = "=1.26.0", features = ["v4", "v5", "serde"] }
 sqids = "=0.4.2"
 rand = "=0.10.2"
 rand_08 = { package = "rand", version = "=0.8.6" }
@@ -236,14 +236,14 @@ ffmpeg-next = { version = "=9.0.0", default-features = false, features = ["build
 ffmpeg-sys-next = { version = "=9.0.0", features = ["build-portable"] }
 
 # Object Storage
-opendal = { version = "=0.58.1", default-features = false, features = [
+opendal = { version = "=0.58.2", default-features = false, features = [
     "executors-tokio",
     "services-s3",
     "layers-retry",
     "layers-timeout",
     "layers-concurrent-limit",
 ] }
-opendal-http-transport-reqwest = { version = "=0.58.1", default-features = false, features = ["rustls-no-provider"] }
+opendal-http-transport-reqwest = { version = "=0.58.2", default-features = false, features = ["rustls-no-provider"] }
 
 # Logging & Tracing
 tracing = "=0.1.44"

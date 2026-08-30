@@ -1,37 +1,54 @@
-use synctv_xiu::streamhub::define::{FrameData, FrameDataSender};
+use synctv_xiu::streamhub::define::{FrameData, FrameDataSender, PacketData, PacketDataSender};
+use tokio::time::Instant;
 use tonic::codec::CompressionEncoding;
 use tonic::metadata::{Ascii, MetadataValue};
 use tonic::Request;
 use tracing::{info, warn};
 
 use super::connection_pool::GrpcConnectionPool;
-use super::proto::{stream_relay_service_client::StreamRelayServiceClient, PullRtmpStreamRequest};
+use super::proto::{
+    stream_relay_service_client::StreamRelayServiceClient, PullRtmpStreamRequest, RtpPacket,
+    RtpPacketType,
+};
 
 const STREAM_MESSAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const FRAME_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-async fn timeout_stream_message<T, E>(
+#[derive(Debug)]
+struct RelayIdleDeadlines {
     timeout: std::time::Duration,
-    future: impl std::future::Future<Output = Result<Option<T>, E>>,
-) -> anyhow::Result<Option<T>>
-where
-    E: std::fmt::Display,
-{
-    tokio::time::timeout(timeout, future)
-        .await
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "No gRPC relay frame received for {}s, stream appears dead",
-                timeout.as_secs()
-            )
-        })?
-        .map_err(|e| anyhow::anyhow!("Stream error: {e}"))
+    frame: Instant,
+    rtp: Option<Instant>,
 }
 
-async fn next_packet_with_timeout(
-    stream: &mut tonic::Streaming<super::proto::RtmpPacket>,
-) -> anyhow::Result<Option<super::proto::RtmpPacket>> {
-    timeout_stream_message(STREAM_MESSAGE_TIMEOUT, stream.message()).await
+impl RelayIdleDeadlines {
+    fn new(now: Instant, timeout: std::time::Duration, expects_rtp: bool) -> Self {
+        let deadline = now + timeout;
+        Self {
+            timeout,
+            frame: deadline,
+            rtp: expects_rtp.then_some(deadline),
+        }
+    }
+
+    fn observe_frame(&mut self, now: Instant) {
+        self.frame = now + self.timeout;
+    }
+
+    fn observe_rtp(&mut self, now: Instant) {
+        self.rtp = Some(now + self.timeout);
+    }
+}
+
+fn map_stream_message<T>(result: Result<Option<T>, tonic::Status>) -> anyhow::Result<Option<T>> {
+    result.map_err(|error| anyhow::anyhow!("Stream error: {error}"))
+}
+
+fn stream_idle_timeout(stream_kind: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "No gRPC {stream_kind} relay message received for {}s, stream appears dead",
+        STREAM_MESSAGE_TIMEOUT.as_secs()
+    )
 }
 
 async fn send_frame_with_backpressure(
@@ -47,6 +64,38 @@ async fn send_frame_with_backpressure(
             )
         })?
         .map_err(|_| anyhow::anyhow!("Local relay stream channel closed"))
+}
+
+fn decode_frame_packet(packet: super::proto::RtmpPacket) -> Option<FrameData> {
+    match packet.frame_type {
+        1 => Some(FrameData::Video {
+            timestamp: packet.timestamp,
+            data: packet.data,
+        }),
+        2 => Some(FrameData::Audio {
+            timestamp: packet.timestamp,
+            data: packet.data,
+        }),
+        3 => Some(FrameData::MetaData {
+            timestamp: packet.timestamp,
+            data: packet.data,
+        }),
+        _ => None,
+    }
+}
+
+fn decode_rtp_packet(packet: RtpPacket) -> Option<PacketData> {
+    match RtpPacketType::try_from(packet.packet_type).ok()? {
+        RtpPacketType::Video => Some(PacketData::Video {
+            timestamp: packet.timestamp,
+            data: packet.data,
+        }),
+        RtpPacketType::Audio => Some(PacketData::Audio {
+            timestamp: packet.timestamp,
+            data: packet.data,
+        }),
+        RtpPacketType::Unspecified => None,
+    }
 }
 /// gRPC Stream Puller
 /// Pulls one RTMP relay session from a remote publisher and forwards frames to
@@ -133,7 +182,11 @@ impl GrpcStreamPuller {
     }
 
     /// Run one remote pull session using a local publication owned by `PullStream`.
-    pub(crate) async fn run(self, data_sender: &FrameDataSender) -> anyhow::Result<()> {
+    pub(crate) async fn run(
+        self,
+        data_sender: &FrameDataSender,
+        packet_sender: Option<&PacketDataSender>,
+    ) -> anyhow::Result<()> {
         info!(
             room_id = %self.room_id,
             media_id = %self.media_id,
@@ -145,7 +198,7 @@ impl GrpcStreamPuller {
 
         self.cluster_secret_metadata()?;
 
-        let result = self.connect_and_stream(data_sender).await;
+        let result = self.connect_and_stream(data_sender, packet_sender).await;
 
         match result {
             Ok(()) => {
@@ -174,7 +227,56 @@ impl GrpcStreamPuller {
     /// pull streams targeting the same node.
     /// On connection failure, the pooled entry is invalidated so the next attempt
     /// creates a fresh connection.
-    async fn connect_and_stream(&self, data_sender: &FrameDataSender) -> anyhow::Result<()> {
+    pub(crate) async fn supports_rtp(&self) -> anyhow::Result<bool> {
+        let cluster_secret = self.cluster_secret_metadata()?;
+        let channel = self
+            .connection_pool
+            .get_channel(&self.publisher_node_addr)
+            .await
+            .map_err(|error| anyhow::anyhow!("Failed to connect to publisher: {error}"))?;
+        let client = StreamRelayServiceClient::new(channel)
+            .max_decoding_message_size(self.grpc_max_message_size_bytes)
+            .max_encoding_message_size(self.grpc_max_message_size_bytes);
+        let mut client = if self.grpc_compression_enabled {
+            client
+                .accept_compressed(CompressionEncoding::Gzip)
+                .send_compressed(CompressionEncoding::Gzip)
+        } else {
+            client
+        };
+        let mut request = Request::new(PullRtmpStreamRequest {
+            room_id: self.room_id.clone(),
+            media_id: self.media_id.clone(),
+            generation_id: self.generation_id.clone(),
+            expected_lease_epoch: self.expected_lease_epoch,
+            is_reconnect: false,
+        });
+        request
+            .metadata_mut()
+            .insert("x-cluster-secret", cluster_secret);
+
+        match client.pull_rtp_stream(request).await {
+            Ok(response) => {
+                drop(response);
+                Ok(true)
+            }
+            Err(status) if status.code() == tonic::Code::FailedPrecondition => Ok(false),
+            Err(status) => {
+                self.connection_pool
+                    .invalidate(&self.publisher_node_addr)
+                    .await;
+                Err(anyhow::anyhow!(
+                    "Failed to probe RTP relay support: {status}"
+                ))
+            }
+        }
+    }
+
+    async fn connect_and_stream(
+        &self,
+        data_sender: &FrameDataSender,
+        packet_sender: Option<&PacketDataSender>,
+    ) -> anyhow::Result<()> {
         let cluster_secret = self.cluster_secret_metadata()?;
 
         let channel = self
@@ -217,47 +319,117 @@ impl GrpcStreamPuller {
             }
         };
 
+        let mut rtp_stream = if packet_sender.is_some() {
+            let mut request = Request::new(PullRtmpStreamRequest {
+                room_id: self.room_id.clone(),
+                media_id: self.media_id.clone(),
+                generation_id: self.generation_id.clone(),
+                expected_lease_epoch: self.expected_lease_epoch,
+                is_reconnect: self.is_reconnect,
+            });
+            request
+                .metadata_mut()
+                .insert("x-cluster-secret", self.cluster_secret_metadata()?);
+            match client.pull_rtp_stream(request).await {
+                Ok(response) => Some(response.into_inner()),
+                Err(error) => {
+                    self.connection_pool
+                        .invalidate(&self.publisher_node_addr)
+                        .await;
+                    return Err(anyhow::anyhow!("Failed to pull RTP stream: {error}"));
+                }
+            }
+        } else {
+            None
+        };
+
         info!("Connected to remote publisher, receiving stream data");
 
         let mut dropped_frames: u64 = 0;
+        let mut dropped_packets: u64 = 0;
         let drop_log_interval: u64 = 100;
+        let mut idle_deadlines =
+            RelayIdleDeadlines::new(Instant::now(), STREAM_MESSAGE_TIMEOUT, rtp_stream.is_some());
 
         loop {
-            match next_packet_with_timeout(&mut stream).await {
-                Ok(Some(packet)) => {
-                    let frame_data = match packet.frame_type {
-                        1 => FrameData::Video {
-                            timestamp: packet.timestamp,
-                            data: packet.data,
-                        },
-                        2 => FrameData::Audio {
-                            timestamp: packet.timestamp,
-                            data: packet.data,
-                        },
-                        3 => FrameData::MetaData {
-                            timestamp: packet.timestamp,
-                            data: packet.data,
-                        },
-                        _ => {
-                            warn!("Unknown frame type: {}", packet.frame_type);
-                            continue;
-                        }
+            enum RelayMessage {
+                Frame(anyhow::Result<Option<super::proto::RtmpPacket>>),
+                Rtp(anyhow::Result<Option<RtpPacket>>),
+            }
+            let frame_deadline = idle_deadlines.frame;
+            let rtp_deadline = idle_deadlines.rtp;
+            let message = tokio::select! {
+                frame = stream.message() => RelayMessage::Frame(map_stream_message(frame)),
+                rtp = async {
+                    match rtp_stream.as_mut() {
+                        Some(stream) => map_stream_message(stream.message().await),
+                        None => std::future::pending().await,
+                    }
+                } => RelayMessage::Rtp(rtp),
+                () = tokio::time::sleep_until(frame_deadline) => {
+                    RelayMessage::Frame(Err(stream_idle_timeout("frame")))
+                }
+                () = async {
+                    match rtp_deadline {
+                        Some(deadline) => tokio::time::sleep_until(deadline).await,
+                        None => std::future::pending().await,
+                    }
+                } => RelayMessage::Rtp(Err(stream_idle_timeout("RTP"))),
+            };
+            match message {
+                RelayMessage::Frame(Ok(Some(packet))) => {
+                    idle_deadlines.observe_frame(Instant::now());
+                    let Some(frame_data) = decode_frame_packet(packet) else {
+                        warn!("Received unknown relay frame type");
+                        continue;
                     };
-
-                    if let Err(e) = send_frame_with_backpressure(data_sender, frame_data).await {
+                    if let Err(error) = send_frame_with_backpressure(data_sender, frame_data).await
+                    {
                         dropped_frames += 1;
                         synctv_core::metrics::livestream::LIVESTREAM_RELAY_FRAME_DROPS.inc();
                         warn!(
                             room_id = %self.room_id,
                             media_id = %self.media_id,
                             total_blocked = dropped_frames,
-                            "Relay frame delivery failed under backpressure: {e}"
+                            "Relay frame delivery failed under backpressure: {error}"
                         );
-                        return Err(e);
+                        return Err(error);
                     }
                 }
-                Ok(None) => break, // Stream ended normally
-                Err(e) => {
+                RelayMessage::Rtp(Ok(Some(packet))) => {
+                    idle_deadlines.observe_rtp(Instant::now());
+                    let Some(packet_data) = decode_rtp_packet(packet) else {
+                        warn!("Received unknown relay RTP packet type");
+                        continue;
+                    };
+                    let Some(packet_sender) = packet_sender else {
+                        return Err(anyhow::anyhow!(
+                            "RTP relay produced data without a local packet channel"
+                        ));
+                    };
+                    match packet_sender.try_send(packet_data) {
+                        Ok(()) => {}
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                            dropped_packets += 1;
+                            if dropped_packets.is_multiple_of(drop_log_interval) {
+                                warn!(
+                                    room_id = %self.room_id,
+                                    media_id = %self.media_id,
+                                    dropped_packets,
+                                    "Dropping relayed RTP packets under local backpressure"
+                                );
+                            }
+                        }
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                            return Err(anyhow::anyhow!("Local RTP relay channel closed"));
+                        }
+                    }
+                }
+                RelayMessage::Frame(Ok(None)) if rtp_stream.is_none() => break,
+                RelayMessage::Frame(Ok(None)) | RelayMessage::Rtp(Ok(None)) => {
+                    return Err(anyhow::anyhow!("Remote relay stream ended"));
+                }
+                RelayMessage::Frame(Err(error)) | RelayMessage::Rtp(Err(error)) => {
                     self.connection_pool
                         .invalidate(&self.publisher_node_addr)
                         .await;
@@ -269,7 +441,7 @@ impl GrpcStreamPuller {
                             "Relay stream terminated after sustained backpressure failures"
                         );
                     }
-                    return Err(e);
+                    return Err(error);
                 }
             }
         }
@@ -439,21 +611,18 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn test_next_packet_with_timeout_fails_when_stream_stalls() -> TestResult {
-        let err = tokio::time::timeout(
-            TEST_STREAM_MESSAGE_TIMEOUT + Duration::from_secs(1),
-            timeout_stream_message(TEST_STREAM_MESSAGE_TIMEOUT, async {
-                tokio::time::sleep(TEST_STREAM_MESSAGE_TIMEOUT + Duration::from_secs(1)).await;
-                Ok::<Option<super::super::proto::RtmpPacket>, tonic::Status>(None)
-            }),
-        )
-        .await?
-        .expect_err("stalled stream must be reported as dead");
-        assert!(
-            err.to_string().contains("stream appears dead"),
-            "unexpected error: {err}"
-        );
-        Ok(())
+    #[tokio::test(start_paused = true)]
+    async fn frame_activity_does_not_refresh_rtp_idle_deadline() {
+        let started_at = Instant::now();
+        let mut deadlines = RelayIdleDeadlines::new(started_at, TEST_STREAM_MESSAGE_TIMEOUT, true);
+        let original_rtp_deadline = deadlines.rtp.expect("RTP deadline should exist");
+
+        tokio::time::advance(TEST_STREAM_MESSAGE_TIMEOUT / 2).await;
+        deadlines.observe_frame(Instant::now());
+        tokio::time::advance(TEST_STREAM_MESSAGE_TIMEOUT / 2).await;
+
+        assert_eq!(deadlines.rtp, Some(original_rtp_deadline));
+        assert!(Instant::now() >= original_rtp_deadline);
+        assert!(Instant::now() < deadlines.frame);
     }
 }

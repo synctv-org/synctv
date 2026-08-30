@@ -969,11 +969,55 @@ impl std::fmt::Debug for HlsS3Config {
     }
 }
 
+#[derive(Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct LivestreamWebRtcIceServerConfig {
+    pub urls: Vec<String>,
+    pub username: String,
+    pub credential: String,
+}
+
+impl std::fmt::Debug for LivestreamWebRtcIceServerConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LivestreamWebRtcIceServerConfig")
+            .field("urls", &self.urls)
+            .field("username", &self.username)
+            .field("credential", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LivestreamWebRtcConfig {
+    pub enabled: bool,
+    pub ice_servers: Vec<LivestreamWebRtcIceServerConfig>,
+    pub ice_gathering_timeout_seconds: u64,
+    pub max_sdp_bytes: usize,
+    pub max_sessions: usize,
+    pub max_session_duration_seconds: u64,
+}
+
+impl Default for LivestreamWebRtcConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            ice_servers: Vec::new(),
+            ice_gathering_timeout_seconds: 10,
+            max_sdp_bytes: 256 * 1024,
+            max_sessions: 1_000,
+            max_session_duration_seconds: 24 * 60 * 60,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LivestreamConfig {
     pub rtmp_port: u16,
     pub public_rtmp_host: String,
+    pub public_webrtc_base_url: String,
     pub logging: LoggingConfig,
     pub gop_cache_size: u32,
     pub stream_timeout_seconds: u64,
@@ -986,6 +1030,7 @@ pub struct LivestreamConfig {
     pub hls_storage: HlsStorageConfig,
     pub flv_max_connection_duration_seconds: u64,
     pub flv_write_timeout_seconds: u64,
+    pub webrtc: LivestreamWebRtcConfig,
 }
 
 impl Default for LivestreamConfig {
@@ -993,6 +1038,7 @@ impl Default for LivestreamConfig {
         Self {
             rtmp_port: 1935,
             public_rtmp_host: String::new(),
+            public_webrtc_base_url: String::new(),
             logging: LoggingConfig::default(),
             gop_cache_size: 2,
             stream_timeout_seconds: 300,
@@ -1005,6 +1051,7 @@ impl Default for LivestreamConfig {
             hls_storage: HlsStorageConfig::default(),
             flv_max_connection_duration_seconds: 86400,
             flv_write_timeout_seconds: 30,
+            webrtc: LivestreamWebRtcConfig::default(),
         }
     }
 }

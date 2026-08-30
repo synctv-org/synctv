@@ -228,6 +228,7 @@ curl -fsS http://localhost:8081/health/ready
 | --- | --- | --- | --- |
 | `livestream.rtmp_port` | 端口 | `1935` | RTMP 推流端口 |
 | `livestream.public_rtmp_host` | 字符串 | `""` | 返回给推流端的公网 RTMP host |
+| `livestream.public_webrtc_base_url` | HTTP(S) origin 或空 | `""` | publish-key 响应中的公开 WHIP origin；空值返回相对 URL |
 | `livestream.gop_cache_size` | 整数 | `2` | 每路流 GOP 缓存数量 |
 | `livestream.stream_timeout_seconds` | 秒数 | `300` | 拉流空闲超时 |
 | `livestream.cleanup_check_interval_seconds` | 秒数 | `60` | 清理检查间隔 |
@@ -247,6 +248,12 @@ curl -fsS http://localhost:8081/health/ready
 | `livestream.hls_storage.base_path` | 字符串 | `hls/` | `s3` 后端 bucket 内对象前缀 |
 | `livestream.flv_max_connection_duration_seconds` | 秒数 | `86400` | HTTP-FLV 最大连接时长 |
 | `livestream.flv_write_timeout_seconds` | 秒数 | `30` | HTTP-FLV 写超时 |
+| `livestream.webrtc.enabled` | 布尔值 | `true` | 启用 WHIP/WHEP 直播会话 |
+| `livestream.webrtc.ice_servers` | ICE server 列表 | `[]` | 直播 PeerConnection 使用的 STUN/TURN server |
+| `livestream.webrtc.ice_gathering_timeout_seconds` | 秒数 | `10` | 等待本地 ICE candidate 收集完成的时间 |
+| `livestream.webrtc.max_sdp_bytes` | 字节数 | `262144` | WHIP/WHEP SDP 请求和上游 WHEP SDP 响应上限 |
+| `livestream.webrtc.max_sessions` | 整数 | `1000` | 当前节点 WHIP/WHEP 会话总数上限 |
+| `livestream.webrtc.max_session_duration_seconds` | 秒数 | `86400` | 单个 WHIP/WHEP 会话最长存活时间 |
 
 ## `file_storage`
 

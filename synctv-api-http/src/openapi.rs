@@ -3,8 +3,8 @@ use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::http::{
-    admin, auth, email, notifications, oauth2, public, room, room_extra, ticket, user, webrtc,
-    websocket, AppState,
+    admin, auth, email, livestream_webrtc, notifications, oauth2, public, room, room_extra, ticket,
+    user, webrtc, websocket, AppState,
 };
 use crate::providers::{
     acfun, alist, bilibili, cctv, cloudreve, common, douyin, douyu, emby, fnos, huya, nextcloud,
@@ -315,6 +315,12 @@ pub struct GoogleRpcStatusSchema {
         playback_provider_live_proxy::get_live_proxy_hls_playlist,
         playback_provider_live_proxy::get_live_proxy_hls_segment,
         playback_provider_live_proxy::head_live_proxy_hls_segment,
+        livestream_webrtc::create_whip_session,
+        livestream_webrtc::delete_whip_session,
+        livestream_webrtc::create_live_whep_session,
+        livestream_webrtc::delete_live_whep_session,
+        livestream_webrtc::create_live_proxy_whep_session,
+        livestream_webrtc::delete_live_proxy_whep_session,
         websocket::websocket_room_connect_doc,
         room::create_room,
         room::discover_rooms,
@@ -1019,7 +1025,7 @@ pub struct GoogleRpcStatusSchema {
         (name = "Alist Playback Provider", description = "Alist playback transport endpoints"),
         (name = "Emby Playback Provider", description = "Emby playback transport endpoints"),
         (name = "Bilibili Playback Provider", description = "Bilibili playback and danmaku transport endpoints"),
-        (name = "RTMP Playback Provider", description = "RTMP live playback transport endpoints"),
+        (name = "Live Playback Provider", description = "SyncTV-managed live playback transport endpoints"),
         (name = "LiveProxy Playback Provider", description = "LiveProxy playback transport endpoints"),
         (name = "User", description = "Current-user profile and ownership endpoints"),
         (name = "Room", description = "Core room lifecycle, membership, media, playback and playlist endpoints"),
@@ -2002,7 +2008,7 @@ mod tests {
         assert_ne!(
             request_body["required"].as_bool(),
             Some(true),
-            "legacy publish-key creation may omit the request body"
+            "publish-key creation may omit the request body"
         );
         Ok(())
     }

@@ -31,7 +31,8 @@ SyncTV 是使用 Rust 实现的实时同步观影平台，支持媒体 Provider 
 
 - 房间内同步播放，实时同步播放状态。
 - 媒体 Provider 支持 Bilibili、Twitch、YouTube、抖音、TikTok、虎牙、斗鱼、AcFun、CCTV、Alist、Cloudreve、Emby/Jellyfin、FNOS、QNAP、Synology、Nextcloud、Seafile、TrueNAS、直链和直播来源。
-- 支持 RTMP 推/拉流、HLS 和 HTTP-FLV 直播。
+- 支持 WHIP、RTMP 推流，以及 WHEP、HLS、HTTP-FLV 播放。
+- 支持外部 WHEP、RTSP、RTMP、HTTP-FLV 拉流和跨节点直播 relay。
 - 提供 HTTP REST、公开 gRPC、WebSocket、management gRPC、metrics、RTMP 和 STUN 等运行时入口。
 - PostgreSQL 持久化业务数据，可选 Redis 作为共享状态、缓存、限流和集群协调层。
 - 提供 Docker Compose 和 Helm 部署模板。

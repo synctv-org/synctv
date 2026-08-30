@@ -1,6 +1,6 @@
 ---
-title: Livestream Configuration
-description: RTMP, RTSP, HLS, HTTP-FLV, pull retry behavior, GOP cache, and livestream storage.
+title: WebRTC, HLS, and FLV Livestreaming
+description: WHIP, WHEP, RTMP, RTSP, HLS, HTTP-FLV, ICE, live proxy, and storage configuration.
 ---
 
 import Diagram from '../../../../components/Diagram.astro';
@@ -10,24 +10,26 @@ import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 
 ## What This Config Controls
 
-`livestream` controls RTMP publishing, external RTMP/RTSP/HTTP-FLV pulls, HLS segments, HTTP-FLV connections, livestream memory cache, and livestream file storage.
+`livestream` controls WHIP and RTMP publishing, external WHEP/RTMP/RTSP/HTTP-FLV pulls, WebRTC sessions, HLS segments, HTTP-FLV connections, and live caches.
 
 If you only use on-demand media providers, most values can remain at their defaults.
 
 ## Livestream Boundaries
 
-Livestreaming includes ingest, realtime packet distribution, FLV playback, HLS remuxing, HLS storage, and cross-node publisher registration. It is separate from on-demand media provider/proxy flows: on-demand media mostly resolves external URLs and Range proxying, while livestreaming handles data that is being produced now.
+The livestream subsystem handles ingest, RTP/frame distribution, WHEP/FLV playback, HLS remuxing, HLS storage, and cross-node publisher registration. On-demand providers resolve external media URLs and Range proxy requests. The livestream subsystem carries a stream while a publisher produces it.
 
 <Diagram
   light={livestreamPipelineLight}
   dark={livestreamPipelineDark}
-  alt="SyncTV livestream pipeline showing RTMP ingest entering StreamHub, splitting into HTTP-FLV and HLS remuxer paths, and HLS playlist/segment routes reading from memory, file, or S3 storage."
-  caption="Livestream data enters through RTMP and StreamHub, then splits by playback protocol: HTTP-FLV streams low-latency chunks, while HLS remuxing writes playlist and segment state to the selected HLS backend."
+  alt="SyncTV livestream pipeline showing WHIP, RTMP, and external pulls entering StreamHub, then reaching WHEP, HTTP-FLV, and HLS through local or cross-node frame and RTP relays."
+  caption="WHIP and upstream WHEP retain RTP and produce remuxed frames. WHEP consumes RTP; HTTP-FLV and HLS consume frames. Cluster relays carry one or both channels according to source capability."
 />
 
+- **WHIP ingest**: A publisher sends an SDP offer to the main HTTP service. SyncTV negotiates H.264/Opus, keeps RTP, and generates H.264/AAC frames.
+- **WHEP playback**: A client sends an SDP offer and receives WebRTC media. The source must provide RTP.
 - **RTMP ingest**: Publishers connect through RTMP. During authentication, the publisher is registered on the local node or shared registry.
 - **RTSP ingest**: External sources are pulled through DESCRIBE/SETUP/PLAY and enter the same StreamHub after RTP depacketization.
-- **StreamHub**: Live packets are distributed in-process to FLV sessions, the HLS remuxer, and internal relay/pull logic.
+- **StreamHub**: RTP packets and remuxed frames use separate in-process channels. RTMP, RTSP, and HTTP-FLV sources provide frames only.
 - **HTTP-FLV**: Best for low latency. Clients hold long-lived responses, and write timeouts protect the server from slow readers.
 - **HLS**: Best for broad player compatibility and shared storage/CDN-like deployments. It has higher latency but scales well across replicas.
 
@@ -35,12 +37,125 @@ Livestreaming includes ingest, realtime packet distribution, FLV playback, HLS r
 
 | Protocol | Strength | Cost | Best fit |
 | --- | --- | --- | --- |
+| WHEP | WebRTC latency, browser media tracks, and ICE/TURN connectivity | The source must retain RTP; both peers need reachable ICE candidates | WHIP ingest, external WHEP proxying, low-latency browser playback |
 | HTTP-FLV | Low latency and short server path | Many long-lived connections; slow clients need strict timeouts | Interactive livestreaming and room-synchronized viewing |
 | HLS | Broad player compatibility; playlist/segment pull model; works with shared storage | Higher latency and segment storage management | Mobile clients, generic players, multi-replica deployments, object storage |
 
 <Aside type="note">
-RTMP is the publishing entry point. Playback uses SyncTV-generated HLS or HTTP-FLV links. Both outputs follow the current live edge, and room synchronization uses live playback state.
+WHIP ingest supports WHEP, HLS, and HTTP-FLV playback. RTMP, RTSP, and HTTP-FLV inputs support HLS/HTTP-FLV. A WHEP request against one of these frame-only inputs returns a source-capability error.
 </Aside>
+
+## WHIP Publishing and WHEP Playback
+
+SyncTV serves WHIP and WHEP resources on the main HTTP(S) service. Both protocols use one SDP offer and answer. The server gathers a complete candidate set and does not implement trickle ICE `PATCH`.
+
+| Operation | HTTP resource | Authentication |
+| --- | --- | --- |
+| Create publish key | `POST /api/playback-providers/{roomId}/rtmp/{mediaId}/publish-key` | Current user token and publish permission |
+| Create WHIP publish | `POST /api/playback-providers/{roomId}/rtmp/{mediaId}/whip` | `Bearer <publish-key>` |
+| Delete WHIP publish | `DELETE <Location from POST>` | The same publish key |
+| Play managed live | `POST /api/playback-providers/{roomId}/live/{mediaId}/whep` | Current user or guest access token |
+| Play LiveProxy | `POST /api/playback-providers/{roomId}/live-proxy/{mediaId}/whep` | Current user or guest access token |
+| Delete WHEP playback | `DELETE <Location from POST>` | The same viewer identity |
+
+POST requests use `Content-Type: application/sdp`. A successful response contains `201 Created`, an SDP answer, and a same-origin `Location`. Send DELETE when the publisher or player stops. SyncTV also cleans local resources after disconnect, session expiry, and server shutdown.
+
+The public name `live` identifies a WHIP/RTMP source managed by SyncTV. `liveProxy` identifies an external WHEP/RTSP/RTMP/HTTP-FLV source pulled by SyncTV. The protobuf wire/source-config oneof uses `RTMP`/`rtmp` for SyncTV-managed live sources.
+
+Use `POST /api/providers/prepare/live` for the Provider prepare API. Generated HLS and HTTP-FLV playback URLs also use `/api/playback-providers/{roomId}/live/...`.
+
+Use `live` to create managed live media from the CLI. `rtmp` remains an input alias:
+
+```bash
+synctv media add <ROOM_ID> --username alice \
+  --source-provider live \
+  --source-config-json '{"mode":"default"}' \
+  --name "Livestream"
+```
+
+The publish-key API returns `rtmp_url`, `stream_key`, and `whip_url`. Set the public HTTP(S) origin in production:
+
+```yaml
+livestream:
+  public_webrtc_base_url: "https://live.example.com"
+  webrtc:
+    enabled: true
+    ice_gathering_timeout_seconds: 10
+    max_sdp_bytes: 262144
+    max_sessions: 1000
+    max_session_duration_seconds: 86400
+```
+
+An empty `public_webrtc_base_url` makes the publish-key response return a WHIP URL relative to the current API origin. The configured value must be an HTTP(S) origin without a path, query, or fragment.
+
+### SDP API Examples
+
+A WHIP client sends the publish key as a Bearer credential:
+
+```bash
+curl -i -X POST "$WHIP_URL" \
+  -H "Authorization: Bearer $PUBLISH_KEY" \
+  -H "Content-Type: application/sdp" \
+  --data-binary @offer.sdp
+```
+
+A WHEP client sends a token that can access the room:
+
+```bash
+curl -i -X POST "$WHEP_URL" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/sdp" \
+  --data-binary @offer.sdp
+```
+
+`curl` verifies signaling only. Media transfer requires a WebRTC peer. A browser client creates `recvonly` audio and video transceivers, waits for ICE gathering, POSTs `pc.localDescription.sdp`, and sets the response as its remote answer. It sends DELETE to Location when playback ends.
+
+In OBS, select the WHIP service and enter the returned `whip_url` and publish key. GStreamer requires the rswebrtc plugin with `whipclientsink` and H.264/Opus output. Property names differ by plugin version; `gst-inspect-1.0 whipclientsink` lists the endpoint and auth-token properties. FFmpeg builds do not expose one consistent WHIP muxer. Check `ffmpeg -muxers`; a build without WHIP can publish H.264/AAC to the returned `rtmp_url`.
+
+### Codecs and Conversion
+
+WHIP and external WHEP accept H.264 constrained baseline (`profile-level-id=42e01f`, `packetization-mode=1`) and Opus. Fixing the H.264 profile keeps untranscoded WHEP RTP output consistent with its SDP. SyncTV depacketizes H.264 into AVC frames and decodes Opus before encoding AAC, so the same input feeds HLS and HTTP-FLV.
+
+SyncTV implements standard WHIP resource semantics and WHEP draft resource semantics. Vendor-specific signatures, signaling APIs, simulcast controls, and ingest SDKs require a gateway that exposes a standard WHIP or WHEP endpoint.
+
+## External WHEP Sources
+
+LiveProxy can relay a remote WHEP resource to local WHEP, HLS, and HTTP-FLV clients:
+
+```json
+{
+  "provider": "liveProxy",
+  "source": {
+    "protocol": "whep",
+    "url": "https://origin.example.com/whep/channel-1",
+    "authorization": "Bearer upstream-token"
+  }
+}
+```
+
+SyncTV applies SSRF checks and DNS pinning to the endpoint, rejects redirects, and requires `201 Created`, `application/sdp`, and a same-origin Location. SDP reads have size and time limits. SyncTV DELETEs the upstream resource when the local pull ends. Management responses omit `authorization`, and logs omit both the upstream URL and credential.
+
+The WHEP URL may carry a query token. It cannot contain userinfo or a fragment; place HTTP header credentials in `authorization`.
+
+## ICE, STUN, and TURN
+
+`livestream.webrtc.ice_servers` configures ICE servers for livestream PeerConnections. The top-level `webrtc` section controls room voice/media P2P and the built-in STUN listener. These settings apply to separate WebRTC features.
+
+```yaml
+livestream:
+  webrtc:
+    ice_servers:
+      - urls:
+          - "stun:stun.example.com:3478"
+          - "turn:turn.example.com:3478?transport=udp"
+          - "turns:turn.example.com:5349?transport=tcp"
+        username: "synctv"
+        credential_file: "/run/secrets/livestream_turn_credential"
+```
+
+STUN lets a peer discover an address. A server behind Kubernetes, NAT, or a strict firewall needs a TURN service reachable by clients and pods. TURN/UDP gives lower latency. TURN/TLS over TCP works on networks that block UDP.
+
+WHIP/WHEP signaling uses the existing HTTP Service. ICE media uses dynamic UDP ports, so the Helm chart does not create a fixed WebRTC media UDP Service. Kubernetes deployments should use TURN. A `hostNetwork` deployment must expose the node's ICE UDP port range. `stunService` exposes the built-in STUN listener and does not relay media.
 
 ## External RTSP Sources
 
@@ -137,17 +252,13 @@ Typical choices: AWS S3, MinIO, Cloudflare R2, or compatible services. Configure
 ## How Clustered Livestreaming Works
 
 <Steps>
-1. A publisher connects through RTMP to any SyncTV node.
+1. A publisher connects through WHIP or RTMP to any SyncTV node. LiveProxy may also pull external WHEP on any node.
 2. After authentication, that node registers `room_id/media_id -> node_id/api_address` in the publisher registry. In cluster mode, the registry uses Redis.
-3. The local StreamHub receives live packets. HTTP-FLV can subscribe directly, and the HLS remuxer keeps producing segments.
+3. The local StreamHub receives frames. WHIP/WHEP sources also retain RTP. HTTP-FLV and HLS subscribe to frames; WHEP subscribes to RTP.
 4. HLS segments are written to the selected `memory`, `file`, `shared_file`, or `s3` backend.
-5. If a viewer request lands on a non-publisher node, that node uses the shared registry to locate the publisher owner. HTTP-FLV uses cross-node relay; HLS playlist/segment reads can be proxied to the publisher node through the HLS gRPC proxy.
+5. A non-publisher node locates the owner through the shared registry. Separate gRPC streams relay frames and RTP, and generation ID plus lease epoch fence stale publishers.
 6. With `shared_file`, TS segment requests are read by the current node from the shared path. Local backends still use publisher-node HLS gRPC proxying for remote playlist/segment reads.
 </Steps>
-
-<Aside type="note">
-Multi-replica HLS uses the publisher registry to locate the publishing node. Local backends read remote playlists and segments through the HLS gRPC proxy; `shared_file` lets TS requests read from the current node's shared mount, which is better for high-traffic multi-replica deployments.
-</Aside>
 
 ## RTMP
 
@@ -159,11 +270,11 @@ OBS push URLs usually look like:
 rtmp://your-domain:1935/live/<stream-key>
 ```
 
-The RTMP provider media source config accepts the same `mode` field:
+The managed live provider media source config accepts the same `mode` field:
 
 ```json
 {
-  "provider": "rtmp",
+  "provider": "live",
   "mode": "audioOnly"
 }
 ```

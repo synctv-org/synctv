@@ -43,6 +43,7 @@ pub enum MediaSourceConfig {
     Bilibili(BilibiliMediaSourceConfig),
     Alist(AlistMediaSourceConfig),
     Emby(EmbyMediaSourceConfig),
+    #[serde(alias = "live")]
     Rtmp(RtmpMediaSourceConfig),
     LiveProxy(LiveProxyMediaSourceConfig),
     Cloudreve(CloudreveMediaSourceConfig),
@@ -907,7 +908,7 @@ pub struct LiveProxyMediaSourceConfig {
     pub source: ExternalLiveSourceConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(
     tag = "protocol",
     rename_all = "camelCase",
@@ -928,13 +929,54 @@ pub enum ExternalLiveSourceConfig {
     HttpFlv {
         url: String,
     },
+    Whep {
+        url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        authorization: Option<String>,
+    },
+}
+
+impl std::fmt::Debug for ExternalLiveSourceConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Rtmp { url, mode } => formatter
+                .debug_struct("Rtmp")
+                .field("url", url)
+                .field("mode", mode)
+                .finish(),
+            Self::Rtsp {
+                url,
+                transport,
+                video_track,
+                audio_track,
+            } => formatter
+                .debug_struct("Rtsp")
+                .field("url", url)
+                .field("transport", transport)
+                .field("video_track", video_track)
+                .field("audio_track", audio_track)
+                .finish(),
+            Self::HttpFlv { url } => formatter.debug_struct("HttpFlv").field("url", url).finish(),
+            Self::Whep { url, authorization } => formatter
+                .debug_struct("Whep")
+                .field("url", url)
+                .field(
+                    "authorization",
+                    &authorization.as_ref().map(|_| "<redacted>"),
+                )
+                .finish(),
+        }
+    }
 }
 
 impl ExternalLiveSourceConfig {
     #[must_use]
     pub fn url(&self) -> &str {
         match self {
-            Self::Rtmp { url, .. } | Self::Rtsp { url, .. } | Self::HttpFlv { url } => url,
+            Self::Rtmp { url, .. }
+            | Self::Rtsp { url, .. }
+            | Self::HttpFlv { url }
+            | Self::Whep { url, .. } => url,
         }
     }
 }
@@ -1058,6 +1100,38 @@ mod tests {
         let decoded = serde_json::from_value::<PlaylistSourceConfig>(storage)
             .expect("playlist source config should deserialize");
         assert_eq!(&decoded, config);
+    }
+
+    #[test]
+    fn whep_source_debug_redacts_authorization() {
+        let config = ExternalLiveSourceConfig::Whep {
+            url: "https://media.example.com/whep/channel".to_string(),
+            authorization: Some("Bearer upstream-secret".to_string()),
+        };
+
+        let debug = format!("{config:?}");
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("upstream-secret"));
+    }
+
+    #[test]
+    fn managed_live_alias_deserializes_to_stable_rtmp_storage_variant() {
+        let config = serde_json::from_value::<MediaSourceConfig>(json!({
+            "provider": "live",
+            "mode": "default"
+        }))
+        .expect("live alias should deserialize");
+
+        assert_eq!(
+            config,
+            MediaSourceConfig::Rtmp(RtmpMediaSourceConfig {
+                mode: RtmpStreamMode::Default,
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(config).expect("live config should serialize"),
+            json!({"provider": "rtmp", "mode": "default"})
+        );
     }
 
     #[test]

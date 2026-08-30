@@ -2989,18 +2989,32 @@ async fn test_streaming_proxy_routes_preserve_options_preflight() -> TestResult 
     let state = test_app_state();
     let app = register_all_routes().with_state(state);
 
-    let rtmp_request = test_request(
+    let live_request = test_request(
+        Request::builder()
+            .method("OPTIONS")
+            .uri("/api/playback-providers/room/live/ver1/hls-master")
+            .header(axum::http::header::ORIGIN, "https://example.com")
+            .body(Body::empty()),
+    )?;
+    let live_preflight = test_response(app.clone().oneshot(live_request).await)?;
+    assert_ne!(
+        live_preflight.status(),
+        StatusCode::METHOD_NOT_ALLOWED,
+        "live playback-provider route must handle browser preflight"
+    );
+
+    let rtmp_alias_request = test_request(
         Request::builder()
             .method("OPTIONS")
             .uri("/api/playback-providers/room/rtmp/ver1/hls-master")
             .header(axum::http::header::ORIGIN, "https://example.com")
             .body(Body::empty()),
     )?;
-    let rtmp_preflight = test_response(app.clone().oneshot(rtmp_request).await)?;
+    let rtmp_alias_preflight = test_response(app.clone().oneshot(rtmp_alias_request).await)?;
     assert_ne!(
-        rtmp_preflight.status(),
+        rtmp_alias_preflight.status(),
         StatusCode::METHOD_NOT_ALLOWED,
-        "RTMP playback-provider route must handle browser preflight"
+        "RTMP alias route must handle browser preflight"
     );
 
     let live_proxy_request = test_request(
@@ -3124,7 +3138,7 @@ async fn test_cors_preflight_allows_upload_and_range_headers() -> TestResult {
 }
 
 #[tokio::test]
-async fn test_cors_actual_response_exposes_request_id_header() -> TestResult {
+async fn test_cors_actual_response_exposes_session_and_request_headers() -> TestResult {
     let mut config = synctv_api_common::ApiRuntimeSettings::default();
     config.server.cors_allowed_origins = vec!["https://example.com".to_string()];
 
@@ -3152,6 +3166,7 @@ async fn test_cors_actual_response_exposes_request_id_header() -> TestResult {
         .map_err(|error| test_error(error.to_string()))?
         .to_ascii_lowercase();
     assert!(exposed_headers.contains("x-request-id"));
+    assert!(exposed_headers.contains("location"));
     Ok(())
 }
 
@@ -3238,8 +3253,15 @@ async fn test_openapi_json_route_is_available() -> TestResult {
     assert!(
         json["paths"]["/api/playback-providers/{roomId}/rtmp/{mediaId}/publish-key"].is_object()
     );
+    assert!(json["paths"]["/api/playback-providers/{roomId}/live/{mediaId}/whep"].is_object());
+    assert!(
+        json["paths"]["/api/playback-providers/{roomId}/live-proxy/{mediaId}/whep"].is_object()
+    );
+    assert!(json["paths"]["/api/playback-providers/{roomId}/rtmp/{mediaId}/whip"].is_object());
     assert!(json["paths"]["/api/rooms/{roomId}/streams/{mediaId}"].is_object());
     assert!(json["paths"]["/api/rooms/{roomId}/streams/{mediaId}/publish-key"].is_null());
+    assert!(json["paths"]["/api/rooms/{roomId}/streams/{mediaId}/whip"].is_null());
+    assert!(json["paths"]["/api/rooms/{roomId}/streams/{mediaId}/whep"].is_null());
     assert!(json["paths"]["/api/providers/rtmp/rooms/{roomId}/publish-key/{mediaId}"].is_null());
     assert!(json["paths"]["/api/providers/rtmp/rooms/{roomId}/info/{mediaId}"].is_null());
     assert_eq!(
@@ -3629,19 +3651,19 @@ async fn test_websocket_ticket_runtime_gate_does_not_leak_to_other_write_routes(
 
 #[tokio::test]
 #[ignore = "Requires Docker-backed PostgreSQL"]
-async fn test_room_stream_and_rtmp_playback_provider_routes_are_reachable_under_api() -> TestResult
+async fn test_room_stream_and_live_playback_provider_routes_are_reachable_under_api() -> TestResult
 {
     let state = test_app_state();
     let app = register_all_routes().with_state(state);
 
-    let api_request = test_request(
+    let request = test_request(
         Request::builder()
             .method("POST")
             .uri("/api/playback-providers/room_AbC123xYz890/rtmp/med_ZyX098wVu765/publish-key")
             .body(Body::empty()),
     )?;
-    let api_response = test_response(app.clone().oneshot(api_request).await)?;
-    assert_eq!(api_response.status(), StatusCode::UNAUTHORIZED);
+    let response = test_response(app.clone().oneshot(request).await)?;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
     let info_request = test_request(
         Request::builder()

@@ -1918,6 +1918,12 @@ fn live_proxy_media_source_config_to_proto(
         synctv_core::models::ExternalLiveSourceConfig::HttpFlv { url } => {
             Source::HttpFlv(source_config_proto::HttpFlvPullSourceConfig { url })
         }
+        synctv_core::models::ExternalLiveSourceConfig::Whep { url, .. } => {
+            Source::Whep(source_config_proto::WhepPullSourceConfig {
+                url,
+                authorization: None,
+            })
+        }
     };
     source_config_proto::LiveProxyMediaSourceConfig {
         source: Some(source),
@@ -2426,6 +2432,9 @@ pub fn playback_client_profile_from_proto(
                             Ok(synctv_proto::client::PlaybackLiveTransport::Flv) => {
                                 Ok(synctv_core::provider::PlaybackLiveTransport::Flv)
                             }
+                            Ok(synctv_proto::client::PlaybackLiveTransport::Whep) => {
+                                Ok(synctv_core::provider::PlaybackLiveTransport::Whep)
+                            }
                             Err(_) => Err(crate::impls::ApiError::InvalidInput(
                                 "Unsupported playback live transport".to_string(),
                             )),
@@ -2465,6 +2474,9 @@ pub fn playback_client_profile_from_proto(
                     }
                     synctv_proto::client::PlaybackMediaTransport::MpegTs => {
                         synctv_core::provider::PlaybackMediaTransport::MpegTs
+                    }
+                    synctv_proto::client::PlaybackMediaTransport::WebRtc => {
+                        synctv_core::provider::PlaybackMediaTransport::WebRtc
                     }
                 };
             let pipeline =
@@ -2740,6 +2752,32 @@ mod playback_client_profile_conversion_tests {
             capability.codec_string.as_deref(),
             Some("hvc1.1.6.L93.B0,ec-3")
         );
+    }
+
+    #[test]
+    fn v2_webrtc_h264_opus_capability_survives_conversion() {
+        let mut profile = v2_profile();
+        profile.media_capabilities = vec![proto::PlaybackMediaCapability {
+            transport: proto::PlaybackMediaTransport::WebRtc as i32,
+            container: None,
+            video_codec: Some(proto::PlaybackVideoCodec::H264 as i32),
+            audio_codec: Some(proto::PlaybackAudioCodec::Opus as i32),
+            pipeline: proto::PlaybackMediaPipeline::Native as i32,
+            codec_string: None,
+        }];
+
+        let converted = playback_client_profile_from_proto(Some(&profile))
+            .expect("WebRTC profile should convert")
+            .expect("profile should be present");
+        let capability = converted
+            .media_capabilities
+            .first()
+            .expect("WebRTC capability should be retained");
+
+        assert_eq!(capability.transport, PlaybackMediaTransport::WebRtc);
+        assert_eq!(capability.video_codec, Some(PlaybackVideoCodec::H264));
+        assert_eq!(capability.audio_codec, Some(PlaybackAudioCodec::Opus));
+        assert_eq!(capability.pipeline, PlaybackMediaPipeline::Native);
     }
 }
 
@@ -4132,7 +4170,7 @@ fn playback_info_to_proto(
         medias: info
             .medias
             .iter()
-            .map(|media| playback_media_to_proto(media, signing))
+            .map(|media| playback_media_to_proto(media, public_id_codec, signing))
             .collect::<Result<_, _>>()?,
         default_media_index,
         subtitles: info
@@ -4159,9 +4197,10 @@ fn playback_info_to_proto(
 /// Convert models `PlaybackMedia` to proto `PlaybackMedia`.
 fn playback_media_to_proto(
     media: &synctv_core::models::media::PlaybackMedia,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
     signing: Option<&PlaybackHttpSigningContext<'_>>,
 ) -> Result<synctv_proto::client::PlaybackMedia, crate::impls::ApiError> {
-    let (url_value, signed_expires_at) = playback_media_url(media, signing)?;
+    let (url_value, signed_expires_at) = playback_media_url(media, public_id_codec, signing)?;
     let expire_at = [
         media.expire_at.map(|expires_at| expires_at.timestamp()),
         signed_expires_at,
@@ -4336,6 +4375,7 @@ fn path_segment_encode(value: &str) -> String {
 
 fn playback_media_url(
     media: &synctv_core::models::media::PlaybackMedia,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
     signing: Option<&PlaybackHttpSigningContext<'_>>,
 ) -> Result<(String, Option<i64>), crate::impls::ApiError> {
     use synctv_core::models::media::{
@@ -4348,6 +4388,31 @@ fn playback_media_url(
     };
 
     let (provider, version, expires_at, path, resource) = match &media.provider {
+        PlaybackMediaProvider::Rtmp(PlaybackRtmpMedia::WhepEndpoint { room_id, media_id }) => {
+            let room_id = encode_room_id_for_proto(*room_id, public_id_codec)?;
+            let media_id = encode_media_id_for_proto(*media_id, public_id_codec)?;
+            return Ok((
+                format!(
+                    "/api/playback-providers/{room_id}/{}/{media_id}/whep",
+                    synctv_core::provider::RtmpProvider::PUBLIC_NAME
+                ),
+                None,
+            ));
+        }
+        PlaybackMediaProvider::LiveProxy(PlaybackLiveProxyMedia::WhepEndpoint {
+            room_id,
+            media_id,
+        }) => {
+            let room_id = encode_room_id_for_proto(*room_id, public_id_codec)?;
+            let media_id = encode_media_id_for_proto(*media_id, public_id_codec)?;
+            return Ok((
+                format!(
+                    "/api/playback-providers/{room_id}/{}/{media_id}/whep",
+                    synctv_core::provider::LiveProxyProvider::PUBLIC_NAME
+                ),
+                None,
+            ));
+        }
         PlaybackMediaProvider::Cloudreve(PlaybackCloudreveMedia::Direct { url, .. })
         | PlaybackMediaProvider::Alist(PlaybackAlistMedia::Direct { url, .. })
         | PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::Direct { url, .. })
@@ -4870,7 +4935,12 @@ fn playback_media_url(
 fn playback_provider_route_slug(provider: &str) -> &str {
     match provider {
         synctv_core::provider::DirectUrlProvider::NAME => "direct-url",
-        synctv_core::provider::LiveProxyProvider::NAME => "live-proxy",
+        synctv_core::provider::LiveProxyProvider::NAME => {
+            synctv_core::provider::LiveProxyProvider::PUBLIC_NAME
+        }
+        synctv_core::provider::RtmpProvider::NAME => {
+            synctv_core::provider::RtmpProvider::PUBLIC_NAME
+        }
         _ => provider,
     }
 }
@@ -5345,9 +5415,9 @@ mod playback_conversion_tests {
         PlaybackDanmakuProvider, PlaybackDirectUrlMedia, PlaybackDirectUrlSubtitle,
         PlaybackDouyuDanmaku, PlaybackDouyuMedia, PlaybackHuyaDanmaku, PlaybackHuyaMedia,
         PlaybackInfo, PlaybackLiveProxyMedia, PlaybackMedia, PlaybackMediaProvider,
-        PlaybackNextcloudMedia, PlaybackQnapMedia, PlaybackResult, PlaybackSeafileMedia,
-        PlaybackSubtitle, PlaybackSubtitleProvider, PlaybackTrueNasMedia, QnapPlaybackMode,
-        QnapPlaybackResource,
+        PlaybackNextcloudMedia, PlaybackQnapMedia, PlaybackResult, PlaybackRtmpMedia,
+        PlaybackSeafileMedia, PlaybackSubtitle, PlaybackSubtitleProvider, PlaybackTrueNasMedia,
+        QnapPlaybackMode, QnapPlaybackResource,
     };
 
     fn direct_url_media(name: &str, url: &str) -> PlaybackMedia {
@@ -6110,6 +6180,100 @@ mod playback_conversion_tests {
             claims.provider,
             synctv_core::provider::LiveProxyProvider::NAME
         );
+    }
+
+    #[test]
+    fn managed_live_urls_use_live_route_and_internal_rtmp_signature_provider() {
+        let key = signing_key();
+        let signing = signing_context(&key);
+        let room_id = synctv_core::models::RoomId::new();
+        let media_id = synctv_core::models::MediaId::new();
+        let expires_at = synctv_core::SystemClock.now().timestamp() + 1800;
+        let info = PlaybackInfo::builder()
+            .add_media(PlaybackMedia {
+                name: "live".to_string(),
+                format: "m3u8".to_string(),
+                expire_at: None,
+                metadata: None,
+                p2p_swarm_id: None,
+                provider: PlaybackMediaProvider::Rtmp(PlaybackRtmpMedia::HlsMaster {
+                    version: "live-v1".to_string(),
+                    expires_at,
+                    room_id,
+                    media_id,
+                }),
+            })
+            .build();
+
+        let proto = try_playback_to_proto(
+            &playback_result_with_mode("hls", info),
+            &codec(),
+            Some(&signing),
+        )
+        .expect("playback should convert");
+        let media = &proto.playback_infos["hls"].medias[0];
+
+        assert!(
+            media
+                .url
+                .starts_with("/api/playback-providers/room-1/live/live-v1/hls-master?"),
+            "unexpected managed-live URL: {}",
+            media.url
+        );
+        key.parse_and_verify_playback_query(
+            signed_query(&media.url),
+            synctv_core::provider::RtmpProvider::NAME,
+            "live-v1",
+            "hls-master",
+            "room-1",
+        )
+        .expect("signature should keep the stable internal RTMP provider name");
+    }
+
+    #[test]
+    fn whep_urls_are_scoped_to_the_playback_provider() {
+        let room_id = synctv_core::models::RoomId::new();
+        let media_id = synctv_core::models::MediaId::new();
+        let codec = codec();
+        let public_room_id = codec
+            .encode_room_id(room_id)
+            .expect("room ID should encode");
+        let public_media_id = codec
+            .encode_media_id(media_id)
+            .expect("media ID should encode");
+
+        for (provider, route_provider) in [
+            (
+                PlaybackMediaProvider::Rtmp(PlaybackRtmpMedia::WhepEndpoint { room_id, media_id }),
+                "live",
+            ),
+            (
+                PlaybackMediaProvider::LiveProxy(PlaybackLiveProxyMedia::WhepEndpoint {
+                    room_id,
+                    media_id,
+                }),
+                "live-proxy",
+            ),
+        ] {
+            let media = PlaybackMedia {
+                name: "whep".to_string(),
+                format: "webrtc".to_string(),
+                expire_at: None,
+                metadata: None,
+                p2p_swarm_id: None,
+                provider,
+            };
+            let (url, expires_at) =
+                playback_media_url(&media, &codec, None).expect("WHEP URL should convert");
+
+            assert_eq!(
+                url,
+                format!(
+                    "/api/playback-providers/{public_room_id}/{route_provider}/{public_media_id}/whep"
+                )
+            );
+            assert_eq!(expires_at, None);
+        }
     }
 
     #[test]

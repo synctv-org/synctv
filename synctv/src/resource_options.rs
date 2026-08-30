@@ -653,6 +653,7 @@ pub fn api_runtime_settings(config: &AppConfig) -> ApiRuntimeSettings {
         livestream: LivestreamRuntimeSettings {
             rtmp_port: config.livestream.rtmp_port,
             public_rtmp_host: config.public_rtmp_host(),
+            public_webrtc_base_url: config.livestream.public_webrtc_base_url.clone(),
             flv_max_connection_duration_seconds: config
                 .livestream
                 .flv_max_connection_duration_seconds,

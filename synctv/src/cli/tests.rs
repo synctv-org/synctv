@@ -2472,6 +2472,31 @@ fn cli_parses_media_add_for_room_scope() {
 }
 
 #[test]
+fn cli_normalizes_live_and_rtmp_source_provider_names() {
+    for provider in ["live", "rtmp"] {
+        let cli = Cli::parse_from([
+            "synctv",
+            "media",
+            "add",
+            "room-123",
+            "--username",
+            "alice",
+            "--source-provider",
+            provider,
+            "--source-config-json",
+            "{\"mode\":\"default\"}",
+        ]);
+        match cli.command {
+            Commands::Media(MediaCommand {
+                command: MediaSubcommand::Add(args),
+                ..
+            }) => assert_eq!(args.source_provider, CliSourceProvider::Live),
+            other => panic!("unexpected command parsed for {provider}: {other:?}"),
+        }
+    }
+}
+
+#[test]
 fn cli_parses_media_update() {
     let cli = Cli::parse_from([
         "synctv", "media", "update", "room-123", "media-1", "--name", "Renamed",

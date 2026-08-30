@@ -64,6 +64,7 @@ pub enum SourceProvider {
     Bilibili,
     Alist,
     Emby,
+    #[serde(alias = "live")]
     Rtmp,
     LiveProxy,
     Cloudreve,
@@ -92,7 +93,7 @@ impl FromStr for SourceProvider {
             "bilibili" => Ok(Self::Bilibili),
             "alist" => Ok(Self::Alist),
             "emby" => Ok(Self::Emby),
-            "rtmp" => Ok(Self::Rtmp),
+            "live" | "rtmp" => Ok(Self::Rtmp),
             "live_proxy" => Ok(Self::LiveProxy),
             "cloudreve" => Ok(Self::Cloudreve),
             "twitch" => Ok(Self::Twitch),
@@ -1272,6 +1273,10 @@ pub enum PlaybackEmbyMedia {
     rename_all_fields = "camelCase"
 )]
 pub enum PlaybackRtmpMedia {
+    WhepEndpoint {
+        room_id: RoomId,
+        media_id: MediaId,
+    },
     FlvStream {
         version: String,
         expires_at: i64,
@@ -1293,6 +1298,10 @@ pub enum PlaybackRtmpMedia {
     rename_all_fields = "camelCase"
 )]
 pub enum PlaybackLiveProxyMedia {
+    WhepEndpoint {
+        room_id: RoomId,
+        media_id: MediaId,
+    },
     FlvStream {
         version: String,
         expires_at: i64,

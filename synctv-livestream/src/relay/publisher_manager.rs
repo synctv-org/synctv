@@ -10,7 +10,8 @@
 
 use super::registry::HEARTBEAT_INTERVAL_SECS;
 use super::registry_trait::{
-    LeaseRefreshOutcome, LeaseRefreshRequest, StreamRegistryTrait, PUBLISHER_REFRESH_BATCH_SIZE,
+    LeaseRefreshOutcome, LeaseRefreshRequest, StreamGenerationRegistration, StreamRegistryTrait,
+    PUBLISHER_REFRESH_BATCH_SIZE,
 };
 use crate::util::{unix_now_secs, validate_stream_ids};
 use dashmap::DashMap;
@@ -158,6 +159,8 @@ struct PublisherEntry {
     user_id: String,
     /// Publisher lease_epoch captured from the registry when tracking started.
     lease_epoch: u64,
+    /// Whether this publisher can serve raw RTP to WHEP subscribers.
+    supports_rtp: bool,
     /// Local StreamHub publication generation. Registry-only reconciliation
     /// leaves this empty until the next media packet binds the current owner.
     generation_id: parking_lot::RwLock<Option<Uuid>>,
@@ -172,21 +175,28 @@ impl PublisherEntry {
             consecutive_heartbeat_failures: std::sync::atomic::AtomicU32::new(0),
             user_id: String::new(),
             lease_epoch: 0,
+            supports_rtp: false,
             generation_id: parking_lot::RwLock::new(None),
         }
     }
 
-    fn with_registration(user_id: String, lease_epoch: u64) -> Self {
+    fn with_registration(user_id: String, lease_epoch: u64, supports_rtp: bool) -> Self {
         Self {
             last_active_secs: AtomicU64::new(unix_now_secs()),
             consecutive_heartbeat_failures: std::sync::atomic::AtomicU32::new(0),
             user_id,
             lease_epoch,
+            supports_rtp,
             generation_id: parking_lot::RwLock::new(None),
         }
     }
 
-    fn clone_with_registration(&self, user_id: String, lease_epoch: u64) -> Self {
+    fn clone_with_registration(
+        &self,
+        user_id: String,
+        lease_epoch: u64,
+        supports_rtp: bool,
+    ) -> Self {
         Self {
             last_active_secs: AtomicU64::new(self.last_active_secs.load(Ordering::Acquire)),
             consecutive_heartbeat_failures: std::sync::atomic::AtomicU32::new(
@@ -194,6 +204,7 @@ impl PublisherEntry {
             ),
             user_id,
             lease_epoch,
+            supports_rtp,
             generation_id: parking_lot::RwLock::new(*self.generation_id.read()),
         }
     }
@@ -656,11 +667,11 @@ impl PublisherManager {
                 pub_type,
                 generation_id,
             } => {
-                // User RTMP pushes are tracked here because RTMP auth registered
+                // User RTMP and WHIP pushes are tracked here because auth registered
                 // them in Redis before StreamHub publish. ExternalPull streams are
                 // registered and cleaned up by ExternalPublishManager, while
                 // RtmpRelay streams are owned by their origin node.
-                if pub_type != synctv_xiu::streamhub::define::PublishType::RtmpPush {
+                if !pub_type.is_user_push() {
                     debug!(
                         pub_type = ?pub_type,
                         identifier = ?identifier,
@@ -786,7 +797,11 @@ impl PublisherManager {
                 );
                 let user_id = info.user_id;
                 let lease_epoch = info.lease_epoch;
-                let entry = PublisherEntry::with_registration(user_id.clone(), lease_epoch);
+                let entry = PublisherEntry::with_registration(
+                    user_id.clone(),
+                    lease_epoch,
+                    info.supports_rtp,
+                );
                 entry.bind_publisher(generation_id);
                 (Arc::new(entry), user_id, lease_epoch)
             }
@@ -1093,9 +1108,11 @@ impl PublisherManager {
                             if current.lease_epoch != info.lease_epoch
                                 || current.user_id != info.user_id
                             {
-                                *current.value_mut() = Arc::new(
-                                    current.clone_with_registration(info.user_id, info.lease_epoch),
-                                );
+                                *current.value_mut() = Arc::new(current.clone_with_registration(
+                                    info.user_id,
+                                    info.lease_epoch,
+                                    info.supports_rtp,
+                                ));
                             }
                         }
                         trace!(
@@ -1262,6 +1279,7 @@ impl PublisherManager {
             let entry = Arc::new(PublisherEntry::with_registration(
                 publisher.generation.user_id,
                 publisher.generation.lease_epoch,
+                publisher.generation.supports_rtp,
             ));
             entry.bind_publisher(generation_id);
             self.active_publishers.insert(publisher_key, entry);
@@ -1366,9 +1384,11 @@ impl PublisherManager {
                 let mut local_registration_updated = false;
                 if let Some(mut current) = self.active_publishers.get_mut(publisher_key) {
                     if Arc::ptr_eq(current.value(), tracked_entry) {
-                        *current.value_mut() = Arc::new(
-                            tracked_entry.clone_with_registration(user_id.clone(), lease_epoch),
-                        );
+                        *current.value_mut() = Arc::new(tracked_entry.clone_with_registration(
+                            user_id.clone(),
+                            lease_epoch,
+                            info.supports_rtp,
+                        ));
                         local_registration_updated = true;
                     } else {
                         debug!(
@@ -1446,13 +1466,16 @@ impl PublisherManager {
         let generation_id = generation_id.to_string();
         match self
             .registry
-            .try_activate_generation(
-                room_id,
-                media_id,
-                &self.local_node_id,
-                &entry.user_id,
-                &self.local_cluster_address,
-                &generation_id,
+            .try_activate_generation_with_capabilities(
+                StreamGenerationRegistration::new(
+                    room_id,
+                    media_id,
+                    &self.local_node_id,
+                    &entry.user_id,
+                    &self.local_cluster_address,
+                    &generation_id,
+                )
+                .with_rtp_support(entry.supports_rtp),
             )
             .await
         {
@@ -1569,13 +1592,16 @@ impl PublisherManager {
                 // so we just need to refresh TTL or re-register if expired.
                 match self
                     .registry
-                    .try_activate_generation(
-                        room_id,
-                        media_id,
-                        &self.local_node_id,
-                        &entry.user_id,
-                        &self.local_cluster_address,
-                        &generation_id,
+                    .try_activate_generation_with_capabilities(
+                        StreamGenerationRegistration::new(
+                            room_id,
+                            media_id,
+                            &self.local_node_id,
+                            &entry.user_id,
+                            &self.local_cluster_address,
+                            &generation_id,
+                        )
+                        .with_rtp_support(entry.supports_rtp),
                     )
                     .await
                 {

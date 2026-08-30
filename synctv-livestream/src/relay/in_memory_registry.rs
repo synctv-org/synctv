@@ -11,8 +11,10 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
-use super::registry::{StreamGeneration, HLS_GENERATION_RETENTION};
-use super::registry_trait::{ActiveStreamGeneration, LeaseRefreshOutcome, StreamRegistryTrait};
+use super::registry::{StreamGeneration, WebRtcSessionOwner, HLS_GENERATION_RETENTION};
+use super::registry_trait::{
+    ActiveStreamGeneration, LeaseRefreshOutcome, StreamGenerationRegistration, StreamRegistryTrait,
+};
 use crate::util::{
     validate_publisher_cluster_address, validate_stream_id_component, validate_stream_ids,
 };
@@ -30,12 +32,19 @@ type GenerationKey = (String, String, String);
 struct InMemoryRegistryState {
     active_generations: HashMap<StreamKey, String>,
     generations: HashMap<GenerationKey, GenerationRecord>,
+    webrtc_sessions: HashMap<String, WebRtcSessionRecord>,
 }
 
 #[derive(Debug)]
 struct GenerationRecord {
     generation: StreamGeneration,
     expires_at: Option<Instant>,
+}
+
+#[derive(Debug)]
+struct WebRtcSessionRecord {
+    owner: WebRtcSessionOwner,
+    expires_at: Instant,
 }
 
 #[derive(Debug, Clone)]
@@ -73,6 +82,58 @@ impl InMemoryStreamRegistry {
                 .generations
                 .remove(&(room_id, media_id, generation_id));
         }
+        state
+            .webrtc_sessions
+            .retain(|_, record| record.expires_at > now);
+    }
+
+    async fn try_activate_generation_with_capabilities(
+        &self,
+        registration: StreamGenerationRegistration<'_>,
+    ) -> Result<bool> {
+        let StreamGenerationRegistration {
+            room_id,
+            media_id,
+            node_id,
+            user_id,
+            cluster_address,
+            generation_id,
+            supports_rtp,
+        } = registration;
+        validate_stream_ids(room_id, media_id)?;
+        crate::util::validate_stream_generation_id(generation_id)?;
+        validate_publisher_cluster_address(cluster_address, node_id, room_id, media_id)?;
+        let mut state = self.state.lock().await;
+        Self::purge_expired(&mut state);
+        let key = (room_id.to_string(), media_id.to_string());
+
+        if state.active_generations.contains_key(&key) {
+            return Ok(false);
+        }
+        let lease_epoch = self.next_epoch.fetch_add(1, Ordering::AcqRel);
+        let generation = StreamGeneration {
+            node_id: node_id.to_string(),
+            cluster_address: cluster_address.to_string(),
+            app_name: "live".to_string(),
+            user_id: user_id.to_string(),
+            started_at: synctv_core::SystemClock.now(),
+            ready_at: None,
+            ended_at: None,
+            lease_epoch,
+            generation_id: generation_id.to_string(),
+            supports_rtp,
+        };
+        state
+            .active_generations
+            .insert(key.clone(), generation_id.to_string());
+        state.generations.insert(
+            (key.0, key.1, generation_id.to_string()),
+            GenerationRecord {
+                generation,
+                expires_at: None,
+            },
+        );
+        Ok(true)
     }
 
     fn owns_active_lease(
@@ -112,38 +173,116 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
         cluster_address: &str,
         generation_id: &str,
     ) -> Result<bool> {
+        self.try_activate_generation_with_capabilities(StreamGenerationRegistration::new(
+            room_id,
+            media_id,
+            node_id,
+            user_id,
+            cluster_address,
+            generation_id,
+        ))
+        .await
+    }
+
+    async fn try_activate_generation_with_capabilities(
+        &self,
+        registration: StreamGenerationRegistration<'_>,
+    ) -> Result<bool> {
+        InMemoryStreamRegistry::try_activate_generation_with_capabilities(self, registration).await
+    }
+
+    async fn set_generation_supports_rtp(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        generation_id: &str,
+        expected_lease_epoch: u64,
+        supports_rtp: bool,
+    ) -> Result<bool> {
         validate_stream_ids(room_id, media_id)?;
         crate::util::validate_stream_generation_id(generation_id)?;
-        validate_publisher_cluster_address(cluster_address, node_id, room_id, media_id)?;
         let mut state = self.state.lock().await;
         Self::purge_expired(&mut state);
-        let key = (room_id.to_string(), media_id.to_string());
-
-        if state.active_generations.contains_key(&key) {
+        let stream_key = (room_id.to_string(), media_id.to_string());
+        let generation_key = (
+            room_id.to_string(),
+            media_id.to_string(),
+            generation_id.to_string(),
+        );
+        if !Self::owns_active_lease(
+            &state,
+            &stream_key,
+            &generation_key,
+            generation_id,
+            expected_lease_epoch,
+        ) {
             return Ok(false);
         }
-        let lease_epoch = self.next_epoch.fetch_add(1, Ordering::AcqRel);
-        let generation = StreamGeneration {
-            node_id: node_id.to_string(),
-            cluster_address: cluster_address.to_string(),
-            app_name: "live".to_string(),
-            user_id: user_id.to_string(),
-            started_at: synctv_core::SystemClock.now(),
-            ready_at: None,
-            ended_at: None,
-            lease_epoch,
-            generation_id: generation_id.to_string(),
+        let Some(record) = state.generations.get_mut(&generation_key) else {
+            return Ok(false);
         };
-        state
-            .active_generations
-            .insert(key.clone(), generation_id.to_string());
-        state.generations.insert(
-            (key.0, key.1, generation_id.to_string()),
-            GenerationRecord {
-                generation,
-                expires_at: None,
+        record.generation.supports_rtp = supports_rtp;
+        Ok(true)
+    }
+
+    async fn try_register_webrtc_session(
+        &self,
+        session_id: &str,
+        owner: &WebRtcSessionOwner,
+        ttl: std::time::Duration,
+    ) -> Result<bool> {
+        crate::util::validate_stream_generation_id(session_id)?;
+        validate_stream_ids(&owner.room_id, &owner.media_id)?;
+        validate_publisher_cluster_address(
+            &owner.cluster_address,
+            &owner.node_id,
+            &owner.room_id,
+            &owner.media_id,
+        )?;
+        let mut state = self.state.lock().await;
+        Self::purge_expired(&mut state);
+        if state.webrtc_sessions.contains_key(session_id) {
+            return Ok(false);
+        }
+        state.webrtc_sessions.insert(
+            session_id.to_string(),
+            WebRtcSessionRecord {
+                owner: owner.clone(),
+                expires_at: Instant::now() + ttl.max(std::time::Duration::from_secs(1)),
             },
         );
+        Ok(true)
+    }
+
+    async fn get_webrtc_session_owner(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<WebRtcSessionOwner>> {
+        crate::util::validate_stream_generation_id(session_id)?;
+        let mut state = self.state.lock().await;
+        Self::purge_expired(&mut state);
+        Ok(state
+            .webrtc_sessions
+            .get(session_id)
+            .map(|record| record.owner.clone()))
+    }
+
+    async fn unregister_webrtc_session(
+        &self,
+        session_id: &str,
+        expected_node_id: &str,
+    ) -> Result<bool> {
+        crate::util::validate_stream_generation_id(session_id)?;
+        let mut state = self.state.lock().await;
+        Self::purge_expired(&mut state);
+        if state
+            .webrtc_sessions
+            .get(session_id)
+            .is_none_or(|record| record.owner.node_id != expected_node_id)
+        {
+            return Ok(false);
+        }
+        state.webrtc_sessions.remove(session_id);
         Ok(true)
     }
 
@@ -576,6 +715,162 @@ mod tests {
             .ok_or_else(|| anyhow::anyhow!("publisher should exist"))?
             .lease_epoch;
         assert!(second_epoch > first_epoch);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rtp_capability_update_is_fenced_by_generation_and_epoch() -> TestResult {
+        const REPLACEMENT_GENERATION_ID: &str = "00000000-0000-4000-8000-000000000002";
+        let registry = InMemoryStreamRegistry::new();
+        assert!(
+            registry
+                .try_activate_generation(
+                    "room1",
+                    "media1",
+                    "node1",
+                    "user1",
+                    "localhost:50051",
+                    TEST_GENERATION_ID,
+                )
+                .await?
+        );
+        let first = registry
+            .get_active_generation("room1", "media1")
+            .await?
+            .expect("first generation should exist");
+        assert!(!first.supports_rtp);
+        assert!(
+            !registry
+                .set_generation_supports_rtp(
+                    "room1",
+                    "media1",
+                    TEST_GENERATION_ID,
+                    first.lease_epoch + 1,
+                    true,
+                )
+                .await?
+        );
+        assert!(
+            registry
+                .set_generation_supports_rtp(
+                    "room1",
+                    "media1",
+                    TEST_GENERATION_ID,
+                    first.lease_epoch,
+                    true,
+                )
+                .await?
+        );
+        assert!(
+            registry
+                .get_active_generation("room1", "media1")
+                .await?
+                .expect("updated generation should exist")
+                .supports_rtp
+        );
+
+        assert!(
+            registry
+                .deactivate_generation_if_lease_matches(
+                    "room1",
+                    "media1",
+                    TEST_GENERATION_ID,
+                    first.lease_epoch,
+                )
+                .await?
+        );
+        assert!(
+            registry
+                .try_activate_generation_with_capabilities(
+                    StreamGenerationRegistration::new(
+                        "room1",
+                        "media1",
+                        "node2",
+                        "user2",
+                        "localhost:50052",
+                        REPLACEMENT_GENERATION_ID,
+                    )
+                    .with_rtp_support(true),
+                )
+                .await?
+        );
+        assert!(
+            !registry
+                .set_generation_supports_rtp(
+                    "room1",
+                    "media1",
+                    TEST_GENERATION_ID,
+                    first.lease_epoch,
+                    false,
+                )
+                .await?
+        );
+        assert!(
+            registry
+                .get_active_generation("room1", "media1")
+                .await?
+                .expect("replacement generation should exist")
+                .supports_rtp
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn webrtc_session_owner_registration_and_cleanup_are_fenced() -> TestResult {
+        let registry = InMemoryStreamRegistry::new();
+        let owner = WebRtcSessionOwner {
+            node_id: "node1".to_string(),
+            cluster_address: "localhost:50051".to_string(),
+            room_id: "room1".to_string(),
+            media_id: "media1".to_string(),
+            kind: crate::relay::WebRtcSessionKind::Whep,
+        };
+        assert!(
+            registry
+                .try_register_webrtc_session(TEST_GENERATION_ID, &owner, Duration::from_secs(30))
+                .await?
+        );
+        assert_eq!(
+            registry
+                .get_webrtc_session_owner(TEST_GENERATION_ID)
+                .await?,
+            Some(owner.clone())
+        );
+
+        let conflicting_owner = WebRtcSessionOwner {
+            node_id: "node2".to_string(),
+            cluster_address: "localhost:50052".to_string(),
+            ..owner.clone()
+        };
+        assert!(
+            !registry
+                .try_register_webrtc_session(
+                    TEST_GENERATION_ID,
+                    &conflicting_owner,
+                    Duration::from_secs(30),
+                )
+                .await?
+        );
+        assert!(
+            !registry
+                .unregister_webrtc_session(TEST_GENERATION_ID, "node2")
+                .await?
+        );
+        assert_eq!(
+            registry
+                .get_webrtc_session_owner(TEST_GENERATION_ID)
+                .await?,
+            Some(owner)
+        );
+        assert!(
+            registry
+                .unregister_webrtc_session(TEST_GENERATION_ID, "node1")
+                .await?
+        );
+        assert!(registry
+            .get_webrtc_session_owner(TEST_GENERATION_ID)
+            .await?
+            .is_none());
         Ok(())
     }
 

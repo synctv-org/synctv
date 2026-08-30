@@ -22,3 +22,4 @@ pub mod rtmp;
 pub mod rtsp;
 pub mod storage;
 pub mod streamhub;
+pub mod webrtc;

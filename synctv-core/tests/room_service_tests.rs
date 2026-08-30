@@ -8016,7 +8016,9 @@ async fn test_room_taxonomy_is_admin_curated_and_filterable() {
             .iter()
             .map(|room| room.id)
             .collect::<std::collections::HashSet<_>>(),
-        [movie_room.id, game_room.id].into_iter().collect()
+        [movie_room.id, game_room.id]
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>()
     );
 
     let registry = make_runtime_settings_store(pool.clone()).await;

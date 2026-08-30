@@ -154,6 +154,7 @@ fn config(
         hls_storage_path: String::new(),
         hls_s3: HlsS3Options::default(),
         ssrf_guard: SsrfGuard::strict_policy(),
+        webrtc_session: crate::WebRtcSessionConfig::default(),
     }
 }
 
@@ -408,6 +409,10 @@ async fn two_real_livestream_nodes_relay_rtmp_to_flv_and_proxy_memory_hls() -> R
     let publisher_info = wait_for_publisher(&node_b.infrastructure).await?;
     assert_eq!(publisher_info.node_id, "node-a");
     assert_eq!(publisher_info.cluster_address, relay_address.to_string());
+    assert!(
+        !publisher_info.supports_rtp,
+        "ordinary RTMP publishers must not advertise WHEP/RTP support"
+    );
     let first_master_generation = HlsStreamingApi::resolve_active_generation_with_pull(
         &node_b.infrastructure,
         ROOM,
@@ -501,6 +506,10 @@ async fn two_real_livestream_nodes_relay_rtmp_to_flv_and_proxy_memory_hls() -> R
         "same-key replacement must receive a newer fencing lease_epoch"
     );
     assert_eq!(replacement_info.node_id, "node-b");
+    assert!(
+        !replacement_info.supports_rtp,
+        "replacement RTMP publishers must preserve frame-only capability"
+    );
     let replacement_master_generation = HlsStreamingApi::resolve_active_generation_with_pull(
         &node_b.infrastructure,
         ROOM,

@@ -419,6 +419,9 @@ livestream:
   # client-reachable domain, LoadBalancer address, or node public IP.
   # If empty, SyncTV uses only the local bind host fallback for local/single-node use.
   # public_rtmp_host: "live.example.com"
+  # Public HTTP(S) origin used in WHIP publish URLs. When empty, publish-key
+  # responses return an origin-relative URL that clients resolve against the API.
+  # public_webrtc_base_url: "https://live.example.com"
   logging:
     level: "info"
     format: "text"
@@ -458,6 +461,25 @@ livestream:
   # Maximum HTTP-FLV connection duration and slow-client write timeout.
   flv_max_connection_duration_seconds: 86400
   flv_write_timeout_seconds: 30
+  # Standards-based WHIP ingest and WHEP playback share the main HTTP port.
+  # ICE uses host candidates when ice_servers is empty. Production deployments
+  # should configure a client-reachable STUN or TURN service.
+  webrtc:
+    enabled: true
+    ice_servers: []
+    # Example TURN configuration. Use credential_file to avoid storing the
+    # shared credential directly in this configuration file.
+    # ice_servers:
+    #   - urls:
+    #       - "stun:stun.example.com:3478"
+    #       - "turn:turn.example.com:3478?transport=udp"
+    #       - "turns:turn.example.com:5349?transport=tcp"
+    #     username: "synctv"
+    #     credential_file: "/run/secrets/livestream_turn_credential"
+    ice_gathering_timeout_seconds: 10
+    max_sdp_bytes: 262144
+    max_sessions: 1000
+    max_session_duration_seconds: 86400
 
 file_storage:
   # Named backend selected by product features when they do not override it.

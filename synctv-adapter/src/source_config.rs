@@ -913,6 +913,10 @@ fn live_proxy_media_source_config_from_proto(
         Some(Source::HttpFlv(config)) => {
             synctv_core::models::ExternalLiveSourceConfig::HttpFlv { url: config.url }
         }
+        Some(Source::Whep(config)) => synctv_core::models::ExternalLiveSourceConfig::Whep {
+            url: config.url,
+            authorization: config.authorization,
+        },
         None => return Err(invalid_source_config("external live source is required")),
     };
     Ok(synctv_core::models::LiveProxyMediaSourceConfig { source })

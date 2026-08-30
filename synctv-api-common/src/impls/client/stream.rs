@@ -16,6 +16,13 @@ const PUBLISH_KEY_SERVICE_UNAVAILABLE_MESSAGE: &str =
 const DEFAULT_ROOM_STREAMS_PAGE: i32 = 1;
 const DEFAULT_ROOM_STREAMS_PAGE_SIZE: i32 = 50;
 
+#[derive(Debug, Clone)]
+pub struct AuthorizedLiveStreamPlayback {
+    pub room_id: RoomId,
+    pub media_id: MediaId,
+    pub external_source: Option<synctv_core::models::LiveProxyMediaSourceConfig>,
+}
+
 fn positive_i32_to_usize(value: i32, field: &'static str) -> Result<usize, ApiError> {
     let value = u32::try_from(value)
         .map_err(|_| ApiError::Internal(format!("{field} must be positive")))?;
@@ -132,6 +139,39 @@ fn build_publish_rtmp_url(
     Ok(format!("rtmp://{rtmp_host}:{rtmp_port}/{room_id}"))
 }
 
+fn build_publish_whip_url(
+    runtime_settings: &crate::ApiRuntimeSettings,
+    room_id: &str,
+    media_id: &str,
+) -> Result<String, ApiError> {
+    let path = format!("/api/playback-providers/{room_id}/rtmp/{media_id}/whip");
+    let base_url = runtime_settings.livestream.public_webrtc_base_url.trim();
+    if base_url.is_empty() {
+        return Ok(path);
+    }
+    let mut url = url::Url::parse(base_url).map_err(|error| {
+        ApiError::InvalidInput(format!(
+            "livestream.public_webrtc_base_url is invalid: {error}"
+        ))
+    })?;
+    url.path_segments_mut()
+        .map_err(|()| {
+            ApiError::InvalidInput(
+                "livestream.public_webrtc_base_url must support path segments".to_string(),
+            )
+        })?
+        .pop_if_empty()
+        .extend([
+            "api",
+            "playback-providers",
+            room_id,
+            "rtmp",
+            media_id,
+            "whip",
+        ]);
+    Ok(url.to_string())
+}
+
 pub(crate) fn rtmp_advertise_address(
     settings: Option<&synctv_core::service::RuntimeSettingsStore>,
 ) -> Result<Option<String>, ApiError> {
@@ -240,6 +280,7 @@ impl<'a> RoomPublishKeyIssuer<'a> {
             .encode_media_id(media_id)
             .map_err(|error| ApiError::Internal(format!("Failed to encode media id: {error}")))?;
         let stream_key = format!("{media_id}?token={}", publish_key.token);
+        let whip_url = build_publish_whip_url(self.runtime_settings, &room_id, &media_id)?;
 
         Ok(CreateRoomPublishKeyResponse {
             publish_key: publish_key.token,
@@ -255,6 +296,7 @@ impl<'a> RoomPublishKeyIssuer<'a> {
                 CorePublishKeyType::Expiring => PublishKeyType::Expiring as i32,
                 CorePublishKeyType::Permanent => PublishKeyType::Permanent as i32,
             },
+            whip_url,
         })
     }
 }
@@ -291,6 +333,44 @@ pub async fn fetch_stream_info(
 }
 
 impl ClientApiImpl {
+    pub async fn authorize_live_stream_playback_for_actor(
+        &self,
+        actor: &crate::impls::client::RoomActor,
+        public_media_id: &str,
+    ) -> Result<AuthorizedLiveStreamPlayback, ApiError> {
+        let room_id = actor.room_id();
+        let media_id =
+            crate::impls::parse_media_id_param(public_media_id, "media_id", &self.public_id_codec)?;
+        self.require_room_permission(actor, synctv_core::models::RoomPermission::BROWSE_LIBRARY)
+            .await?;
+        let media = self
+            .room_service
+            .media_service()
+            .get_room_media(&room_id, &media_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::NotFound(format!("Media {public_media_id} not found")))?;
+        self.room_service
+            .ensure_client_usable_media(&media)
+            .await
+            .map_err(ApiError::from)?;
+        let external_source = match media.source_config {
+            synctv_core::models::MediaSourceConfig::Rtmp(_) => None,
+            synctv_core::models::MediaSourceConfig::LiveProxy(config) => Some(config),
+            _ => {
+                return Err(ApiError::InvalidInput(
+                    "This media source does not support WHEP playback".to_string(),
+                ));
+            }
+        };
+
+        Ok(AuthorizedLiveStreamPlayback {
+            room_id,
+            media_id,
+            external_source,
+        })
+    }
+
     pub async fn create_room_publish_key(
         &self,
         user_id: &UserId,
@@ -474,8 +554,9 @@ impl ClientApiImpl {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_publish_rtmp_url, build_room_streams_request, build_room_streams_response,
-        ensure_room_accepts_live_publish, filter_usable_stream_media_ids, publish_key_options,
+        build_publish_rtmp_url, build_publish_whip_url, build_room_streams_request,
+        build_room_streams_response, ensure_room_accepts_live_publish,
+        filter_usable_stream_media_ids, publish_key_options,
     };
     use crate::impls::ApiError;
 
@@ -653,6 +734,39 @@ mod tests {
         ))?;
 
         assert_eq!(url, "rtmp://live.internal:1936/room_AbC123");
+        Ok(())
+    }
+
+    #[test]
+    fn whip_publish_url_is_origin_relative_without_public_base() -> TestResult {
+        let url = api_ok(build_publish_whip_url(
+            &crate::ApiRuntimeSettings::default(),
+            "room_AbC123",
+            "med_XyZ789",
+        ))?;
+
+        assert_eq!(
+            url,
+            "/api/playback-providers/room_AbC123/rtmp/med_XyZ789/whip"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn whip_publish_url_uses_configured_public_base() -> TestResult {
+        let mut runtime_settings = crate::ApiRuntimeSettings::default();
+        runtime_settings.livestream.public_webrtc_base_url =
+            "https://live.example.com/".to_string();
+        let url = api_ok(build_publish_whip_url(
+            &runtime_settings,
+            "room_AbC123",
+            "med_XyZ789",
+        ))?;
+
+        assert_eq!(
+            url,
+            "https://live.example.com/api/playback-providers/room_AbC123/rtmp/med_XyZ789/whip"
+        );
         Ok(())
     }
 

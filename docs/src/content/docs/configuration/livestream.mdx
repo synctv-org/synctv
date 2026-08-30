@@ -1,6 +1,6 @@
 ---
-title: 直播与 HLS/FLV
-description: RTMP、RTSP、HLS、HTTP-FLV、拉流重试、GOP 缓存和直播存储配置。
+title: 直播与 WebRTC/HLS/FLV
+description: WHIP、WHEP、RTMP、RTSP、HLS、HTTP-FLV、ICE、拉流代理和直播存储配置。
 ---
 
 import Diagram from '../../../components/Diagram.astro';
@@ -10,24 +10,26 @@ import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 
 ## 直播配置控制什么？
 
-`livestream` 控制 RTMP 推流、RTMP/RTSP/HTTP-FLV 外部拉流、HLS 分片、HTTP-FLV 连接、直播内存缓存和直播文件存储。
+`livestream` 控制 WHIP/RTMP 推流、WHEP/RTMP/RTSP/HTTP-FLV 外部拉流、WebRTC 会话、HLS 分片、HTTP-FLV 连接和直播缓存。
 
 如果你只使用点播媒体 Provider，这一页大部分配置可以保持默认。
 
 ## 直播子系统的边界
 
-直播能力包含推流入口、实时包分发、FLV 播放、HLS remux、HLS 存储、跨节点 publisher registry。它和点播 Provider/proxy 是两个不同路径：点播主要处理外部媒体 URL 和 Range proxy，直播主要处理正在产生的数据流。
+直播子系统包含推流入口、RTP/frame 分发、WHEP/FLV 播放、HLS remux、HLS 存储和跨节点 publisher registry。点播 Provider 处理外部媒体 URL 和 Range proxy；直播子系统处理持续产生的数据流。
 
 <Diagram
   light={livestreamPipelineLight}
   dark={livestreamPipelineDark}
-  alt="SyncTV 直播流水线图，展示 RTMP 推流进入 StreamHub，分发到 HTTP-FLV 与 HLS remuxer，HLS 写入 memory/file/S3 存储后由 playlist 和 segment 路由读取。"
-  caption="直播数据先进入 RTMP/StreamHub，再按播放协议分流：HTTP-FLV 直接面向低延迟播放，HLS remuxer 生成 playlist/segment 并写入选择的 HLS backend。"
+  alt="SyncTV 直播流水线图，展示 WHIP、RTMP 和外部拉流进入 StreamHub，再分发到 WHEP、HTTP-FLV 与 HLS，并通过 gRPC 在节点间转发 frame 和 RTP。"
+  caption="WHIP 和上游 WHEP 同时保留 RTP 与 remux frame；WHEP 使用 RTP，HTTP-FLV 和 HLS 使用 frame。集群 relay 按源能力传输一条或两条数据通道。"
 />
 
+- **WHIP ingest**： 推流端向主 HTTP 服务提交 SDP offer。SyncTV 协商 H.264/Opus，保留 RTP，并生成 H.264/AAC frame。
+- **WHEP playback**： 客户端通过 SDP offer 建立 WebRTC 播放会话。源必须提供 RTP。
 - **RTMP ingest**： 推流端通过 RTMP 连接进入，认证阶段会把 publisher 注册到本节点或共享 registry。
 - **RTSP ingest**： 外部 RTSP 源通过 DESCRIBE/SETUP/PLAY 拉取，经过 RTP 解包后进入同一个 StreamHub。
-- **StreamHub**： 直播包在进程内分发给 FLV session、HLS remuxer 和内部拉流/代理逻辑。
+- **StreamHub**： 进程内同时分发 RTP packet 和 remux frame。普通 RTMP/RTSP/HTTP-FLV 源只提供 frame。
 - **HTTP-FLV**： 适合低延迟观看。客户端保持长连接，服务端持续写 FLV chunk，并通过写超时保护慢客户端。
 - **HLS**： 适合通用播放器和 CDN/对象存储形态。延迟更高，但对客户端兼容性和多副本扩展更友好。
 
@@ -35,12 +37,125 @@ import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 
 | 协议 | 优点 | 代价 | 适合场景 |
 | --- | --- | --- | --- |
+| WHEP | WebRTC 低延迟、浏览器原生媒体轨道、ICE/TURN 穿透 | 源需要保留 RTP，服务端和客户端都需要可达 ICE candidate | WHIP 推流、外部 WHEP 代理、低延迟浏览器播放 |
 | HTTP-FLV | 延迟低、链路短、服务端直接推 chunk | 长连接多，弱网慢客户端需要严格超时 | 互动直播、房间内同步观看 |
 | HLS | 播放器兼容性强，天然按 playlist/segment 拉取，可配共享存储 | 延迟高于 FLV，需要管理分片存储 | 移动端、通用播放器、多副本、对象存储 |
 
 <Aside type="note">
-RTMP 是推流入口，播放端使用 SyncTV 生成的 HLS 或 HTTP-FLV 链接。两种输出都跟随当前直播边缘，房间同步以实时播放状态为准。
+WHIP 推流可播放为 WHEP、HLS 或 HTTP-FLV。RTMP、RTSP 和 HTTP-FLV 输入提供 HLS/HTTP-FLV；这些输入没有原始 RTP，WHEP 请求会返回源能力错误。
 </Aside>
+
+## WHIP 推流与 WHEP 播放
+
+SyncTV 在主 HTTP(S) 服务上实现 WHIP resource 和 WHEP resource。两个协议都使用一次性 SDP offer/answer；当前实现收集完整 ICE candidate，不提供 trickle ICE `PATCH`。
+
+| 操作 | HTTP 资源 | 鉴权 |
+| --- | --- | --- |
+| 创建 publish key | `POST /api/playback-providers/{roomId}/rtmp/{mediaId}/publish-key` | 当前用户 token 与推流权限 |
+| 创建 WHIP 推流 | `POST /api/playback-providers/{roomId}/rtmp/{mediaId}/whip` | `Bearer <publish-key>` |
+| 删除 WHIP 推流 | `DELETE <POST 响应的 Location>` | 同一个 publish key |
+| 播放 managed live | `POST /api/playback-providers/{roomId}/live/{mediaId}/whep` | 当前用户或游客访问 token |
+| 播放 LiveProxy | `POST /api/playback-providers/{roomId}/live-proxy/{mediaId}/whep` | 当前用户或游客访问 token |
+| 删除 WHEP 播放 | `DELETE <POST 响应的 Location>` | 同一个观看身份 |
+
+POST 请求使用 `Content-Type: application/sdp`。成功响应返回 `201 Created`、SDP answer 和同源 `Location`；客户端停止推流或播放时应发送 DELETE。服务器在连接关闭、会话超时或进程退出时清理本地资源。
+
+公开名称 `live` 表示由 SyncTV 管理的 WHIP/RTMP 推流源；`liveProxy` 表示 SyncTV 拉取的外部 WHEP/RTSP/RTMP/HTTP-FLV 源。protobuf wire/source-config oneof 继续使用 `RTMP`/`rtmp` 表示 SyncTV 管理的直播源。
+
+Provider prepare API 使用 `POST /api/providers/prepare/live`。HLS 和 HTTP-FLV 播放 URL 同样使用 `/api/playback-providers/{roomId}/live/...`。
+
+CLI 使用 `live` 创建 managed live 媒体，`rtmp` 仍作为输入别名：
+
+```bash
+synctv media add <ROOM_ID> --username alice \
+  --source-provider live \
+  --source-config-json '{"mode":"default"}' \
+  --name "直播"
+```
+
+使用 publish-key API 创建密钥后，响应会同时包含 `rtmp_url`、`stream_key` 和 `whip_url`。生产环境设置公开 HTTP(S) origin：
+
+```yaml
+livestream:
+  public_webrtc_base_url: "https://live.example.com"
+  webrtc:
+    enabled: true
+    ice_gathering_timeout_seconds: 10
+    max_sdp_bytes: 262144
+    max_sessions: 1000
+    max_session_duration_seconds: 86400
+```
+
+`public_webrtc_base_url` 为空时，publish-key 响应返回相对当前 API origin 的 WHIP URL。该值只接受无 path、query 和 fragment 的 HTTP(S) origin。
+
+### SDP API 示例
+
+WHIP 客户端把 publish key 放在 Bearer header：
+
+```bash
+curl -i -X POST "$WHIP_URL" \
+  -H "Authorization: Bearer $PUBLISH_KEY" \
+  -H "Content-Type: application/sdp" \
+  --data-binary @offer.sdp
+```
+
+WHEP 客户端使用访问房间的 token：
+
+```bash
+curl -i -X POST "$WHEP_URL" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/sdp" \
+  --data-binary @offer.sdp
+```
+
+`curl` 只能验证信令。媒体传输需要 WebRTC peer。浏览器客户端应创建 `recvonly` 音视频 transceiver，等待 ICE gathering 完成，POST `pc.localDescription.sdp`，再把响应设置为 remote answer。播放结束时对 Location 发送 DELETE。
+
+OBS 的 WHIP service 填写响应中的 `whip_url` 和 publish key。GStreamer 需要安装带 `whipclientsink` 的 rswebrtc 插件，并输出 H.264/Opus。不同版本的属性名存在差异，可用 `gst-inspect-1.0 whipclientsink` 查看 endpoint 和 auth token 属性。FFmpeg 构建对 WHIP 的支持不一致；用 `ffmpeg -muxers` 检查当前二进制。没有 WHIP muxer 时，FFmpeg 可以继续向 `rtmp_url` 推送 H.264/AAC。
+
+### 编码与转换
+
+WHIP 和外部 WHEP 接受 H.264 constrained-baseline（`profile-level-id=42e01f`、`packetization-mode=1`）与 Opus。固定 H.264 profile 可以让未转码的 WHEP RTP 输出保持与 SDP 一致。SyncTV 将 H.264 RTP 解包为 AVC frame，并把 Opus 解码后编码为 AAC，因此同一输入可供 HLS 和 HTTP-FLV 播放。
+
+SyncTV 实现标准 WHIP resource 语义和 WHEP draft resource 语义。云厂商的私有签名参数、私有信令接口、SIMULCAST 控制 API 和专用 ingest SDK 不属于这两个协议；接入此类服务时需要一个标准 WHIP/WHEP endpoint。
+
+## 外部 WHEP 源
+
+LiveProxy 可以把远程 WHEP 资源代理到本地 WHEP、HLS 和 HTTP-FLV：
+
+```json
+{
+  "provider": "liveProxy",
+  "source": {
+    "protocol": "whep",
+    "url": "https://origin.example.com/whep/channel-1",
+    "authorization": "Bearer upstream-token"
+  }
+}
+```
+
+SyncTV 对 endpoint 做 SSRF 校验和 DNS pinning，禁止 HTTP redirect，并要求上游返回 `201 Created`、`application/sdp` 与同源 Location。服务端限制 SDP 大小和读取时间；本地拉流结束后会 DELETE 远程 resource。管理查询不会回显 `authorization`，日志也不会记录上游 URL 或 Authorization。
+
+WHEP URL 可以使用 query token。URL 不接受 userinfo 和 fragment；HTTP header 凭据应放在 `authorization` 字段。
+
+## ICE、STUN 与 TURN
+
+`livestream.webrtc.ice_servers` 配置直播 PeerConnection 使用的 STUN/TURN 服务。顶层 `webrtc` 配置管理房间语音/媒体 P2P 和内置 STUN，两组选项服务不同的 WebRTC 功能。
+
+```yaml
+livestream:
+  webrtc:
+    ice_servers:
+      - urls:
+          - "stun:stun.example.com:3478"
+          - "turn:turn.example.com:3478?transport=udp"
+          - "turns:turn.example.com:5349?transport=tcp"
+        username: "synctv"
+        credential_file: "/run/secrets/livestream_turn_credential"
+```
+
+STUN 只帮助 peer 发现地址。服务器位于 Kubernetes、NAT 或严格防火墙后时，部署一个客户端和 Pod 都可访问的 TURN 服务。TURN UDP 提供较低延迟，TURN/TLS over TCP 适合限制 UDP 的网络。
+
+WHIP/WHEP 信令走现有 HTTP Service。ICE 媒体使用动态 UDP 端口，Helm chart 不创建固定的 WebRTC media UDP Service。Kubernetes 部署应使用 TURN；采用 `hostNetwork` 时需同时开放节点的 ICE UDP 端口范围。`stunService` 只暴露内置 STUN listener，不转发媒体。
 
 ## RTSP 外部源
 
@@ -137,17 +252,13 @@ RTSP、外部 RTMP 与内部 RTMP 推流都进入同一个 Live StreamHub。Sync
 ## 集群直播如何工作？
 
 <Steps>
-1. Publisher 通过 RTMP 连接到任意一个 SyncTV 节点。
+1. Publisher 通过 WHIP 或 RTMP 连接到任意一个 SyncTV 节点；LiveProxy 也可以在任意节点拉取外部 WHEP。
 2. 认证通过后，节点把 `room_id/media_id -> node_id/api_address` 注册到 publisher registry。集群模式下 registry 使用 Redis。
-3. 本节点 StreamHub 开始接收直播包；HTTP-FLV 可以直接从本节点订阅，HLS remuxer 持续生成分片。
+3. 本节点 StreamHub 接收 frame；WHIP/WHEP 源还会保留 RTP。HTTP-FLV 和 HLS 订阅 frame，WHEP 订阅 RTP。
 4. HLS 分片写入 `memory`、`file`、`shared_file` 或 `s3` backend。
-5. 观众请求如果落到非 publisher 节点，该节点通过共享 registry 找到 publisher owner。HTTP-FLV 走跨节点拉流/relay；HLS playlist/segment 可以通过 HLS gRPC proxy 从 publisher 节点读取。
+5. 观众请求落到非 publisher 节点时，该节点通过共享 registry 找到 publisher owner。gRPC relay 分别传输 frame 和 RTP，并使用 generation ID 与 lease epoch 拒绝过期 publisher。
 6. `shared_file` 的 TS 分片请求由当前节点从共享路径读取；本地 backend 仍使用 publisher-node HLS gRPC proxy 读取远端 playlist/segment。
 </Steps>
-
-<Aside type="note">
-多副本 HLS 依赖 publisher registry 定位推流节点。本地 backend 通过 HLS gRPC proxy 读取远端 playlist/segment；`shared_file` 可以让 TS 请求从当前节点读取共享路径，适合高流量多副本场景。
-</Aside>
 
 ## `livestream.rtmp_port`
 
@@ -161,11 +272,11 @@ OBS 推流地址通常类似：
 rtmp://your-domain:1935/live/<stream-key>
 ```
 
-RTMP provider 的媒体 source config 也支持相同的 `mode` 字段：
+managed live Provider 的媒体 source config 也支持相同的 `mode` 字段：
 
 ```json
 {
-  "provider": "rtmp",
+  "provider": "live",
   "mode": "audioOnly"
 }
 ```

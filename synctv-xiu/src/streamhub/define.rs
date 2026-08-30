@@ -28,6 +28,8 @@ pub enum SubscribeType {
     RtmpRemux2Hls,
     /// Relay publisher pushes a local stream to another RTMP node.
     RtmpRelay,
+    /// WHEP player consumes RTP packets from a local stream.
+    WhepPull,
 }
 
 /// How a producer publishes a stream into `StreamsHub`.
@@ -35,10 +37,19 @@ pub enum SubscribeType {
 pub enum PublishType {
     /// Remote RTMP client pushes into this node.
     RtmpPush,
+    /// Standards-based WHIP client pushes into this node.
+    WhipPush,
     /// This node pulls a remote RTMP stream and republishes it locally.
     RtmpRelay,
     /// This node owns an external RTMP, RTSP, or HTTP-FLV pull and republishes it locally.
     ExternalPull,
+}
+
+impl PublishType {
+    #[must_use]
+    pub const fn is_user_push(&self) -> bool {
+        matches!(self, Self::RtmpPush | Self::WhipPush)
+    }
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -468,13 +479,13 @@ pub enum DataSender {
     Packet { sender: PacketDataSender },
 }
 //we can only sub one kind of stream.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Eq, PartialEq)]
 pub enum SubDataType {
     Frame,
     Packet,
 }
 //we can pub frame or packet or both.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Eq, PartialEq)]
 pub enum PubDataType {
     Frame,
     Packet,

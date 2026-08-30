@@ -16,7 +16,10 @@ use std::time::Duration;
 pub struct RtmpProvider {}
 
 impl RtmpProvider {
+    /// Stable internal provider name used by persistence and signed claims.
     pub const NAME: &'static str = "rtmp";
+    /// Public route and CLI name for SyncTV-managed live streams.
+    pub const PUBLIC_NAME: &'static str = "live";
 
     pub const fn new() -> Self {
         Self {}
@@ -66,7 +69,8 @@ fn mark_rtmp_playback_resources(
                     }
                     | PlaybackRtmpMedia::FlvStream {
                         room_id, media_id, ..
-                    },
+                    }
+                    | PlaybackRtmpMedia::WhepEndpoint { room_id, media_id },
                 ) => (*room_id, *media_id),
                 _ => continue,
             };
@@ -85,6 +89,8 @@ fn mark_rtmp_playback_resources(
                     room_id,
                     media_id,
                 })
+            } else if mode_name == "whep" {
+                PlaybackMediaProvider::Rtmp(PlaybackRtmpMedia::WhepEndpoint { room_id, media_id })
             } else {
                 continue;
             };
@@ -119,11 +125,16 @@ impl MediaProvider for RtmpProvider {
         let (room_id, media_id) = Self::resolve_live_binding(ctx)?;
 
         let _config = config;
-        let result = super::build_live_playback(*media_id, *room_id);
+        let client_profile = ctx.playback_client_profile();
+        let mut result = super::build_live_playback(*media_id, *room_id);
+        if client_profile.is_some_and(|profile| {
+            profile.supports_transport(super::PlaybackMediaTransport::WebRtc)
+        }) {
+            super::add_whep_playback(&mut result, *media_id, *room_id);
+        }
 
         let cache_key = format!("playback:{room_id}:{media_id}");
         let cache_ttl = Duration::from_mins(5); // 5 minutes for live
-        let client_profile = ctx.playback_client_profile();
         let result = super::cache_versioned_playback_and_build_response(
             result,
             Self::NAME,

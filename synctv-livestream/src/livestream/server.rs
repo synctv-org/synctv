@@ -9,7 +9,9 @@ use crate::{
     api::{livestream::LiveStreamingInfrastructure, tracker::StreamTracker},
     error::StreamResult,
     livestream::{
-        external_publish_manager::ExternalPublishManager, pull_manager::PullStreamManager,
+        external_publish_manager::ExternalPublishManager,
+        pull_manager::PullStreamManager,
+        webrtc_session_manager::{WebRtcSessionConfig, WebRtcSessionManager},
         CleanupConfig, SegmentManager,
     },
     relay::{
@@ -331,6 +333,8 @@ pub struct LivestreamConfig {
     pub hls_s3: HlsS3Options,
     /// Global SSRF policy for outbound livestream pull requests.
     pub ssrf_guard: SsrfGuard,
+    /// WHIP/WHEP peer and session limits.
+    pub webrtc_session: WebRtcSessionConfig,
 }
 
 fn build_hls_storage(config: &LivestreamConfig) -> StreamResult<Arc<dyn HlsStorage>> {
@@ -445,6 +449,7 @@ impl LivestreamHandle {
         let hub_cycle_tasks = Arc::clone(&self.hub_cycle_tasks);
         let pull_manager = Arc::clone(&self.pull_manager);
         let external_publish_manager = Arc::clone(&self.infrastructure.external_publish_manager);
+        let webrtc_session_manager = Arc::clone(&self.infrastructure.webrtc_session_manager);
         let publisher_manager = Arc::clone(&self.publisher_manager);
         let registry = Arc::clone(&self.infrastructure.registry);
         let node_id = self.infrastructure.local_node_id.clone();
@@ -453,6 +458,7 @@ impl LivestreamHandle {
                 .shutdown_maintenance(std::time::Duration::from_millis(200))
                 .await;
             hub_cycle_tasks.lock().await.shutdown().await;
+            webrtc_session_manager.shutdown().await;
             pull_manager.stop_all().await;
             external_publish_manager.stop_all().await;
             if !node_id.is_empty() {
@@ -569,6 +575,10 @@ impl LivestreamHandle {
         }
 
         // 3. Stop all managed stream pools to prevent zombie streams.
+        info!("Stopping all WebRTC sessions...");
+        self.infrastructure.webrtc_session_manager.shutdown().await;
+        info!("All WebRTC sessions stopped");
+
         info!("Stopping all managed pull streams...");
         self.pull_manager.stop_all().await;
         info!("All managed pull streams stopped");
@@ -658,13 +668,21 @@ impl LivestreamHandle {
 
         let pull_manager = Arc::clone(&self.pull_manager);
         let external_publish_manager = Arc::clone(&self.infrastructure.external_publish_manager);
-        let (pull_result, external_result) = tokio::join!(
+        let webrtc_session_manager = Arc::clone(&self.infrastructure.webrtc_session_manager);
+        let (webrtc_result, pull_result, external_result) = tokio::join!(
+            timeout(
+                Duration::from_millis(200),
+                webrtc_session_manager.shutdown()
+            ),
             timeout(Duration::from_millis(200), pull_manager.stop_all()),
             timeout(
                 Duration::from_millis(200),
                 external_publish_manager.stop_all()
             ),
         );
+        if webrtc_result.is_err() {
+            warn!("Force shutdown timed out stopping WebRTC sessions");
+        }
         if pull_result.is_err() {
             warn!("Force shutdown timed out stopping managed pull streams");
         }
@@ -858,7 +876,20 @@ impl LivestreamServer {
                 self.config.cleanup_check_interval_seconds,
                 self.config.stream_timeout_seconds,
             )?
-            .with_max_flv_tag_size_bytes(self.config.max_flv_tag_size_bytes),
+            .with_max_flv_tag_size_bytes(self.config.max_flv_tag_size_bytes)
+            .with_webrtc_config(self.config.webrtc_session.peer.clone()),
+        );
+        let webrtc_session_manager = Arc::new(
+            WebRtcSessionManager::new(
+                event_sender.clone(),
+                self.auth.clone(),
+                self.config.webrtc_session.clone(),
+            )
+            .with_session_directory(
+                self.publisher_registry.clone(),
+                local_node_id.clone(),
+                self.config.cluster_address.clone(),
+            ),
         );
 
         // Create a shared gRPC connection pool for HlsProxy and PullStreamManager
@@ -867,6 +898,12 @@ impl LivestreamServer {
 
         let hls_proxy =
             crate::grpc::HlsProxyClient::with_defaults(self.config.cluster_secret.clone())
+                .with_grpc_max_message_size(self.config.grpc_max_message_size_bytes)
+                .with_grpc_compression(self.config.grpc_compression_enabled)
+                .with_connection_pool(shared_grpc_pool.clone());
+
+        let webrtc_session_router =
+            crate::grpc::WebRtcSessionRouter::with_defaults(self.config.cluster_secret.clone())
                 .with_grpc_max_message_size(self.config.grpc_max_message_size_bytes)
                 .with_grpc_compression(self.config.grpc_compression_enabled)
                 .with_connection_pool(shared_grpc_pool.clone());
@@ -1271,7 +1308,9 @@ impl LivestreamServer {
             .with_segment_manager(segment_manager)
             .with_hls_stream_registry(stream_registry)
             .with_hls_storage_backend(self.config.hls_storage_backend)
-            .with_hls_proxy(hls_proxy),
+            .with_hls_proxy(hls_proxy)
+            .with_webrtc_session_manager(webrtc_session_manager)
+            .with_webrtc_session_router(webrtc_session_router),
         );
 
         info!(
@@ -1381,6 +1420,7 @@ mod tests {
             hls_storage_path: String::new(),
             hls_s3: HlsS3Options::default(),
             ssrf_guard: SsrfGuard::strict_policy(),
+            webrtc_session: WebRtcSessionConfig::default(),
         }
     }
 

@@ -40,6 +40,7 @@ impl Default for LiveProxyProvider {
 
 impl LiveProxyProvider {
     pub const NAME: &'static str = "live_proxy";
+    pub const PUBLIC_NAME: &'static str = "live-proxy";
 
     pub fn new() -> Self {
         Self::new_with_ssrf_guard(synctv_common::ssrf::SsrfGuard::strict_policy())
@@ -69,11 +70,10 @@ impl LiveProxyProvider {
         })?;
         let is_rtmp = parsed_url.scheme().eq_ignore_ascii_case("rtmp");
         let is_rtsp = parsed_url.scheme().eq_ignore_ascii_case("rtsp");
-        let is_flv =
-            matches!(parsed_url.scheme(), "http" | "https") && parsed_url.path().ends_with(".flv");
-        if !is_rtmp && !is_rtsp && !is_flv {
+        let is_http = matches!(parsed_url.scheme(), "http" | "https");
+        if !is_rtmp && !is_rtsp && !is_http {
             return Err(ProviderError::InvalidConfig(format!(
-                "Unsupported source URL format: {url}. Expected rtmp://, rtsp://, or *.flv"
+                "Unsupported source URL format: {url}. Expected rtmp://, rtsp://, or http(s)://"
             )));
         }
         Self::reject_synctv_publish_url(&parsed_url)?;
@@ -162,6 +162,22 @@ impl LiveProxyProvider {
             crate::models::ExternalLiveSourceConfig::Rtsp { .. } => parsed.scheme() == "rtsp",
             crate::models::ExternalLiveSourceConfig::HttpFlv { .. } => {
                 matches!(parsed.scheme(), "http" | "https") && parsed.path().ends_with(".flv")
+            }
+            crate::models::ExternalLiveSourceConfig::Whep { authorization, .. } => {
+                if let Some(authorization) = authorization {
+                    if authorization.trim().is_empty()
+                        || authorization
+                            .chars()
+                            .any(|character| matches!(character, '\r' | '\n'))
+                        || authorization.len() > 4096
+                    {
+                        return Err(ProviderError::InvalidConfig(
+                            "WHEP authorization must be a non-empty HTTP header value of at most 4096 bytes"
+                                .to_string(),
+                        ));
+                    }
+                }
+                matches!(parsed.scheme(), "http" | "https")
             }
         };
         if !protocol_matches {
@@ -261,12 +277,18 @@ fn mark_live_proxy_playback_resources(
                     }
                     | PlaybackRtmpMedia::FlvStream {
                         room_id, media_id, ..
-                    },
+                    }
+                    | PlaybackRtmpMedia::WhepEndpoint { room_id, media_id },
                 ) => (*room_id, *media_id),
                 _ => continue,
             };
 
-            media.provider = if is_hls {
+            media.provider = if mode_name == "whep" {
+                PlaybackMediaProvider::LiveProxy(PlaybackLiveProxyMedia::WhepEndpoint {
+                    room_id,
+                    media_id,
+                })
+            } else if is_hls {
                 PlaybackMediaProvider::LiveProxy(PlaybackLiveProxyMedia::HlsMaster {
                     version: version.to_string(),
                     expires_at,
@@ -321,8 +343,23 @@ impl MediaProvider for LiveProxyProvider {
 
         let source_url = source_config.source.url().to_string();
         Self::validate_external_source(&source_config.source, &self.ssrf_guard).await?;
+        let client_profile = ctx.playback_client_profile();
         let mut result = super::build_live_playback(*media_id, *room_id);
-        result.default_mode = default_live_proxy_mode(ctx.playback_client_profile()).to_string();
+        let supports_whep = matches!(
+            &source_config.source,
+            crate::models::ExternalLiveSourceConfig::Whep { .. }
+        ) && client_profile.is_some_and(|profile| {
+            profile.supports_transport(super::PlaybackMediaTransport::WebRtc)
+        });
+        if supports_whep {
+            super::add_whep_playback(&mut result, *media_id, *room_id);
+        }
+        result.default_mode = if supports_whep {
+            "whep"
+        } else {
+            default_live_proxy_mode(client_profile)
+        }
+        .to_string();
         let parsed_source_url = url::Url::parse(&source_url).map_err(|error| {
             ProviderError::InvalidConfig(format!(
                 "Invalid LiveProxy source URL '{source_url}': {error}"
@@ -342,7 +379,6 @@ impl MediaProvider for LiveProxyProvider {
 
         let cache_key = format!("playback:{room_id}:{media_id}");
         let cache_ttl = Duration::from_mins(5);
-        let client_profile = ctx.playback_client_profile();
         let result = super::cache_versioned_playback_and_build_response(
             result,
             Self::NAME,
@@ -450,6 +486,26 @@ mod tests {
         };
         assert_eq!(default_live_proxy_mode(Some(&native_profile)), "flv");
         assert_eq!(default_live_proxy_mode(None), "hls");
+    }
+
+    #[test]
+    fn live_proxy_preserves_whep_when_it_is_the_default_mode() {
+        let media_id = MediaId::new();
+        let room_id = RoomId::new();
+        let mut result = super::super::build_live_playback(media_id, room_id);
+        super::super::add_whep_playback(&mut result, media_id, room_id);
+        result.default_mode = "whep".to_string();
+
+        mark_live_proxy_playback_resources(&mut result, "version", 123, None);
+
+        assert_eq!(result.default_mode, "whep");
+        assert!(matches!(
+            result.playback_infos["whep"].medias[0].provider,
+            PlaybackMediaProvider::LiveProxy(PlaybackLiveProxyMedia::WhepEndpoint {
+                room_id: mapped_room_id,
+                media_id: mapped_media_id,
+            }) if mapped_room_id == room_id && mapped_media_id == media_id
+        ));
     }
 
     #[tokio::test]

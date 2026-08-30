@@ -680,7 +680,8 @@ pub enum CliSourceProvider {
     Bilibili,
     Alist,
     Emby,
-    Rtmp,
+    #[value(alias = "rtmp")]
+    Live,
     LiveProxy,
     Cloudreve,
     Twitch,
@@ -706,7 +707,7 @@ impl CliSourceProvider {
             Self::Bilibili => synctv_proto::source_config::SourceProvider::Bilibili,
             Self::Alist => synctv_proto::source_config::SourceProvider::Alist,
             Self::Emby => synctv_proto::source_config::SourceProvider::Emby,
-            Self::Rtmp => synctv_proto::source_config::SourceProvider::Rtmp,
+            Self::Live => synctv_proto::source_config::SourceProvider::Rtmp,
             Self::LiveProxy => synctv_proto::source_config::SourceProvider::LiveProxy,
             Self::Cloudreve => synctv_proto::source_config::SourceProvider::Cloudreve,
             Self::Twitch => synctv_proto::source_config::SourceProvider::Twitch,

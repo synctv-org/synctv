@@ -3,7 +3,10 @@ use std::sync::Arc;
 use subtle::ConstantTimeEq;
 use synctv_xiu::hls::StreamRegistry as HlsStreamRegistry;
 use synctv_xiu::streamhub::{
-    define::{NotifyInfo, StreamHubEvent, StreamHubEventSender, SubscribeType, SubscriberInfo},
+    define::{
+        NotifyInfo, PacketData, StreamHubEvent, StreamHubEventSender, SubDataType, SubscribeType,
+        SubscriberInfo,
+    },
     errors::StreamHubErrorValue,
     send_event_with_backpressure_timeout, spawn_event_delivery_with_backpressure_timeout,
     stream::StreamIdentifier,
@@ -16,10 +19,14 @@ use tonic::{Request, Response, Status};
 use tracing::{info, warn};
 
 use super::proto::{
-    stream_relay_service_server, FrameType, GetHlsPlaylistRequest, GetHlsPlaylistResponse,
-    GetHlsSegmentRequest, GetHlsSegmentResponse, PullRtmpStreamRequest, RtmpPacket,
+    stream_relay_service_server, DeleteWebRtcSessionRequest, DeleteWebRtcSessionResponse,
+    FrameType, GetHlsPlaylistRequest, GetHlsPlaylistResponse, GetHlsSegmentRequest,
+    GetHlsSegmentResponse, PullRtmpStreamRequest, RtmpPacket, RtpPacket, RtpPacketType,
+    WebRtcSessionKind as ProtoWebRtcSessionKind,
 };
+use crate::error::StreamError;
 use crate::livestream::external_publish_manager::ExternalPublishManager;
+use crate::livestream::webrtc_session_manager::WebRtcSessionManager;
 use crate::livestream::SegmentManager;
 use crate::relay::StreamRegistryTrait;
 use crate::util::{
@@ -28,6 +35,7 @@ use crate::util::{
 };
 
 type ResponseStream = Pin<Box<dyn Stream<Item = Result<RtmpPacket, Status>> + Send>>;
+type RtpResponseStream = Pin<Box<dyn Stream<Item = Result<RtpPacket, Status>> + Send>>;
 
 /// Metadata key for cluster authentication shared secret
 const AUTH_SECRET_METADATA_KEY: &str = "x-cluster-secret";
@@ -38,6 +46,8 @@ struct RelaySubscriptionGuard {
     subscriber_id: Uuid,
     room_id: String,
     media_id: String,
+    sub_type: SubscribeType,
+    sub_data_type: SubDataType,
     active: bool,
 }
 
@@ -49,8 +59,8 @@ impl Drop for RelaySubscriptionGuard {
 
         let sub_info = SubscriberInfo {
             id: self.subscriber_id,
-            sub_type: SubscribeType::RtmpPull,
-            sub_data_type: synctv_xiu::streamhub::define::SubDataType::Frame,
+            sub_type: self.sub_type.clone(),
+            sub_data_type: self.sub_data_type,
             notify_info: NotifyInfo {
                 request_url: String::new(),
                 remote_addr: String::new(),
@@ -79,6 +89,18 @@ fn map_streamhub_enqueue_error(error: synctv_xiu::streamhub::errors::StreamHubEr
             tracing::error!("failed to enqueue StreamHub subscribe event: {other:?}");
             Status::internal("Failed to enqueue subscribe event")
         }
+    }
+}
+
+fn map_webrtc_session_error(error: StreamError) -> Status {
+    match error {
+        StreamError::InvalidInput(message) => Status::invalid_argument(message),
+        StreamError::PermissionDenied(message) => Status::permission_denied(message),
+        StreamError::Authentication(message) => Status::unauthenticated(message),
+        StreamError::InvalidState(message) => Status::failed_precondition(message),
+        StreamError::ResourceExhausted(message) => Status::resource_exhausted(message),
+        StreamError::RegistryError(message) => Status::unavailable(message),
+        other => Status::internal(other.to_string()),
     }
 }
 
@@ -136,6 +158,10 @@ async fn forward_rtmp_packets(
                     None => break,
                 }
             }
+            () = tx.closed() => {
+                info!("Relay client closed the live-frame stream");
+                break;
+            }
         };
 
         let (data, timestamp, frame_type) = match frame_data {
@@ -172,6 +198,46 @@ async fn forward_rtmp_packets(
     }
 }
 
+async fn forward_rtp_packets(
+    mut packet_receiver: synctv_xiu::streamhub::define::PacketDataReceiver,
+    tx: mpsc::Sender<Result<RtpPacket, Status>>,
+    cancel_token: CancellationToken,
+) {
+    info!("Streaming RTP data to puller");
+
+    loop {
+        let packet_data = tokio::select! {
+            () = cancel_token.cancelled() => break,
+            () = tx.closed() => break,
+            result = packet_receiver.recv() => {
+                match result {
+                    Some(data) => data,
+                    None => break,
+                }
+            }
+        };
+        let packet = match packet_data {
+            PacketData::Video { timestamp, data } => RtpPacket {
+                data,
+                timestamp,
+                packet_type: RtpPacketType::Video as i32,
+            },
+            PacketData::Audio { timestamp, data } => RtpPacket {
+                data,
+                timestamp,
+                packet_type: RtpPacketType::Audio as i32,
+            },
+        };
+        let send_result = tokio::select! {
+            () = cancel_token.cancelled() => break,
+            result = tx.send(Ok(packet)) => result,
+        };
+        if send_result.is_err() {
+            break;
+        }
+    }
+}
+
 /// `StreamRelayService` implementation
 /// Publisher nodes use this to serve RTMP packets to Puller nodes via subscription
 /// and HLS playlists/segments to non-publisher nodes via proxy.
@@ -191,6 +257,7 @@ pub struct StreamRelayServiceImpl {
     /// HLS stream registry for M3U8 generation (optional, only on HLS-enabled nodes)
     hls_stream_registry: Option<HlsStreamRegistry>,
     external_publish_manager: Option<Arc<ExternalPublishManager>>,
+    webrtc_session_manager: Option<Arc<WebRtcSessionManager>>,
 }
 
 impl StreamRelayServiceImpl {
@@ -210,6 +277,7 @@ impl StreamRelayServiceImpl {
             segment_manager: None,
             hls_stream_registry: None,
             external_publish_manager: None,
+            webrtc_session_manager: None,
         }
     }
 
@@ -244,6 +312,15 @@ impl StreamRelayServiceImpl {
         external_publish_manager: Arc<ExternalPublishManager>,
     ) -> Self {
         self.external_publish_manager = Some(external_publish_manager);
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn with_webrtc_session_manager(
+        mut self,
+        manager: Arc<WebRtcSessionManager>,
+    ) -> Self {
+        self.webrtc_session_manager = Some(manager);
         self
     }
 
@@ -451,6 +528,8 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
             subscriber_id,
             room_id: req.room_id.clone(),
             media_id: req.media_id.clone(),
+            sub_type: SubscribeType::RtmpPull,
+            sub_data_type: SubDataType::Frame,
             active: true,
         };
 
@@ -471,6 +550,8 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
                 subscriber_id,
                 req.room_id.clone(),
                 req.media_id.clone(),
+                SubscribeType::RtmpPull,
+                SubDataType::Frame,
             )
             .await;
             return Err(status);
@@ -498,6 +579,8 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
                 subscriber_id,
                 room_id_clone,
                 media_id_clone,
+                SubscribeType::RtmpPull,
+                SubDataType::Frame,
             )
             .await;
         });
@@ -508,6 +591,126 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
         Ok(Response::new(
             Box::pin(output_stream) as Self::PullRtmpStreamStream
         ))
+    }
+
+    type PullRtpStreamStream = RtpResponseStream;
+
+    async fn pull_rtp_stream(
+        &self,
+        request: Request<PullRtmpStreamRequest>,
+    ) -> Result<Response<Self::PullRtpStreamStream>, Status> {
+        self.authenticate(&request)?;
+
+        let req = request.into_inner();
+        validate_relay_stream_ids(&req.room_id, &req.media_id)?;
+        validate_relay_generation_id(&req.generation_id)?;
+        self.verify_local_active_generation(
+            &req.room_id,
+            &req.media_id,
+            &req.generation_id,
+            req.expected_lease_epoch,
+        )
+        .await?;
+
+        let subscriber_id = Uuid::new();
+        let sub_info = SubscriberInfo {
+            id: subscriber_id,
+            sub_type: SubscribeType::WhepPull,
+            sub_data_type: SubDataType::Packet,
+            notify_info: NotifyInfo {
+                request_url: String::new(),
+                remote_addr: String::new(),
+            },
+        };
+        let identifier = StreamIdentifier::Rtmp {
+            app_name: req.room_id.clone(),
+            stream_name: req.media_id.clone(),
+        };
+        let (event_result_sender, event_result_receiver) = tokio::sync::oneshot::channel();
+        send_event_with_backpressure_timeout(
+            &self.stream_hub_event_sender,
+            StreamHubEvent::SubscribeWithGeneration {
+                identifier,
+                info: sub_info,
+                expected_generation_id: Uuid::parse_str(&req.generation_id)
+                    .map_err(|_| Status::invalid_argument("generation_id must be a UUID"))?,
+                result_sender: event_result_sender,
+            },
+        )
+        .await
+        .map_err(map_streamhub_enqueue_error)?;
+
+        let subscribe_result =
+            tokio::time::timeout(STREAM_HUB_SUBSCRIBE_TIMEOUT, event_result_receiver)
+                .await
+                .map_err(|_| Status::deadline_exceeded("Timed out waiting for RTP subscription"))?
+                .map_err(|_| Status::internal("RTP subscribe result channel closed"))?
+                .map_err(|error| match error.value {
+                    StreamHubErrorValue::NotCorrectDataSenderType => {
+                        Status::failed_precondition("Active stream does not provide RTP packets")
+                    }
+                    other => {
+                        tracing::error!("RTP subscribe failed: {other:?}");
+                        Status::internal("RTP stream subscription failed")
+                    }
+                })?;
+
+        let mut subscription_guard = RelaySubscriptionGuard {
+            event_sender: self.stream_hub_event_sender.clone(),
+            subscriber_id,
+            room_id: req.room_id.clone(),
+            media_id: req.media_id.clone(),
+            sub_type: SubscribeType::WhepPull,
+            sub_data_type: SubDataType::Packet,
+            active: true,
+        };
+
+        if let Err(status) = self
+            .verify_local_active_generation(
+                &req.room_id,
+                &req.media_id,
+                &req.generation_id,
+                req.expected_lease_epoch,
+            )
+            .await
+        {
+            Self::unsubscribe_from_hub(
+                self.stream_hub_event_sender.clone(),
+                subscriber_id,
+                req.room_id.clone(),
+                req.media_id.clone(),
+                SubscribeType::WhepPull,
+                SubDataType::Packet,
+            )
+            .await;
+            subscription_guard.active = false;
+            return Err(status);
+        }
+
+        let packet_receiver = subscribe_result
+            .0
+            .packet_receiver
+            .ok_or_else(|| Status::internal("RTP subscription returned no packet receiver"))?;
+        let (tx, rx) = mpsc::channel(256);
+        let room_id = req.room_id;
+        let media_id = req.media_id;
+        let event_sender = self.stream_hub_event_sender.clone();
+        let child_token = self.cancel_token.child_token();
+        tokio::spawn(async move {
+            forward_rtp_packets(packet_receiver, tx, child_token).await;
+            Self::unsubscribe_from_hub(
+                event_sender,
+                subscriber_id,
+                room_id,
+                media_id,
+                SubscribeType::WhepPull,
+                SubDataType::Packet,
+            )
+            .await;
+        });
+        subscription_guard.active = false;
+
+        Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
     }
 
     /// Get HLS M3U8 playlist from this (publisher) node.
@@ -647,6 +850,49 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
             }
         }
     }
+
+    async fn delete_web_rtc_session(
+        &self,
+        request: Request<DeleteWebRtcSessionRequest>,
+    ) -> Result<Response<DeleteWebRtcSessionResponse>, Status> {
+        self.authenticate(&request)?;
+        let req = request.into_inner();
+        validate_relay_stream_ids(&req.room_id, &req.media_id)?;
+        validate_relay_generation_id(&req.session_id)?;
+        let kind = ProtoWebRtcSessionKind::try_from(req.kind)
+            .map_err(|_| Status::invalid_argument("invalid WebRTC session kind"))?;
+        let manager = self
+            .webrtc_session_manager
+            .as_ref()
+            .ok_or_else(|| Status::unavailable("WebRTC session manager is unavailable"))?;
+        let deleted = match kind {
+            ProtoWebRtcSessionKind::Whip => {
+                if req.publish_token.is_empty() {
+                    return Err(Status::invalid_argument(
+                        "WHIP session deletion requires a publish token",
+                    ));
+                }
+                manager
+                    .delete_whip_session(
+                        &req.session_id,
+                        &req.room_id,
+                        &req.media_id,
+                        &req.publish_token,
+                    )
+                    .await
+            }
+            ProtoWebRtcSessionKind::Whep => {
+                manager
+                    .delete_whep_session(&req.session_id, &req.room_id, &req.media_id)
+                    .await
+            }
+            ProtoWebRtcSessionKind::Unspecified => {
+                return Err(Status::invalid_argument("WebRTC session kind is required"));
+            }
+        }
+        .map_err(map_webrtc_session_error)?;
+        Ok(Response::new(DeleteWebRtcSessionResponse { deleted }))
+    }
 }
 
 impl StreamRelayServiceImpl {
@@ -656,11 +902,13 @@ impl StreamRelayServiceImpl {
         subscriber_id: Uuid,
         room_id: String,
         media_id: String,
+        sub_type: SubscribeType,
+        sub_data_type: SubDataType,
     ) {
         let sub_info = SubscriberInfo {
             id: subscriber_id,
-            sub_type: SubscribeType::RtmpPull,
-            sub_data_type: synctv_xiu::streamhub::define::SubDataType::Frame,
+            sub_type,
+            sub_data_type,
             notify_info: NotifyInfo {
                 request_url: String::new(),
                 remote_addr: String::new(),
@@ -696,7 +944,9 @@ mod tests {
     use crate::livestream::managed_stream::ManagedStream as _;
     use crate::util::TEST_GENERATION_ID;
     use bytes::Bytes;
+    use futures::StreamExt as _;
     use synctv_xiu::streamhub::define::{DataReceiver, StreamHubEvent};
+    use synctv_xiu::streamhub::errors::{StreamHubError, StreamHubErrorValue};
     use synctv_xiu::streamhub::stream::StreamIdentifier;
     use tokio::time::{timeout, Duration};
 
@@ -754,6 +1004,114 @@ mod tests {
         // Just verify the ResponseStream type alias compiles
         let (_tx, rx) = tokio::sync::mpsc::channel(128);
         let _: ResponseStream = Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx));
+    }
+
+    #[tokio::test]
+    async fn pull_rtp_stream_forwards_packets_and_unsubscribes() -> TestResult {
+        let registry = crate::relay::local_stream_registry();
+        let generation_id = register_test_publisher(&registry).await?;
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(4);
+        let service = StreamRelayServiceImpl::new(
+            registry,
+            "test-node".to_string(),
+            event_tx,
+            CancellationToken::new(),
+        )
+        .with_cluster_secret("cluster-secret");
+        let mut request = Request::new(PullRtmpStreamRequest {
+            room_id: "room1".to_string(),
+            media_id: "media1".to_string(),
+            generation_id: generation_id.to_string(),
+            is_reconnect: false,
+            expected_lease_epoch: 1,
+        });
+        attach_test_auth(&mut request)?;
+        let service_task = tokio::spawn(async move { service.pull_rtp_stream(request).await });
+
+        let event = recv_event(&mut event_rx, "RTP subscribe event missing").await?;
+        let StreamHubEvent::SubscribeWithGeneration {
+            info,
+            result_sender,
+            ..
+        } = event
+        else {
+            return Err(test_error("expected RTP subscribe event"));
+        };
+        assert_eq!(info.sub_data_type, SubDataType::Packet);
+        let subscriber_id = info.id;
+        let (packet_tx, packet_rx) = mpsc::channel(4);
+        result_sender
+            .send(Ok((
+                DataReceiver {
+                    frame_receiver: None,
+                    packet_receiver: Some(packet_rx),
+                },
+                None,
+            )))
+            .map_err(|_| test_error("RTP subscribe result receiver dropped"))?;
+
+        let response = timeout(Duration::from_secs(1), service_task).await???;
+        let mut stream = response.into_inner();
+        packet_tx
+            .send(PacketData::Video {
+                timestamp: 90_000,
+                data: Bytes::from_static(b"rtp-packet"),
+            })
+            .await?;
+        let forwarded = timeout(Duration::from_secs(1), stream.next())
+            .await?
+            .ok_or_else(|| test_error("RTP response stream closed"))??;
+        assert_eq!(forwarded.packet_type, RtpPacketType::Video as i32);
+        assert_eq!(forwarded.timestamp, 90_000);
+        assert_eq!(forwarded.data, Bytes::from_static(b"rtp-packet"));
+
+        drop(stream);
+        let cleanup = recv_event(&mut event_rx, "RTP unsubscribe event missing").await?;
+        assert!(matches!(
+            cleanup,
+            StreamHubEvent::UnSubscribe { info, .. }
+                if info.id == subscriber_id && info.sub_data_type == SubDataType::Packet
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn pull_rtp_stream_reports_frame_only_source() -> TestResult {
+        let registry = crate::relay::local_stream_registry();
+        let generation_id = register_test_publisher(&registry).await?;
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(2);
+        let service = StreamRelayServiceImpl::new(
+            registry,
+            "test-node".to_string(),
+            event_tx,
+            CancellationToken::new(),
+        )
+        .with_cluster_secret("cluster-secret");
+        let mut request = Request::new(PullRtmpStreamRequest {
+            room_id: "room1".to_string(),
+            media_id: "media1".to_string(),
+            generation_id: generation_id.to_string(),
+            is_reconnect: false,
+            expected_lease_epoch: 1,
+        });
+        attach_test_auth(&mut request)?;
+        let service_task = tokio::spawn(async move { service.pull_rtp_stream(request).await });
+
+        let event = recv_event(&mut event_rx, "RTP subscribe event missing").await?;
+        let StreamHubEvent::SubscribeWithGeneration { result_sender, .. } = event else {
+            return Err(test_error("expected RTP subscribe event"));
+        };
+        result_sender
+            .send(Err(StreamHubError {
+                value: StreamHubErrorValue::NotCorrectDataSenderType,
+            }))
+            .map_err(|_| test_error("RTP subscribe result receiver dropped"))?;
+
+        let result = timeout(Duration::from_secs(1), service_task).await??;
+        let status = expect_status(result, "frame-only source must reject RTP pull")?;
+        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+        assert!(status.message().contains("does not provide RTP"));
+        Ok(())
     }
 
     #[tokio::test]
@@ -836,6 +1194,8 @@ mod tests {
                 subscriber_id,
                 "room1".to_string(),
                 "media1".to_string(),
+                SubscribeType::RtmpPull,
+                SubDataType::Frame,
             )
             .await;
         });
@@ -875,6 +1235,8 @@ mod tests {
             subscriber_id,
             room_id: "room-cancel".to_string(),
             media_id: "media-cancel".to_string(),
+            sub_type: SubscribeType::RtmpPull,
+            sub_data_type: SubDataType::Frame,
             active: true,
         };
         drop(guard);

@@ -189,11 +189,17 @@ message HttpFlvPullSourceConfig {
   string url = 1;
 }
 
+message WhepPullSourceConfig {
+  string url = 1;
+  optional string authorization = 2 [(buf.validate.field).string.max_len = 4096];
+}
+
 message LiveProxyMediaSourceConfig {
   oneof source {
     RtmpPullSourceConfig rtmp = 1;
     RtspPullSourceConfig rtsp = 2;
     HttpFlvPullSourceConfig http_flv = 3;
+    WhepPullSourceConfig whep = 4;
   }
 }
 

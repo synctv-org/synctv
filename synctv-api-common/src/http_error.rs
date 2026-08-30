@@ -14,6 +14,7 @@ pub type AppResult<T> = Result<T, AppError>;
 #[derive(Debug)]
 pub struct AppError {
     pub api_error: crate::impls::ApiError,
+    status_override: Option<StatusCode>,
     extra_headers: Vec<(HeaderName, HeaderValue)>,
 }
 
@@ -22,6 +23,7 @@ impl AppError {
         let api_error = api_error_from_status(status, message.into());
         Self {
             api_error: crate::api_error_model::sanitized_api_error(&api_error),
+            status_override: Some(status),
             extra_headers: Vec::new(),
         }
     }
@@ -45,13 +47,16 @@ impl AppError {
         };
         Self {
             api_error: crate::api_error_model::sanitized_api_error(&api_error),
+            status_override: None,
             extra_headers: Vec::new(),
         }
     }
 
     #[must_use]
     pub fn status(&self) -> StatusCode {
-        crate::api_error_model::GoogleApiError::from_api_error(&self.api_error).http_status
+        self.status_override.unwrap_or_else(|| {
+            crate::api_error_model::GoogleApiError::from_api_error(&self.api_error).http_status
+        })
     }
 
     #[must_use]
@@ -139,6 +144,7 @@ impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let Self {
             api_error,
+            status_override,
             extra_headers,
         } = self;
         let request_id = crate::request_context::CURRENT_REQUEST_ID
@@ -146,7 +152,7 @@ impl IntoResponse for AppError {
             .ok();
         let google_error = crate::api_error_model::GoogleApiError::from_api_error(&api_error)
             .with_request_id(request_id.as_deref());
-        let status = google_error.http_status;
+        let status = status_override.unwrap_or(google_error.http_status);
         let body = match google_error.to_protojson_bytes() {
             Ok(bytes) => bytes,
             Err(error) => {
@@ -221,6 +227,7 @@ impl From<crate::impls::ApiError> for AppError {
     fn from(err: crate::impls::ApiError) -> Self {
         let mut app_err = Self {
             api_error: crate::api_error_model::sanitized_api_error(&err),
+            status_override: None,
             extra_headers: Vec::new(),
         };
         if let crate::impls::ApiError::RangeNotSatisfiable { total_size } = err {

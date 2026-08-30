@@ -1183,9 +1183,8 @@ fn media_source_config_json_to_proto(
         DirectUrlMediaSourceConfig, DouyinMediaSourceConfig, DouyuMediaSourceConfig,
         EmbyMediaSourceConfig, FnosMediaSourceConfig, HuyaMediaSourceConfig,
         LiveProxyMediaSourceConfig, NextcloudMediaSourceConfig, QnapMediaSourceConfig,
-        RtmpMediaSourceConfig, SeafileMediaSourceConfig, SynologyMediaSourceConfig,
-        TikTokMediaSourceConfig, TrueNasMediaSourceConfig, TwitchMediaSourceConfig,
-        YoutubeMediaSourceConfig,
+        SeafileMediaSourceConfig, SynologyMediaSourceConfig, TikTokMediaSourceConfig,
+        TrueNasMediaSourceConfig, TwitchMediaSourceConfig, YoutubeMediaSourceConfig,
     };
 
     let provider =
@@ -1212,11 +1211,8 @@ fn media_source_config_json_to_proto(
                     raw,
                 )?)
             }
-            CliSourceProvider::Rtmp => {
-                media_source_config::Provider::Rtmp(parse_cli_json::<RtmpMediaSourceConfig>(
-                    "rtmp media sourceConfig",
-                    raw,
-                )?)
+            CliSourceProvider::Live => {
+                media_source_config::Provider::Rtmp(parse_live_media_source_config(raw)?)
             }
             CliSourceProvider::LiveProxy => {
                 media_source_config::Provider::LiveProxy(parse_cli_json::<
@@ -1318,6 +1314,48 @@ fn media_source_config_json_to_proto(
     Ok(synctv_proto::source_config::MediaSourceConfig {
         provider: Some(provider),
     })
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CliLiveMediaSourceConfig {
+    #[serde(default)]
+    mode: Option<CliLiveStreamMode>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum CliLiveStreamMode {
+    Number(i32),
+    Name(String),
+}
+
+fn parse_live_media_source_config(
+    raw: &str,
+) -> Result<synctv_proto::source_config::RtmpMediaSourceConfig> {
+    use synctv_proto::source_config::RtmpStreamMode;
+
+    let config = parse_cli_json::<CliLiveMediaSourceConfig>("live media sourceConfig", raw)?;
+    let mode = match config.mode {
+        None => RtmpStreamMode::Unspecified,
+        Some(CliLiveStreamMode::Number(value)) => RtmpStreamMode::try_from(value)
+            .map_err(|_| anyhow::anyhow!("Unsupported live stream mode: {value}"))?,
+        Some(CliLiveStreamMode::Name(value)) => {
+            let normalized = value
+                .chars()
+                .filter(|ch| *ch != '-' && *ch != '_')
+                .flat_map(char::to_lowercase)
+                .collect::<String>();
+            match normalized.as_str() {
+                "unspecified" => RtmpStreamMode::Unspecified,
+                "default" => RtmpStreamMode::Default,
+                "videoonly" => RtmpStreamMode::VideoOnly,
+                "audioonly" => RtmpStreamMode::AudioOnly,
+                _ => bail!("Unsupported live stream mode: {value}"),
+            }
+        }
+    };
+    Ok(synctv_proto::source_config::RtmpMediaSourceConfig { mode: mode as i32 })
 }
 
 fn playlist_source_config_json_to_proto(
@@ -1594,6 +1632,25 @@ mod source_config_tests {
     use super::*;
 
     type TestResult<T = ()> = anyhow::Result<T>;
+
+    #[test]
+    fn parses_live_media_source_config_as_internal_rtmp() -> TestResult {
+        let config =
+            media_source_config_json_to_proto(CliSourceProvider::Live, r#"{"mode":"default"}"#)?;
+
+        let Some(synctv_proto::source_config::media_source_config::Provider::Rtmp(config)) =
+            config.provider
+        else {
+            return Err(anyhow::anyhow!(
+                "live media config did not produce the RTMP compatibility oneof"
+            ));
+        };
+        assert_eq!(
+            config.mode,
+            synctv_proto::source_config::RtmpStreamMode::Default as i32
+        );
+        Ok(())
+    }
 
     #[test]
     fn parses_cloudreve_playlist_source_config() -> TestResult {

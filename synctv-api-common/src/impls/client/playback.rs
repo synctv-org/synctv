@@ -185,6 +185,95 @@ fn apply_static_direct_url_thumbnail(
     }
 }
 
+fn remove_unavailable_live_whep(
+    result: &mut synctv_core::models::media::PlaybackResult,
+) -> Result<(), ApiError> {
+    result.playback_infos.remove("whep");
+    if result.playback_infos.is_empty() {
+        return Err(ApiError::ClientIncompatible {
+            message: "The active live stream does not support a playback transport accepted by this client"
+                .to_string(),
+            required_capability: None,
+        });
+    }
+    if result.default_mode == "whep" {
+        result.default_mode = ["hls", "flv"]
+            .into_iter()
+            .find(|mode| result.playback_infos.contains_key(*mode))
+            .map(str::to_string)
+            .or_else(|| result.playback_infos.keys().min().cloned())
+            .unwrap_or_default();
+    }
+    Ok(())
+}
+
+fn generation_supports_whep(generation: Option<&synctv_livestream::StreamGeneration>) -> bool {
+    generation.is_some_and(|generation| generation.ready_at.is_some() && generation.supports_rtp)
+}
+
+fn retain_live_whep_if_enabled(
+    result: &mut synctv_core::models::media::PlaybackResult,
+    enabled: bool,
+) -> Result<bool, ApiError> {
+    if !result.playback_infos.contains_key("whep") {
+        return Ok(false);
+    }
+    if !enabled {
+        remove_unavailable_live_whep(result)?;
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+async fn filter_unavailable_live_whep(
+    infrastructure: Option<&std::sync::Arc<synctv_livestream::LiveStreamingInfrastructure>>,
+    result: &mut synctv_core::models::media::PlaybackResult,
+) -> Result<Option<synctv_livestream::StreamGeneration>, ApiError> {
+    let webrtc_enabled = infrastructure
+        .is_some_and(|infrastructure| infrastructure.webrtc_session_manager().enabled());
+    let whep_retained = retain_live_whep_if_enabled(result, webrtc_enabled)?;
+    if result.provider != SourceProvider::Rtmp {
+        return Ok(None);
+    }
+    let Some(infrastructure) = infrastructure else {
+        return Ok(None);
+    };
+    let media_id = result.id.or(match result.metadata.as_ref() {
+        Some(synctv_core::models::media::PlaybackMetadata::Live(metadata)) => {
+            Some(metadata.media_id)
+        }
+        _ => None,
+    });
+    let Some(media_id) = media_id else {
+        if whep_retained {
+            remove_unavailable_live_whep(result)?;
+        }
+        return Ok(None);
+    };
+    let generation = infrastructure
+        .find_publisher(&result.room_id.to_string(), &media_id.to_string())
+        .await
+        .map_err(|error| crate::impls::map_livestream_backend_error(error.as_ref()))?;
+    if whep_retained && !generation_supports_whep(generation.as_ref()) {
+        remove_unavailable_live_whep(result)?;
+    }
+    Ok(generation)
+}
+
+fn attach_live_stream_generation(
+    playback: &mut synctv_proto::client::Playback,
+    generation: Option<&synctv_livestream::StreamGeneration>,
+) {
+    let Some(synctv_proto::client::playback_metadata::Metadata::Live(metadata)) = playback
+        .metadata
+        .as_mut()
+        .and_then(|metadata| metadata.metadata.as_mut())
+    else {
+        return;
+    };
+    apply_live_stream_generation(metadata, generation);
+}
+
 pub fn build_start_playback_request(
     req: synctv_proto::client::StartPlaybackRequest,
     public_id_codec: &synctv_adapter::PublicIdCodec,
@@ -480,7 +569,15 @@ impl ClientApiImpl {
             thumbnail.as_deref(),
         );
 
-        self.sign_and_finalize_playback(&full_result, &ctx, actor, proxy_authorizer_id)
+        let generation = filter_unavailable_live_whep(
+            self.live_streaming_infrastructure.as_ref(),
+            &mut full_result,
+        )
+        .await?;
+        let mut playback =
+            self.sign_and_finalize_playback(&full_result, &ctx, actor, proxy_authorizer_id)?;
+        attach_live_stream_generation(&mut playback, generation.as_ref());
+        Ok(playback)
     }
 
     /// Helper to encode public IDs, sign playback URLs, and set expiration.
@@ -626,7 +723,15 @@ impl ClientApiImpl {
 
         full_result.target = Some(target.clone());
 
-        self.sign_and_finalize_playback(&full_result, &ctx, actor, proxy_authorizer_id)
+        let generation = filter_unavailable_live_whep(
+            self.live_streaming_infrastructure.as_ref(),
+            &mut full_result,
+        )
+        .await?;
+        let mut playback =
+            self.sign_and_finalize_playback(&full_result, &ctx, actor, proxy_authorizer_id)?;
+        attach_live_stream_generation(&mut playback, generation.as_ref());
+        Ok(playback)
     }
 
     async fn build_playback_from_state(
@@ -638,7 +743,7 @@ impl ClientApiImpl {
         playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
         request_control: Option<&ExecutionControl>,
     ) -> Result<synctv_proto::client::Playback, ApiError> {
-        let mut playback = if let Some(ref media_id) = state.playing_media_id {
+        let playback = if let Some(ref media_id) = state.playing_media_id {
             let media = self
                 .room_service
                 .media_service()
@@ -697,36 +802,7 @@ impl ClientApiImpl {
             }
         };
 
-        self.attach_live_stream_state(room_id, state.playing_media_id.as_ref(), &mut playback)
-            .await?;
         Ok(playback)
-    }
-
-    async fn attach_live_stream_state(
-        &self,
-        room_id: &synctv_core::models::RoomId,
-        media_id: Option<&MediaId>,
-        playback: &mut synctv_proto::client::Playback,
-    ) -> Result<(), ApiError> {
-        let Some(synctv_proto::client::playback_metadata::Metadata::Live(metadata)) = playback
-            .metadata
-            .as_mut()
-            .and_then(|metadata| metadata.metadata.as_mut())
-        else {
-            return Ok(());
-        };
-        let Some(media_id) = media_id else {
-            return Ok(());
-        };
-        let publisher = match &self.live_streaming_infrastructure {
-            Some(infrastructure) => infrastructure
-                .find_publisher(&room_id.to_string(), &media_id.to_string())
-                .await
-                .map_err(|error| crate::impls::map_livestream_backend_error(error.as_ref()))?,
-            None => None,
-        };
-        apply_live_stream_generation(metadata, publisher.as_ref());
-        Ok(())
     }
 
     async fn playback_credential_dependencies_from_state(

@@ -1,14 +1,15 @@
 // Live streaming API helpers used by synctv-api HTTP endpoints.
 
 use crate::livestream::server::HlsStorageBackend;
+use crate::livestream::webrtc_session_manager::WebRtcSessionManager;
 use crate::{
     error::StreamError,
-    grpc::{HlsProxyClient, StreamRelayServiceImpl},
+    grpc::{HlsProxyClient, StreamRelayServiceImpl, WebRtcSessionRouter},
     livestream::{
         external_publish_manager::ExternalPublishManager, managed_stream::ManagedStream,
         pull_manager::PullStreamManager, SegmentManager,
     },
-    relay::{ActiveStreamGeneration, StreamGeneration, StreamRegistryTrait},
+    relay::{ActiveStreamGeneration, StreamGeneration, StreamRegistryTrait, WebRtcSessionKind},
 };
 use anyhow::{Context, Result};
 use bytes::Bytes;
@@ -88,6 +89,10 @@ pub struct LiveStreamingInfrastructure {
     pub(crate) hls_storage_backend: HlsStorageBackend,
     /// HLS proxy client for fetching playlists/segments from remote publisher nodes
     pub(crate) hls_proxy: Option<HlsProxyClient>,
+    /// Owns WHIP/WHEP peer connections and their StreamHub resources.
+    pub(crate) webrtc_session_manager: Arc<WebRtcSessionManager>,
+    /// Authenticated client for forwarding session deletion to its owner node.
+    pub(crate) webrtc_session_router: Option<WebRtcSessionRouter>,
 }
 
 impl LiveStreamingInfrastructure {
@@ -108,6 +113,11 @@ impl LiveStreamingInfrastructure {
             stream_hub_event_sender.clone(),
             ssrf_guard,
         )?);
+        let webrtc_session_manager = Arc::new(WebRtcSessionManager::new(
+            stream_hub_event_sender.clone(),
+            None,
+            crate::WebRtcSessionConfig::default(),
+        ));
 
         Ok(Self::from_parts(
             registry,
@@ -116,7 +126,8 @@ impl LiveStreamingInfrastructure {
             external_publish_manager,
             user_stream_tracker,
             local_node_id,
-        ))
+        )
+        .with_webrtc_session_manager(webrtc_session_manager))
     }
 
     /// Create infrastructure from preconfigured internal managers.
@@ -128,6 +139,11 @@ impl LiveStreamingInfrastructure {
         user_stream_tracker: Arc<StreamTracker>,
         local_node_id: String,
     ) -> Self {
+        let webrtc_session_manager = Arc::new(WebRtcSessionManager::new(
+            stream_hub_event_sender.clone(),
+            None,
+            crate::WebRtcSessionConfig::default(),
+        ));
         Self {
             registry,
             stream_hub_event_sender,
@@ -139,6 +155,8 @@ impl LiveStreamingInfrastructure {
             local_node_id,
             hls_storage_backend: HlsStorageBackend::Memory,
             hls_proxy: None,
+            webrtc_session_manager,
+            webrtc_session_router: None,
         }
     }
 
@@ -167,6 +185,128 @@ impl LiveStreamingInfrastructure {
     pub(crate) fn with_hls_proxy(mut self, hls_proxy: HlsProxyClient) -> Self {
         self.hls_proxy = Some(hls_proxy);
         self
+    }
+
+    #[must_use]
+    pub(crate) fn with_webrtc_session_manager(
+        mut self,
+        manager: Arc<WebRtcSessionManager>,
+    ) -> Self {
+        self.webrtc_session_manager = manager;
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn with_webrtc_session_router(mut self, router: WebRtcSessionRouter) -> Self {
+        self.webrtc_session_router = Some(router);
+        self
+    }
+
+    #[must_use]
+    pub fn webrtc_session_manager(&self) -> Arc<WebRtcSessionManager> {
+        Arc::clone(&self.webrtc_session_manager)
+    }
+
+    async fn remote_webrtc_session_owner(
+        &self,
+        session_id: &str,
+        room_id: &str,
+        media_id: &str,
+        expected_kind: WebRtcSessionKind,
+    ) -> crate::error::StreamResult<Option<crate::relay::WebRtcSessionOwner>> {
+        let owner = self
+            .registry
+            .get_webrtc_session_owner(session_id)
+            .await
+            .map_err(|error| StreamError::RegistryError(error.to_string()))?;
+        let Some(owner) = owner else {
+            return Ok(None);
+        };
+        if owner.room_id != room_id || owner.media_id != media_id || owner.kind != expected_kind {
+            return Ok(None);
+        }
+        if self.is_local_publisher_node(&owner.node_id) {
+            return Ok(None);
+        }
+        Ok(Some(owner))
+    }
+
+    async fn delete_remote_webrtc_session(
+        &self,
+        session_id: &str,
+        room_id: &str,
+        media_id: &str,
+        expected_kind: WebRtcSessionKind,
+        publish_token: Option<&str>,
+    ) -> crate::error::StreamResult<bool> {
+        let Some(owner) = self
+            .remote_webrtc_session_owner(session_id, room_id, media_id, expected_kind)
+            .await?
+        else {
+            return Ok(false);
+        };
+        let router = self.webrtc_session_router.as_ref().ok_or_else(|| {
+            StreamError::InvalidState(
+                "WebRTC cluster session routing is not configured".to_string(),
+            )
+        })?;
+        let deleted = router
+            .delete_session(session_id, &owner, publish_token)
+            .await?;
+        if !deleted {
+            let _ = self
+                .registry
+                .unregister_webrtc_session(session_id, &owner.node_id)
+                .await;
+        }
+        Ok(deleted)
+    }
+
+    pub async fn delete_whip_session(
+        &self,
+        session_id: &str,
+        room_id: &str,
+        media_id: &str,
+        token: &str,
+    ) -> crate::error::StreamResult<bool> {
+        if self
+            .webrtc_session_manager
+            .delete_whip_session(session_id, room_id, media_id, token)
+            .await?
+        {
+            return Ok(true);
+        }
+        self.delete_remote_webrtc_session(
+            session_id,
+            room_id,
+            media_id,
+            WebRtcSessionKind::Whip,
+            Some(token),
+        )
+        .await
+    }
+
+    pub async fn delete_whep_session(
+        &self,
+        session_id: &str,
+        room_id: &str,
+        media_id: &str,
+    ) -> crate::error::StreamResult<bool> {
+        if self
+            .webrtc_session_manager
+            .delete_whep_session(session_id, room_id, media_id)
+            .await?
+        {
+            return Ok(true);
+        }
+        self.delete_remote_webrtc_session(
+            session_id,
+            room_id,
+            media_id,
+            WebRtcSessionKind::Whep,
+            None,
+        )
+        .await
     }
 
     /// Enqueue a local `UnPublish` event for an RTMP publisher.
@@ -552,7 +692,8 @@ impl LiveStreamingInfrastructure {
             cancel_token,
         )
         .with_cluster_secret(cluster_secret)
-        .with_external_publish_manager(Arc::clone(&self.external_publish_manager));
+        .with_external_publish_manager(Arc::clone(&self.external_publish_manager))
+        .with_webrtc_session_manager(Arc::clone(&self.webrtc_session_manager));
 
         let relay_service = if let Some(segment_manager) = &self.segment_manager {
             relay_service.with_segment_manager(segment_manager.clone())
@@ -1038,6 +1179,7 @@ mod tests {
                     ended_at: None,
                     lease_epoch: 1,
                     generation_id: TEST_GENERATION_ID.to_string(),
+                    supports_rtp: false,
                 },
             )]),
         ));
@@ -1618,6 +1760,7 @@ mod tests {
                     ended_at: None,
                     lease_epoch: 1,
                     generation_id: TEST_GENERATION_ID.to_string(),
+                    supports_rtp: false,
                 },
             )]),
         ));
@@ -1679,6 +1822,7 @@ mod tests {
                 ended_at: None,
                 lease_epoch: 1,
                 generation_id: TEST_GENERATION_ID.to_string(),
+                supports_rtp: false,
             },
         )])));
 
@@ -1770,6 +1914,7 @@ mod tests {
                     ended_at: None,
                     lease_epoch: 1,
                     generation_id: TEST_GENERATION_ID.to_string(),
+                    supports_rtp: false,
                 },
             )]),
         ));
@@ -1831,6 +1976,7 @@ mod tests {
                     ended_at: None,
                     lease_epoch: 1,
                     generation_id: TEST_GENERATION_ID.to_string(),
+                    supports_rtp: false,
                 },
             )]),
         ));
@@ -1885,6 +2031,7 @@ mod tests {
                     ended_at: None,
                     lease_epoch: 1,
                     generation_id: TEST_GENERATION_ID.to_string(),
+                    supports_rtp: false,
                 },
             )]),
         ));
@@ -1940,6 +2087,7 @@ mod tests {
                         ended_at: None,
                         lease_epoch: 1,
                         generation_id: TEST_GENERATION_ID.to_string(),
+                        supports_rtp: false,
                     },
                 ),
                 (
@@ -1954,6 +2102,7 @@ mod tests {
                         ended_at: None,
                         lease_epoch: 1,
                         generation_id: TEST_GENERATION_ID.to_string(),
+                        supports_rtp: false,
                     },
                 ),
             ]),
@@ -2021,6 +2170,7 @@ mod tests {
                         ended_at: None,
                         lease_epoch: 1,
                         generation_id: TEST_GENERATION_ID.to_string(),
+                        supports_rtp: false,
                     },
                 ),
                 (
@@ -2035,6 +2185,7 @@ mod tests {
                         ended_at: None,
                         lease_epoch: 1,
                         generation_id: TEST_GENERATION_ID.to_string(),
+                        supports_rtp: false,
                     },
                 ),
             ]),
@@ -2113,6 +2264,7 @@ mod tests {
                         ended_at: None,
                         lease_epoch: 1,
                         generation_id: TEST_GENERATION_ID.to_string(),
+                        supports_rtp: false,
                     },
                 ),
                 (
@@ -2127,6 +2279,7 @@ mod tests {
                         ended_at: None,
                         lease_epoch: 1,
                         generation_id: TEST_GENERATION_ID.to_string(),
+                        supports_rtp: false,
                     },
                 ),
             ]),
@@ -2180,6 +2333,7 @@ mod tests {
                     ended_at: None,
                     lease_epoch: 1,
                     generation_id: TEST_GENERATION_ID.to_string(),
+                    supports_rtp: false,
                 },
             )]),
         ));

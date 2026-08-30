@@ -1846,6 +1846,9 @@ message CreateRoomPublishKeyResponse {
   string stream_key = 3;
   optional int64 expires_at = 4;
   PublishKeyType type = 5;
+  // WHIP resource used with Authorization: Bearer <publish_key>.
+  // This is origin-relative unless livestream.public_webrtc_base_url is set.
+  string whip_url = 6;
 }
 
 message GetRoomStreamInfoRequest {
@@ -2612,6 +2615,7 @@ enum PlaybackLiveTransport {
   PLAYBACK_LIVE_TRANSPORT_UNSPECIFIED = 0;
   PLAYBACK_LIVE_TRANSPORT_HLS = 1;
   PLAYBACK_LIVE_TRANSPORT_FLV = 2;
+  PLAYBACK_LIVE_TRANSPORT_WHEP = 3;
 }
 
 enum PlaybackAudioCapability {
@@ -2639,6 +2643,7 @@ enum PlaybackMediaTransport {
   PLAYBACK_MEDIA_TRANSPORT_DASH = 3;
   PLAYBACK_MEDIA_TRANSPORT_FLV = 4;
   PLAYBACK_MEDIA_TRANSPORT_MPEG_TS = 5;
+  PLAYBACK_MEDIA_TRANSPORT_WEB_RTC = 6;
 }
 
 enum PlaybackMediaPipeline {

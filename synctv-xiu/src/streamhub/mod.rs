@@ -19,10 +19,10 @@ use transceiver::StreamDataTransceiver;
 use {
     channels::{build_publisher_data_channel, build_subscriber_data_channel},
     define::{
-        BroadcastEvent, BroadcastEventSender, DataReceiver, DataSender, PublisherActivityCallback,
-        StatisticDataSender, StreamHubEvent, StreamHubEventReceiver, StreamHubEventSender,
-        SubEventExecuteResultSender, SubscriberInfo, TStreamHandler, TransceiverEvent,
-        TransceiverEventSender,
+        BroadcastEvent, BroadcastEventSender, DataReceiver, DataSender, PubDataType,
+        PublisherActivityCallback, StatisticDataSender, StreamHubEvent, StreamHubEventReceiver,
+        StreamHubEventSender, SubDataType, SubEventExecuteResultSender, SubscriberInfo,
+        TStreamHandler, TransceiverEvent, TransceiverEventSender,
     },
     errors::{StreamHubError, StreamHubErrorValue},
     std::any::Any,
@@ -60,6 +60,7 @@ pub struct StreamsHub {
 
 struct ActiveStream {
     generation_id: Uuid,
+    pub_data_type: PubDataType,
     event_sender: TransceiverEventSender,
 }
 
@@ -251,6 +252,19 @@ impl StreamsHub {
                 return;
             }
         }
+        if let Some(active_stream) = self.streams.get(&identifier) {
+            let supported = matches!(
+                (active_stream.pub_data_type, info.sub_data_type),
+                (PubDataType::Frame | PubDataType::Both, SubDataType::Frame)
+                    | (PubDataType::Packet | PubDataType::Both, SubDataType::Packet)
+            );
+            if !supported {
+                let _ = result_sender.send(Err(StreamHubError {
+                    value: StreamHubErrorValue::NotCorrectDataSenderType,
+                }));
+                return;
+            }
+        }
 
         let info_clone = info.clone();
         let (sender, receiver) = build_subscriber_data_channel(&info);
@@ -333,6 +347,19 @@ impl StreamsHub {
         receiver: DataReceiver,
         handler: Arc<dyn TStreamHandler>,
     ) -> Result<StatisticDataSender, StreamHubError> {
+        let pub_data_type = match (
+            receiver.frame_receiver.is_some(),
+            receiver.packet_receiver.is_some(),
+        ) {
+            (true, true) => PubDataType::Both,
+            (true, false) => PubDataType::Frame,
+            (false, true) => PubDataType::Packet,
+            (false, false) => {
+                return Err(StreamHubError {
+                    value: StreamHubErrorValue::NotCorrectDataSenderType,
+                });
+            }
+        };
         // Reserve the stream slot before spawning the transceiver.
         let entry = match self.streams.entry(identifier.clone()) {
             std::collections::hash_map::Entry::Occupied(_) => {
@@ -346,7 +373,7 @@ impl StreamsHub {
         let (event_sender, event_receiver) = mpsc::unbounded_channel();
         let mut transceiver =
             StreamDataTransceiver::new(receiver, event_receiver, identifier.clone(), handler);
-        if pub_type == define::PublishType::RtmpPush {
+        if pub_type.is_user_push() {
             if let Some(callback) = self.publisher_activity_callback.clone() {
                 transceiver = transceiver.with_publisher_activity_callback(generation_id, callback);
             }
@@ -408,6 +435,7 @@ impl StreamsHub {
 
         entry.insert(ActiveStream {
             generation_id,
+            pub_data_type,
             event_sender,
         });
 
@@ -644,6 +672,48 @@ mod tests {
                 "internal subscriber {sub_type:?} should use bounded receiver"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn frame_only_stream_rejects_packet_subscription() {
+        let (hub_sender, hub_receiver) = mpsc::channel(8);
+        let mut hub = StreamsHub::new(hub_sender, hub_receiver);
+        let identifier = test_identifier();
+        let (_frame_sender, frame_receiver) = mpsc::channel(8);
+        hub.publish(
+            identifier.clone(),
+            Uuid::new(),
+            define::PublishType::RtmpPush,
+            DataReceiver {
+                frame_receiver: Some(FrameDataReceiver::bounded(frame_receiver)),
+                packet_receiver: None,
+            },
+            Arc::new(NoopHandler),
+        )
+        .expect("frame publisher should publish");
+
+        let (result_sender, result_receiver) = oneshot::channel();
+        hub.handle_subscribe_event(
+            identifier,
+            SubscriberInfo {
+                sub_type: SubscribeType::WhepPull,
+                sub_data_type: SubDataType::Packet,
+                ..test_subscriber()
+            },
+            None,
+            result_sender,
+        )
+        .await;
+
+        let result = result_receiver
+            .await
+            .expect("packet subscription should return a result");
+        assert!(matches!(
+            result,
+            Err(StreamHubError {
+                value: StreamHubErrorValue::NotCorrectDataSenderType
+            })
+        ));
     }
 
     #[tokio::test]

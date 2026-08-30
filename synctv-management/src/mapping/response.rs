@@ -726,6 +726,12 @@ fn media_source_config_to_proto(
                 synctv_core::models::ExternalLiveSourceConfig::HttpFlv { url } => {
                     Source::HttpFlv(source_config_proto::HttpFlvPullSourceConfig { url })
                 }
+                synctv_core::models::ExternalLiveSourceConfig::Whep { url, .. } => {
+                    Source::Whep(source_config_proto::WhepPullSourceConfig {
+                        url,
+                        authorization: None,
+                    })
+                }
             };
             Provider::LiveProxy(source_config_proto::LiveProxyMediaSourceConfig {
                 source: Some(source),
@@ -1310,8 +1316,10 @@ pub(crate) fn created_media_to_client_proto(
 
 #[cfg(test)]
 mod tests {
-    use super::playback_proxy_mode_to_proto;
-    use synctv_core::models::PlaybackProxyMode;
+    use super::{media_source_config_to_proto, playback_proxy_mode_to_proto};
+    use synctv_core::models::{
+        ExternalLiveSourceConfig, LiveProxyMediaSourceConfig, MediaSourceConfig, PlaybackProxyMode,
+    };
     use synctv_proto::source_config::PlaybackProxyMode as ProtoPlaybackProxyMode;
 
     #[test]
@@ -1324,5 +1332,30 @@ mod tests {
             playback_proxy_mode_to_proto(PlaybackProxyMode::DirectOnly),
             ProtoPlaybackProxyMode::DirectOnly as i32,
         );
+    }
+
+    #[test]
+    fn management_response_redacts_whep_authorization() {
+        use synctv_proto::source_config::{
+            live_proxy_media_source_config::Source, media_source_config::Provider,
+        };
+
+        let converted = media_source_config_to_proto(&MediaSourceConfig::LiveProxy(
+            LiveProxyMediaSourceConfig {
+                source: ExternalLiveSourceConfig::Whep {
+                    url: "https://media.example.com/whep/channel".to_string(),
+                    authorization: Some("Bearer upstream-secret".to_string()),
+                },
+            },
+        ));
+        let Some(Provider::LiveProxy(proxy)) = converted.provider else {
+            panic!("expected live proxy source config");
+        };
+        let Some(Source::Whep(whep)) = proxy.source else {
+            panic!("expected WHEP source config");
+        };
+
+        assert_eq!(whep.url, "https://media.example.com/whep/channel");
+        assert!(whep.authorization.is_none());
     }
 }

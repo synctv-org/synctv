@@ -1,6 +1,7 @@
-use super::registry::StreamGeneration;
+use super::registry::{StreamGeneration, WebRtcSessionOwner};
 use super::registry_trait::{
-    ActiveStreamGeneration, LeaseRefreshOutcome, LeaseRefreshRequest, StreamRegistryTrait,
+    ActiveStreamGeneration, LeaseRefreshOutcome, LeaseRefreshRequest, StreamGenerationRegistration,
+    StreamRegistryTrait,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -17,6 +18,8 @@ pub struct TestStreamRegistry {
     generations: std::sync::Arc<
         tokio::sync::Mutex<std::collections::HashMap<GenerationKey, StreamGeneration>>,
     >,
+    webrtc_sessions:
+        std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<String, WebRtcSessionOwner>>>,
     epoch_counters:
         std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<(String, String), u64>>>,
     register_call_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
@@ -41,6 +44,9 @@ impl TestStreamRegistry {
                 std::collections::HashMap::new(),
             )),
             generations: std::sync::Arc::new(tokio::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
+            webrtc_sessions: std::sync::Arc::new(tokio::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
             epoch_counters: std::sync::Arc::new(tokio::sync::Mutex::new(
@@ -90,6 +96,9 @@ impl TestStreamRegistry {
         Self {
             publishers: std::sync::Arc::new(tokio::sync::Mutex::new(publishers)),
             generations: std::sync::Arc::new(tokio::sync::Mutex::new(generations)),
+            webrtc_sessions: std::sync::Arc::new(tokio::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
             epoch_counters: std::sync::Arc::new(tokio::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
@@ -229,6 +238,7 @@ impl StreamRegistryTrait for TestStreamRegistry {
                 ended_at: None,
                 lease_epoch: *lease_epoch,
                 generation_id: generation_id.to_string(),
+                supports_rtp: false,
             };
             entry.insert(generation.clone());
             self.generations.lock().await.insert(
@@ -243,6 +253,116 @@ impl StreamRegistryTrait for TestStreamRegistry {
         } else {
             Ok(false)
         }
+    }
+
+    async fn try_activate_generation_with_capabilities(
+        &self,
+        registration: StreamGenerationRegistration<'_>,
+    ) -> Result<bool> {
+        let StreamGenerationRegistration {
+            room_id,
+            media_id,
+            node_id,
+            user_id,
+            cluster_address,
+            generation_id,
+            supports_rtp,
+        } = registration;
+        let registered = self
+            .try_activate_generation(
+                room_id,
+                media_id,
+                node_id,
+                user_id,
+                cluster_address,
+                generation_id,
+            )
+            .await?;
+        if !registered || !supports_rtp {
+            return Ok(registered);
+        }
+        let generation = self
+            .get_active_generation(room_id, media_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("test generation disappeared"))?;
+        Ok(self
+            .set_generation_supports_rtp(
+                room_id,
+                media_id,
+                generation_id,
+                generation.lease_epoch,
+                true,
+            )
+            .await?)
+    }
+
+    async fn set_generation_supports_rtp(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        generation_id: &str,
+        expected_lease_epoch: u64,
+        supports_rtp: bool,
+    ) -> Result<bool> {
+        let key = (room_id.to_string(), media_id.to_string());
+        let mut publishers = self.publishers.lock().await;
+        let Some(publisher) = publishers.get_mut(&key) else {
+            return Ok(false);
+        };
+        if publisher.generation_id != generation_id || publisher.lease_epoch != expected_lease_epoch
+        {
+            return Ok(false);
+        }
+        publisher.supports_rtp = supports_rtp;
+        if let Some(generation) = self.generations.lock().await.get_mut(&(
+            room_id.to_string(),
+            media_id.to_string(),
+            generation_id.to_string(),
+        )) {
+            generation.supports_rtp = supports_rtp;
+        }
+        Ok(true)
+    }
+
+    async fn try_register_webrtc_session(
+        &self,
+        session_id: &str,
+        owner: &WebRtcSessionOwner,
+        _ttl: std::time::Duration,
+    ) -> Result<bool> {
+        crate::util::validate_stream_generation_id(session_id)?;
+        validate_stream_ids(&owner.room_id, &owner.media_id)?;
+        let mut sessions = self.webrtc_sessions.lock().await;
+        if sessions.contains_key(session_id) {
+            return Ok(false);
+        }
+        sessions.insert(session_id.to_string(), owner.clone());
+        Ok(true)
+    }
+
+    async fn get_webrtc_session_owner(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<WebRtcSessionOwner>> {
+        crate::util::validate_stream_generation_id(session_id)?;
+        Ok(self.webrtc_sessions.lock().await.get(session_id).cloned())
+    }
+
+    async fn unregister_webrtc_session(
+        &self,
+        session_id: &str,
+        expected_node_id: &str,
+    ) -> Result<bool> {
+        crate::util::validate_stream_generation_id(session_id)?;
+        let mut sessions = self.webrtc_sessions.lock().await;
+        if sessions
+            .get(session_id)
+            .is_none_or(|owner| owner.node_id != expected_node_id)
+        {
+            return Ok(false);
+        }
+        sessions.remove(session_id);
+        Ok(true)
     }
 
     async fn mark_generation_ready(
@@ -591,6 +711,7 @@ mod tests {
                 ended_at: None,
                 lease_epoch: 1,
                 generation_id: TEST_GENERATION_ID.to_string(),
+                supports_rtp: false,
             },
         );
 

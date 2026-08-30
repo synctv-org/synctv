@@ -1,7 +1,7 @@
 // StreamRegistry trait for abstraction and testing
 // This trait allows mocking StreamRegistry in tests without requiring Redis
 
-use super::registry::{StreamGeneration, StreamRegistry};
+use super::registry::{StreamGeneration, StreamRegistry, WebRtcSessionOwner};
 use anyhow::Result;
 use async_trait::async_trait;
 
@@ -30,6 +30,45 @@ pub struct ActiveStreamGeneration {
     pub generation: StreamGeneration,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct StreamGenerationRegistration<'a> {
+    pub room_id: &'a str,
+    pub media_id: &'a str,
+    pub node_id: &'a str,
+    pub user_id: &'a str,
+    pub cluster_address: &'a str,
+    pub generation_id: &'a str,
+    pub supports_rtp: bool,
+}
+
+impl<'a> StreamGenerationRegistration<'a> {
+    #[must_use]
+    pub const fn new(
+        room_id: &'a str,
+        media_id: &'a str,
+        node_id: &'a str,
+        user_id: &'a str,
+        cluster_address: &'a str,
+        generation_id: &'a str,
+    ) -> Self {
+        Self {
+            room_id,
+            media_id,
+            node_id,
+            user_id,
+            cluster_address,
+            generation_id,
+            supports_rtp: false,
+        }
+    }
+
+    #[must_use]
+    pub const fn with_rtp_support(mut self, supports_rtp: bool) -> Self {
+        self.supports_rtp = supports_rtp;
+        self
+    }
+}
+
 /// `StreamRegistry` trait for publisher registration
 #[async_trait]
 pub trait StreamRegistryTrait: Send + Sync {
@@ -47,6 +86,91 @@ pub trait StreamRegistryTrait: Send + Sync {
         cluster_address: &str,
         generation_id: &str,
     ) -> Result<bool>;
+
+    async fn try_activate_generation_with_capabilities(
+        &self,
+        registration: StreamGenerationRegistration<'_>,
+    ) -> Result<bool> {
+        let StreamGenerationRegistration {
+            room_id,
+            media_id,
+            node_id,
+            user_id,
+            cluster_address,
+            generation_id,
+            supports_rtp,
+        } = registration;
+        let registered = self
+            .try_activate_generation(
+                room_id,
+                media_id,
+                node_id,
+                user_id,
+                cluster_address,
+                generation_id,
+            )
+            .await?;
+        if !registered || !supports_rtp {
+            return Ok(registered);
+        }
+        let generation = self
+            .get_active_generation(room_id, media_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("registered generation disappeared"))?;
+        anyhow::ensure!(
+            self.set_generation_supports_rtp(
+                room_id,
+                media_id,
+                generation_id,
+                generation.lease_epoch,
+                true,
+            )
+            .await?,
+            "registered generation ownership changed before RTP capability update"
+        );
+        Ok(true)
+    }
+
+    async fn set_generation_supports_rtp(
+        &self,
+        _room_id: &str,
+        _media_id: &str,
+        _generation_id: &str,
+        _expected_lease_epoch: u64,
+        _supports_rtp: bool,
+    ) -> Result<bool> {
+        Ok(false)
+    }
+
+    async fn try_register_webrtc_session(
+        &self,
+        _session_id: &str,
+        _owner: &WebRtcSessionOwner,
+        _ttl: std::time::Duration,
+    ) -> Result<bool> {
+        Err(anyhow::anyhow!(
+            "WebRTC session ownership is not supported by this registry"
+        ))
+    }
+
+    async fn get_webrtc_session_owner(
+        &self,
+        _session_id: &str,
+    ) -> Result<Option<WebRtcSessionOwner>> {
+        Err(anyhow::anyhow!(
+            "WebRTC session ownership is not supported by this registry"
+        ))
+    }
+
+    async fn unregister_webrtc_session(
+        &self,
+        _session_id: &str,
+        _expected_node_id: &str,
+    ) -> Result<bool> {
+        Err(anyhow::anyhow!(
+            "WebRTC session ownership is not supported by this registry"
+        ))
+    }
 
     /// Commit a generation as playable after StreamHub admission.
     async fn mark_generation_ready(
@@ -234,6 +358,56 @@ impl StreamRegistryTrait for StreamRegistry {
             generation_id,
         )
         .await
+    }
+
+    async fn try_activate_generation_with_capabilities(
+        &self,
+        registration: StreamGenerationRegistration<'_>,
+    ) -> Result<bool> {
+        StreamRegistry::try_activate_generation_with_capabilities(self, registration).await
+    }
+
+    async fn set_generation_supports_rtp(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        generation_id: &str,
+        expected_lease_epoch: u64,
+        supports_rtp: bool,
+    ) -> Result<bool> {
+        StreamRegistry::set_generation_supports_rtp(
+            self,
+            room_id,
+            media_id,
+            generation_id,
+            expected_lease_epoch,
+            supports_rtp,
+        )
+        .await
+    }
+
+    async fn try_register_webrtc_session(
+        &self,
+        session_id: &str,
+        owner: &WebRtcSessionOwner,
+        ttl: std::time::Duration,
+    ) -> Result<bool> {
+        StreamRegistry::try_register_webrtc_session(self, session_id, owner, ttl).await
+    }
+
+    async fn get_webrtc_session_owner(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<WebRtcSessionOwner>> {
+        StreamRegistry::get_webrtc_session_owner(self, session_id).await
+    }
+
+    async fn unregister_webrtc_session(
+        &self,
+        session_id: &str,
+        expected_node_id: &str,
+    ) -> Result<bool> {
+        StreamRegistry::unregister_webrtc_session(self, session_id, expected_node_id).await
     }
 
     async fn refresh_generation_lease(

@@ -8,6 +8,7 @@ pub(crate) mod managed_stream;
 pub(crate) mod pull_manager;
 pub(crate) mod pull_stream;
 pub(crate) mod server;
+pub(crate) mod webrtc_session_manager;
 
 #[cfg(test)]
 mod cluster_e2e_tests;

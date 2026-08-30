@@ -14,6 +14,7 @@ pub(crate) mod auth;
 pub(crate) mod email;
 pub(crate) mod error;
 pub(crate) mod health;
+pub(crate) mod livestream_webrtc;
 pub(crate) mod metrics_middleware;
 pub(crate) mod middleware;
 pub(crate) mod native_app_association;
@@ -893,6 +894,34 @@ fn register_websocket_routes() -> Router<AppState> {
     )
 }
 
+fn register_livestream_webrtc_routes() -> Router<AppState> {
+    Router::new()
+        .route(
+            "/api/playback-providers/{roomId}/rtmp/{mediaId}/whip",
+            post(livestream_webrtc::create_whip_session),
+        )
+        .route(
+            "/api/playback-providers/{roomId}/rtmp/{mediaId}/whip/{sessionId}",
+            axum::routing::delete(livestream_webrtc::delete_whip_session),
+        )
+        .route(
+            "/api/playback-providers/{roomId}/live/{mediaId}/whep",
+            post(livestream_webrtc::create_live_whep_session),
+        )
+        .route(
+            "/api/playback-providers/{roomId}/live/{mediaId}/whep/{sessionId}",
+            axum::routing::delete(livestream_webrtc::delete_live_whep_session),
+        )
+        .route(
+            "/api/playback-providers/{roomId}/live-proxy/{mediaId}/whep",
+            post(livestream_webrtc::create_live_proxy_whep_session),
+        )
+        .route(
+            "/api/playback-providers/{roomId}/live-proxy/{mediaId}/whep/{sessionId}",
+            axum::routing::delete(livestream_webrtc::delete_live_proxy_whep_session),
+        )
+}
+
 fn register_all_routes() -> Router<AppState> {
     let mut router = Router::new();
     #[cfg(any(feature = "web-ui", feature = "web-ui-dynamic"))]
@@ -980,6 +1009,7 @@ fn register_all_routes() -> Router<AppState> {
         .merge(register_media_routes())
         .merge(register_write_routes())
         .merge(register_read_routes())
+        .merge(register_livestream_webrtc_routes())
         .merge(register_chat_attachment_object_routes())
         .merge(register_media_cover_object_routes())
         .merge(register_media_thumbnail_object_routes())
@@ -1487,9 +1517,20 @@ fn register_all_routes() -> Router<AppState> {
             post(room::create_room_publish_key),
         )
         .route(
+            "/api/playback-providers/{roomId}/live/{version}/flv-stream",
+            get(crate::providers::playback_provider::rtmp::get_rtmp_flv_stream)
+                .head(crate::providers::playback_provider::rtmp::head_rtmp_flv_stream)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
             "/api/playback-providers/{roomId}/rtmp/{version}/flv-stream",
             get(crate::providers::playback_provider::rtmp::get_rtmp_flv_stream)
                 .head(crate::providers::playback_provider::rtmp::head_rtmp_flv_stream)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/{roomId}/live/{version}/hls-master",
+            get(crate::providers::playback_provider::rtmp::get_rtmp_hls_master)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
@@ -1498,8 +1539,19 @@ fn register_all_routes() -> Router<AppState> {
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
+            "/api/playback-providers/{roomId}/live/{version}/hls/{generationId}/index.m3u8",
+            get(crate::providers::playback_provider::rtmp::get_rtmp_hls_playlist)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
             "/api/playback-providers/{roomId}/rtmp/{version}/hls/{generationId}/index.m3u8",
             get(crate::providers::playback_provider::rtmp::get_rtmp_hls_playlist)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
+            "/api/playback-providers/{roomId}/live/{version}/hls/{generationId}/{segmentName}",
+            get(crate::providers::playback_provider::rtmp::get_rtmp_hls_segment)
+                .head(crate::providers::playback_provider::rtmp::head_rtmp_hls_segment)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
@@ -1724,6 +1776,7 @@ fn build_cors_layer(
             ])
             .expose_headers([
                 axum::http::HeaderName::from_static("x-request-id"),
+                axum::http::header::LOCATION,
                 axum::http::header::ACCEPT_RANGES,
                 axum::http::header::CONTENT_RANGE,
                 axum::http::HeaderName::from_static("x-synctv-content-manifest-sha256"),

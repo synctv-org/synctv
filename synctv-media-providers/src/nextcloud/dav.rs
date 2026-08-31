@@ -70,9 +70,7 @@ pub fn parse_multistatus(
             }
             Ok(Event::Text(text)) if in_response => {
                 if let Some(field) = current_field.as_ref() {
-                    let value = text
-                        .decode()
-                        .map_err(|error| ProviderClientError::Parse(error.to_string()))?;
+                    let value = text.xml_content(quick_xml::XmlVersion::Implicit1_0);
                     fields
                         .entry(field.clone())
                         .and_modify(|existing| existing.push_str(&value))
@@ -81,9 +79,7 @@ pub fn parse_multistatus(
             }
             Ok(Event::GeneralRef(reference)) if in_response => {
                 if let Some(field) = current_field.as_ref() {
-                    let decoded = reference
-                        .decode()
-                        .map_err(|error| ProviderClientError::Parse(error.to_string()))?;
+                    let decoded = reference.xml_content(quick_xml::XmlVersion::Implicit1_0);
                     let value = match decoded.as_ref() {
                         "amp" => '&',
                         "lt" => '<',
@@ -187,9 +183,8 @@ fn boolean(fields: &HashMap<String, String>, key: &str) -> bool {
         .is_some_and(|value| matches!(value.as_str(), "1" | "true"))
 }
 
-fn local_name(name: &[u8]) -> String {
-    let name = name.rsplit(|byte| *byte == b':').next().unwrap_or(name);
-    String::from_utf8_lossy(name).into_owned()
+fn local_name(name: &str) -> String {
+    name.rsplit(':').next().unwrap_or(name).to_owned()
 }
 
 fn dav_scope(user_id: &str, path: &str) -> String {

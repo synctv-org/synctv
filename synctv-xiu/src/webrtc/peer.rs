@@ -1,39 +1,41 @@
-use std::{io::Cursor, net::IpAddr, sync::Arc, time::Duration};
+use std::{future::Future, io::Cursor, net::IpAddr, pin::Pin, sync::Arc, time::Duration};
 
 use bytes::Bytes;
+use rtc::{
+    interceptor::Registry,
+    media_stream::MediaStreamTrack,
+    peer_connection::configuration::{
+        interceptor_registry::register_default_interceptors, media_engine::MediaEngine,
+    },
+    rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication,
+    rtp::packet::Packet,
+    rtp_transceiver::{
+        rtp_sender::{
+            RTCPFeedback, RTCRtpCodec, RTCRtpCodecParameters, RTCRtpCodingParameters,
+            RTCRtpEncodingParameters, RTCRtpHeaderExtensionCapability, RtpCodecKind,
+        },
+        RTCRtpTransceiverDirection, RTCRtpTransceiverInit,
+    },
+    shared::marshal::{Marshal, MarshalSize, Unmarshal},
+};
 use sdp::description::session::{
     SessionDescription, ATTR_KEY_INACTIVE, ATTR_KEY_RECV_ONLY, ATTR_KEY_SEND_ONLY,
     ATTR_KEY_SEND_RECV,
 };
 use synctv_common::ssrf::SsrfGuard;
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 use webrtc::{
-    api::{
-        interceptor_registry::register_default_interceptors, media_engine::MediaEngine, APIBuilder,
+    media_stream::{
+        track_local::{static_rtp::TrackLocalStaticRTP, TrackLocal},
+        track_remote::{TrackRemote, TrackRemoteEvent},
     },
-    ice_transport::ice_server::RTCIceServer,
-    interceptor::registry::Registry,
     peer_connection::{
-        configuration::RTCConfiguration, peer_connection_state::RTCPeerConnectionState,
-        sdp::session_description::RTCSessionDescription, RTCPeerConnection,
+        PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler, RTCConfiguration,
+        RTCConfigurationBuilder, RTCIceGatheringState, RTCIceServer, RTCPeerConnectionState,
+        RTCSessionDescription,
     },
-    rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication,
-    rtp::packet::Packet,
-    rtp_transceiver::{
-        rtp_codec::{
-            RTCRtpCodecCapability, RTCRtpCodecParameters, RTCRtpHeaderExtensionCapability,
-            RTPCodecType,
-        },
-        rtp_transceiver_direction::RTCRtpTransceiverDirection,
-        RTCPFeedback, RTCRtpTransceiverInit,
-    },
-    sdp::extmap,
-    track::{
-        track_local::{track_local_static_rtp::TrackLocalStaticRTP, TrackLocal, TrackLocalWriter},
-        track_remote::TrackRemote,
-    },
-    util::{Marshal, MarshalSize, Unmarshal},
 };
 
 use crate::{
@@ -51,7 +53,6 @@ const MIME_TYPE_OPUS: &str = "audio/opus";
 const H264_BRIDGE_FMTP: &str =
     "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f";
 const OPUS_BRIDGE_FMTP: &str = "minptime=10;useinbandfec=1";
-const RTP_READ_BUFFER_SIZE: usize = 64 * 1024;
 const PLI_INTERVAL: Duration = Duration::from_secs(3);
 const FRAME_SEND_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -114,16 +115,62 @@ pub enum WebRtcError {
     MissingLocalDescription,
 }
 
+type RemoteTrackFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
+type RemoteTrackHandler = Arc<dyn Fn(Arc<dyn TrackRemote>) -> RemoteTrackFuture + Send + Sync>;
+
+#[derive(Clone)]
+struct SyncTvPeerHandler {
+    cancel_token: CancellationToken,
+    gathering_complete: watch::Sender<bool>,
+    connection_state: watch::Sender<RTCPeerConnectionState>,
+    remote_track_handler: Option<RemoteTrackHandler>,
+}
+
+#[async_trait::async_trait]
+impl PeerConnectionEventHandler for SyncTvPeerHandler {
+    async fn on_ice_gathering_state_change(&self, state: RTCIceGatheringState) {
+        if state == RTCIceGatheringState::Complete {
+            self.gathering_complete.send_replace(true);
+        }
+    }
+
+    async fn on_connection_state_change(&self, state: RTCPeerConnectionState) {
+        self.connection_state.send_replace(state);
+        match state {
+            RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed => {
+                self.cancel_token.cancel();
+            }
+            RTCPeerConnectionState::Disconnected => {
+                debug!("WebRTC peer disconnected and may still recover");
+            }
+            _ => {}
+        }
+    }
+
+    async fn on_track(&self, track: Arc<dyn TrackRemote>) {
+        if let Some(handler) = &self.remote_track_handler {
+            handler(track).await;
+        }
+    }
+}
+
+struct ManagedPeer {
+    connection: Arc<dyn PeerConnection>,
+    gathering_complete: watch::Receiver<bool>,
+    connection_state: watch::Receiver<RTCPeerConnectionState>,
+}
+
 pub struct PeerSession {
     pub answer_sdp: String,
-    peer_connection: Arc<RTCPeerConnection>,
+    peer_connection: Arc<dyn PeerConnection>,
     cancel_token: CancellationToken,
 }
 
 pub struct WhepClientSession {
     pub offer_sdp: String,
-    peer_connection: Arc<RTCPeerConnection>,
+    peer_connection: Arc<dyn PeerConnection>,
     cancel_token: CancellationToken,
+    connection_state: watch::Receiver<RTCPeerConnectionState>,
     max_sdp_bytes: usize,
     ssrf_guard: SsrfGuard,
 }
@@ -144,10 +191,11 @@ impl WhepClientSession {
     }
 
     pub async fn wait_connected(&self, timeout: Duration) -> Result<(), WebRtcError> {
+        let mut connection_state = self.connection_state.clone();
         let wait = async {
-            let mut interval = tokio::time::interval(Duration::from_millis(25));
             loop {
-                match self.peer_connection.connection_state() {
+                let state = *connection_state.borrow_and_update();
+                match state {
                     RTCPeerConnectionState::Connected => return Ok(()),
                     RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed => {
                         return Err(WebRtcError::Negotiation(
@@ -164,7 +212,13 @@ impl WhepClientSession {
                                 .to_string(),
                         ));
                     }
-                    _ = interval.tick() => {}
+                    result = connection_state.changed() => {
+                        if result.is_err() {
+                            return Err(WebRtcError::Negotiation(
+                                "peer connection state channel closed".to_string(),
+                            ));
+                        }
+                    }
                 }
             }
         };
@@ -338,9 +392,9 @@ fn validate_whip_offer(
         .filter(|media| media.media_name.port.value != 0 && remote_sends_media(&session, media))
     {
         let kind = if media.media_name.media.eq_ignore_ascii_case("audio") {
-            RTPCodecType::Audio
+            RtpCodecKind::Audio
         } else if media.media_name.media.eq_ignore_ascii_case("video") {
-            RTPCodecType::Video
+            RtpCodecKind::Video
         } else {
             continue;
         };
@@ -370,13 +424,13 @@ fn validate_whip_offer(
                 compatible_opus |= codec.clock_rate == 48_000 && matches!(channels, 1 | 2);
             }
         }
-        if kind == RTPCodecType::Video && offered_h264 && !compatible_h264 {
+        if kind == RtpCodecKind::Video && offered_h264 && !compatible_h264 {
             return Err(WebRtcError::IncompatibleWhipVideoCodec);
         }
         has_compatible_media |= match kind {
-            RTPCodecType::Audio => compatible_opus,
-            RTPCodecType::Video => compatible_h264,
-            RTPCodecType::Unspecified => false,
+            RtpCodecKind::Audio => compatible_opus,
+            RtpCodecKind::Video => compatible_h264,
+            RtpCodecKind::Unspecified => false,
         };
     }
     if !has_compatible_media {
@@ -395,89 +449,89 @@ fn peer_configuration(config: &WebRtcConfig) -> RTCConfiguration {
             credential: server.credential.clone(),
         })
         .collect();
-    RTCConfiguration {
-        ice_servers,
-        ..Default::default()
-    }
+    RTCConfigurationBuilder::new()
+        .with_ice_servers(ice_servers)
+        .build()
 }
 
 async fn create_peer_connection(
     config: &WebRtcConfig,
-) -> Result<Arc<RTCPeerConnection>, WebRtcError> {
+    cancel_token: CancellationToken,
+    remote_track_handler: Option<RemoteTrackHandler>,
+) -> Result<ManagedPeer, WebRtcError> {
     synctv_common::install_process_crypto_provider();
     let mut media_engine = MediaEngine::default();
     register_streaming_codecs(&mut media_engine)?;
     let registry = register_default_interceptors(Registry::new(), &mut media_engine)
         .map_err(|error| WebRtcError::Negotiation(error.to_string()))?;
-    let api = APIBuilder::new()
-        .with_media_engine(media_engine)
-        .with_interceptor_registry(registry)
-        .build();
-    api.new_peer_connection(peer_configuration(config))
-        .await
-        .map(Arc::new)
-        .map_err(|error| WebRtcError::Negotiation(error.to_string()))
+    let (gathering_complete_tx, gathering_complete) = watch::channel(false);
+    let (connection_state_tx, connection_state) = watch::channel(RTCPeerConnectionState::New);
+    let handler = Arc::new(SyncTvPeerHandler {
+        cancel_token: cancel_token.clone(),
+        gathering_complete: gathering_complete_tx,
+        connection_state: connection_state_tx,
+        remote_track_handler,
+    });
+    let connection = Box::pin(
+        PeerConnectionBuilder::new()
+            .with_configuration(peer_configuration(config))
+            .with_media_engine(media_engine)
+            .with_interceptor_registry(registry)
+            .with_handler(handler)
+            .with_udp_addrs(vec!["0.0.0.0:0".to_string()])
+            .build(),
+    )
+    .await
+    .map_err(|error| WebRtcError::Negotiation(error.to_string()))?;
+    let connection: Arc<dyn PeerConnection> = Arc::new(connection);
+    Ok(ManagedPeer {
+        connection,
+        gathering_complete,
+        connection_state,
+    })
 }
 
 fn register_streaming_codecs(media_engine: &mut MediaEngine) -> Result<(), WebRtcError> {
     media_engine
         .register_codec(
             RTCRtpCodecParameters {
-                capability: streaming_codec_capability(RTPCodecType::Audio),
+                rtp_codec: streaming_codec_capability(RtpCodecKind::Audio),
                 payload_type: 111,
-                ..Default::default()
             },
-            RTPCodecType::Audio,
+            RtpCodecKind::Audio,
         )
         .map_err(|error| WebRtcError::Negotiation(error.to_string()))?;
     media_engine
         .register_codec(
             RTCRtpCodecParameters {
-                capability: streaming_codec_capability(RTPCodecType::Video),
+                rtp_codec: streaming_codec_capability(RtpCodecKind::Video),
                 payload_type: 102,
-                ..Default::default()
             },
-            RTPCodecType::Video,
+            RtpCodecKind::Video,
         )
         .map_err(|error| WebRtcError::Negotiation(error.to_string()))?;
-    for kind in [RTPCodecType::Audio, RTPCodecType::Video] {
-        media_engine
-            .register_header_extension(
-                RTCRtpHeaderExtensionCapability {
-                    uri: extmap::SDES_MID_URI.to_string(),
-                },
-                kind,
-                None,
-            )
-            .map_err(|error| WebRtcError::Negotiation(error.to_string()))?;
-    }
-    for uri in [
-        extmap::SDES_RTP_STREAM_ID_URI,
-        extmap::SDES_REPAIR_RTP_STREAM_ID_URI,
-    ] {
-        media_engine
-            .register_header_extension(
-                RTCRtpHeaderExtensionCapability {
-                    uri: uri.to_string(),
-                },
-                RTPCodecType::Video,
-                None,
-            )
-            .map_err(|error| WebRtcError::Negotiation(error.to_string()))?;
-    }
+    media_engine
+        .register_header_extension(
+            RTCRtpHeaderExtensionCapability {
+                uri: sdp::extmap::SDES_MID_URI.to_string(),
+            },
+            RtpCodecKind::Audio,
+            None,
+        )
+        .map_err(|error| WebRtcError::Negotiation(error.to_string()))?;
     Ok(())
 }
 
-fn streaming_codec_capability(kind: RTPCodecType) -> RTCRtpCodecCapability {
+fn streaming_codec_capability(kind: RtpCodecKind) -> RTCRtpCodec {
     match kind {
-        RTPCodecType::Audio => RTCRtpCodecCapability {
+        RtpCodecKind::Audio => RTCRtpCodec {
             mime_type: MIME_TYPE_OPUS.to_string(),
             clock_rate: 48_000,
             channels: 2,
             sdp_fmtp_line: OPUS_BRIDGE_FMTP.to_string(),
             rtcp_feedback: Vec::new(),
         },
-        RTPCodecType::Video | RTPCodecType::Unspecified => RTCRtpCodecCapability {
+        RtpCodecKind::Video | RtpCodecKind::Unspecified => RTCRtpCodec {
             mime_type: MIME_TYPE_H264.to_string(),
             clock_rate: 90_000,
             channels: 0,
@@ -500,34 +554,19 @@ fn streaming_codec_capability(kind: RTPCodecType) -> RTCRtpCodecCapability {
     }
 }
 
-fn bind_connection_lifecycle(peer: &Arc<RTCPeerConnection>, cancel_token: CancellationToken) {
-    peer.on_peer_connection_state_change(Box::new(move |state| {
-        let cancel_token = cancel_token.clone();
-        Box::pin(async move {
-            match state {
-                RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed => {
-                    cancel_token.cancel();
-                }
-                RTCPeerConnectionState::Disconnected => {
-                    debug!("WebRTC peer disconnected and may still recover");
-                }
-                _ => {}
-            }
-        })
-    }));
-}
-
 async fn negotiate_answer(
-    peer: &Arc<RTCPeerConnection>,
+    peer: &ManagedPeer,
     offer_sdp: &str,
     config: &WebRtcConfig,
 ) -> Result<String, WebRtcError> {
     let offer = RTCSessionDescription::offer(offer_sdp.to_string())
         .map_err(|error| WebRtcError::InvalidSdp(error.to_string()))?;
-    peer.set_remote_description(offer)
+    peer.connection
+        .set_remote_description(offer)
         .await
         .map_err(|error| WebRtcError::InvalidSdp(error.to_string()))?;
     let answer = peer
+        .connection
         .create_answer(None)
         .await
         .map_err(|error| WebRtcError::Negotiation(error.to_string()))?;
@@ -535,18 +574,28 @@ async fn negotiate_answer(
 }
 
 async fn gather_local_description(
-    peer: &Arc<RTCPeerConnection>,
+    peer: &ManagedPeer,
     description: RTCSessionDescription,
     config: &WebRtcConfig,
 ) -> Result<String, WebRtcError> {
-    let mut gathering_complete = peer.gathering_complete_promise().await;
-    peer.set_local_description(description)
+    let mut gathering_complete = peer.gathering_complete.clone();
+    peer.connection
+        .set_local_description(description)
         .await
         .map_err(|error| WebRtcError::Negotiation(error.to_string()))?;
-    tokio::time::timeout(config.ice_gathering_timeout, gathering_complete.recv())
+    let wait_for_gathering = async {
+        while !*gathering_complete.borrow_and_update() {
+            gathering_complete.changed().await.map_err(|_| {
+                WebRtcError::Negotiation("ICE gathering state channel closed".to_string())
+            })?;
+        }
+        Ok::<(), WebRtcError>(())
+    };
+    tokio::time::timeout(config.ice_gathering_timeout, wait_for_gathering)
         .await
-        .map_err(|_| WebRtcError::IceGatheringTimeout(config.ice_gathering_timeout))?;
-    peer.local_description()
+        .map_err(|_| WebRtcError::IceGatheringTimeout(config.ice_gathering_timeout))??;
+    peer.connection
+        .local_description()
         .await
         .map(|description| description.sdp)
         .ok_or(WebRtcError::MissingLocalDescription)
@@ -557,9 +606,19 @@ pub async fn create_whep_client_session(
     packet_sender: PacketDataSender,
     config: &WebRtcConfig,
 ) -> Result<WhepClientSession, WebRtcError> {
-    let peer = create_peer_connection(config).await?;
     let cancel_token = CancellationToken::new();
-    bind_connection_lifecycle(&peer, cancel_token.clone());
+    let remote_track_handler = bridge_remote_track_handler(
+        frame_sender.clone(),
+        packet_sender,
+        cancel_token.clone(),
+        None,
+    );
+    let peer = Box::pin(create_peer_connection(
+        config,
+        cancel_token.clone(),
+        Some(remote_track_handler),
+    ))
+    .await?;
     frame_sender
         .send(FrameData::MediaInfo {
             media_info: MediaInfo {
@@ -571,34 +630,21 @@ pub async fn create_whep_client_session(
         .await
         .map_err(|_| WebRtcError::Negotiation("StreamHub frame channel closed".to_string()))?;
 
-    for kind in [RTPCodecType::Audio, RTPCodecType::Video] {
-        peer.add_transceiver_from_kind(
-            kind,
-            Some(RTCRtpTransceiverInit {
-                direction: RTCRtpTransceiverDirection::Recvonly,
-                send_encodings: Vec::new(),
-            }),
-        )
-        .await
-        .map_err(|error| WebRtcError::Negotiation(error.to_string()))?;
+    for kind in [RtpCodecKind::Audio, RtpCodecKind::Video] {
+        peer.connection
+            .add_transceiver_from_kind(
+                kind,
+                Some(RTCRtpTransceiverInit {
+                    direction: RTCRtpTransceiverDirection::Recvonly,
+                    ..Default::default()
+                }),
+            )
+            .await
+            .map_err(|error| WebRtcError::Negotiation(error.to_string()))?;
     }
 
-    let weak_peer = Arc::downgrade(&peer);
-    let track_cancel = cancel_token.clone();
-    peer.on_track(Box::new(move |track, _, _| {
-        let weak_peer = weak_peer.clone();
-        let packet_sender = packet_sender.clone();
-        let frame_sender = frame_sender.clone();
-        let track_cancel = track_cancel.clone();
-        Box::pin(async move {
-            if track.kind() == RTPCodecType::Video {
-                spawn_pli_loop(weak_peer, track.ssrc(), track_cancel.clone());
-            }
-            spawn_track_reader(track, packet_sender, frame_sender, track_cancel);
-        })
-    }));
-
     let offer = peer
+        .connection
         .create_offer(None)
         .await
         .map_err(|error| WebRtcError::Negotiation(error.to_string()))?;
@@ -606,31 +652,55 @@ pub async fn create_whep_client_session(
         Ok(offer_sdp) => offer_sdp,
         Err(error) => {
             cancel_token.cancel();
-            let _ = peer.close().await;
+            let _ = peer.connection.close().await;
             return Err(error);
         }
     };
     Ok(WhepClientSession {
         offer_sdp,
-        peer_connection: peer,
+        peer_connection: peer.connection,
         cancel_token,
+        connection_state: peer.connection_state,
         max_sdp_bytes: config.max_sdp_bytes,
         ssrf_guard: config.ssrf_guard.clone(),
     })
 }
 
-fn packet_kind(track: &TrackRemote) -> Option<RTPCodecType> {
-    match track.kind() {
-        RTPCodecType::Audio | RTPCodecType::Video => Some(track.kind()),
-        RTPCodecType::Unspecified => None,
-    }
+fn bridge_remote_track_handler(
+    frame_sender: FrameDataSender,
+    packet_sender: PacketDataSender,
+    cancel_token: CancellationToken,
+    media_mode: Option<RtmpStreamMode>,
+) -> RemoteTrackHandler {
+    Arc::new(move |track| {
+        let frame_sender = frame_sender.clone();
+        let packet_sender = packet_sender.clone();
+        let cancel_token = cancel_token.clone();
+        Box::pin(async move {
+            let kind = track.kind().await;
+            if media_mode.is_some_and(|mode| !whip_accepts_track(mode, kind)) {
+                return;
+            }
+            let Some(media_ssrc) = track.ssrcs().await.first().copied() else {
+                warn!("ignoring WebRTC track without an SSRC");
+                return;
+            };
+            if kind == RtpCodecKind::Video {
+                spawn_pli_loop(Arc::clone(&track), media_ssrc, cancel_token.clone());
+            }
+            spawn_track_reader(
+                track,
+                media_ssrc,
+                kind,
+                packet_sender,
+                frame_sender,
+                cancel_token,
+            );
+        })
+    })
 }
 
-fn spawn_pli_loop(
-    peer: std::sync::Weak<RTCPeerConnection>,
-    media_ssrc: u32,
-    cancel_token: CancellationToken,
-) {
+fn spawn_pli_loop(track: Arc<dyn TrackRemote>, media_ssrc: u32, cancel_token: CancellationToken) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(PLI_INTERVAL);
         interval.tick().await;
@@ -638,10 +708,7 @@ fn spawn_pli_loop(
             tokio::select! {
                 () = cancel_token.cancelled() => break,
                 _ = interval.tick() => {
-                    let Some(peer) = peer.upgrade() else {
-                        break;
-                    };
-                    if let Err(error) = peer.write_rtcp(&[Box::new(PictureLossIndication {
+                    if let Err(error) = track.write_rtcp(vec![Box::new(PictureLossIndication {
                         sender_ssrc: 0,
                         media_ssrc,
                     })]).await {
@@ -655,17 +722,22 @@ fn spawn_pli_loop(
 }
 
 fn spawn_track_reader(
-    track: Arc<TrackRemote>,
+    track: Arc<dyn TrackRemote>,
+    media_ssrc: u32,
+    kind: RtpCodecKind,
     packet_sender: PacketDataSender,
     frame_sender: FrameDataSender,
     cancel_token: CancellationToken,
 ) {
     tokio::spawn(async move {
-        let Some(kind) = packet_kind(&track) else {
+        if kind == RtpCodecKind::Unspecified {
             warn!("ignoring WebRTC track with unspecified media kind");
             return;
+        }
+        let Some(codec) = track.codec(media_ssrc).await else {
+            warn!("ignoring WebRTC track without a negotiated codec");
+            return;
         };
-        let codec = track.codec().capability;
         let mut frame_encoder = match TrackFrameEncoder::new(kind, &codec.mime_type, codec.channels)
         {
             Ok(encoder) => encoder,
@@ -675,19 +747,20 @@ fn spawn_track_reader(
                 return;
             }
         };
-        let mut buffer = vec![0_u8; RTP_READ_BUFFER_SIZE];
         loop {
-            let read_result = tokio::select! {
+            let event = tokio::select! {
                 () = cancel_token.cancelled() => break,
-                result = track.read(&mut buffer) => result,
+                event = track.poll() => event,
             };
-            let rtp_packet = match read_result {
-                Ok((packet, _)) => packet,
-                Err(error) => {
-                    warn!(%error, "failed to read incoming WebRTC RTP track");
+            let rtp_packet = match event {
+                Some(TrackRemoteEvent::OnRtpPacket(packet)) => packet,
+                Some(TrackRemoteEvent::OnError) => {
+                    warn!("failed to read incoming WebRTC RTP track");
                     cancel_token.cancel();
                     break;
                 }
+                Some(TrackRemoteEvent::OnEnding | TrackRemoteEvent::OnEnded) | None => break,
+                Some(_) => continue,
             };
             let mut marshaled = vec![0_u8; rtp_packet.marshal_size()];
             let marshaled_len = match rtp_packet.marshal_to(&mut marshaled) {
@@ -699,15 +772,15 @@ fn spawn_track_reader(
             };
             marshaled.truncate(marshaled_len);
             let packet = match kind {
-                RTPCodecType::Video => PacketData::Video {
+                RtpCodecKind::Video => PacketData::Video {
                     timestamp: rtp_packet.header.timestamp,
                     data: Bytes::from(marshaled),
                 },
-                RTPCodecType::Audio => PacketData::Audio {
+                RtpCodecKind::Audio => PacketData::Audio {
                     timestamp: rtp_packet.header.timestamp,
                     data: Bytes::from(marshaled),
                 },
-                RTPCodecType::Unspecified => continue,
+                RtpCodecKind::Unspecified => continue,
             };
             match packet_sender.try_send(packet) {
                 Ok(()) => {}
@@ -751,9 +824,19 @@ pub async fn create_whip_session(
     config: &WebRtcConfig,
 ) -> Result<PeerSession, WebRtcError> {
     let offer_sdp = validate_whip_offer(offer_sdp, config, media_mode)?.to_string();
-    let peer = create_peer_connection(config).await?;
     let cancel_token = CancellationToken::new();
-    bind_connection_lifecycle(&peer, cancel_token.clone());
+    let remote_track_handler = bridge_remote_track_handler(
+        frame_sender.clone(),
+        packet_sender,
+        cancel_token.clone(),
+        Some(media_mode),
+    );
+    let peer = Box::pin(create_peer_connection(
+        config,
+        cancel_token.clone(),
+        Some(remote_track_handler),
+    ))
+    .await?;
     frame_sender
         .send(FrameData::MediaInfo {
             media_info: MediaInfo {
@@ -765,65 +848,48 @@ pub async fn create_whip_session(
         .await
         .map_err(|_| WebRtcError::Negotiation("StreamHub frame channel closed".to_string()))?;
 
-    for kind in [RTPCodecType::Audio, RTPCodecType::Video] {
-        peer.add_transceiver_from_kind(
-            kind,
-            Some(RTCRtpTransceiverInit {
-                direction: whip_transceiver_direction(media_mode, kind),
-                send_encodings: Vec::new(),
-            }),
-        )
-        .await
-        .map_err(|error| WebRtcError::Negotiation(error.to_string()))?;
+    for kind in [RtpCodecKind::Audio, RtpCodecKind::Video] {
+        peer.connection
+            .add_transceiver_from_kind(
+                kind,
+                Some(RTCRtpTransceiverInit {
+                    direction: whip_transceiver_direction(media_mode, kind),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .map_err(|error| WebRtcError::Negotiation(error.to_string()))?;
     }
-
-    let weak_peer = Arc::downgrade(&peer);
-    let track_cancel = cancel_token.clone();
-    peer.on_track(Box::new(move |track, _, _| {
-        let weak_peer = weak_peer.clone();
-        let packet_sender = packet_sender.clone();
-        let frame_sender = frame_sender.clone();
-        let track_cancel = track_cancel.clone();
-        Box::pin(async move {
-            if !whip_accepts_track(media_mode, track.kind()) {
-                return;
-            }
-            if track.kind() == RTPCodecType::Video {
-                spawn_pli_loop(weak_peer, track.ssrc(), track_cancel.clone());
-            }
-            spawn_track_reader(track, packet_sender, frame_sender, track_cancel);
-        })
-    }));
 
     let answer_sdp = match negotiate_answer(&peer, &offer_sdp, config).await {
         Ok(answer) => answer,
         Err(error) => {
             cancel_token.cancel();
-            let _ = peer.close().await;
+            let _ = peer.connection.close().await;
             return Err(error);
         }
     };
     Ok(PeerSession {
         answer_sdp,
-        peer_connection: peer,
+        peer_connection: peer.connection,
         cancel_token,
     })
 }
 
-fn whip_accepts_track(media_mode: RtmpStreamMode, kind: RTPCodecType) -> bool {
+fn whip_accepts_track(media_mode: RtmpStreamMode, kind: RtpCodecKind) -> bool {
     matches!(
         (media_mode, kind),
         (
             RtmpStreamMode::Default,
-            RTPCodecType::Audio | RTPCodecType::Video
-        ) | (RtmpStreamMode::VideoOnly, RTPCodecType::Video)
-            | (RtmpStreamMode::AudioOnly, RTPCodecType::Audio)
+            RtpCodecKind::Audio | RtpCodecKind::Video
+        ) | (RtmpStreamMode::VideoOnly, RtpCodecKind::Video)
+            | (RtmpStreamMode::AudioOnly, RtpCodecKind::Audio)
     )
 }
 
 fn whip_transceiver_direction(
     media_mode: RtmpStreamMode,
-    kind: RTPCodecType,
+    kind: RtpCodecKind,
 ) -> RTCRtpTransceiverDirection {
     if whip_accepts_track(media_mode, kind) {
         RTCRtpTransceiverDirection::Recvonly
@@ -832,22 +898,35 @@ fn whip_transceiver_direction(
     }
 }
 
-fn outgoing_track(kind: RTPCodecType) -> Arc<TrackLocalStaticRTP> {
+fn outgoing_track(kind: RtpCodecKind) -> (Arc<TrackLocalStaticRTP>, u32) {
     let id = match kind {
-        RTPCodecType::Audio => "audio",
-        RTPCodecType::Video | RTPCodecType::Unspecified => "video",
+        RtpCodecKind::Audio => "audio",
+        RtpCodecKind::Video | RtpCodecKind::Unspecified => "video",
     };
-    Arc::new(TrackLocalStaticRTP::new(
-        streaming_codec_capability(kind),
-        id.to_string(),
+    let ssrc = rand::random();
+    let track = Arc::new(TrackLocalStaticRTP::new(MediaStreamTrack::new(
         "synctv".to_string(),
-    ))
+        id.to_string(),
+        id.to_string(),
+        kind,
+        vec![RTCRtpEncodingParameters {
+            rtp_coding_parameters: RTCRtpCodingParameters {
+                ssrc: Some(ssrc),
+                ..Default::default()
+            },
+            codec: streaming_codec_capability(kind),
+            ..Default::default()
+        }],
+    )));
+    (track, ssrc)
 }
 
 fn spawn_packet_writer(
     mut receiver: PacketDataReceiver,
     audio_track: Arc<TrackLocalStaticRTP>,
+    audio_ssrc: u32,
     video_track: Arc<TrackLocalStaticRTP>,
+    video_ssrc: u32,
     cancel_token: CancellationToken,
 ) {
     tokio::spawn(async move {
@@ -859,19 +938,20 @@ fn spawn_packet_writer(
             let Some(packet) = packet else {
                 break;
             };
-            let (raw, track) = match packet {
-                PacketData::Audio { data, .. } => (data, &audio_track),
-                PacketData::Video { data, .. } => (data, &video_track),
+            let (raw, track, ssrc) = match packet {
+                PacketData::Audio { data, .. } => (data, &audio_track, audio_ssrc),
+                PacketData::Video { data, .. } => (data, &video_track, video_ssrc),
             };
             let mut raw = raw;
-            let packet = match Packet::unmarshal(&mut raw) {
+            let mut packet = match Packet::unmarshal(&mut raw) {
                 Ok(packet) => packet,
                 Err(error) => {
                     warn!(%error, "dropping malformed StreamHub RTP packet");
                     continue;
                 }
             };
-            if let Err(error) = track.write_rtp(&packet).await {
+            packet.header.ssrc = ssrc;
+            if let Err(error) = track.write_rtp(packet).await {
                 debug!(%error, "stopped WebRTC RTP writer");
                 break;
             }
@@ -886,25 +966,24 @@ pub async fn create_whep_session(
     config: &WebRtcConfig,
 ) -> Result<PeerSession, WebRtcError> {
     let offer_sdp = validate_offer(offer_sdp, config)?.to_string();
-    let peer = create_peer_connection(config).await?;
     let cancel_token = CancellationToken::new();
-    bind_connection_lifecycle(&peer, cancel_token.clone());
+    let peer = Box::pin(create_peer_connection(config, cancel_token.clone(), None)).await?;
 
-    let audio_track = outgoing_track(RTPCodecType::Audio);
-    let video_track = outgoing_track(RTPCodecType::Video);
+    let (audio_track, audio_ssrc) = outgoing_track(RtpCodecKind::Audio);
+    let (video_track, video_ssrc) = outgoing_track(RtpCodecKind::Video);
     for track in [&audio_track, &video_track] {
-        let sender = peer
-            .add_track(Arc::clone(track) as Arc<dyn TrackLocal + Send + Sync>)
+        peer.connection
+            .add_track(Arc::clone(track) as Arc<dyn TrackLocal>)
             .await
             .map_err(|error| WebRtcError::Negotiation(error.to_string()))?;
         let rtcp_cancel = cancel_token.clone();
+        let rtcp_track = Arc::clone(track);
         tokio::spawn(async move {
-            let mut buffer = vec![0_u8; 1500];
             loop {
                 tokio::select! {
                     () = rtcp_cancel.cancelled() => break,
-                    result = sender.read(&mut buffer) => {
-                        if result.is_err() {
+                    event = rtcp_track.poll() => {
+                        if event.is_none() {
                             break;
                         }
                     }
@@ -917,19 +996,21 @@ pub async fn create_whep_session(
         Ok(answer) => answer,
         Err(error) => {
             cancel_token.cancel();
-            let _ = peer.close().await;
+            let _ = peer.connection.close().await;
             return Err(error);
         }
     };
     spawn_packet_writer(
         packet_receiver,
         audio_track,
+        audio_ssrc,
         video_track,
+        video_ssrc,
         cancel_token.clone(),
     );
     Ok(PeerSession {
         answer_sdp,
-        peer_connection: peer,
+        peer_connection: peer.connection,
         cancel_token,
     })
 }
@@ -937,32 +1018,80 @@ pub async fn create_whep_session(
 #[cfg(test)]
 mod tests {
     use anyhow::{anyhow, Result};
+    use rtc::media::Sample;
     use tokio::sync::mpsc;
-    use webrtc::{
-        media::Sample, track::track_local::track_local_static_sample::TrackLocalStaticSample,
-    };
+    use webrtc::media_stream::{track_local::static_sample::TrackLocalStaticSample, Track as _};
 
     use crate::flv::define::avc_packet_type;
 
     use super::*;
 
-    async fn wait_for_connected(peer: &RTCPeerConnection, timeout: Duration) -> Result<()> {
+    async fn wait_for_connected(peer: &ManagedPeer, timeout: Duration) -> Result<()> {
+        let mut connection_state = peer.connection_state.clone();
         tokio::time::timeout(timeout, async {
-            let mut interval = tokio::time::interval(Duration::from_millis(20));
             loop {
-                match peer.connection_state() {
+                let state = *connection_state.borrow_and_update();
+                match state {
                     RTCPeerConnectionState::Connected => return Ok(()),
                     RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed => {
                         return Err(anyhow!("peer connection closed before connecting"));
                     }
-                    _ => {
-                        interval.tick().await;
-                    }
+                    _ => connection_state
+                        .changed()
+                        .await
+                        .map_err(|_| anyhow!("peer connection state channel closed"))?,
                 }
             }
         })
         .await
         .map_err(|_| anyhow!("peer connection timed out"))?
+    }
+
+    fn sample_track(kind: RtpCodecKind) -> Result<(Arc<TrackLocalStaticSample>, u32, u8)> {
+        let ssrc = rand::random();
+        let payload_type = match kind {
+            RtpCodecKind::Audio => 111,
+            RtpCodecKind::Video | RtpCodecKind::Unspecified => 102,
+        };
+        let track = TrackLocalStaticSample::new(MediaStreamTrack::new(
+            "synctv".to_string(),
+            kind.to_string(),
+            kind.to_string(),
+            kind,
+            vec![RTCRtpEncodingParameters {
+                rtp_coding_parameters: RTCRtpCodingParameters {
+                    ssrc: Some(ssrc),
+                    ..Default::default()
+                },
+                codec: streaming_codec_capability(kind),
+                ..Default::default()
+            }],
+        ))?;
+        Ok((Arc::new(track), ssrc, payload_type))
+    }
+
+    fn packet_collector(
+        packet_sender: mpsc::Sender<Packet>,
+        filter: Option<RtpCodecKind>,
+    ) -> RemoteTrackHandler {
+        Arc::new(move |track| {
+            let packet_sender = packet_sender.clone();
+            Box::pin(async move {
+                let kind = track.kind().await;
+                if filter.is_some_and(|filter| kind != filter) {
+                    return;
+                }
+                tokio::spawn(async move {
+                    while let Some(event) = track.poll().await {
+                        if let TrackRemoteEvent::OnRtpPacket(packet) = event {
+                            if packet_sender.send(packet).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                });
+            })
+        })
     }
 
     async fn wait_for_video_frame(
@@ -1182,10 +1311,10 @@ a=rtpmap:111 opus/48000/2\r\n";
             ..WebRtcConfig::default()
         };
         let rtc = peer_configuration(&config);
-        assert_eq!(rtc.ice_servers.len(), 1);
-        assert_eq!(rtc.ice_servers[0].urls, config.ice_servers[0].urls);
-        assert_eq!(rtc.ice_servers[0].username, "stream-user");
-        assert_eq!(rtc.ice_servers[0].credential, "stream-password");
+        assert_eq!(rtc.ice_servers().len(), 1);
+        assert_eq!(rtc.ice_servers()[0].urls, config.ice_servers[0].urls);
+        assert_eq!(rtc.ice_servers()[0].username, "stream-user");
+        assert_eq!(rtc.ice_servers()[0].credential, "stream-password");
     }
 
     #[test]
@@ -1208,63 +1337,55 @@ a=rtpmap:111 opus/48000/2\r\n";
             ),
         ] {
             assert_eq!(
-                whip_transceiver_direction(mode, RTPCodecType::Audio),
+                whip_transceiver_direction(mode, RtpCodecKind::Audio),
                 audio_direction
             );
             assert_eq!(
-                whip_transceiver_direction(mode, RTPCodecType::Video),
+                whip_transceiver_direction(mode, RtpCodecKind::Video),
                 video_direction
             );
         }
     }
 
-    #[test]
-    fn outgoing_tracks_use_the_bridge_codec_capabilities() {
-        assert_eq!(
-            outgoing_track(RTPCodecType::Video).codec().sdp_fmtp_line,
-            H264_BRIDGE_FMTP
-        );
-        assert_eq!(
-            outgoing_track(RTPCodecType::Audio).codec().sdp_fmtp_line,
-            OPUS_BRIDGE_FMTP
-        );
+    #[tokio::test]
+    async fn outgoing_tracks_use_the_bridge_codec_capabilities() {
+        for (kind, expected_fmtp) in [
+            (RtpCodecKind::Video, H264_BRIDGE_FMTP),
+            (RtpCodecKind::Audio, OPUS_BRIDGE_FMTP),
+        ] {
+            let (track, ssrc) = outgoing_track(kind);
+            let codec = track.codec(ssrc).await.expect("track should have a codec");
+            assert_eq!(codec.sdp_fmtp_line, expected_fmtp);
+        }
     }
 
     #[tokio::test]
     async fn peer_factory_delivers_h264_track() -> Result<()> {
         let config = WebRtcConfig::default();
-        let sender = create_peer_connection(&config).await?;
-        let receiver = create_peer_connection(&config).await?;
-        let track = Arc::new(TrackLocalStaticSample::new(
-            RTCRtpCodecCapability {
-                mime_type: MIME_TYPE_H264.to_string(),
-                clock_rate: 90_000,
-                ..Default::default()
-            },
-            "video".to_string(),
-            "synctv".to_string(),
-        ));
-        sender
-            .add_track(Arc::clone(&track) as Arc<dyn TrackLocal + Send + Sync>)
-            .await?;
+        let sender = create_peer_connection(&config, CancellationToken::new(), None).await?;
         let (packet_sender, mut packet_receiver) = mpsc::channel(1);
-        receiver.on_track(Box::new(move |track, _, _| {
-            let packet_sender = packet_sender.clone();
-            Box::pin(async move {
-                if let Ok((packet, _)) = track.read_rtp().await {
-                    let _ = packet_sender.send(packet).await;
-                }
-            })
-        }));
+        let receiver = create_peer_connection(
+            &config,
+            CancellationToken::new(),
+            Some(packet_collector(packet_sender, None)),
+        )
+        .await?;
+        let (track, ssrc, payload_type) = sample_track(RtpCodecKind::Video)?;
+        sender
+            .connection
+            .add_track(Arc::clone(&track) as Arc<dyn TrackLocal>)
+            .await?;
 
-        let offer = sender.create_offer(None).await?;
+        let offer = sender.connection.create_offer(None).await?;
         let offer = gather_local_description(&sender, offer, &config).await?;
         receiver
+            .connection
             .set_remote_description(RTCSessionDescription::offer(offer)?)
             .await?;
-        let answer = receiver.create_answer(None).await?;
+        let answer = receiver.connection.create_answer(None).await?;
         let answer = gather_local_description(&receiver, answer, &config).await?;
         sender
+            .connection
             .set_remote_description(RTCSessionDescription::answer(answer)?)
             .await?;
         wait_for_connected(&sender, Duration::from_secs(5)).await?;
@@ -1273,11 +1394,16 @@ a=rtpmap:111 opus/48000/2\r\n";
         let packet = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 track
-                    .write_sample(&Sample {
-                        data: Bytes::from_static(&[0x65, 0x88, 0x84, 0x21]),
-                        duration: Duration::from_millis(33),
-                        ..Default::default()
-                    })
+                    .write_sample(
+                        ssrc,
+                        payload_type,
+                        &Sample {
+                            data: Bytes::from_static(&[0x65, 0x88, 0x84, 0x21]),
+                            duration: Duration::from_millis(33),
+                            ..Default::default()
+                        },
+                        &[],
+                    )
                     .await?;
                 if let Ok(Some(packet)) =
                     tokio::time::timeout(Duration::from_millis(50), packet_receiver.recv()).await
@@ -1289,8 +1415,8 @@ a=rtpmap:111 opus/48000/2\r\n";
         .await
         .map_err(|_| anyhow!("timed out waiting for peer factory RTP"))??;
         assert!(!packet.payload.is_empty());
-        sender.close().await?;
-        receiver.close().await?;
+        sender.connection.close().await?;
+        receiver.connection.close().await?;
         Ok(())
     }
 
@@ -1312,50 +1438,31 @@ a=rtpmap:111 opus/48000/2\r\n";
             }
         });
 
-        let publisher = create_peer_connection(&config).await?;
-        let publisher_track = Arc::new(TrackLocalStaticSample::new(
-            RTCRtpCodecCapability {
-                mime_type: MIME_TYPE_H264.to_string(),
-                clock_rate: 90_000,
-                ..Default::default()
-            },
-            "video".to_string(),
-            "synctv".to_string(),
-        ));
-        let publisher_audio_track = Arc::new(TrackLocalStaticSample::new(
-            RTCRtpCodecCapability {
-                mime_type: MIME_TYPE_OPUS.to_string(),
-                clock_rate: 48_000,
-                channels: 2,
-                ..Default::default()
-            },
-            "audio".to_string(),
-            "synctv".to_string(),
-        ));
+        let publisher = create_peer_connection(&config, CancellationToken::new(), None).await?;
+        let (publisher_track, publisher_ssrc, publisher_payload_type) =
+            sample_track(RtpCodecKind::Video)?;
+        let (publisher_audio_track, _, _) = sample_track(RtpCodecKind::Audio)?;
         publisher
+            .connection
             .add_transceiver_from_track(
-                publisher_audio_track as Arc<dyn TrackLocal + Send + Sync>,
+                publisher_audio_track as Arc<dyn TrackLocal>,
                 Some(RTCRtpTransceiverInit {
                     direction: RTCRtpTransceiverDirection::Sendonly,
-                    send_encodings: Vec::new(),
+                    ..Default::default()
                 }),
             )
             .await?;
-        let publisher_transceiver = publisher
+        publisher
+            .connection
             .add_transceiver_from_track(
-                Arc::clone(&publisher_track) as Arc<dyn TrackLocal + Send + Sync>,
+                Arc::clone(&publisher_track) as Arc<dyn TrackLocal>,
                 Some(RTCRtpTransceiverInit {
                     direction: RTCRtpTransceiverDirection::Sendonly,
-                    send_encodings: Vec::new(),
+                    ..Default::default()
                 }),
             )
             .await?;
-        let publisher_rtcp = publisher_transceiver.sender().await;
-        tokio::spawn(async move {
-            let mut buffer = vec![0_u8; 1_500];
-            while publisher_rtcp.read(&mut buffer).await.is_ok() {}
-        });
-        let publisher_offer = publisher.create_offer(None).await?;
+        let publisher_offer = publisher.connection.create_offer(None).await?;
         let publisher_offer =
             gather_local_description(&publisher, publisher_offer, &config).await?;
         let whip = create_whip_session(
@@ -1367,42 +1474,37 @@ a=rtpmap:111 opus/48000/2\r\n";
         )
         .await?;
         publisher
+            .connection
             .set_remote_description(RTCSessionDescription::answer(whip.answer_sdp.clone())?)
             .await?;
 
-        let viewer = create_peer_connection(&config).await?;
-        for kind in [RTPCodecType::Audio, RTPCodecType::Video] {
+        let (viewer_packet_sender, mut viewer_packet_receiver) = mpsc::channel(16);
+        let viewer = create_peer_connection(
+            &config,
+            CancellationToken::new(),
+            Some(packet_collector(
+                viewer_packet_sender,
+                Some(RtpCodecKind::Video),
+            )),
+        )
+        .await?;
+        for kind in [RtpCodecKind::Audio, RtpCodecKind::Video] {
             viewer
+                .connection
                 .add_transceiver_from_kind(
                     kind,
                     Some(RTCRtpTransceiverInit {
                         direction: RTCRtpTransceiverDirection::Recvonly,
-                        send_encodings: Vec::new(),
+                        ..Default::default()
                     }),
                 )
                 .await?;
         }
-        let (viewer_packet_sender, mut viewer_packet_receiver) = mpsc::channel(16);
-        viewer.on_track(Box::new(move |track, _, _| {
-            let viewer_packet_sender = viewer_packet_sender.clone();
-            Box::pin(async move {
-                if track.kind() != RTPCodecType::Video {
-                    return;
-                }
-                tokio::spawn(async move {
-                    let mut buffer = vec![0_u8; RTP_READ_BUFFER_SIZE];
-                    while let Ok((packet, _)) = track.read(&mut buffer).await {
-                        if viewer_packet_sender.send(packet).await.is_err() {
-                            break;
-                        }
-                    }
-                });
-            })
-        }));
-        let viewer_offer = viewer.create_offer(None).await?;
+        let viewer_offer = viewer.connection.create_offer(None).await?;
         let viewer_offer = gather_local_description(&viewer, viewer_offer, &config).await?;
         let whep = create_whep_session(&viewer_offer, packet_receiver, &config).await?;
         viewer
+            .connection
             .set_remote_description(RTCSessionDescription::answer(whep.answer_sdp.clone())?)
             .await?;
 
@@ -1417,11 +1519,16 @@ a=rtpmap:111 opus/48000/2\r\n";
                     Bytes::from_static(&[0x65, 0x88, 0x84, 0x21]),
                 ] {
                     publisher_track
-                        .write_sample(&Sample {
-                            data: payload,
-                            duration: Duration::from_millis(33),
-                            ..Default::default()
-                        })
+                        .write_sample(
+                            publisher_ssrc,
+                            publisher_payload_type,
+                            &Sample {
+                                data: payload,
+                                duration: Duration::from_millis(33),
+                                ..Default::default()
+                            },
+                            &[],
+                        )
                         .await?;
                 }
 
@@ -1454,8 +1561,8 @@ a=rtpmap:111 opus/48000/2\r\n";
 
         whep.close().await?;
         whip.close().await?;
-        viewer.close().await?;
-        publisher.close().await?;
+        viewer.connection.close().await?;
+        publisher.connection.close().await?;
         Ok(())
     }
 }

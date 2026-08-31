@@ -14,16 +14,16 @@
     "validate": "npm run diagrams && npm run validate:content && astro check && astro build"
   },
   "dependencies": {
-    "@astrojs/starlight": "0.41.7",
-    "astro": "7.2.0",
-    "sharp": "0.35.3",
+    "@astrojs/starlight": "0.41.10",
+    "astro": "7.2.9",
+    "sharp": "0.35.4",
     "tar-js": "0.3.0"
   },
   "devDependencies": {
-    "@astrojs/check": "0.9.9",
-    "@mermaid-js/mermaid-cli": "11.14.0",
-    "starlight-codeblock-fullscreen": "1.0.0",
-    "starlight-links-validator": "0.24.0",
-    "typescript": "5.9.3"
+    "@astrojs/check": "0.9.10",
+    "@mermaid-js/mermaid-cli": "11.16.0",
+    "starlight-codeblock-fullscreen": "2.0.0",
+    "starlight-links-validator": "0.25.3",
+    "typescript": "6.0.3"
   }
 }

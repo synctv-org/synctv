@@ -39,7 +39,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-08-25
+          toolchain: nightly-2026-08-31
           components: rustfmt
 
       - name: Check formatting
@@ -55,7 +55,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-08-25
+          toolchain: nightly-2026-08-31
           components: clippy
 
       - name: Install build dependencies
@@ -82,7 +82,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-08-25
+          toolchain: nightly-2026-08-31
 
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler nasm libclang-dev
@@ -106,7 +106,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-08-25
+          toolchain: nightly-2026-08-31
 
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler nasm libclang-dev
@@ -128,7 +128,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-08-25
+          toolchain: nightly-2026-08-31
 
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler nasm libclang-dev
@@ -159,7 +159,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-08-25
+          toolchain: nightly-2026-08-31
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
@@ -211,7 +211,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-08-25
+          toolchain: nightly-2026-08-31
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
@@ -240,7 +240,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-08-25
+          toolchain: nightly-2026-08-31
 
       - name: Install cargo-audit
         run: make install-cargo-audit
@@ -263,7 +263,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-08-25
+          toolchain: nightly-2026-08-31
 
       - name: Install cargo-deny
         run: make install-cargo-deny
@@ -297,7 +297,7 @@ jobs:
       - name: Install Rust nightly
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-08-25
+          toolchain: nightly-2026-08-31
 
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler nasm libclang-dev

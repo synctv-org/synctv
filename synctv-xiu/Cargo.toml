@@ -36,6 +36,7 @@ futures.workspace = true
 async-trait.workspace = true
 retina.workspace = true
 webrtc.workspace = true
+rtc.workspace = true
 sdp.workspace = true
 opus.workspace = true
 fdk-aac.workspace = true

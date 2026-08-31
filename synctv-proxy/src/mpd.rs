@@ -50,12 +50,7 @@ where
                         }
                     },
                 );
-                let rewritten = rewrite_start(
-                    &start,
-                    reader.decoder(),
-                    &inherited_base,
-                    &mut proxy_scope_for,
-                )?;
+                let rewritten = rewrite_start(&start, &inherited_base, &mut proxy_scope_for)?;
                 writer.write_event(Event::Start(rewritten))?;
 
                 let mut context = ElementContext {
@@ -89,12 +84,7 @@ where
                 let inherited_base = contexts
                     .last()
                     .map_or_else(|| source.clone(), |context| context.descendant_base.clone());
-                let rewritten = rewrite_start(
-                    &start,
-                    reader.decoder(),
-                    &inherited_base,
-                    &mut proxy_scope_for,
-                )?;
+                let rewritten = rewrite_start(&start, &inherited_base, &mut proxy_scope_for)?;
                 writer.write_event(Event::Empty(rewritten))?;
             }
             Event::Text(text) => {
@@ -106,7 +96,7 @@ where
                     writer.write_event(Event::Text(text.into_owned()))?;
                     continue;
                 };
-                let decoded = text.decode()?;
+                let decoded = text.xml_content(quick_xml::XmlVersion::Implicit1_0);
                 let unescaped = quick_xml::escape::unescape(&decoded)?;
                 url_text.push_str(&unescaped);
             }
@@ -119,7 +109,7 @@ where
                     writer.write_event(Event::CData(cdata.into_owned()))?;
                     continue;
                 };
-                let decoded = cdata.decode()?;
+                let decoded = cdata.xml_content(quick_xml::XmlVersion::Implicit1_0);
                 url_text.push_str(&decoded);
             }
             Event::GeneralRef(reference) => {
@@ -130,7 +120,7 @@ where
                     writer.write_event(Event::GeneralRef(reference.into_owned()))?;
                     continue;
                 };
-                let reference = reference.decode()?;
+                let reference = reference.xml_content(quick_xml::XmlVersion::Implicit1_0);
                 url_text.push_str(match reference.as_ref() {
                     "amp" => "&",
                     "lt" => "<",
@@ -219,22 +209,20 @@ fn root_has_base_url(mpd: &str) -> Result<bool, anyhow::Error> {
 
 fn rewrite_start<F>(
     start: &BytesStart<'_>,
-    decoder: quick_xml::encoding::Decoder,
     inherited_base: &Url,
     proxy_scope_for: &mut F,
 ) -> Result<BytesStart<'static>, anyhow::Error>
 where
     F: FnMut(&str, MpdResourceKind) -> String,
 {
-    let qualified_name = String::from_utf8(start.name().as_ref().to_vec())?;
+    let qualified_name = start.name().as_ref().to_owned();
     let element_name = local_name(start.name().as_ref());
     let mut rewritten = BytesStart::new(qualified_name);
     for attribute in start.attributes() {
         let attribute = attribute?;
-        let qualified_key = String::from_utf8(attribute.key.as_ref().to_vec())?;
+        let qualified_key = attribute.key.as_ref().to_owned();
         let attribute_name = local_name(attribute.key.as_ref());
-        let value =
-            attribute.decoded_and_normalized_value(quick_xml::XmlVersion::Implicit1_0, decoder)?;
+        let value = attribute.normalized_value(quick_xml::XmlVersion::Implicit1_0)?;
         let kind = uri_attribute_kind(&element_name, &qualified_key, &attribute_name);
         let rewritten_value = match kind {
             Some(MpdResourceKind::Media) if safe_relative_media_reference(&value) => value,
@@ -360,9 +348,8 @@ fn ensure_trailing_slash(mut value: String) -> String {
     value
 }
 
-fn local_name(name: &[u8]) -> String {
-    let name = name.rsplit(|byte| *byte == b':').next().unwrap_or(name);
-    String::from_utf8_lossy(name).into_owned()
+fn local_name(name: &str) -> String {
+    name.rsplit(':').next().unwrap_or(name).to_owned()
 }
 
 #[cfg(test)]

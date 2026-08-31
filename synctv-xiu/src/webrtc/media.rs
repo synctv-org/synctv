@@ -1,11 +1,11 @@
 use bytes::{BufMut as _, Bytes, BytesMut};
 use fdk_aac::enc::{AudioObjectType, BitRate, ChannelMode, Encoder as AacEncoder, EncoderParams};
 use opus::{Channels, Decoder as OpusDecoder};
-use std::collections::VecDeque;
-use webrtc::{
-    rtp::{codecs::h264::H264Packet, packet::Packet, packetizer::Depacketizer},
-    rtp_transceiver::rtp_codec::RTPCodecType,
+use rtc::{
+    rtp::{codec::h264::H264Packet, packet::Packet, packetizer::Depacketizer},
+    rtp_transceiver::rtp_sender::RtpCodecKind,
 };
+use std::collections::VecDeque;
 
 use crate::{
     flv::define::{self, aac_packet_type, avc_packet_type},
@@ -44,13 +44,13 @@ pub(crate) enum TrackFrameEncoder {
 
 impl TrackFrameEncoder {
     pub(crate) fn new(
-        kind: RTPCodecType,
+        kind: RtpCodecKind,
         mime_type: &str,
         channels: u16,
     ) -> Result<Self, MediaConversionError> {
         match (kind, mime_type.to_ascii_lowercase().as_str()) {
-            (RTPCodecType::Video, "video/h264") => Ok(Self::Video(VideoFrameEncoder::default())),
-            (RTPCodecType::Audio, "audio/opus") => {
+            (RtpCodecKind::Video, "video/h264") => Ok(Self::Video(VideoFrameEncoder::default())),
+            (RtpCodecKind::Audio, "audio/opus") => {
                 AudioFrameEncoder::new(channels).map(Self::Audio)
             }
             _ => Err(MediaConversionError::UnsupportedCodec(
@@ -427,7 +427,7 @@ mod tests {
             let payload_len = opus_encoder.encode(&pcm, &mut payload)?;
             payload.truncate(payload_len);
             let packet = Packet {
-                header: webrtc::rtp::header::Header {
+                header: rtc::rtp::header::Header {
                     timestamp: index * 960,
                     ..Default::default()
                 },
@@ -463,7 +463,7 @@ mod tests {
             let payload_len = opus_encoder.encode(&pcm, &mut payload)?;
             payload.truncate(payload_len);
             let packet = Packet {
-                header: webrtc::rtp::header::Header {
+                header: rtc::rtp::header::Header {
                     timestamp,
                     ..Default::default()
                 },

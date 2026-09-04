@@ -76,6 +76,46 @@ fn video_segments_from_durls(durls: &[types::DurlInfo]) -> Vec<VideoSegment> {
         .collect()
 }
 
+fn dash_video_query_params(aid: u64, bvid: &str, cid: u64) -> Vec<(&'static str, String)> {
+    let mut params = vec![
+        ("cid", cid.to_string()),
+        ("qn", "127".to_string()),
+        ("fnver", "0".to_string()),
+        ("fnval", "4048".to_string()),
+        ("fourk", "1".to_string()),
+    ];
+    if bvid.is_empty() {
+        params.push(("aid", aid.to_string()));
+    } else {
+        params.push(("bvid", bvid.to_string()));
+    }
+    params
+}
+
+fn parse_dash_video_response(
+    json: types::DashVideoResp,
+) -> Result<(DashData, DashData), BilibiliError> {
+    if json.code != 0 {
+        return Err(bilibili_api_error(i64::from(json.code), "DASH video URL"));
+    }
+    let data = json.data.ok_or_else(|| BilibiliError::Api {
+        code: i64::from(json.code),
+        message: "DASH video URL response missing payload".to_string(),
+    })?;
+    let dash_info = data.dash.ok_or_else(|| BilibiliError::Api {
+        code: i64::from(json.code),
+        message: "DASH video URL response did not include DASH streams".to_string(),
+    })?;
+    let (dash, hevc_dash) = parse_dash_info(&dash_info, &data.support_formats);
+    if dash.video_streams.is_empty() && hevc_dash.video_streams.is_empty() {
+        return Err(BilibiliError::Api {
+            code: i64::from(json.code),
+            message: "DASH video URL response did not include playable video streams".to_string(),
+        });
+    }
+    Ok((dash, hevc_dash))
+}
+
 fn quality_to_u32(quality: u64, endpoint: &'static str) -> Result<u32, BilibiliError> {
     u32::try_from(quality)
         .map_err(|_| BilibiliError::Parse(format!("{endpoint} quality {quality} exceeds u32")))
@@ -1828,20 +1868,42 @@ impl BilibiliClient {
         bvid: &str,
         cid: u64,
     ) -> Result<(DashData, DashData), BilibiliError> {
-        // First attempt with cached key
         let result = self
             .get_dash_video_url_internal(aid, bvid, cid, false)
             .await;
 
-        // If we get a WBI stale error, retry once with fresh key
-        if let Err(ref e) = result {
-            if Self::is_wbi_stale_error(e) {
+        let result = match result {
+            Err(ref error) if Self::is_wbi_stale_error(error) => {
                 tracing::warn!("WBI key appears stale, refreshing and retrying");
-                return self.get_dash_video_url_internal(aid, bvid, cid, true).await;
+                self.get_dash_video_url_internal(aid, bvid, cid, true).await
             }
+            result => result,
+        };
+
+        if result
+            .as_ref()
+            .is_err_and(Self::is_missing_dash_streams_error)
+        {
+            tracing::warn!(
+                bvid,
+                aid,
+                cid,
+                "Bilibili WBI playurl response omitted DASH streams; retrying with standard playurl"
+            );
+            return self
+                .get_dash_video_url_from_standard_endpoint(aid, bvid, cid)
+                .await;
         }
 
         result
+    }
+
+    fn is_missing_dash_streams_error(error: &BilibiliError) -> bool {
+        matches!(
+            error,
+            BilibiliError::Api { code: 0, message }
+                if message.as_bytes().starts_with(b"DASH video URL response")
+        )
     }
 
     /// Internal method for DASH video URL with optional key refresh
@@ -1857,26 +1919,21 @@ impl BilibiliClient {
         let client = self.client.clone();
         let cookie_header = self.build_cookie_header();
         let bvid = bvid.to_string();
+        let endpoint = self.endpoints.api_url("/x/player/wbi/playurl");
 
         with_retry(|| {
             let client = client.clone();
             let cookie_header = cookie_header.clone();
             let mixin_key = mixin_key.clone();
             let bvid = bvid.clone();
+            let endpoint = endpoint.clone();
             async move {
-                // Build query parameters
-                let mut params: Vec<(&str, String)> =
-                    vec![("cid", cid.to_string()), ("fnval", "4048".to_string())];
-                if bvid.is_empty() {
-                    params.push(("aid", aid.to_string()));
-                } else {
-                    params.push(("bvid", bvid.clone()));
-                }
+                let params = dash_video_query_params(aid, &bvid, cid);
 
                 // Sign parameters with WBI (re-signs on each retry for fresh wts)
                 let signed_params = wbi_sign(&params, &mixin_key);
 
-                let mut req = client.get("https://api.bilibili.com/x/player/wbi/playurl");
+                let mut req = client.get(&endpoint);
                 req = req.query(&signed_params);
                 req = req.header("Referer", REFERER);
                 if let Some(ref cookies) = cookie_header {
@@ -1884,22 +1941,41 @@ impl BilibiliClient {
                 }
                 let resp = check_response(req.send().await?).await?;
                 let json: types::DashVideoResp = json_with_limit(resp).await?;
+                parse_dash_video_response(json)
+            }
+        })
+        .await
+    }
 
-                if json.code != 0 {
-                    return Err(bilibili_api_error(i64::from(json.code), "DASH video URL"));
+    async fn get_dash_video_url_from_standard_endpoint(
+        &self,
+        aid: u64,
+        bvid: &str,
+        cid: u64,
+    ) -> Result<(DashData, DashData), BilibiliError> {
+        let client = self.client.clone();
+        let cookie_header = self.build_cookie_header();
+        let bvid = bvid.to_string();
+        let endpoint = self.endpoints.api_url("/x/player/playurl");
+
+        with_retry(|| {
+            let client = client.clone();
+            let cookie_header = cookie_header.clone();
+            let bvid = bvid.clone();
+            let endpoint = endpoint.clone();
+            async move {
+                let params = dash_video_query_params(aid, &bvid, cid);
+
+                let mut req = client
+                    .get(&endpoint)
+                    .query(&params)
+                    .header("Referer", REFERER);
+                if let Some(ref cookies) = cookie_header {
+                    req = req.header("Cookie", cookies.as_str());
                 }
-
-                // Parse DASH data into structured format
-                let data = json.data.ok_or_else(|| {
-                    BilibiliError::Parse("DASH video URL response missing payload".to_string())
-                })?;
-                let dash_info = data.dash.ok_or_else(|| BilibiliError::Api {
-                    code: i64::from(json.code),
-                    message: "DASH video URL response did not include DASH streams".to_string(),
-                })?;
-                let (regular_dash, hevc_dash) = parse_dash_info(&dash_info, &data.support_formats);
-
-                Ok((regular_dash, hevc_dash))
+                let resp = check_response(req.send().await?).await?;
+                let json: types::DashVideoResp = json_with_limit(resp).await?;
+                parse_dash_video_response(json)
             }
         })
         .await

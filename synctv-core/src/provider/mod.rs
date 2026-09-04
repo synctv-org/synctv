@@ -169,7 +169,7 @@ pub(crate) fn playback_media_requirements(
             PlaybackMediaTransport::Dash,
             Some(PlaybackContainer::Mp4),
             None,
-            Some(PlaybackAudioCodec::Aac),
+            (!bilibili_unified_dash_media(media)).then_some(PlaybackAudioCodec::Aac),
         ),
         "m3u8" | "hls" => (
             PlaybackMediaTransport::Hls,
@@ -221,6 +221,16 @@ pub(crate) fn playback_media_requirements(
         video_codec: video_codec.or(default_video_codec),
         audio_codec,
     })
+}
+
+fn bilibili_unified_dash_media(media: &PlaybackMedia) -> bool {
+    matches!(
+        &media.provider,
+        PlaybackMediaProvider::Bilibili(
+            crate::models::PlaybackBilibiliMedia::DirectDashManifest { mode_name, .. }
+                | crate::models::PlaybackBilibiliMedia::ProxyDashManifest { mode_name, .. }
+        ) if mode_name.eq_ignore_ascii_case("dash")
+    )
 }
 
 pub(crate) fn playback_media_supported_by_client(
@@ -1820,8 +1830,9 @@ where
 mod playback_route_capability_tests {
     use super::*;
     use crate::models::media::{
-        PlaybackDanmakuProvider, PlaybackDirectUrlDanmaku, PlaybackDirectUrlMedia,
-        PlaybackDirectUrlSubtitle, PlaybackMediaProvider, PlaybackSubtitleProvider,
+        PlaybackBilibiliMedia, PlaybackDanmakuProvider, PlaybackDirectUrlDanmaku,
+        PlaybackDirectUrlMedia, PlaybackDirectUrlSubtitle, PlaybackMediaProvider,
+        PlaybackSubtitleProvider,
     };
     use std::collections::HashMap;
 
@@ -2057,6 +2068,55 @@ mod playback_route_capability_tests {
         .expect("native browser HLS should consume a public direct URL");
 
         assert!(filtered.playback_infos.contains_key("hls"));
+    }
+
+    #[test]
+    fn bilibili_unified_dash_route_accepts_a_non_aac_audio_capability() {
+        let profile = PlaybackClientProfile {
+            profile_version: CURRENT_PLAYBACK_CLIENT_PROFILE_VERSION,
+            media_capabilities: vec![PlaybackMediaCapability {
+                transport: PlaybackMediaTransport::Dash,
+                container: Some(PlaybackContainer::Mp4),
+                video_codec: Some(PlaybackVideoCodec::H264),
+                audio_codec: Some(PlaybackAudioCodec::Eac3),
+                pipeline: PlaybackMediaPipeline::Native,
+                codec_string: Some("avc1.64001F,ec-3".to_string()),
+            }],
+            ..PlaybackClientProfile::default()
+        };
+        let media = media_with_format(
+            "mpd",
+            PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::DirectDashManifest {
+                version: "v1".to_string(),
+                expires_at: 1,
+                mode_name: "dash".to_string(),
+                headers: HashMap::new(),
+            }),
+        );
+
+        assert!(direct_playback_media_supported_by_client(
+            Some(&profile),
+            "dash",
+            &media
+        ));
+        assert!(proxy_playback_media_supported_by_client(
+            Some(&profile),
+            "dash",
+            &media
+        ));
+
+        let generic = media_with_format(
+            "mpd",
+            PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::Direct {
+                url: "https://cdn.example.test/video.mpd".to_string(),
+                headers: HashMap::new(),
+            }),
+        );
+        assert!(!direct_playback_media_supported_by_client(
+            Some(&profile),
+            "dash",
+            &generic
+        ));
     }
 
     #[test]

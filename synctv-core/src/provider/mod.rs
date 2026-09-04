@@ -238,7 +238,7 @@ pub(crate) fn playback_media_supported_by_client(
     mode_name: &str,
     media: &PlaybackMedia,
 ) -> bool {
-    let Some(profile) = profile.filter(|profile| profile.uses_explicit_capabilities()) else {
+    let Some(profile) = profile else {
         return true;
     };
     playback_media_requirements(mode_name, media).is_some_and(|requirements| {
@@ -256,7 +256,7 @@ pub(crate) fn direct_playback_media_supported_by_client(
     mode_name: &str,
     media: &PlaybackMedia,
 ) -> bool {
-    let Some(profile) = profile.filter(|profile| profile.uses_explicit_capabilities()) else {
+    let Some(profile) = profile else {
         return true;
     };
     if !media.upstream_headers().is_empty() && !profile.supports_custom_http_headers {
@@ -306,7 +306,7 @@ pub(crate) fn proxy_playback_media_supported_by_client(
     media: &PlaybackMedia,
 ) -> bool {
     profile.is_none_or(|profile| {
-        (!profile.uses_explicit_capabilities() || profile.supports_provider_proxy)
+        profile.supports_provider_proxy
             && playback_media_supported_by_client(Some(profile), mode_name, media)
     })
 }
@@ -319,7 +319,7 @@ pub(crate) fn require_compatible_playback_route(
     if !result.playback_infos.is_empty() {
         return Ok(result);
     }
-    if profile.is_some_and(PlaybackClientProfile::uses_explicit_capabilities) {
+    if profile.is_some() {
         let required_capability = if matches!(
             proxy_mode,
             crate::models::PlaybackProxyMode::Only | crate::models::PlaybackProxyMode::Auto
@@ -379,7 +379,7 @@ pub(crate) fn build_direct_playback_info_for_client(
     if source.medias.is_empty() {
         return None;
     }
-    let Some(profile) = profile.filter(|profile| profile.uses_explicit_capabilities()) else {
+    let Some(profile) = profile else {
         return Some(source.clone());
     };
     let (medias, default_media_index) =

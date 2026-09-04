@@ -252,7 +252,7 @@ pub struct PlaybackClientProfile {
 impl Default for PlaybackClientProfile {
     fn default() -> Self {
         Self {
-            profile_version: 0,
+            profile_version: CURRENT_PLAYBACK_CLIENT_PROFILE_VERSION,
             environment: PlaybackClientEnvironment::Native,
             stream_preference: PlaybackStreamPreference::Auto,
             max_streaming_bitrate: None,
@@ -281,58 +281,29 @@ impl Default for PlaybackClientProfile {
 
 impl PlaybackClientProfile {
     #[must_use]
-    pub const fn uses_explicit_capabilities(&self) -> bool {
-        self.profile_version >= CURRENT_PLAYBACK_CLIENT_PROFILE_VERSION
-    }
-
-    #[must_use]
     pub const fn is_web(&self) -> bool {
         matches!(self.environment, PlaybackClientEnvironment::Web)
     }
 
     #[must_use]
     pub fn supports_transport(&self, transport: PlaybackMediaTransport) -> bool {
-        if self.uses_explicit_capabilities() {
-            return self
-                .media_capabilities
-                .iter()
-                .any(|capability| capability.transport == transport);
-        }
-
-        match transport {
-            PlaybackMediaTransport::Progressive | PlaybackMediaTransport::Dash => true,
-            PlaybackMediaTransport::Hls => self
-                .supported_live_transports
-                .contains(&PlaybackLiveTransport::Hls),
-            PlaybackMediaTransport::Flv | PlaybackMediaTransport::MpegTs => self
-                .supported_live_transports
-                .contains(&PlaybackLiveTransport::Flv),
-            PlaybackMediaTransport::WebRtc => self
-                .supported_live_transports
-                .contains(&PlaybackLiveTransport::Whep),
-        }
+        self.media_capabilities
+            .iter()
+            .any(|capability| capability.transport == transport)
     }
 
     #[must_use]
     pub fn supports_video_codec(&self, codec: PlaybackVideoCodec) -> bool {
-        if self.uses_explicit_capabilities() {
-            return self
-                .media_capabilities
-                .iter()
-                .any(|capability| capability.video_codec.is_none_or(|value| value == codec));
-        }
-        self.supported_video_codecs.contains(&codec)
+        self.media_capabilities
+            .iter()
+            .any(|capability| capability.video_codec.is_none_or(|value| value == codec))
     }
 
     #[must_use]
     pub fn supports_container(&self, container: PlaybackContainer) -> bool {
-        if self.uses_explicit_capabilities() {
-            return self
-                .media_capabilities
-                .iter()
-                .any(|capability| capability.container.is_none_or(|value| value == container));
-        }
-        self.supported_containers.contains(&container)
+        self.media_capabilities
+            .iter()
+            .any(|capability| capability.container.is_none_or(|value| value == container))
     }
 
     #[must_use]
@@ -343,12 +314,6 @@ impl PlaybackClientProfile {
         video_codec: Option<PlaybackVideoCodec>,
         audio_codec: Option<PlaybackAudioCodec>,
     ) -> bool {
-        if !self.uses_explicit_capabilities() {
-            return self.supports_transport(transport)
-                && container.is_none_or(|value| self.supports_container(value))
-                && video_codec.is_none_or(|value| self.supports_video_codec(value));
-        }
-
         self.media_capabilities.iter().any(|capability| {
             capability.transport == transport
                 && container
@@ -371,9 +336,6 @@ impl PlaybackClientProfile {
         audio_codec: Option<PlaybackAudioCodec>,
         codec_string: &str,
     ) -> bool {
-        if !self.uses_explicit_capabilities() {
-            return self.supports_media(transport, container, video_codec, audio_codec);
-        }
         let codec_string = codec_string.trim();
         if codec_string.is_empty() {
             return false;
@@ -405,9 +367,6 @@ impl PlaybackClientProfile {
         audio_codec: Option<PlaybackAudioCodec>,
         pipeline: PlaybackMediaPipeline,
     ) -> bool {
-        if !self.uses_explicit_capabilities() {
-            return self.supports_media(transport, container, video_codec, audio_codec);
-        }
         self.media_capabilities.iter().any(|capability| {
             capability.transport == transport
                 && capability.pipeline == pipeline

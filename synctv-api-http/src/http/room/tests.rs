@@ -97,75 +97,6 @@ fn test_watch_after_event_sequence_rejects_non_utf8_last_event_id() -> TestResul
 }
 
 #[test]
-fn test_build_get_playback_request_parses_generic_profile_query() -> TestResult {
-    let request = app_ok(build_get_playback_request(&GetPlaybackQuery {
-        client_profile: None,
-        stream_preference: Some(synctv_proto::client::PlaybackStreamPreference::Transcode as i32),
-        max_streaming_bitrate: Some(8_000_000),
-        max_audio_channels: Some(2),
-        video_codecs: Some(format!(
-            "{},{}",
-            synctv_proto::client::PlaybackVideoCodec::H264 as i32,
-            synctv_proto::client::PlaybackVideoCodec::Av1 as i32
-        )),
-        containers: Some(format!(
-            "{},{}",
-            synctv_proto::client::PlaybackContainer::Mp4 as i32,
-            synctv_proto::client::PlaybackContainer::Webm as i32
-        )),
-        live_transports: Some(format!(
-            "{},{}",
-            synctv_proto::client::PlaybackLiveTransport::Hls as i32,
-            synctv_proto::client::PlaybackLiveTransport::Flv as i32
-        )),
-        audio_capability: Some(synctv_proto::client::PlaybackAudioCapability::Surround as i32),
-        subtitle_preference: Some(
-            synctv_proto::client::PlaybackSubtitlePreference::EmbeddedOrExternal as i32,
-        ),
-    }))?;
-
-    let profile = request
-        .playback_client_profile
-        .ok_or_else(|| test_error("query should produce playback client profile"))?;
-    assert_eq!(
-        profile.stream_preference,
-        synctv_proto::client::PlaybackStreamPreference::Transcode as i32
-    );
-    assert_eq!(profile.max_streaming_bitrate, Some(8_000_000));
-    assert_eq!(profile.max_audio_channels, Some(2));
-    assert_eq!(
-        profile.supported_video_codecs,
-        vec![
-            synctv_proto::client::PlaybackVideoCodec::H264 as i32,
-            synctv_proto::client::PlaybackVideoCodec::Av1 as i32,
-        ]
-    );
-    assert_eq!(
-        profile.supported_containers,
-        vec![
-            synctv_proto::client::PlaybackContainer::Mp4 as i32,
-            synctv_proto::client::PlaybackContainer::Webm as i32,
-        ]
-    );
-    assert_eq!(
-        profile.supported_live_transports,
-        vec![
-            synctv_proto::client::PlaybackLiveTransport::Hls as i32,
-            synctv_proto::client::PlaybackLiveTransport::Flv as i32,
-        ]
-    );
-    assert_eq!(
-        profile.audio_capability,
-        synctv_proto::client::PlaybackAudioCapability::Surround as i32
-    );
-    assert_eq!(
-        profile.subtitle_preference,
-        synctv_proto::client::PlaybackSubtitlePreference::EmbeddedOrExternal as i32
-    );
-    Ok(())
-}
-
-#[test]
 fn test_build_get_playback_request_omits_profile_when_query_is_empty() -> TestResult {
     let request = app_ok(build_get_playback_request(&GetPlaybackQuery::default()))?;
 
@@ -195,7 +126,6 @@ fn test_build_get_playback_request_decodes_versioned_profile() -> TestResult {
     let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(expected.encode_to_vec());
     let request = app_ok(build_get_playback_request(&GetPlaybackQuery {
         client_profile: Some(encoded),
-        ..Default::default()
     }))?;
 
     assert_eq!(request.playback_client_profile, Some(expected));
@@ -203,23 +133,11 @@ fn test_build_get_playback_request_decodes_versioned_profile() -> TestResult {
 }
 
 #[test]
-fn test_build_get_playback_request_rejects_mixed_profile_encodings() {
-    let error = build_get_playback_request(&GetPlaybackQuery {
-        client_profile: Some("AA".to_string()),
-        stream_preference: Some(1),
-        ..Default::default()
-    })
-    .expect_err("profile encodings must be unambiguous");
-
-    assert!(error.message().contains("cannot be combined"), "{error:?}");
-}
-
-#[test]
 fn test_handwritten_room_queries_ignore_unknown_fields() {
     let playback_query =
-        serde_urlencoded::from_str::<GetPlaybackQuery>("streamPreference=2&extra=true")
+        serde_urlencoded::from_str::<GetPlaybackQuery>("clientProfile=AA&extra=true")
             .expect("playback query should ignore unknown fields");
-    assert_eq!(playback_query.stream_preference, Some(2));
+    assert_eq!(playback_query.client_profile.as_deref(), Some("AA"));
     let watch_query =
         serde_urlencoded::from_str::<WatchQuery>("format=json&afterEventSequence=12&extra=true")
             .expect("watch query should ignore unknown fields");
@@ -277,96 +195,6 @@ fn test_handwritten_room_queries_ignore_unknown_fields() {
         serde_urlencoded::from_str::<PlaylistCoverObjectQuery>("token=token&extra=true")
             .expect("playlist cover query should ignore unknown fields");
     assert_eq!(playlist_cover.token, "token");
-}
-
-#[test]
-fn test_build_get_playback_request_rejects_invalid_video_codec() {
-    let error = build_get_playback_request(&GetPlaybackQuery {
-        client_profile: None,
-        stream_preference: None,
-        max_streaming_bitrate: None,
-        max_audio_channels: None,
-        video_codecs: Some("1,999".to_string()),
-        containers: None,
-        live_transports: None,
-        audio_capability: None,
-        subtitle_preference: None,
-    })
-    .expect_err("unknown codec must be rejected");
-
-    assert!(error.message().contains("videoCodecs"), "{error:?}");
-}
-
-#[test]
-fn test_build_get_playback_request_rejects_invalid_stream_preference() {
-    let error = build_get_playback_request(&GetPlaybackQuery {
-        client_profile: None,
-        stream_preference: Some(999),
-        max_streaming_bitrate: None,
-        max_audio_channels: None,
-        video_codecs: None,
-        containers: None,
-        live_transports: None,
-        audio_capability: None,
-        subtitle_preference: None,
-    })
-    .expect_err("unknown stream preference must be rejected");
-
-    assert!(error.message().contains("streamPreference"), "{error:?}");
-}
-
-#[test]
-fn test_build_get_playback_request_rejects_invalid_container() {
-    let error = build_get_playback_request(&GetPlaybackQuery {
-        client_profile: None,
-        stream_preference: None,
-        max_streaming_bitrate: None,
-        max_audio_channels: None,
-        video_codecs: None,
-        containers: Some("1,999".to_string()),
-        live_transports: None,
-        audio_capability: None,
-        subtitle_preference: None,
-    })
-    .expect_err("unknown container must be rejected");
-
-    assert!(error.message().contains("container"), "{error:?}");
-}
-
-#[test]
-fn test_build_get_playback_request_rejects_invalid_audio_capability() {
-    let error = build_get_playback_request(&GetPlaybackQuery {
-        client_profile: None,
-        stream_preference: None,
-        max_streaming_bitrate: None,
-        max_audio_channels: None,
-        video_codecs: None,
-        containers: None,
-        live_transports: None,
-        audio_capability: Some(999),
-        subtitle_preference: None,
-    })
-    .expect_err("unknown audio capability must be rejected");
-
-    assert!(error.message().contains("audioCapability"), "{error:?}");
-}
-
-#[test]
-fn test_build_get_playback_request_rejects_invalid_subtitle_preference() -> TestResult {
-    let error = app_err(build_get_playback_request(&GetPlaybackQuery {
-        client_profile: None,
-        stream_preference: None,
-        max_streaming_bitrate: None,
-        max_audio_channels: None,
-        video_codecs: None,
-        containers: None,
-        live_transports: None,
-        audio_capability: None,
-        subtitle_preference: Some(999),
-    }))?;
-
-    assert!(error.message().contains("subtitlePreference"), "{error:?}");
-    Ok(())
 }
 
 #[test]

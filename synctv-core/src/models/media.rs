@@ -2047,8 +2047,8 @@ pub struct BilibiliPlaybackMetadata {
     /// Current upstream state when the provider could determine it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub is_currently_live: Option<bool>,
-    #[serde(default, skip_serializing_if = "BilibiliDashManifests::is_empty")]
-    pub dash_manifests: BilibiliDashManifests,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dash_manifest: Option<BilibiliDashManifest>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -2075,52 +2075,7 @@ impl BilibiliPlaybackMetadata {
             live_started_at: None,
             is_live: false,
             is_currently_live: None,
-            dash_manifests: BilibiliDashManifests::default(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BilibiliDashManifests {
-    /// Unified DASH manifest containing every compatible video and audio codec.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dash: Option<BilibiliDashManifest>,
-    /// H.264/AVC DASH representations.
-    ///
-    /// Retained for playback-cache compatibility with manifests created before
-    /// the unified DASH route was introduced.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub h264: Option<BilibiliDashManifest>,
-    /// AV1 DASH representations.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub av1: Option<BilibiliDashManifest>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hevc: Option<BilibiliDashManifest>,
-}
-
-impl BilibiliDashManifests {
-    #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        self.dash.is_none() && self.h264.is_none() && self.av1.is_none() && self.hevc.is_none()
-    }
-
-    pub fn set(&mut self, mode: BilibiliDashManifestSlot, manifest: BilibiliDashManifest) {
-        match mode {
-            BilibiliDashManifestSlot::Dash => self.dash = Some(manifest),
-            BilibiliDashManifestSlot::H264 => self.h264 = Some(manifest),
-            BilibiliDashManifestSlot::Av1 => self.av1 = Some(manifest),
-            BilibiliDashManifestSlot::Hevc => self.hevc = Some(manifest),
-        }
-    }
-
-    #[must_use]
-    pub const fn get(&self, mode: BilibiliDashManifestSlot) -> Option<&BilibiliDashManifest> {
-        match mode {
-            BilibiliDashManifestSlot::Dash => self.dash.as_ref(),
-            BilibiliDashManifestSlot::H264 => self.h264.as_ref(),
-            BilibiliDashManifestSlot::Av1 => self.av1.as_ref(),
-            BilibiliDashManifestSlot::Hevc => self.hevc.as_ref(),
+            dash_manifest: None,
         }
     }
 }
@@ -2179,38 +2134,6 @@ pub struct BilibiliDashAudioStream {
 pub struct BilibiliDashSegmentBase {
     pub index_range: String,
     pub initialization_range: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum BilibiliDashManifestSlot {
-    Dash,
-    H264,
-    Av1,
-    Hevc,
-}
-
-impl BilibiliDashManifestSlot {
-    #[must_use]
-    pub fn parse(value: &str) -> Option<Self> {
-        match value.trim() {
-            "dash" => Some(Self::Dash),
-            "h264" => Some(Self::H264),
-            "av1" => Some(Self::Av1),
-            "hevc" => Some(Self::Hevc),
-            _ => None,
-        }
-    }
-
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Dash => "dash",
-            Self::H264 => "h264",
-            Self::Av1 => "av1",
-            Self::Hevc => "hevc",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

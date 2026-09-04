@@ -2685,8 +2685,7 @@ message PlaybackClientProfile {
   PlaybackAudioCapability audio_capability = 6 [(buf.validate.field).enum.defined_only = true];
   PlaybackSubtitlePreference subtitle_preference = 7 [(buf.validate.field).enum.defined_only = true];
   repeated PlaybackLiveTransport supported_live_transports = 8 [(buf.validate.field).repeated.items.enum.defined_only = true];
-  // Version 0 preserves the legacy defaults of fields 1-8. Version 2 gives
-  // repeated capability fields explicit empty-set semantics.
+  // Must match the server's current playback client profile version.
   uint32 profile_version = 9;
   PlaybackClientEnvironment environment = 10 [(buf.validate.field).enum.defined_only = true];
   repeated PlaybackMediaCapability media_capabilities = 11 [(buf.validate.field).repeated.max_items = 64];

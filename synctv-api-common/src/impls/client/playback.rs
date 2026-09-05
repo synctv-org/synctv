@@ -1072,7 +1072,6 @@ impl ClientApiImpl {
         let cursor_entry_id = req
             .cursor_entry_id
             .as_deref()
-            .or(req.before_entry_id.as_deref())
             .map(|id| self.public_id_codec.decode_playback_history_entry_id(id))
             .transpose()
             .map_err(|_| {

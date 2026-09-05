@@ -74,23 +74,7 @@ pub struct LoadedConfig {
     pub path: PathBuf,
 }
 
-pub fn load_config(
-    manifest_dir: &Path,
-    explicit: Option<&Path>,
-    legacy_dist: Option<&Path>,
-) -> Result<LoadedConfig, String> {
-    if let Some(path) = legacy_dist {
-        return Ok(LoadedConfig {
-            config: WebUiConfig {
-                schema_version: 1,
-                source: WebUiSource::Dist {
-                    path: path.to_path_buf(),
-                },
-                build: FlutterBuild::default(),
-            },
-            path: manifest_dir.join(LOCAL_CONFIG),
-        });
-    }
+pub fn load_config(manifest_dir: &Path, explicit: Option<&Path>) -> Result<LoadedConfig, String> {
     let path = explicit.map_or_else(
         || {
             let local = manifest_dir.join(LOCAL_CONFIG);
@@ -564,7 +548,7 @@ mod tests {
             "schema-version=1\n[source]\nkind='dist'\npath='local'\n",
         )?;
 
-        let loaded = load_config(directory.path(), None, None)?;
+        let loaded = load_config(directory.path(), None)?;
 
         assert_eq!(loaded.path, directory.path().join(LOCAL_CONFIG));
         assert!(matches!(

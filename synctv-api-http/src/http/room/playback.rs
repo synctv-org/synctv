@@ -185,7 +185,6 @@ pub async fn play_previous(
         tag = "Room",
         params(
             ("roomId" = String, Path, description = "Room ID"),
-            ("beforeEntryId" = Option<String>, Query, description = "Legacy newest-first pagination cursor"),
             ("cursorEntryId" = Option<String>, Query, description = "Pagination cursor for the selected sort direction"),
             ("limit" = Option<i32>, Query, description = "Page size, up to 100"),
             ("sortDirection" = Option<i32>, Query, description = "Sort direction enum value; defaults to descending")

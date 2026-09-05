@@ -38,10 +38,9 @@ pub struct PublishKey {
     pub key_type: PublishKeyType,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PublishKeyType {
-    #[default]
     SingleUse,
     Expiring,
     Permanent,
@@ -101,7 +100,6 @@ pub struct PublishClaims {
     /// JWT ID (unique token identifier)
     pub jti: String,
     /// Key lifecycle type
-    #[serde(default)]
     pub key_type: PublishKeyType,
 }
 

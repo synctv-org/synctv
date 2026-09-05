@@ -3417,7 +3417,6 @@ impl ResourceObserver {
                 let cursor_entry_id = request
                     .cursor_entry_id
                     .as_deref()
-                    .or(request.before_entry_id.as_deref())
                     .map(|id| self.public_id_codec.decode_playback_history_entry_id(id))
                     .transpose()
                     .map_err(|_| "Invalid playback history cursor_entry_id".to_string())?;

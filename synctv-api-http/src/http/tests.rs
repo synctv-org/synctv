@@ -3792,7 +3792,8 @@ async fn test_notification_routes_fail_closed_when_service_missing() -> TestResu
         Request::builder()
             .method("POST")
             .uri("/api/notifications/read-all")
-            .body(Body::empty()),
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from("{}")),
     )?;
     let write_response = test_response(app.oneshot(write_request).await)?;
     assert_eq!(write_response.status(), StatusCode::SERVICE_UNAVAILABLE);

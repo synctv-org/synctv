@@ -208,25 +208,24 @@ async fn filter_usable_stream_media_ids(
 
 pub(crate) fn publish_key_options(
     req: &CreateRoomPublishKeyRequest,
-) -> Result<Option<PublishKeyOptions>, ApiError> {
+) -> Result<PublishKeyOptions, ApiError> {
     let key_type = match PublishKeyType::try_from(req.r#type)
         .map_err(|_| ApiError::InvalidInput("publish key type is invalid".to_string()))?
     {
         PublishKeyType::SingleUse => CorePublishKeyType::SingleUse,
         PublishKeyType::Expiring => CorePublishKeyType::Expiring,
         PublishKeyType::Permanent => CorePublishKeyType::Permanent,
-        PublishKeyType::Unspecified if req.expires_at.is_none() => return Ok(None),
         PublishKeyType::Unspecified => {
             return Err(ApiError::InvalidInput(
-                "publish key type is required when expiration is provided".to_string(),
+                "publish key type must be specified".to_string(),
             ));
         }
     };
 
-    Ok(Some(PublishKeyOptions {
+    Ok(PublishKeyOptions {
         key_type,
         expires_at: req.expires_at,
-    }))
+    })
 }
 
 pub(crate) struct RoomPublishKeyIssuer<'a> {
@@ -256,21 +255,12 @@ impl<'a> RoomPublishKeyIssuer<'a> {
         room_id: RoomId,
         media_id: MediaId,
         actor_user_id: &UserId,
-        options: Option<PublishKeyOptions>,
+        options: PublishKeyOptions,
     ) -> Result<CreateRoomPublishKeyResponse, ApiError> {
-        let publish_key = match options {
-            Some(options) => self.publish_key_service.generate_publish_key_with_options(
-                &room_id,
-                &media_id,
-                actor_user_id,
-                options,
-            ),
-            None => {
-                self.publish_key_service
-                    .generate_publish_key(&room_id, &media_id, actor_user_id)
-            }
-        }
-        .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
+        let publish_key = self
+            .publish_key_service
+            .generate_publish_key_with_options(&room_id, &media_id, actor_user_id, options)
+            .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
         let room_id = self
             .public_id_codec
             .encode_room_id(room_id)
@@ -682,24 +672,10 @@ mod tests {
     }
 
     #[test]
-    fn publish_key_options_preserves_legacy_default() -> TestResult {
-        let options = api_ok(publish_key_options(
-            &synctv_proto::client::CreateRoomPublishKeyRequest {
-                media_id: "med_AbC123".to_string(),
-                ..Default::default()
-            },
-        ))?;
-
-        assert!(options.is_none());
-        Ok(())
-    }
-
-    #[test]
-    fn publish_key_options_rejects_ambiguous_legacy_expiration() -> TestResult {
+    fn publish_key_options_requires_type() -> TestResult {
         let error = api_err(publish_key_options(
             &synctv_proto::client::CreateRoomPublishKeyRequest {
                 media_id: "med_AbC123".to_string(),
-                expires_at: Some(1_800_000_000),
                 ..Default::default()
             },
         ))?;

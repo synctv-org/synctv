@@ -64,7 +64,7 @@ pub async fn list_room_streams(
         post,
         path = "/api/playback-providers/{roomId}/rtmp/{mediaId}/publish-key",
         tag = "RTMP Playback Provider",
-        request_body = Option<CreateRoomPublishKeyRequest>,
+        request_body = CreateRoomPublishKeyRequest,
         params(
             ("roomId" = String, Path, description = "Room ID"),
             ("mediaId" = String, Path, description = "Media ID")
@@ -85,10 +85,9 @@ pub async fn create_room_publish_key(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<RoomStreamPath>,
-    req: Option<Json<CreateRoomPublishKeyRequest>>,
+    Json(mut req): Json<CreateRoomPublishKeyRequest>,
 ) -> AppResult<Json<CreateRoomPublishKeyResponse>> {
     let room_id = path.room_id;
-    let mut req = req.map(|Json(req)| req).unwrap_or_default();
     req.media_id = path.media_id;
     let response = execute_user_endpoint(
         &state,

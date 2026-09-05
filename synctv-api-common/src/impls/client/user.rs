@@ -469,17 +469,7 @@ impl ClientApiImpl {
         req: synctv_proto::client::ListBlockedUsersRequest,
     ) -> Result<synctv_proto::client::ListBlockedUsersResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let page = if req.page > 0 {
-            req.page.cast_unsigned()
-        } else {
-            1
-        };
-        let page_size = if req.page_size > 0 {
-            req.page_size.cast_unsigned().min(100)
-        } else {
-            50
-        };
-        let pagination = PageParams::new(Some(page), Some(page_size));
+        let pagination = crate::impls::proto_page_params(req.page, req.page_size, 50, 100);
         let search = (!req.search.is_empty()).then_some(req.search);
         let (blocked_users, total) = self
             .user_service

@@ -2211,12 +2211,7 @@ message PlaybackHistoryEntry {
 }
 
 message ListPlaybackHistoryRequest {
-  option (buf.validate.message).cel = {
-    id: "list_playback_history.single_cursor"
-    message: "before_entry_id and cursor_entry_id cannot both be set"
-    expression: "!(has(this.before_entry_id) && has(this.cursor_entry_id))"
-  };
-  optional string before_entry_id = 1 [(buf.validate.field).string = {min_len: 4 max_len: 64 pattern: "^ph_[A-Za-z0-9]+$"}];
+  reserved 1;
   int32 limit = 2 [(buf.validate.field).int32 = {gte: 0 lte: 100}];
   optional string cursor_entry_id = 3 [(buf.validate.field).string = {min_len: 4 max_len: 64 pattern: "^ph_[A-Za-z0-9]+$"}];
   SortDirection sort_direction = 4 [(buf.validate.field).enum.defined_only = true];
@@ -2225,7 +2220,7 @@ message ListPlaybackHistoryRequest {
 message ListPlaybackHistoryResponse {
   repeated PlaybackHistoryEntry entries = 1;
   string history_cursor_id = 2;
-  string next_before_entry_id = 3;
+  reserved 3;
   string next_cursor_entry_id = 4;
 }
 

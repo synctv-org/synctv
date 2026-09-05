@@ -182,7 +182,7 @@ pub async fn mark_as_read(
         post,
         path = "/api/notifications/read-all",
         tag = "Notification",
-        request_body = Option<MarkAllAsReadRequest>,
+        request_body = MarkAllAsReadRequest,
         responses(
             (status = 204, description = "Notifications marked as read"),
             (status = 400, description = "Invalid timestamp", body = crate::openapi::GoogleRpcStatusSchema),
@@ -197,14 +197,12 @@ pub async fn mark_as_read(
 pub async fn mark_all_as_read(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    req: Option<Json<MarkAllAsReadRequest>>,
+    Json(req): Json<MarkAllAsReadRequest>,
 ) -> AppResult<StatusCode> {
     let api = get_notification_api(&state)?;
     let request_meta = request_meta
         .0
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
-
-    let req = req.map_or_else(MarkAllAsReadRequest::default, |Json(req)| req);
 
     state
         .shared_api_runtime

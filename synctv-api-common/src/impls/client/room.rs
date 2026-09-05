@@ -5,7 +5,7 @@ use futures::{stream, StreamExt as _, TryStreamExt as _};
 use std::collections::{HashMap, HashSet};
 use synctv_core::models::{
     ChatMentionInput, ChatMessageEvent, ChatMessageType, ChatMessageWithAttachments, ChatPinEvent,
-    ChatPlaybackMessagesQuery, CreateChatAttachmentUploadSession, MarkChatRead, PageParams,
+    ChatPlaybackMessagesQuery, CreateChatAttachmentUploadSession, MarkChatRead,
     PlaybackSourceIdentity, SendChatMessage, SetChatReaction, StoreFileUploadResult, UserId,
 };
 use synctv_core::provider::ExecutionControl;
@@ -948,13 +948,12 @@ impl ClientApiImpl {
     ) -> Result<synctv_proto::client::ListFavoriteRoomsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let uid = *user_id;
-        let page = positive_i32_to_u32(req.page, DEFAULT_ROOM_PAGE);
-        let page_size = if req.page_size > 0 {
-            req.page_size.cast_unsigned().min(MAX_ROOM_PAGE_SIZE)
-        } else {
-            DEFAULT_ROOM_PAGE_SIZE
-        };
-        let pagination = PageParams::new(Some(page), Some(page_size));
+        let pagination = crate::impls::proto_page_params(
+            req.page,
+            req.page_size,
+            DEFAULT_ROOM_PAGE_SIZE,
+            MAX_ROOM_PAGE_SIZE,
+        );
         let search = (!req.search.is_empty()).then_some(req.search);
         let (rooms, total) = self
             .room_service

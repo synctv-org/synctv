@@ -118,7 +118,6 @@ pub(super) fn proto_sort_direction(
     }
 }
 
-pub(super) const DEFAULT_ROOM_PAGE: u32 = 1;
 pub(super) const DEFAULT_ROOM_PAGE_SIZE: u32 = 20;
 pub(super) const MAX_ROOM_PAGE_SIZE: u32 = 100;
 pub(super) const DISCOVERY_FEATURED_ROOM_COUNT: usize = 5;
@@ -134,14 +133,6 @@ pub(super) fn validate_room_password_for_verify(password: &str) -> Result<(), Ap
         return Err(ApiError::InvalidInput("Invalid room password".to_string()));
     }
     Ok(())
-}
-
-pub(super) fn positive_i32_to_u32(value: i32, default: u32) -> u32 {
-    if value > 0 {
-        value.cast_unsigned()
-    } else {
-        default
-    }
 }
 
 pub(super) fn positive_i32(value: i32, default: i32) -> i32 {
@@ -622,15 +613,13 @@ pub(super) fn build_room_discovery_query(
 ) -> Result<synctv_core::models::RoomListQuery, ApiError> {
     crate::impls::validate_proto_request(&req)?;
 
-    let page = positive_i32_to_u32(req.page, DEFAULT_ROOM_PAGE);
-    let page_size = if req.page_size > 0 {
-        req.page_size.cast_unsigned().min(MAX_ROOM_PAGE_SIZE)
-    } else {
-        DEFAULT_ROOM_PAGE_SIZE
-    };
-
     Ok(synctv_core::models::RoomListQuery {
-        pagination: synctv_core::models::PageParams::new(Some(page), Some(page_size)),
+        pagination: crate::impls::proto_page_params(
+            req.page,
+            req.page_size,
+            DEFAULT_ROOM_PAGE_SIZE,
+            MAX_ROOM_PAGE_SIZE,
+        ),
         search: (!req.search.is_empty()).then_some(req.search),
         status: Some(synctv_core::models::RoomStatus::Active),
         is_banned: Some(false),
@@ -675,15 +664,13 @@ pub(super) fn build_my_room_list_query(
 ) -> Result<synctv_core::models::MyRoomListQuery, ApiError> {
     crate::impls::validate_proto_request(&req)?;
 
-    let page = positive_i32_to_u32(req.page, DEFAULT_ROOM_PAGE);
-    let page_size = if req.page_size > 0 {
-        req.page_size.cast_unsigned().min(MAX_ROOM_PAGE_SIZE)
-    } else {
-        DEFAULT_ROOM_PAGE_SIZE
-    };
-
     Ok(synctv_core::models::MyRoomListQuery {
-        pagination: synctv_core::models::PageParams::new(Some(page), Some(page_size)),
+        pagination: crate::impls::proto_page_params(
+            req.page,
+            req.page_size,
+            DEFAULT_ROOM_PAGE_SIZE,
+            MAX_ROOM_PAGE_SIZE,
+        ),
         search: (!req.search.is_empty()).then_some(req.search),
         status: proto_room_status_filter(req.status)?,
         is_banned: req.is_banned,

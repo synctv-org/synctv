@@ -25,17 +25,8 @@ pub(super) fn validate_include_message_types(values: Vec<i32>) -> AppResult<Vec<
     into_params(parameter_in = Query, rename_all = "camelCase")
 )]
 pub struct GetPlaybackQuery {
-    /// Base64url-encoded PlaybackClientProfile protobuf. New clients use this
-    /// lossless representation; the remaining fields are legacy compatibility.
+    /// Base64url-encoded PlaybackClientProfile protobuf.
     pub client_profile: Option<String>,
-    pub stream_preference: Option<i32>,
-    pub max_streaming_bitrate: Option<i64>,
-    pub max_audio_channels: Option<i32>,
-    pub video_codecs: Option<String>,
-    pub containers: Option<String>,
-    pub live_transports: Option<String>,
-    pub audio_capability: Option<i32>,
-    pub subtitle_preference: Option<i32>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -81,14 +72,6 @@ pub struct WatchPlaybackQuery {
     pub delivery_mode: Option<i32>,
     pub format: Option<String>,
     pub client_profile: Option<String>,
-    pub stream_preference: Option<i32>,
-    pub max_streaming_bitrate: Option<i64>,
-    pub max_audio_channels: Option<i32>,
-    pub video_codecs: Option<String>,
-    pub containers: Option<String>,
-    pub live_transports: Option<String>,
-    pub audio_capability: Option<i32>,
-    pub subtitle_preference: Option<i32>,
 }
 
 pub(crate) fn parse_watch_delivery_mode(value: Option<i32>) -> AppResult<i32> {
@@ -137,100 +120,6 @@ pub(crate) fn watch_after_event_sequence(
     }
 }
 
-fn parse_stream_preference(
-    value: Option<i32>,
-) -> Result<synctv_proto::client::PlaybackStreamPreference, super::super::AppError> {
-    value
-        .map(synctv_proto::client::PlaybackStreamPreference::try_from)
-        .transpose()
-        .map(|value| value.unwrap_or(synctv_proto::client::PlaybackStreamPreference::Unspecified))
-        .map_err(|_| super::super::AppError::bad_request("Invalid streamPreference enum integer"))
-}
-
-fn parse_subtitle_preference(
-    value: Option<i32>,
-) -> Result<synctv_proto::client::PlaybackSubtitlePreference, super::super::AppError> {
-    value
-        .map(synctv_proto::client::PlaybackSubtitlePreference::try_from)
-        .transpose()
-        .map(|value| value.unwrap_or(synctv_proto::client::PlaybackSubtitlePreference::Unspecified))
-        .map_err(|_| super::super::AppError::bad_request("Invalid subtitlePreference enum integer"))
-}
-
-fn parse_video_codecs(value: Option<&str>) -> Result<Vec<i32>, super::super::AppError> {
-    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
-        return Ok(Vec::new());
-    };
-
-    value
-        .split(',')
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|codec| {
-            let value = codec.parse::<i32>().map_err(|_| {
-                super::super::AppError::bad_request("Invalid videoCodecs enum integer")
-            })?;
-            synctv_proto::client::PlaybackVideoCodec::try_from(value)
-                .map(|_| value)
-                .map_err(|_| {
-                    super::super::AppError::bad_request("Invalid videoCodecs enum integer")
-                })
-        })
-        .collect()
-}
-
-fn parse_containers(value: Option<&str>) -> Result<Vec<i32>, super::super::AppError> {
-    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
-        return Ok(Vec::new());
-    };
-
-    value
-        .split(',')
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|container| {
-            let value = container.parse::<i32>().map_err(|_| {
-                super::super::AppError::bad_request("Invalid containers enum integer")
-            })?;
-            synctv_proto::client::PlaybackContainer::try_from(value)
-                .map(|_| value)
-                .map_err(|_| super::super::AppError::bad_request("Invalid containers enum integer"))
-        })
-        .collect()
-}
-
-fn parse_live_transports(value: Option<&str>) -> Result<Vec<i32>, super::super::AppError> {
-    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
-        return Ok(Vec::new());
-    };
-
-    value
-        .split(',')
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|transport| {
-            let value = transport.parse::<i32>().map_err(|_| {
-                super::super::AppError::bad_request("Invalid liveTransports enum integer")
-            })?;
-            synctv_proto::client::PlaybackLiveTransport::try_from(value)
-                .map(|_| value)
-                .map_err(|_| {
-                    super::super::AppError::bad_request("Invalid liveTransports enum integer")
-                })
-        })
-        .collect()
-}
-
-fn parse_audio_capability(
-    value: Option<i32>,
-) -> Result<synctv_proto::client::PlaybackAudioCapability, super::super::AppError> {
-    value
-        .map(synctv_proto::client::PlaybackAudioCapability::try_from)
-        .transpose()
-        .map(|value| value.unwrap_or(synctv_proto::client::PlaybackAudioCapability::Unspecified))
-        .map_err(|_| super::super::AppError::bad_request("Invalid audioCapability enum integer"))
-}
-
 fn decode_client_profile(
     encoded: &str,
 ) -> Result<synctv_proto::client::PlaybackClientProfile, super::super::AppError> {
@@ -251,43 +140,13 @@ fn decode_client_profile(
 pub(crate) fn build_get_playback_request(
     query: &GetPlaybackQuery,
 ) -> AppResult<GetPlaybackRequest> {
-    let has_legacy_profile = query.stream_preference.is_some()
-        || query.max_streaming_bitrate.is_some()
-        || query.max_audio_channels.is_some()
-        || query.video_codecs.is_some()
-        || query.containers.is_some()
-        || query.live_transports.is_some()
-        || query.audio_capability.is_some()
-        || query.subtitle_preference.is_some();
-
-    if query.client_profile.is_some() && has_legacy_profile {
-        return Err(super::super::AppError::bad_request(
-            "clientProfile cannot be combined with legacy playback profile parameters",
-        ));
-    }
-
-    let playback_client_profile = if let Some(encoded) = query.client_profile.as_deref() {
-        Some(decode_client_profile(encoded)?)
-    } else if has_legacy_profile {
-        Some(synctv_proto::client::PlaybackClientProfile {
-            stream_preference: parse_stream_preference(query.stream_preference)? as i32,
-            max_streaming_bitrate: query.max_streaming_bitrate,
-            max_audio_channels: query.max_audio_channels,
-            supported_video_codecs: parse_video_codecs(query.video_codecs.as_deref())?,
-            supported_containers: parse_containers(query.containers.as_deref())?,
-            supported_live_transports: parse_live_transports(query.live_transports.as_deref())?,
-            audio_capability: parse_audio_capability(query.audio_capability)? as i32,
-            subtitle_preference: parse_subtitle_preference(query.subtitle_preference)? as i32,
-            ..Default::default()
-        })
-    } else {
-        None
-    };
-
-    let request = GetPlaybackRequest {
-        playback_client_profile,
-    };
-    Ok(request)
+    Ok(GetPlaybackRequest {
+        playback_client_profile: query
+            .client_profile
+            .as_deref()
+            .map(decode_client_profile)
+            .transpose()?,
+    })
 }
 
 pub(crate) fn build_playback_client_profile_from_watch_query(
@@ -295,14 +154,6 @@ pub(crate) fn build_playback_client_profile_from_watch_query(
 ) -> AppResult<Option<synctv_proto::client::PlaybackClientProfile>> {
     build_get_playback_request(&GetPlaybackQuery {
         client_profile: query.client_profile.clone(),
-        stream_preference: query.stream_preference,
-        max_streaming_bitrate: query.max_streaming_bitrate,
-        max_audio_channels: query.max_audio_channels,
-        video_codecs: query.video_codecs.clone(),
-        containers: query.containers.clone(),
-        live_transports: query.live_transports.clone(),
-        audio_capability: query.audio_capability,
-        subtitle_preference: query.subtitle_preference,
     })
     .map(|request| request.playback_client_profile)
 }

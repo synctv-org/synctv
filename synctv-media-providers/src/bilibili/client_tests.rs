@@ -76,6 +76,119 @@ fn nav_response_with_wbi_keys(img_key: &str, sub_key: &str) -> serde_json::Value
     })
 }
 
+fn dash_video_response() -> serde_json::Value {
+    json!({
+        "code": 0,
+        "ttl": 1,
+        "data": {
+            "support_formats": [{
+                "quality": 80,
+                "new_description": "1080P"
+            }],
+            "dash": {
+                "duration": 10.0,
+                "minBufferTime": 1.5,
+                "video": [{
+                    "id": 80,
+                    "baseUrl": "https://cdn.example/video.m4s",
+                    "backupUrl": [],
+                    "mimeType": "video/mp4",
+                    "codecs": "avc1.640028",
+                    "width": 1920,
+                    "height": 1080,
+                    "frameRate": "30",
+                    "bandwidth": 1_000_000,
+                    "codecid": 7,
+                    "sar": "1:1",
+                    "startWithSap": 1,
+                    "SegmentBase": {
+                        "Initialization": "0-999",
+                        "indexRange": "1000-1999"
+                    }
+                }],
+                "audio": [{
+                    "id": 30280,
+                    "baseUrl": "https://cdn.example/audio.m4s",
+                    "backupUrl": [],
+                    "mimeType": "audio/mp4",
+                    "codecs": "mp4a.40.2",
+                    "bandwidth": 192_000,
+                    "audioSamplingRate": 48_000,
+                    "startWithSap": 1,
+                    "SegmentBase": {
+                        "Initialization": "0-999",
+                        "indexRange": "1000-1999"
+                    }
+                }]
+            }
+        }
+    })
+}
+
+#[tokio::test]
+async fn dash_video_falls_back_to_standard_playurl_when_wbi_omits_dash() -> TestResult {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/x/web-interface/nav"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(nav_response_with_wbi_keys(
+                "7cd084941338484aae1ad9425b84077c",
+                "4932caff0ff746eab6f01bf08b70ac45",
+            )),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/x/player/wbi/playurl"))
+        .and(query_param("bvid", "BV1test"))
+        .and(query_param("cid", "42"))
+        .and(query_param("qn", "127"))
+        .and(query_param("fnver", "0"))
+        .and(query_param("fnval", "4048"))
+        .and(query_param("fourk", "1"))
+        .and(header("cookie", "SESSDATA=session"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": 0,
+            "ttl": 1,
+            "data": {
+                "support_formats": [],
+                "dash": null
+            }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/x/player/playurl"))
+        .and(query_param("bvid", "BV1test"))
+        .and(query_param("cid", "42"))
+        .and(query_param("qn", "127"))
+        .and(query_param("fnver", "0"))
+        .and(query_param("fnval", "4048"))
+        .and(query_param("fourk", "1"))
+        .and(header("cookie", "SESSDATA=session"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(dash_video_response()))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = BilibiliClient::with_cookies_and_transport(
+        HashMap::from([("SESSDATA".to_string(), "session".to_string())]),
+        test_http_client(),
+        test_http_client(),
+        test_endpoints(server.uri()),
+        Arc::new(WbiState::default()),
+        SsrfGuard::disabled(),
+    );
+    let (dash, hevc_dash) = client.get_dash_video_url(0, "BV1test", 42).await?;
+
+    assert_eq!(dash.video_streams.len(), 1);
+    assert_eq!(dash.audio_streams.len(), 1);
+    assert!(hevc_dash.video_streams.is_empty());
+    Ok(())
+}
+
 #[tokio::test]
 async fn live_danmaku_info_uses_wbi_signature_and_cached_device_cookies() -> TestResult {
     let server = MockServer::start().await;

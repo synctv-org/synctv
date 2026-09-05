@@ -2256,9 +2256,7 @@ pub fn playback_client_profile_from_proto(
         return Ok(None);
     };
 
-    let default_profile = synctv_core::provider::PlaybackClientProfile::default();
-    let uses_legacy_defaults = profile.profile_version == 0;
-    if !matches!(profile.profile_version, 0 | 2) {
+    if profile.profile_version != synctv_core::provider::CURRENT_PLAYBACK_CLIENT_PROFILE_VERSION {
         return Err(crate::impls::ApiError::InvalidInput(format!(
             "Unsupported playback client profile version {}",
             profile.profile_version
@@ -2272,14 +2270,9 @@ pub fn playback_client_profile_from_proto(
                     "Unsupported playback client environment".to_string(),
                 )
             })? {
-            synctv_proto::client::PlaybackClientEnvironment::Unspecified
-                if uses_legacy_defaults =>
-            {
-                default_profile.environment
-            }
             synctv_proto::client::PlaybackClientEnvironment::Unspecified => {
                 return Err(crate::impls::ApiError::InvalidInput(
-                    "Playback client environment is required for profile version 2".to_string(),
+                    "Playback client environment is required".to_string(),
                 ));
             }
             synctv_proto::client::PlaybackClientEnvironment::Native => {
@@ -2308,66 +2301,56 @@ pub fn playback_client_profile_from_proto(
             }
         };
 
-    let supported_video_codecs = if uses_legacy_defaults
-        && profile.supported_video_codecs.is_empty()
-    {
-        default_profile.supported_video_codecs.clone()
-    } else {
-        profile
-            .supported_video_codecs
-            .iter()
-            .filter_map(|codec| {
-                Some(
-                    match synctv_proto::client::PlaybackVideoCodec::try_from(*codec) {
-                        Ok(synctv_proto::client::PlaybackVideoCodec::Unspecified) => return None,
-                        Ok(synctv_proto::client::PlaybackVideoCodec::H264) => {
-                            Ok(synctv_core::provider::PlaybackVideoCodec::H264)
-                        }
-                        Ok(synctv_proto::client::PlaybackVideoCodec::Hevc) => {
-                            Ok(synctv_core::provider::PlaybackVideoCodec::Hevc)
-                        }
-                        Ok(synctv_proto::client::PlaybackVideoCodec::Vp9) => {
-                            Ok(synctv_core::provider::PlaybackVideoCodec::Vp9)
-                        }
-                        Ok(synctv_proto::client::PlaybackVideoCodec::Av1) => {
-                            Ok(synctv_core::provider::PlaybackVideoCodec::Av1)
-                        }
-                        Err(_) => Err(crate::impls::ApiError::InvalidInput(
-                            "Unsupported playback video codec".to_string(),
-                        )),
-                    },
-                )
-            })
-            .collect::<Result<Vec<_>, _>>()?
-    };
+    let supported_video_codecs = profile
+        .supported_video_codecs
+        .iter()
+        .filter_map(|codec| {
+            Some(
+                match synctv_proto::client::PlaybackVideoCodec::try_from(*codec) {
+                    Ok(synctv_proto::client::PlaybackVideoCodec::Unspecified) => return None,
+                    Ok(synctv_proto::client::PlaybackVideoCodec::H264) => {
+                        Ok(synctv_core::provider::PlaybackVideoCodec::H264)
+                    }
+                    Ok(synctv_proto::client::PlaybackVideoCodec::Hevc) => {
+                        Ok(synctv_core::provider::PlaybackVideoCodec::Hevc)
+                    }
+                    Ok(synctv_proto::client::PlaybackVideoCodec::Vp9) => {
+                        Ok(synctv_core::provider::PlaybackVideoCodec::Vp9)
+                    }
+                    Ok(synctv_proto::client::PlaybackVideoCodec::Av1) => {
+                        Ok(synctv_core::provider::PlaybackVideoCodec::Av1)
+                    }
+                    Err(_) => Err(crate::impls::ApiError::InvalidInput(
+                        "Unsupported playback video codec".to_string(),
+                    )),
+                },
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
-    let supported_containers = if uses_legacy_defaults && profile.supported_containers.is_empty() {
-        default_profile.supported_containers.clone()
-    } else {
-        profile
-            .supported_containers
-            .iter()
-            .filter_map(|container| {
-                Some(
-                    match synctv_proto::client::PlaybackContainer::try_from(*container) {
-                        Ok(synctv_proto::client::PlaybackContainer::Unspecified) => return None,
-                        Ok(synctv_proto::client::PlaybackContainer::Mp4) => {
-                            Ok(synctv_core::provider::PlaybackContainer::Mp4)
-                        }
-                        Ok(synctv_proto::client::PlaybackContainer::Mkv) => {
-                            Ok(synctv_core::provider::PlaybackContainer::Mkv)
-                        }
-                        Ok(synctv_proto::client::PlaybackContainer::Webm) => {
-                            Ok(synctv_core::provider::PlaybackContainer::Webm)
-                        }
-                        Err(_) => Err(crate::impls::ApiError::InvalidInput(
-                            "Unsupported playback container".to_string(),
-                        )),
-                    },
-                )
-            })
-            .collect::<Result<Vec<_>, _>>()?
-    };
+    let supported_containers = profile
+        .supported_containers
+        .iter()
+        .filter_map(|container| {
+            Some(
+                match synctv_proto::client::PlaybackContainer::try_from(*container) {
+                    Ok(synctv_proto::client::PlaybackContainer::Unspecified) => return None,
+                    Ok(synctv_proto::client::PlaybackContainer::Mp4) => {
+                        Ok(synctv_core::provider::PlaybackContainer::Mp4)
+                    }
+                    Ok(synctv_proto::client::PlaybackContainer::Mkv) => {
+                        Ok(synctv_core::provider::PlaybackContainer::Mkv)
+                    }
+                    Ok(synctv_proto::client::PlaybackContainer::Webm) => {
+                        Ok(synctv_core::provider::PlaybackContainer::Webm)
+                    }
+                    Err(_) => Err(crate::impls::ApiError::InvalidInput(
+                        "Unsupported playback container".to_string(),
+                    )),
+                },
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
     let audio_capability =
         match synctv_proto::client::PlaybackAudioCapability::try_from(profile.audio_capability)
@@ -2376,12 +2359,9 @@ pub fn playback_client_profile_from_proto(
                     "Unsupported playback audio capability".to_string(),
                 )
             })? {
-            synctv_proto::client::PlaybackAudioCapability::Unspecified if uses_legacy_defaults => {
-                default_profile.audio_capability
-            }
             synctv_proto::client::PlaybackAudioCapability::Unspecified => {
                 return Err(crate::impls::ApiError::InvalidInput(
-                    "Playback audio capability is required for profile version 2".to_string(),
+                    "Playback audio capability is required".to_string(),
                 ));
             }
             synctv_proto::client::PlaybackAudioCapability::Stereo => {
@@ -2413,36 +2393,29 @@ pub fn playback_client_profile_from_proto(
         }
     };
 
-    let supported_live_transports =
-        if uses_legacy_defaults && profile.supported_live_transports.is_empty() {
-            default_profile.supported_live_transports.clone()
-        } else {
-            profile
-                .supported_live_transports
-                .iter()
-                .filter_map(|transport| {
-                    Some(
-                        match synctv_proto::client::PlaybackLiveTransport::try_from(*transport) {
-                            Ok(synctv_proto::client::PlaybackLiveTransport::Unspecified) => {
-                                return None
-                            }
-                            Ok(synctv_proto::client::PlaybackLiveTransport::Hls) => {
-                                Ok(synctv_core::provider::PlaybackLiveTransport::Hls)
-                            }
-                            Ok(synctv_proto::client::PlaybackLiveTransport::Flv) => {
-                                Ok(synctv_core::provider::PlaybackLiveTransport::Flv)
-                            }
-                            Ok(synctv_proto::client::PlaybackLiveTransport::Whep) => {
-                                Ok(synctv_core::provider::PlaybackLiveTransport::Whep)
-                            }
-                            Err(_) => Err(crate::impls::ApiError::InvalidInput(
-                                "Unsupported playback live transport".to_string(),
-                            )),
-                        },
-                    )
-                })
-                .collect::<Result<Vec<_>, _>>()?
-        };
+    let supported_live_transports = profile
+        .supported_live_transports
+        .iter()
+        .filter_map(|transport| {
+            Some(
+                match synctv_proto::client::PlaybackLiveTransport::try_from(*transport) {
+                    Ok(synctv_proto::client::PlaybackLiveTransport::Unspecified) => return None,
+                    Ok(synctv_proto::client::PlaybackLiveTransport::Hls) => {
+                        Ok(synctv_core::provider::PlaybackLiveTransport::Hls)
+                    }
+                    Ok(synctv_proto::client::PlaybackLiveTransport::Flv) => {
+                        Ok(synctv_core::provider::PlaybackLiveTransport::Flv)
+                    }
+                    Ok(synctv_proto::client::PlaybackLiveTransport::Whep) => {
+                        Ok(synctv_core::provider::PlaybackLiveTransport::Whep)
+                    }
+                    Err(_) => Err(crate::impls::ApiError::InvalidInput(
+                        "Unsupported playback live transport".to_string(),
+                    )),
+                },
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
     let media_capabilities = profile
         .media_capabilities
@@ -2611,34 +2584,16 @@ pub fn playback_client_profile_from_proto(
         environment,
         stream_preference,
         max_streaming_bitrate: profile.max_streaming_bitrate,
-        max_audio_channels: if uses_legacy_defaults {
-            profile
-                .max_audio_channels
-                .or(default_profile.max_audio_channels)
-        } else {
-            profile.max_audio_channels
-        },
+        max_audio_channels: profile.max_audio_channels,
         supported_video_codecs,
         supported_containers,
         audio_capability,
         subtitle_preference,
         supported_live_transports,
         media_capabilities,
-        supports_custom_http_headers: if uses_legacy_defaults {
-            default_profile.supports_custom_http_headers
-        } else {
-            profile.supports_custom_http_headers
-        },
-        supports_provider_proxy: if uses_legacy_defaults {
-            default_profile.supports_provider_proxy
-        } else {
-            profile.supports_provider_proxy
-        },
-        supports_insecure_http_media: if uses_legacy_defaults {
-            default_profile.supports_insecure_http_media
-        } else {
-            profile.supports_insecure_http_media
-        },
+        supports_custom_http_headers: profile.supports_custom_http_headers,
+        supports_provider_proxy: profile.supports_provider_proxy,
+        supports_insecure_http_media: profile.supports_insecure_http_media,
     }))
 }
 
@@ -2661,34 +2616,15 @@ mod playback_client_profile_conversion_tests {
     }
 
     #[test]
-    fn v0_empty_capability_lists_restore_legacy_defaults() {
-        let converted =
+    fn obsolete_profile_version_is_rejected() {
+        let error =
             playback_client_profile_from_proto(Some(&proto::PlaybackClientProfile::default()))
-                .expect("legacy profile should convert")
-                .expect("profile should be present");
-        let defaults = synctv_core::provider::PlaybackClientProfile::default();
-
-        assert_eq!(converted.environment, defaults.environment);
-        assert_eq!(
-            converted.supported_video_codecs,
-            defaults.supported_video_codecs
-        );
-        assert_eq!(
-            converted.supported_containers,
-            defaults.supported_containers
-        );
-        assert_eq!(
-            converted.supported_live_transports,
-            defaults.supported_live_transports
-        );
-        assert_eq!(
-            converted.supports_custom_http_headers,
-            defaults.supports_custom_http_headers
-        );
-        assert_eq!(
-            converted.supports_provider_proxy,
-            defaults.supports_provider_proxy
-        );
+                .expect_err("obsolete profiles must fail closed");
+        assert!(matches!(
+            error,
+            crate::impls::ApiError::InvalidInput(message)
+                if message.contains("Unsupported playback client profile version 0")
+        ));
     }
 
     #[test]
@@ -5638,7 +5574,7 @@ mod playback_conversion_tests {
                     PlaybackBilibiliMedia::DirectDashManifest {
                         version: "v1".to_string(),
                         expires_at: synctv_core::SystemClock.now().timestamp() + 1800,
-                        mode_name: "h264".to_string(),
+                        mode_name: "dash".to_string(),
                         headers: headers.clone(),
                     },
                 ),
@@ -5646,15 +5582,15 @@ mod playback_conversion_tests {
             .build();
 
         let proto = try_playback_to_proto(
-            &playback_result_with_mode("h264", info),
+            &playback_result_with_mode("dash", info),
             &codec(),
             Some(&signing),
         )
         .expect("playback should convert");
-        let media = &proto.playback_infos["h264"].medias[0];
+        let media = &proto.playback_infos["dash"].medias[0];
         assert!(
             media.url.starts_with(
-                "/api/playback-providers/room-1/bilibili/v1/dash-manifests/h264/direct?"
+                "/api/playback-providers/room-1/bilibili/v1/dash-manifests/dash/direct?"
             ),
             "unexpected direct DASH URL: {}",
             media.url

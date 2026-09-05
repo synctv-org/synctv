@@ -252,7 +252,7 @@ pub struct PlaybackClientProfile {
 impl Default for PlaybackClientProfile {
     fn default() -> Self {
         Self {
-            profile_version: 0,
+            profile_version: CURRENT_PLAYBACK_CLIENT_PROFILE_VERSION,
             environment: PlaybackClientEnvironment::Native,
             stream_preference: PlaybackStreamPreference::Auto,
             max_streaming_bitrate: None,
@@ -281,58 +281,29 @@ impl Default for PlaybackClientProfile {
 
 impl PlaybackClientProfile {
     #[must_use]
-    pub const fn uses_explicit_capabilities(&self) -> bool {
-        self.profile_version >= CURRENT_PLAYBACK_CLIENT_PROFILE_VERSION
-    }
-
-    #[must_use]
     pub const fn is_web(&self) -> bool {
         matches!(self.environment, PlaybackClientEnvironment::Web)
     }
 
     #[must_use]
     pub fn supports_transport(&self, transport: PlaybackMediaTransport) -> bool {
-        if self.uses_explicit_capabilities() {
-            return self
-                .media_capabilities
-                .iter()
-                .any(|capability| capability.transport == transport);
-        }
-
-        match transport {
-            PlaybackMediaTransport::Progressive | PlaybackMediaTransport::Dash => true,
-            PlaybackMediaTransport::Hls => self
-                .supported_live_transports
-                .contains(&PlaybackLiveTransport::Hls),
-            PlaybackMediaTransport::Flv | PlaybackMediaTransport::MpegTs => self
-                .supported_live_transports
-                .contains(&PlaybackLiveTransport::Flv),
-            PlaybackMediaTransport::WebRtc => self
-                .supported_live_transports
-                .contains(&PlaybackLiveTransport::Whep),
-        }
+        self.media_capabilities
+            .iter()
+            .any(|capability| capability.transport == transport)
     }
 
     #[must_use]
     pub fn supports_video_codec(&self, codec: PlaybackVideoCodec) -> bool {
-        if self.uses_explicit_capabilities() {
-            return self
-                .media_capabilities
-                .iter()
-                .any(|capability| capability.video_codec.is_none_or(|value| value == codec));
-        }
-        self.supported_video_codecs.contains(&codec)
+        self.media_capabilities
+            .iter()
+            .any(|capability| capability.video_codec.is_none_or(|value| value == codec))
     }
 
     #[must_use]
     pub fn supports_container(&self, container: PlaybackContainer) -> bool {
-        if self.uses_explicit_capabilities() {
-            return self
-                .media_capabilities
-                .iter()
-                .any(|capability| capability.container.is_none_or(|value| value == container));
-        }
-        self.supported_containers.contains(&container)
+        self.media_capabilities
+            .iter()
+            .any(|capability| capability.container.is_none_or(|value| value == container))
     }
 
     #[must_use]
@@ -343,10 +314,31 @@ impl PlaybackClientProfile {
         video_codec: Option<PlaybackVideoCodec>,
         audio_codec: Option<PlaybackAudioCodec>,
     ) -> bool {
-        if !self.uses_explicit_capabilities() {
-            return self.supports_transport(transport)
-                && container.is_none_or(|value| self.supports_container(value))
-                && video_codec.is_none_or(|value| self.supports_video_codec(value));
+        self.media_capabilities.iter().any(|capability| {
+            capability.transport == transport
+                && container
+                    .is_none_or(|value| capability.container.is_none_or(|item| item == value))
+                && video_codec
+                    .is_none_or(|value| capability.video_codec.is_none_or(|item| item == value))
+                && audio_codec
+                    .is_none_or(|value| capability.audio_codec.is_none_or(|item| item == value))
+        })
+    }
+
+    /// Checks one codec token against the exact strings advertised for a media route.
+    /// Capabilities without a codec string remain family-level wildcards for native clients.
+    #[must_use]
+    pub fn supports_codec_string(
+        &self,
+        transport: PlaybackMediaTransport,
+        container: Option<PlaybackContainer>,
+        video_codec: Option<PlaybackVideoCodec>,
+        audio_codec: Option<PlaybackAudioCodec>,
+        codec_string: &str,
+    ) -> bool {
+        let codec_string = codec_string.trim();
+        if codec_string.is_empty() {
+            return false;
         }
 
         self.media_capabilities.iter().any(|capability| {
@@ -357,6 +349,12 @@ impl PlaybackClientProfile {
                     .is_none_or(|value| capability.video_codec.is_none_or(|item| item == value))
                 && audio_codec
                     .is_none_or(|value| capability.audio_codec.is_none_or(|item| item == value))
+                && capability.codec_string.as_deref().is_none_or(|advertised| {
+                    advertised
+                        .split(',')
+                        .map(str::trim)
+                        .any(|codec| codec.eq_ignore_ascii_case(codec_string))
+                })
         })
     }
 
@@ -369,9 +367,6 @@ impl PlaybackClientProfile {
         audio_codec: Option<PlaybackAudioCodec>,
         pipeline: PlaybackMediaPipeline,
     ) -> bool {
-        if !self.uses_explicit_capabilities() {
-            return self.supports_media(transport, container, video_codec, audio_codec);
-        }
         self.media_capabilities.iter().any(|capability| {
             capability.transport == transport
                 && capability.pipeline == pipeline
@@ -553,6 +548,82 @@ mod tests {
             Some(PlaybackContainer::Mp4),
             Some(PlaybackVideoCodec::Vp9),
             Some(PlaybackAudioCodec::Aac),
+        ));
+    }
+
+    #[test]
+    fn exact_codec_support_matches_individual_tokens_case_insensitively() {
+        let profile = PlaybackClientProfile {
+            profile_version: CURRENT_PLAYBACK_CLIENT_PROFILE_VERSION,
+            media_capabilities: vec![PlaybackMediaCapability {
+                transport: PlaybackMediaTransport::Dash,
+                container: Some(PlaybackContainer::Mp4),
+                video_codec: Some(PlaybackVideoCodec::H264),
+                audio_codec: Some(PlaybackAudioCodec::Aac),
+                pipeline: PlaybackMediaPipeline::MediaSource,
+                codec_string: Some("avc1.64001F,mp4a.40.2".to_string()),
+            }],
+            ..PlaybackClientProfile::default()
+        };
+
+        assert!(profile.supports_codec_string(
+            PlaybackMediaTransport::Dash,
+            Some(PlaybackContainer::Mp4),
+            Some(PlaybackVideoCodec::H264),
+            None,
+            "AVC1.64001f",
+        ));
+        assert!(profile.supports_codec_string(
+            PlaybackMediaTransport::Dash,
+            Some(PlaybackContainer::Mp4),
+            None,
+            Some(PlaybackAudioCodec::Aac),
+            "mp4a.40.2",
+        ));
+        assert!(!profile.supports_codec_string(
+            PlaybackMediaTransport::Dash,
+            Some(PlaybackContainer::Mp4),
+            Some(PlaybackVideoCodec::H264),
+            None,
+            "avc1.640033",
+        ));
+    }
+
+    #[test]
+    fn missing_codec_string_keeps_family_level_support() {
+        let profile = PlaybackClientProfile {
+            profile_version: CURRENT_PLAYBACK_CLIENT_PROFILE_VERSION,
+            media_capabilities: vec![PlaybackMediaCapability {
+                transport: PlaybackMediaTransport::Dash,
+                container: Some(PlaybackContainer::Mp4),
+                video_codec: Some(PlaybackVideoCodec::H264),
+                audio_codec: Some(PlaybackAudioCodec::Aac),
+                pipeline: PlaybackMediaPipeline::Native,
+                codec_string: None,
+            }],
+            ..PlaybackClientProfile::default()
+        };
+
+        assert!(profile.supports_codec_string(
+            PlaybackMediaTransport::Dash,
+            Some(PlaybackContainer::Mp4),
+            Some(PlaybackVideoCodec::H264),
+            None,
+            "avc1.640033",
+        ));
+        assert!(profile.supports_codec_string(
+            PlaybackMediaTransport::Dash,
+            Some(PlaybackContainer::Mp4),
+            None,
+            Some(PlaybackAudioCodec::Aac),
+            "mp4a.40.2",
+        ));
+        assert!(!profile.supports_codec_string(
+            PlaybackMediaTransport::Dash,
+            Some(PlaybackContainer::Mp4),
+            Some(PlaybackVideoCodec::Hevc),
+            None,
+            "hvc1.1.6.L120.90",
         ));
     }
 }

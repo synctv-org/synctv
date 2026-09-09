@@ -244,7 +244,7 @@ opendal = { version = "=0.58.2", default-features = false, features = [
     "layers-timeout",
     "layers-concurrent-limit",
 ] }
-opendal-http-transport-reqwest = { version = "=0.58.2", default-features = false, features = ["rustls-no-provider"] }
+opendal-http-transport-reqwest = { version = "=0.59.0", default-features = false, features = ["rustls-no-provider"] }
 
 # Logging & Tracing
 tracing = "=0.1.44"

@@ -4691,7 +4691,7 @@ version = "0.58.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "33dbff14cc9bb085224256d6a81289d2f3202e85b06f408d42534b42162a4231"
 dependencies = [
- "opendal-core",
+ "opendal-core 0.58.2",
  "opendal-layer-concurrent-limit",
  "opendal-layer-retry",
  "opendal-layer-timeout",
@@ -4725,16 +4725,41 @@ dependencies = [
 ]
 
 [[package]]
-name = "opendal-http-transport-reqwest"
-version = "0.58.2"
+name = "opendal-core"
+version = "0.59.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85663452ea32bbc17e8f79ab29788c846d116ec7de31451be9c787e462dcb36c"
+checksum = "a43405d217dfdfb543f58847336d3af672897dd1939bb7dcf314b63cf364f1c9"
+dependencies = [
+ "anyhow",
+ "asyncband",
+ "base64 0.23.1",
+ "bytes",
+ "futures",
+ "http",
+ "jiff",
+ "log",
+ "md-5 0.11.0",
+ "percent-encoding",
+ "quick-xml 0.41.0",
+ "serde",
+ "serde_json",
+ "tokio",
+ "url",
+ "uuid",
+ "web-time",
+]
+
+[[package]]
+name = "opendal-http-transport-reqwest"
+version = "0.59.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "740229ef5aa63335415ff9410c26301358faeef645945e92755916b39cdccd34"
 dependencies = [
  "bytes",
  "futures",
  "http",
  "http-body",
- "opendal-core",
+ "opendal-core 0.59.1",
  "reqwest",
 ]
 
@@ -4747,7 +4772,7 @@ dependencies = [
  "asyncband",
  "futures",
  "http",
- "opendal-core",
+ "opendal-core 0.58.2",
 ]
 
 [[package]]
@@ -4758,7 +4783,7 @@ checksum = "e94db301964a25366090484d61e6da16d5979cc8faf02c3e12210dc74fafed38"
 dependencies = [
  "backon",
  "log",
- "opendal-core",
+ "opendal-core 0.58.2",
 ]
 
 [[package]]
@@ -4767,7 +4792,7 @@ version = "0.58.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "08956ddda07465449bfd48825f4f0f25e0351278ac974eaa659895d9d74f2c80"
 dependencies = [
- "opendal-core",
+ "opendal-core 0.58.2",
  "tokio",
 ]
 
@@ -4783,7 +4808,7 @@ dependencies = [
  "http",
  "log",
  "md-5 0.11.0",
- "opendal-core",
+ "opendal-core 0.58.2",
  "quick-xml 0.41.0",
  "reqsign-aws-v4",
  "reqsign-core",

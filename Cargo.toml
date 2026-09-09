@@ -326,7 +326,7 @@ lz4_flex = { version = "=0.14.0", default-features = false, features = [
     "safe-encode",
     "safe-decode",
 ] }
-zstd = { version = "=0.13.3", default-features = false }
+zstd = { version = "=0.14.0", default-features = false }
 image = { version = "=0.25.10", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 symphonia = { version = "=0.6.1", default-features = false, features = ["opt-simd", "all-formats", "aac", "flac", "mp3", "vorbis"] }
 

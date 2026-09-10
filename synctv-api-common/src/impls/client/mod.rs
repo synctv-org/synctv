@@ -688,7 +688,7 @@ impl ClientApiImpl {
             })
             .transpose()?
             .flatten();
-        convert::try_room_to_proto_basic_with_cover(
+        let mut proto = convert::try_room_to_proto_basic_with_cover(
             room,
             settings,
             member_count,
@@ -696,9 +696,16 @@ impl ClientApiImpl {
             cover.as_ref(),
             cover_access.as_ref(),
             &self.public_id_codec,
-        )
+        )?;
+        proto.password_enabled = self
+            .room_service
+            .is_room_password_enabled(&room.id)
+            .await
+            .map_err(ApiError::from)?;
+        Ok(proto)
     }
 
+    #[allow(clippy::too_many_arguments)] // Keep preloaded projection inputs explicit, as in convert.
     pub async fn room_to_proto_with_availability_presence_and_loaded_cover(
         &self,
         room: &synctv_core::models::Room,
@@ -707,6 +714,7 @@ impl ClientApiImpl {
         availability: synctv_core::service::ClientResourceAvailability,
         presence: Option<&synctv_core::service::OnlineRoomStats>,
         creator: Option<synctv_proto::client::UserPublicView>,
+        password_enabled: Option<bool>,
     ) -> Result<synctv_proto::client::Room, ApiError> {
         let creator = async {
             match creator {
@@ -730,7 +738,7 @@ impl ClientApiImpl {
             })
             .transpose()?
             .flatten();
-        convert::try_room_to_proto_with_availability_presence_and_cover(
+        let mut proto = convert::try_room_to_proto_with_availability_presence_and_cover(
             room,
             settings,
             member_count,
@@ -740,7 +748,16 @@ impl ClientApiImpl {
             cover.as_ref(),
             cover_access.as_ref(),
             &self.public_id_codec,
-        )
+        )?;
+        proto.password_enabled = match password_enabled {
+            Some(enabled) => enabled,
+            None => self
+                .room_service
+                .is_room_password_enabled(&room.id)
+                .await
+                .map_err(ApiError::from)?,
+        };
+        Ok(proto)
     }
 
     pub async fn media_to_proto_for_viewer_with_loaded_cover(

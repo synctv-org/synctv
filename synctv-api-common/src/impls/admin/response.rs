@@ -258,6 +258,10 @@ impl AdminApiImpl {
             cover.as_ref().map(|(reference, _)| reference),
             cover.as_ref().map(|(_, access)| access),
             Some(&presence),
+            self.room_service
+                .is_room_password_enabled(&room.id)
+                .await
+                .map_err(ApiError::from)?,
             &self.public_id_codec,
         )
     }

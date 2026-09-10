@@ -2810,6 +2810,17 @@ impl ResourceObserver {
                         ));
                     };
                     event.sequence = logged.sequence;
+                    let chat_service = self
+                        .chat_service
+                        .as_ref()
+                        .ok_or_else(|| "Chat service is unavailable".to_string())?;
+                    chat_service
+                        .attach_pin_event_view_metadata_for_authorized_viewer(
+                            &mut event,
+                            self.actor.user_id().as_ref(),
+                        )
+                        .await
+                        .map_err(|error| error.to_string())?;
                     if !Self::apply_event_cursor_to_observation(&mut observation, &cursor) {
                         continue;
                     }

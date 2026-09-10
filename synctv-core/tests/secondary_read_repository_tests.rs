@@ -11,8 +11,9 @@ use synctv_core::{
     repository::{
         AuditLogQuery, AuditLogRepository, BanRecordListQuery, BanRecordRepository, ChatRepository,
         ContentReportListQuery, ContentReportListScope, ContentReportRepository, ReviewRepository,
-        RoomMemberRepository, RoomPasswordRepository, RoomRepository, RoomSettingsRepository,
-        RoomTaxonomyRepository, UserRegistrationReviewListQuery, UserRepository,
+        RoomCreationReviewListQuery, RoomMemberRepository, RoomPasswordRepository, RoomRepository,
+        RoomSettingsRepository, RoomTaxonomyRepository, UserRegistrationReviewListQuery,
+        UserRepository,
     },
 };
 use synctv_core_testing::{create_test_pool_with_db_and_label, ok, some};
@@ -724,4 +725,48 @@ async fn audit_log_list_reads_from_read_pool_while_detail_uses_primary() {
         .as_deref(),
         Some("primary_audit_actor")
     );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn room_creation_review_lists_and_loads_uncategorized_requests() {
+    let (_container, pool) =
+        create_test_pool_with_db_and_label("synctv_test", "uncategorized-creation-review").await;
+    let owner = create_user(&pool, "uncategorized_review_owner").await;
+    let request_id: i64 = ok(
+        sqlx::query_scalar(
+            "INSERT INTO room_creation_requests (requested_by, name, status) VALUES ($1, $2, $3) RETURNING id",
+        )
+        .bind(owner.id.as_i64())
+        .bind("Uncategorized review")
+        .bind(i16::from(ReviewStatus::Pending))
+        .fetch_one(&pool)
+        .await,
+        "uncategorized request should be inserted",
+    );
+    let repo = ReviewRepository::new(pool);
+    let page = ok(
+        repo.list_room_creations(&RoomCreationReviewListQuery {
+            status: ReviewStatus::Pending,
+            requested_by: Some(owner.id),
+            search: None,
+            limit: 10,
+            offset: 0,
+        })
+        .await,
+        "review list should decode an absent category",
+    );
+    assert_eq!(page.total, 1);
+    assert_eq!(page.rows[0].name, "Uncategorized review");
+    assert!(page.rows[0].category.is_none());
+    let request_id = ok(RoomId::try_from(request_id), "request id should be valid");
+    let detail = some(
+        ok(
+            repo.load_room_creation(request_id).await,
+            "detail should load",
+        ),
+        "request should exist",
+    );
+    assert_eq!(detail.name, page.rows[0].name);
+    assert!(detail.category.is_none());
 }

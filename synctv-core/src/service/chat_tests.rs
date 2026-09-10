@@ -186,6 +186,14 @@ struct PrefixingFileStorageService;
 
 #[async_trait::async_trait]
 impl FileStorageService for PrefixingFileStorageService {
+    fn public_object_url(
+        &self,
+        _storage_backend: &str,
+        object_key: &str,
+    ) -> Result<Option<String>> {
+        Ok(Some(format!("https://cdn.invalid/{object_key}")))
+    }
+
     fn backend_name(&self) -> &'static str {
         "test-storage"
     }
@@ -3069,7 +3077,11 @@ async fn concurrent_same_delete_returns_existing_delete_event() {
 async fn chat_reactions_update_history_and_emit_reaction_events() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let username_cache = UsernameCache::local_only("test:chat:reactions:".to_string(), 100, 60);
-    let service = test_chat_service(&pool, username_cache.clone());
+    let service = test_chat_service_with_file_storage(
+        &pool,
+        username_cache.clone(),
+        Arc::new(PrefixingFileStorageService),
+    );
     let user_repository = Arc::new(UserRepository::new(pool.clone()));
     let owner = ok(
         user_repository
@@ -3124,6 +3136,19 @@ async fn chat_reactions_update_history_and_emit_reaction_events() {
         room_service.join_room(room.id, member.id, None).await,
         "member should join room",
     );
+    ok(
+        FileStorageRepository::new(pool.clone())
+            .upsert_object(UpsertFileObject {
+                storage_backend: "test-storage",
+                object_key: "submitted/reaction-image",
+                mime_type: "image/webp",
+                size_bytes: 128,
+                content_manifest_sha256: &hex::encode(Sha256::digest(b"reaction-image")),
+                metadata: &crate::models::FileMetadata::default(),
+            })
+            .await,
+        "reaction attachment should be registered",
+    );
     let message = ok(
         service
             .send_message_event(SendChatMessage {
@@ -3134,12 +3159,75 @@ async fn chat_reactions_update_history_and_emit_reaction_events() {
                 message_type: ChatMessageType::User,
                 reply_to_message_id: None,
                 metadata: None,
-                attachments: Vec::new(),
+                attachments: vec![SubmittedFileReference {
+                    id: "reaction-image".to_string(),
+                    kind: crate::models::SubmittedFileReferenceKind::Upload,
+                }],
                 mentions: Vec::new(),
             })
             .await,
         "message should be stored",
     );
+
+    ok(
+        sqlx::query("UPDATE chat_message_attachments SET url = NULL WHERE message_id = $1")
+            .bind(message.message.message.id)
+            .execute(&pool)
+            .await,
+        "stored attachment should require URL resolution",
+    );
+
+    let pin_request = PinChatMessage {
+        room_id: room.id,
+        message_id: message.message.message.id,
+        user_id: owner.id,
+        client_operation_id: Some("image-pin".to_string()),
+        note: None,
+    };
+    for expected_inserted in [true, false] {
+        let outcome = ok(
+            service.pin_message_event_outcome(pin_request.clone()).await,
+            "image pin and replay should succeed",
+        );
+        assert_eq!(outcome.inserted, expected_inserted);
+        assert_reaction_image_url(&outcome.event.message);
+    }
+    let pins = ok(
+        service.list_pinned_messages(&room.id, &owner.id, 10).await,
+        "image pins should load",
+    );
+    assert_reaction_image_url(&pins[0].message);
+    let logged_pins = ok(
+        RoomResourceEventRepository::new(pool.clone())
+            .list_room_events_after_sequence_for_resource_types(
+                &room.id,
+                &[crate::repository::RoomResourceKind::ChatPins],
+                0,
+                10,
+            )
+            .await,
+        "image pin should have a durable event",
+    );
+    let mut replayed_pin = some(
+        logged_pins
+            .into_iter()
+            .find_map(|logged| match logged.payload {
+                Some(crate::repository::RoomResourceEventPayload::ChatPin { event }) => Some(event),
+                _ => None,
+            }),
+        "image pin event should be replayable",
+    );
+    assert!(replayed_pin.message.attachments[0].url.is_none());
+    ok(
+        service
+            .attach_pin_event_view_metadata_for_authorized_viewer(
+                &mut replayed_pin,
+                Some(&owner.id),
+            )
+            .await,
+        "durable image pin should resolve attachment metadata",
+    );
+    assert_reaction_image_url(&replayed_pin.message);
 
     let owner_reaction = ok(
         service
@@ -3152,6 +3240,14 @@ async fn chat_reactions_update_history_and_emit_reaction_events() {
             })
             .await,
         "owner reaction should be stored",
+    );
+    assert_reaction_image_url(&owner_reaction.event.message);
+    assert_reaction_image_url(
+        &some(
+            owner_reaction.pin_event.as_ref(),
+            "reaction should update the pin",
+        )
+        .message,
     );
     assert_eq!(owner_reaction.event.kind, ChatEventKind::ReactionsChanged);
     assert_eq!(owner_reaction.event.message.reactions.len(), 1);
@@ -3311,6 +3407,45 @@ async fn chat_reactions_update_history_and_emit_reaction_events() {
     assert_eq!(next.users.len(), 1);
     assert_ne!(page.users[0].user_id, next.users[0].user_id);
 
+    let edit_request = EditChatMessage {
+        room_id: room.id,
+        message_id: message.message.message.id,
+        user_id: owner.id,
+        client_operation_id: Some("image-edit".to_string()),
+        content: "edited image caption".to_string(),
+        metadata: None,
+        expected_version: None,
+    };
+    for expected_inserted in [true, false] {
+        let outcome = ok(
+            service.edit_message_outcome(edit_request.clone()).await,
+            "image edit and replay should succeed",
+        );
+        assert_eq!(outcome.inserted, expected_inserted);
+        assert_reaction_image_url(&outcome.event.message);
+        if expected_inserted {
+            assert_reaction_image_url(
+                &some(outcome.pin_event.as_ref(), "edit should update the pin").message,
+            );
+        }
+    }
+    let unpin_request = UnpinChatMessage {
+        room_id: room.id,
+        message_id: message.message.message.id,
+        user_id: owner.id,
+        client_operation_id: Some("image-unpin".to_string()),
+    };
+    for expected_inserted in [true, false] {
+        let outcome = ok(
+            service
+                .unpin_message_event_outcome(unpin_request.clone())
+                .await,
+            "image unpin and replay should succeed",
+        );
+        assert_eq!(outcome.inserted, expected_inserted);
+        assert_reaction_image_url(&outcome.event.message);
+    }
+
     ok(
         service.user_service.block_user(&member.id, &owner.id).await,
         "member should block message owner",
@@ -3330,6 +3465,14 @@ async fn chat_reactions_update_history_and_emit_reaction_events() {
         blocked_message_error,
         crate::Error::NotFound(ref message) if message == "Message not found"
     ));
+}
+
+fn assert_reaction_image_url(message: &ChatMessageWithAttachments) {
+    assert_eq!(message.attachments.len(), 1);
+    assert_eq!(
+        message.attachments[0].url.as_deref(),
+        Some("https://cdn.invalid/submitted/reaction-image")
+    );
 }
 
 #[tokio::test]

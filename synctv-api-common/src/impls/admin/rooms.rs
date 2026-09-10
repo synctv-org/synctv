@@ -116,16 +116,18 @@ impl AdminApiImpl {
 
         let room_ids: Vec<synctv_core::models::RoomId> = rooms.iter().map(|room| room.id).collect();
         let room_id_refs: Vec<&synctv_core::models::RoomId> = room_ids.iter().collect();
-        let (member_counts, room_settings_map, presence_stats, room_assets) = tokio::join!(
+        let (member_counts, room_settings_map, presence_stats, room_assets, password_room_ids) = tokio::join!(
             self.room_service.get_member_count_batch(&room_id_refs),
             self.room_service.get_room_settings_batch(&room_ids),
             self.presence_service.room_stats_batch(&room_ids),
             self.load_admin_room_list_assets(&rooms, &creator_user_map),
+            self.room_service.password_enabled_room_ids(&room_ids),
         );
         let member_counts = member_counts.map_err(ApiError::from)?;
         let room_settings_map = room_settings_map.map_err(ApiError::from)?;
         let presence_stats = presence_stats.map_err(ApiError::from)?;
         let (creator_avatar_urls, room_covers) = room_assets?;
+        let password_room_ids = password_room_ids.map_err(ApiError::from)?;
         let presence_by_room: std::collections::HashMap<synctv_core::models::RoomId, _> =
             presence_stats
                 .iter()
@@ -150,6 +152,7 @@ impl AdminApiImpl {
                 cover.map(|(reference, _)| reference),
                 cover.map(|(_, access)| access),
                 presence_by_room.get(&r.id).copied(),
+                password_room_ids.contains(&r.id),
                 &self.public_id_codec,
             )?);
         }
@@ -1035,16 +1038,18 @@ impl AdminApiImpl {
 
         let room_ids: Vec<synctv_core::models::RoomId> = rooms.iter().map(|room| room.id).collect();
         let room_id_refs: Vec<&synctv_core::models::RoomId> = room_ids.iter().collect();
-        let (member_counts, room_settings_map, presence_stats, room_assets) = tokio::join!(
+        let (member_counts, room_settings_map, presence_stats, room_assets, password_room_ids) = tokio::join!(
             self.room_service.get_member_count_batch(&room_id_refs),
             self.room_service.get_room_settings_batch(&room_ids),
             self.presence_service.room_stats_batch(&room_ids),
             self.load_admin_room_list_assets(&rooms, &creator_user_map),
+            self.room_service.password_enabled_room_ids(&room_ids),
         );
         let member_counts = member_counts.map_err(ApiError::from)?;
         let room_settings_map = room_settings_map.map_err(ApiError::from)?;
         let presence_stats = presence_stats.map_err(ApiError::from)?;
         let (creator_avatar_urls, room_covers) = room_assets?;
+        let password_room_ids = password_room_ids.map_err(ApiError::from)?;
         let presence_by_room: std::collections::HashMap<synctv_core::models::RoomId, _> =
             presence_stats
                 .iter()
@@ -1069,6 +1074,7 @@ impl AdminApiImpl {
                 cover.map(|(reference, _)| reference),
                 cover.map(|(_, access)| access),
                 presence_by_room.get(&room.id).copied(),
+                password_room_ids.contains(&room.id),
                 &self.public_id_codec,
             )?);
         }

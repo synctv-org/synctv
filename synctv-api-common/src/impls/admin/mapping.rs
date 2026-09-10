@@ -438,6 +438,7 @@ pub(in crate::impls::admin) fn try_managed_room_to_proto(
     cover: Option<&synctv_core::models::StoredFileReference>,
     cover_access: Option<&crate::impls::stored_files::StoredFileObjectAccess>,
     presence: Option<&synctv_core::service::OnlineRoomStats>,
+    password_enabled: bool,
     public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<synctv_proto::admin::Room, ApiError> {
     let room_settings = settings.ok_or_else(|| {
@@ -498,6 +499,7 @@ pub(in crate::impls::admin) fn try_managed_room_to_proto(
             .map(|label| room_label_to_proto(label, public_id_codec))
             .collect::<Result<Vec<_>, _>>()?,
         is_public: Some(room.is_public),
+        password_enabled,
     })
 }
 

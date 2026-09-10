@@ -758,6 +758,10 @@ impl ManagementServiceImpl {
             &settings,
             member_count,
             &creator,
+            self.room_service
+                .is_room_password_enabled(&room.id)
+                .await
+                .map_err(map_core_error)?,
             &self.public_id_codec,
         )
     }
@@ -776,6 +780,10 @@ impl ManagementServiceImpl {
             &settings,
             member_count,
             &creator,
+            self.room_service
+                .is_room_password_enabled(&room.id)
+                .await
+                .map_err(map_core_error)?,
             &self.public_id_codec,
         )
     }
@@ -2430,6 +2438,10 @@ impl ManagementService for ManagementServiceImpl {
             &response_settings,
             member_count,
             &creator,
+            self.room_service
+                .is_room_password_enabled(&room.id)
+                .await
+                .map_err(map_core_error)?,
             &self.public_id_codec,
         )?;
         Ok(Response::new(response))

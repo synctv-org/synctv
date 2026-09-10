@@ -243,6 +243,7 @@ impl ClientApiImpl {
                 availability,
                 Some(&presence),
                 None,
+                None,
             )
             .await?;
         proto_room.creator_blocked = creator_blocked;
@@ -425,6 +426,7 @@ impl ClientApiImpl {
                             availability,
                             presence_by_room.get(&room.id).copied(),
                             Some(creator),
+                            Some(password_room_ids.contains(&room.id)),
                         )
                         .await?;
                     Ok::<_, ApiError>(DiscoveryRoomProjection {
@@ -794,6 +796,7 @@ impl ClientApiImpl {
             creator_views,
             favorite_room_ids,
             blocked_creator_ids,
+            password_room_ids,
         ) = tokio::try_join!(
             async {
                 self.room_service
@@ -825,6 +828,12 @@ impl ClientApiImpl {
                     .map(|ids| ids.into_iter().collect::<HashSet<_>>())
                     .map_err(ApiError::from)
             },
+            async {
+                self.room_service
+                    .password_enabled_room_ids_eventually_consistent(&room_ids)
+                    .await
+                    .map_err(ApiError::from)
+            },
         )?;
         let presence_by_room: HashMap<synctv_core::models::RoomId, _> = presence_stats
             .iter()
@@ -846,6 +855,7 @@ impl ClientApiImpl {
                 let availability_map = &availability_map;
                 let favorite_room_ids = &favorite_room_ids;
                 let blocked_creator_ids = &blocked_creator_ids;
+                let password_room_ids = &password_room_ids;
                 async move {
                     let settings = required_room_settings(room_settings_map, &room.id)?;
                     let availability = required_room_availability(availability_map, &room.id)?;
@@ -867,6 +877,7 @@ impl ClientApiImpl {
                             availability,
                             presence_by_room.get(&room.id).copied(),
                             Some(creator),
+                            Some(password_room_ids.contains(&room.id)),
                         )
                         .await?;
                     proto_room.creator_blocked = blocked_creator_ids.contains(&room.created_by);
@@ -1166,6 +1177,7 @@ impl ClientApiImpl {
                 member_count,
                 availability,
                 Some(&presence),
+                None,
                 None,
             )
             .await?;

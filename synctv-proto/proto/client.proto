@@ -625,6 +625,8 @@ message Room {
   repeated RoomLabel labels = 17;
   optional bool is_public = 18;
   bool creator_blocked = 19;
+  // Current OPAQUE credential state, independent of room policy settings.
+  bool password_enabled = 20;
 }
 
 message RoomCategory {

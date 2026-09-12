@@ -1178,6 +1178,7 @@ pub(crate) fn created_room_to_client_proto(
     settings: &synctv_core::models::RoomSettings,
     member_count: i32,
     creator: &synctv_core::models::User,
+    password_enabled: bool,
     public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<client_proto::Room, Status> {
     Ok(client_proto::Room {
@@ -1197,6 +1198,7 @@ pub(crate) fn created_room_to_client_proto(
         presence: None,
         creator: Some(user_public_view_to_client_proto(creator, public_id_codec)?),
         creator_blocked: false,
+        password_enabled,
         category: room
             .category
             .as_ref()

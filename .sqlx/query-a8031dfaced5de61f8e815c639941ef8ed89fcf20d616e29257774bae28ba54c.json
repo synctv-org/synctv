@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT rcr.id AS \"id!: RoomId\",\n                   rcr.requested_by AS \"requested_by!: UserId\",\n                   COALESCE(u.username, '') AS \"requested_by_username!\",\n                   rcr.name AS \"name!\",\n                   rcr.description AS \"description!\",\n                   rc.id AS \"category_id: RoomCategoryId\",\n                   rc.key AS \"category_key?\",\n                   rc.name AS \"category_name?\",\n                   rc.description AS \"category_description?\",\n                   rc.sort_order AS \"category_sort_order?\",\n                   rc.is_enabled AS \"category_is_enabled?\",\n                   rc.created_at AS \"category_created_at?\",\n                   rc.updated_at AS \"category_updated_at?\",\n                   rcr.status AS \"status!: ReviewStatus\",\n                   rcr.requested_at AS \"requested_at!\",\n                   rcr.reviewed_at AS \"reviewed_at?\",\n                   rcr.reviewed_by AS \"reviewed_by?: UserId\",\n                   rcr.rejection_reason AS \"rejection_reason?\"\n            FROM room_creation_requests rcr\n            LEFT JOIN users u ON u.id = rcr.requested_by\n            LEFT JOIN room_categories rc ON rc.id = rcr.category_id\n            WHERE rcr.id = $1\n            ",
+  "query": "\n            SELECT rcr.id AS \"id!: RoomId\",\n                   rcr.requested_by AS \"requested_by!: UserId\",\n                   COALESCE(u.username, '') AS \"requested_by_username!\",\n                   rcr.name AS \"name!\",\n                   rcr.description AS \"description!\",\n                   rc.id AS \"category_id?: RoomCategoryId\",\n                   rc.key AS \"category_key?\",\n                   rc.name AS \"category_name?\",\n                   rc.description AS \"category_description?\",\n                   rc.sort_order AS \"category_sort_order?\",\n                   rc.is_enabled AS \"category_is_enabled?\",\n                   rc.created_at AS \"category_created_at?\",\n                   rc.updated_at AS \"category_updated_at?\",\n                   rcr.status AS \"status!: ReviewStatus\",\n                   rcr.requested_at AS \"requested_at!\",\n                   rcr.reviewed_at AS \"reviewed_at?\",\n                   rcr.reviewed_by AS \"reviewed_by?: UserId\",\n                   rcr.rejection_reason AS \"rejection_reason?\"\n            FROM room_creation_requests rcr\n            LEFT JOIN users u ON u.id = rcr.requested_by\n            LEFT JOIN room_categories rc ON rc.id = rcr.category_id\n            WHERE rcr.id = $1\n            ",
   "describe": {
     "columns": [
       {
@@ -55,7 +55,7 @@
       },
       {
         "ordinal": 5,
-        "name": "category_id: RoomCategoryId",
+        "name": "category_id?: RoomCategoryId",
         "type_info": "Int8",
         "origin": {
           "Table": {
@@ -223,5 +223,5 @@
       true
     ]
   },
-  "hash": "168ed07152ae8b4b5e056d410f3439d2d93dbcf66f32b7d9d57558d47ec53c77"
+  "hash": "a8031dfaced5de61f8e815c639941ef8ed89fcf20d616e29257774bae28ba54c"
 }

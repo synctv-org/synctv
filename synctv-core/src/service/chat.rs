@@ -903,6 +903,24 @@ impl ChatService {
         &self,
         request: EditChatMessage,
     ) -> Result<ChatMessageEventOutcome> {
+        let viewer_user_id = request.user_id;
+        let mut outcome = self.edit_message_outcome_stored(request).await?;
+        self.attach_event_attachment_view_metadata(&mut outcome.event, Some(&viewer_user_id))
+            .await?;
+        if let Some(pin_event) = &mut outcome.pin_event {
+            self.attach_attachment_view_metadata(
+                std::slice::from_mut(&mut pin_event.message),
+                Some(&viewer_user_id),
+            )
+            .await?;
+        }
+        Ok(outcome)
+    }
+
+    async fn edit_message_outcome_stored(
+        &self,
+        request: EditChatMessage,
+    ) -> Result<ChatMessageEventOutcome> {
         validate_client_operation_id(request.client_operation_id.as_deref())?;
         validate_chat_metadata(request.metadata.as_ref())?;
         if request.content.trim().is_empty() {
@@ -1574,8 +1592,7 @@ impl ChatService {
             )
             .await?;
 
-        self.chat_repository
-            .list_pinned_messages_for_viewer(room_id, limit.clamp(1, 100), Some(user_id))
+        self.list_pinned_messages_for_authorized_viewer(room_id, Some(user_id), limit)
             .await
     }
 
@@ -1585,12 +1602,35 @@ impl ChatService {
         viewer_user_id: Option<&UserId>,
         limit: i32,
     ) -> Result<Vec<ChatPinnedMessage>> {
-        self.chat_repository
+        let mut pinned = self
+            .chat_repository
             .list_pinned_messages_for_viewer(room_id, limit.clamp(1, 100), viewer_user_id)
-            .await
+            .await?;
+        for entry in &mut pinned {
+            self.attach_attachment_view_metadata(
+                std::slice::from_mut(&mut entry.message),
+                viewer_user_id,
+            )
+            .await?;
+        }
+        Ok(pinned)
     }
 
     pub async fn pin_message_event_outcome(
+        &self,
+        request: PinChatMessage,
+    ) -> Result<ChatPinEventOutcome> {
+        let viewer_user_id = request.user_id;
+        let mut outcome = self.pin_message_event_outcome_stored(request).await?;
+        self.attach_attachment_view_metadata(
+            std::slice::from_mut(&mut outcome.event.message),
+            Some(&viewer_user_id),
+        )
+        .await?;
+        Ok(outcome)
+    }
+
+    async fn pin_message_event_outcome_stored(
         &self,
         request: PinChatMessage,
     ) -> Result<ChatPinEventOutcome> {
@@ -1671,6 +1711,20 @@ impl ChatService {
         &self,
         request: UnpinChatMessage,
     ) -> Result<ChatPinEventOutcome> {
+        let viewer_user_id = request.user_id;
+        let mut outcome = self.unpin_message_event_outcome_stored(request).await?;
+        self.attach_attachment_view_metadata(
+            std::slice::from_mut(&mut outcome.event.message),
+            Some(&viewer_user_id),
+        )
+        .await?;
+        Ok(outcome)
+    }
+
+    async fn unpin_message_event_outcome_stored(
+        &self,
+        request: UnpinChatMessage,
+    ) -> Result<ChatPinEventOutcome> {
         validate_client_operation_id(request.client_operation_id.as_deref())?;
         self.permission_service
             .check_permission(
@@ -1745,7 +1799,7 @@ impl ChatService {
             .await?;
         validate_chat_reaction_key(&request.reaction_key)?;
 
-        let inserted = self
+        let mut inserted = self
             .chat_repository
             .set_reaction_with_event(&request, &synctv_common::snanoid!(16), self.clock.now())
             .await?;
@@ -1755,6 +1809,19 @@ impl ChatService {
             &request.reaction_key,
         )
         .await;
+
+        self.attach_event_attachment_view_metadata(
+            &mut inserted.event.event,
+            Some(&request.user_id),
+        )
+        .await?;
+        if let Some(pin_event) = &mut inserted.pin_event {
+            self.attach_attachment_view_metadata(
+                std::slice::from_mut(&mut pin_event.event.message),
+                Some(&request.user_id),
+            )
+            .await?;
+        }
 
         info!(
             room_id = %request.room_id,
@@ -2157,6 +2224,19 @@ impl ChatService {
             )?;
         }
         Ok(())
+    }
+
+    /// Resolves attachment views for an already-authorized pin event, including durable replay.
+    pub async fn attach_pin_event_view_metadata_for_authorized_viewer(
+        &self,
+        event: &mut ChatPinEvent,
+        viewer_user_id: Option<&UserId>,
+    ) -> Result<()> {
+        self.attach_attachment_view_metadata(
+            std::slice::from_mut(&mut event.message),
+            viewer_user_id,
+        )
+        .await
     }
 
     async fn attach_event_attachment_view_metadata(

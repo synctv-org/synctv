@@ -5869,6 +5869,7 @@ fn render_human_output_uses_room_and_member_enums_by_context() {
             labels: Vec::new(),
             is_public: Some(true),
             creator_blocked: false,
+            password_enabled: false,
         }),
         playback_state: None,
         requires_approval: false,
@@ -5970,6 +5971,7 @@ fn render_human_output_converts_room_listing_without_context_inference() {
             category: None,
             labels: Vec::new(),
             is_public: Some(false),
+            password_enabled: true,
         }],
         total: 1,
     })

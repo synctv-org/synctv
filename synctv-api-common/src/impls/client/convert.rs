@@ -2890,6 +2890,7 @@ pub fn try_room_to_proto_with_availability_and_presence(
             .collect::<Result<Vec<_>, _>>()?,
         is_public: Some(room.is_public),
         creator_blocked: false,
+        password_enabled: false,
     })
 }
 

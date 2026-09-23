@@ -120,7 +120,7 @@ axum = { version = "=0.8.9", features = ["ws", "http2"] }
 tower = { version = "=0.5.3", features = [
     "util",
 ] }
-tower-http = { version = "=0.7.0", features = [
+tower-http = { version = "=0.7.1", features = [
     "trace",
     "on-early-drop",
     "cors",
@@ -133,7 +133,7 @@ hyper = { version = "=1.11.1", default-features = false, features = [
     "http2",
     "server",
 ] }
-reqwest = { version = "=0.13.4", default-features = false, features = [
+reqwest = { version = "=0.13.5", default-features = false, features = [
     "json",
     "cookies",
     "query",
@@ -160,7 +160,7 @@ sqlx = { version = "=0.9.0", default-features = false, features = [
 ] }
 
 # Redis
-redis = { version = "=1.6.0", default-features = false, features = [
+redis = { version = "=1.7.0", default-features = false, features = [
     "tokio-comp",
     "connection-manager",
     "streams",
@@ -170,14 +170,14 @@ redis = { version = "=1.6.0", default-features = false, features = [
 
 # Security
 opaque-ke = { version = "=4.1.0-pre.2", features = ["argon2"] }
-jsonwebtoken = { version = "=11.0.0", features = ["rust_crypto"] }
+jsonwebtoken = { version = "=11.1.0", features = ["rust_crypto"] }
 oauth2 = { version = "=5.0.0", default-features = false }
 webauthn-rs = { version = "=0.6.1-dev", features = ["conditional-ui", "danger-allow-state-serialisation"] }
 webauthn-rs-proto = "=0.6.1-dev"
 aes-gcm = "=0.11.1"
 aes = "=0.9.3"
 cbc = { version = "=0.2.1", features = ["alloc", "block-padding"] }
-ammonia = "=4.1.4"
+ammonia = "=4.2.0"
 http-acl = "=0.13.0"
 http-acl-reqwest = "=0.13.0"
 hkdf = "=0.13.0"
@@ -195,24 +195,24 @@ serde_json = "=1.0.151"
 quick-xml = "=0.42.0"
 serde_yaml = "=0.9.34"
 serde_ignored = "=0.1.14"
-toml = "=1.1.4"
+toml = "=1.1.6"
 serde_urlencoded = "=0.7.1"
 serde_html_form = "=0.4.1"
 serde_path_to_error = "=0.1.20"
-indexmap = "=2.14.1"
+indexmap = "=2.14.2"
 # bincode 3.0.0 is an intentionally unbuildable placeholder release.
 bincode = { version = "=2.0.1", features = ["serde"] }
 
 # Caching
 moka = { version = "=0.12.16", features = ["future", "sync"] }
 dashmap = "=7.0.0-rc2"
-lru = "=0.18.3"
+lru = "=0.18.4"
 
 # IDs & Crypto
 nanoid = "=0.5.0"
-uuid = { version = "=1.26.0", features = ["v4", "v5", "serde"] }
+uuid = { version = "=1.26.1", features = ["v4", "v5", "serde"] }
 sqids = "=0.4.2"
-rand = "=0.10.2"
+rand = "=0.10.3"
 rand_08 = { package = "rand", version = "=0.8.6" }
 rand_chacha_08 = { package = "rand_chacha", version = "=0.3.1" }
 base64 = "=0.23.1"
@@ -256,8 +256,8 @@ dotenvy = "=0.15.7"
 
 # Configuration
 config = { version = "=0.15.25", default-features = false, features = ["yaml", "json", "toml"] }
-clap = { version = "=4.6.6", features = ["wrap_help", "derive"] }
-clap_complete = "=4.6.9"
+clap = { version = "=4.6.7", features = ["wrap_help", "derive"] }
+clap_complete = "=4.6.11"
 
 # Utilities
 anyhow = "=1.0.104"
@@ -295,13 +295,13 @@ kube = { version = "=4.2.0", default-features = false, features = ["client", "gz
 k8s-openapi = { version = "=0.28.0", features = ["latest"] }
 
 # TLS
-tokio-rustls = { version = "=0.26.4", default-features = false, features = ["tls12", "brotli", "zlib"] }
-rustls = { version = "=0.23.43", default-features = false, features = ["std", "tls12", "brotli", "zlib"] }
+tokio-rustls = { version = "=0.26.5", default-features = false, features = ["tls12", "brotli", "zlib"] }
+rustls = { version = "=0.23.45", default-features = false, features = ["std", "tls12", "brotli", "zlib"] }
 rustls-pemfile = "=2.2.0"
 hyper-util = { version = "=0.1.20", default-features = false, features = ["tokio"] }
 
 # Networking
-ipnet = "=2.12.1"
+ipnet = "=2.12.2"
 tokio-socks = "=0.5.3"
 webpki-roots = "=1.0.9"
 

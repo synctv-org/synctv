@@ -430,7 +430,7 @@ fn validate_whip_offer(
         has_compatible_media |= match kind {
             RtpCodecKind::Audio => compatible_opus,
             RtpCodecKind::Video => compatible_h264,
-            RtpCodecKind::Unspecified => false,
+            _ => false,
         };
     }
     if !has_compatible_media {
@@ -531,7 +531,7 @@ fn streaming_codec_capability(kind: RtpCodecKind) -> RTCRtpCodec {
             sdp_fmtp_line: OPUS_BRIDGE_FMTP.to_string(),
             rtcp_feedback: Vec::new(),
         },
-        RtpCodecKind::Video | RtpCodecKind::Unspecified => RTCRtpCodec {
+        RtpCodecKind::Video | RtpCodecKind::Unspecified | _ => RTCRtpCodec {
             mime_type: MIME_TYPE_H264.to_string(),
             clock_rate: 90_000,
             channels: 0,
@@ -780,7 +780,7 @@ fn spawn_track_reader(
                     timestamp: rtp_packet.header.timestamp,
                     data: Bytes::from(marshaled),
                 },
-                RtpCodecKind::Unspecified => continue,
+                RtpCodecKind::Unspecified | _ => continue,
             };
             match packet_sender.try_send(packet) {
                 Ok(()) => {}
@@ -901,7 +901,7 @@ fn whip_transceiver_direction(
 fn outgoing_track(kind: RtpCodecKind) -> (Arc<TrackLocalStaticRTP>, u32) {
     let id = match kind {
         RtpCodecKind::Audio => "audio",
-        RtpCodecKind::Video | RtpCodecKind::Unspecified => "video",
+        RtpCodecKind::Video | RtpCodecKind::Unspecified | _ => "video",
     };
     let ssrc = rand::random();
     let track = Arc::new(TrackLocalStaticRTP::new(MediaStreamTrack::new(
@@ -1019,6 +1019,7 @@ pub async fn create_whep_session(
 mod tests {
     use anyhow::{anyhow, Result};
     use rtc::media::Sample;
+    use std::time::Instant;
     use tokio::sync::mpsc;
     use webrtc::media_stream::{track_local::static_sample::TrackLocalStaticSample, Track as _};
 
@@ -1051,22 +1052,25 @@ mod tests {
         let ssrc = rand::random();
         let payload_type = match kind {
             RtpCodecKind::Audio => 111,
-            RtpCodecKind::Video | RtpCodecKind::Unspecified => 102,
+            RtpCodecKind::Video | RtpCodecKind::Unspecified | _ => 102,
         };
-        let track = TrackLocalStaticSample::new(MediaStreamTrack::new(
-            "synctv".to_string(),
-            kind.to_string(),
-            kind.to_string(),
-            kind,
-            vec![RTCRtpEncodingParameters {
-                rtp_coding_parameters: RTCRtpCodingParameters {
-                    ssrc: Some(ssrc),
+        let track = TrackLocalStaticSample::new(
+            Instant::now(),
+            MediaStreamTrack::new(
+                "synctv".to_string(),
+                kind.to_string(),
+                kind.to_string(),
+                kind,
+                vec![RTCRtpEncodingParameters {
+                    rtp_coding_parameters: RTCRtpCodingParameters {
+                        ssrc: Some(ssrc),
+                        ..Default::default()
+                    },
+                    codec: streaming_codec_capability(kind),
                     ..Default::default()
-                },
-                codec: streaming_codec_capability(kind),
-                ..Default::default()
-            }],
-        ))?;
+                }],
+            ),
+        )?;
         Ok((Arc::new(track), ssrc, payload_type))
     }
 
@@ -1400,7 +1404,7 @@ a=rtpmap:111 opus/48000/2\r\n";
                         &Sample {
                             data: Bytes::from_static(&[0x65, 0x88, 0x84, 0x21]),
                             duration: Duration::from_millis(33),
-                            ..Default::default()
+                            ..Sample::new(Instant::now())
                         },
                         &[],
                     )
@@ -1525,7 +1529,7 @@ a=rtpmap:111 opus/48000/2\r\n";
                             &Sample {
                                 data: payload,
                                 duration: Duration::from_millis(33),
-                                ..Default::default()
+                                ..Sample::new(Instant::now())
                             },
                             &[],
                         )

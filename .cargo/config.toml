@@ -1,3 +1,34 @@
+# Shared nightly rustc flags for every platform. The Linux target tables below
+# append linker flags; target-specific rustflags fully replace build.rustflags,
+# so the nightly flags are repeated there.
 [build]
-# The nightly global next solver exceeds CI memory on synctv-api-http; see rust-lang/rust#161748.
+# The nightly globally-enabled next solver still multiplies peak rustc memory
+# on this workspace: on nightly-2026-09-27, checking synctv-api-http
+# --all-targets peaked at ~14.9 GB with -Znext-solver=globally versus ~3.8 GB
+# with coherence, which exceeds hosted CI runners; see rust-lang/rust#161748.
+# -Zthreads=8 (parallel frontend) measured 32s vs 53s at -Zthreads=1 with a
+# +0.9 GB peak difference on the same crate - a good trade for 16 GB runners.
 rustflags = ["-Zthreads=8", "-Zshare-generics=y", "-Znext-solver=coherence"]
+
+# lld replaces bfd for native Linux links: test binaries and dev builds link
+# several times faster, and -Wl,-z,pack-relative-relocs keeps release binaries
+# small. Requires the lld package, installed by CI and the Docker builder.
+# cross-* Makefile targets only run check/clippy, so cross containers never
+# invoke the linker and do not need lld.
+[target.x86_64-unknown-linux-gnu]
+rustflags = [
+    "-Zthreads=8",
+    "-Zshare-generics=y",
+    "-Znext-solver=coherence",
+    "-C", "link-arg=-fuse-ld=lld",
+    "-C", "link-arg=-Wl,-z,pack-relative-relocs",
+]
+
+[target.aarch64-unknown-linux-gnu]
+rustflags = [
+    "-Zthreads=8",
+    "-Zshare-generics=y",
+    "-Znext-solver=coherence",
+    "-C", "link-arg=-fuse-ld=lld",
+    "-C", "link-arg=-Wl,-z,pack-relative-relocs",
+]

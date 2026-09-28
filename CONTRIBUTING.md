@@ -4,7 +4,7 @@
 
 SyncTV is a Rust workspace with PostgreSQL, optional Redis, protobuf APIs, deployment templates, and an Astro Starlight documentation site.
 
-Rust builds require `protoc` on `PATH`. Native media builds also require NASM and libclang.
+Rust builds require `protoc` on `PATH`. Native media builds also require NASM and libclang. Linux builds link with `lld` (see `.cargo/config.toml`); install the `lld` package.
 
 Typical local setup:
 

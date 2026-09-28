@@ -96,13 +96,11 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     if [ -n "$SYNCTV_BUILD_FEATURES" ]; then \
         build_flags="$build_flags --features $SYNCTV_BUILD_FEATURES"; \
     fi; \
+    # lld and -z pack-relative-relocs come from .cargo/config.toml Linux targets.
     cargo \
         rustc $build_flags \
         -p synctv \
-        --bin synctv \
-        -- \
-        -Clink-arg=-fuse-ld=lld \
-        -Clink-arg=-Wl,-z,pack-relative-relocs && \
+        --bin synctv && \
     cp "target/$target_profile_dir/synctv" /synctv
 
 # Stage 2: Runtime image

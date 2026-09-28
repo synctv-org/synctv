@@ -17,7 +17,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 const CONFIG_ENV: &str = "SYNCTV_WEB_CONFIG";
-const LEGACY_DIST_ENV: &str = "SYNCTV_WEB_DIST";
 const CACHE_ENV: &str = "SYNCTV_WEB_CACHE_DIR";
 const OFFLINE_ENV: &str = "SYNCTV_WEB_OFFLINE";
 const FORCE_ENV: &str = "SYNCTV_WEB_FORCE_REBUILD";
@@ -42,14 +41,7 @@ fn build() -> Result<(), String> {
         .map_err(|error| format!("failed to write disabled Web UI manifest: {error}"))?;
         return Ok(());
     }
-    for name in [
-        CONFIG_ENV,
-        LEGACY_DIST_ENV,
-        CACHE_ENV,
-        OFFLINE_ENV,
-        FORCE_ENV,
-        EXPORT_ENV,
-    ] {
+    for name in [CONFIG_ENV, CACHE_ENV, OFFLINE_ENV, FORCE_ENV, EXPORT_ENV] {
         println!("cargo:rerun-if-env-changed={name}");
     }
 
@@ -64,14 +56,7 @@ fn build() -> Result<(), String> {
     let explicit_config = env::var_os(CONFIG_ENV)
         .map(PathBuf::from)
         .map(|path| absolute_control_path(control_base, path));
-    let legacy_dist = env::var_os(LEGACY_DIST_ENV)
-        .map(PathBuf::from)
-        .map(|path| absolute_control_path(control_base, path));
-    let loaded = load_config(
-        &manifest_dir,
-        explicit_config.as_deref(),
-        legacy_dist.as_deref(),
-    )?;
+    let loaded = load_config(&manifest_dir, explicit_config.as_deref())?;
     println!("cargo:rerun-if-changed={}", loaded.path.display());
 
     let cache_dir = env::var_os(CACHE_ENV).map_or_else(

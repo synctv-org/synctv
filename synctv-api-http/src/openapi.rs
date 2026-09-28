@@ -1976,7 +1976,7 @@ mod tests {
     }
 
     #[test]
-    fn openapi_marks_notifications_read_all_body_optional() -> TestResult {
+    fn openapi_marks_notifications_read_all_body_required() -> TestResult {
         let doc = openapi_json()?;
 
         let request_body = &doc["paths"]["/api/notifications/read-all"]["post"]["requestBody"];
@@ -1987,16 +1987,16 @@ mod tests {
 
         let required = request_body["required"].as_bool();
 
-        assert_ne!(
+        assert_eq!(
             required,
             Some(true),
-            "mark-all-as-read should not document its request body as required"
+            "mark-all-as-read should document its request body as required"
         );
         Ok(())
     }
 
     #[test]
-    fn openapi_marks_publish_key_body_optional() -> TestResult {
+    fn openapi_marks_publish_key_body_required() -> TestResult {
         let doc = openapi_json()?;
 
         let request_body = &doc["paths"]
@@ -2005,10 +2005,10 @@ mod tests {
             request_body.is_object(),
             "publish-key creation should document its request body schema"
         );
-        assert_ne!(
+        assert_eq!(
             request_body["required"].as_bool(),
             Some(true),
-            "publish-key creation may omit the request body"
+            "publish-key creation should require its request body"
         );
         Ok(())
     }
@@ -2268,7 +2268,7 @@ mod tests {
             "streamPreference",
             "query",
         )?;
-        for name in ["beforeEntryId", "cursorEntryId", "limit", "sortDirection"] {
+        for name in ["cursorEntryId", "limit", "sortDirection"] {
             assert_parameter_location(
                 &doc,
                 "/api/rooms/{roomId}/playback/history",
@@ -2277,6 +2277,12 @@ mod tests {
                 "query",
             )?;
         }
+        assert_parameter_absent(
+            &doc,
+            "/api/rooms/{roomId}/playback/history",
+            "get",
+            "beforeEntryId",
+        )?;
         Ok(())
     }
 

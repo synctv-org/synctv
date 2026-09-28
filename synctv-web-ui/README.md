@@ -97,7 +97,6 @@ embeds the archive; it never installs Flutter or builds the frontend.
 | Variable | Behavior |
 | --- | --- |
 | `SYNCTV_WEB_CONFIG` | Select a configuration file explicitly. |
-| `SYNCTV_WEB_DIST` | Use a prebuilt directory. This compatibility override takes precedence over configured sources. |
 | `SYNCTV_WEB_CACHE_DIR` | Select the Git, Flutter output, and compression cache root. |
 | `SYNCTV_WEB_EXPORT_DIR` | Copy the final uncompressed distribution to a disjoint directory. |
 | `SYNCTV_WEB_OFFLINE` | Disable Git fetches and use `flutter pub get --offline`. Missing cache entries fail. |

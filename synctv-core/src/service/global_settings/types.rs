@@ -656,8 +656,7 @@ impl OAuth2ProviderConfigs {
     pub fn policy_for(&self, instance_name: &str) -> OAuth2SignupPolicy {
         self.0
             .get(instance_name)
-            .map(OAuth2ProviderConfig::signup_policy)
-            .unwrap_or_default()
+            .map_or_default(OAuth2ProviderConfig::signup_policy)
     }
 
     pub fn validate(

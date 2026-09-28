@@ -2247,16 +2247,13 @@ impl ClientApiImpl {
             .search_messages_with_attachments_for_viewer(query, viewer_user_id.as_ref())
             .await
             .map_err(ApiError::from)?;
-        let next_cursor = page
-            .next_cursor
-            .map(|cursor| {
-                format!(
-                    "{}|{}",
-                    synctv_common::time::format_datetime_rfc3339(cursor.created_at),
-                    cursor.id
-                )
-            })
-            .unwrap_or_default();
+        let next_cursor = page.next_cursor.map_or_default(|cursor| {
+            format!(
+                "{}|{}",
+                synctv_common::time::format_datetime_rfc3339(cursor.created_at),
+                cursor.id
+            )
+        });
         let messages = self.chat_messages_to_proto(page.messages).await?;
 
         Ok(synctv_proto::client::SearchChatMessagesResponse {

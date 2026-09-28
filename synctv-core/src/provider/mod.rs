@@ -1684,9 +1684,8 @@ fn provider_metadata_cache_key(
     };
     let credential_owner_id = ctx
         .credential_owner_id()
-        .map(std::string::ToString::to_string)
-        .unwrap_or_default();
-    let room_id = ctx.room_id.map(|id| id.to_string()).unwrap_or_default();
+        .map_or_default(std::string::ToString::to_string);
+    let room_id = ctx.room_id.map_or_default(|id| id.to_string());
     let provider_instance_name = ctx.provider_instance_name.unwrap_or_default();
     let mut hasher = Sha256::new();
     for component in [

@@ -2342,14 +2342,11 @@ impl BilibiliClient {
             .map_err(|error| BilibiliError::Parse(format!("Invalid Bilibili URL: {error}")))?;
         Self::validate_bilibili_url(url.as_str())?;
         let host = url.host_str().unwrap_or_default();
-        let segments = url
-            .path_segments()
-            .map(|segments| {
-                segments
-                    .filter(|segment| !segment.is_empty())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        let segments = url.path_segments().map_or_default(|segments| {
+            segments
+                .filter(|segment| !segment.is_empty())
+                .collect::<Vec<_>>()
+        });
         let page = query_value(&url, "p")
             .and_then(|value| value.parse::<u32>().ok())
             .unwrap_or(0);
@@ -3249,8 +3246,7 @@ impl BilibiliClient {
                         .playurl_info
                         .as_ref()
                         .and_then(|info| info.playurl.as_ref())
-                        .map(|playurl| &playurl.stream[..])
-                        .unwrap_or_default();
+                        .map_or_default(|playurl| &playurl.stream[..]);
                     for stream in stream_list {
                         if !stream.protocol_name.is_empty() && stream.protocol_name != dominated {
                             continue;

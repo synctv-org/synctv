@@ -768,8 +768,7 @@ impl AdminApiImpl {
             AuditDetails {
                 room_id: Some(rid.to_string()),
                 role: Some(
-                    role.map(crate::impls::client::room_role_to_proto)
-                        .unwrap_or_default()
+                    role.map_or_default(crate::impls::client::room_role_to_proto)
                         .to_string(),
                 ),
                 added_permissions: Some(added_permissions),

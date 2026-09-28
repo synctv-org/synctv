@@ -931,8 +931,7 @@ impl ManagementServiceImpl {
             .map_err(map_core_error)?;
         let next_cursor = page
             .next_cursor
-            .map(chat_history_cursor_to_client_proto)
-            .unwrap_or_default();
+            .map_or_default(chat_history_cursor_to_client_proto);
         let messages = self.chat_messages_to_client_proto(page.messages).await?;
 
         Ok(client_proto::SearchChatMessagesResponse {

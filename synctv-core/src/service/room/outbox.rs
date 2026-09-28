@@ -196,12 +196,8 @@ impl RoomService {
     ) -> Result<PermissionChangedOutboxSnapshot> {
         let target_username = Self::membership_snapshot_username_tx(tx, &target_user_id).await?;
         let changed_by_username = Self::membership_snapshot_username_tx(tx, &changed_by).await?;
-        let target_remark_name = member
-            .map(|member| member.remark_name.clone())
-            .unwrap_or_default();
-        let target_display_tag = member
-            .map(|member| member.display_tag.clone())
-            .unwrap_or_default();
+        let target_remark_name = member.map_or_default(|member| member.remark_name.clone());
+        let target_display_tag = member.map_or_default(|member| member.display_tag.clone());
         let room_settings = self
             .room_settings_repo
             .get_for_update(&room_id, &mut **tx)
@@ -262,9 +258,8 @@ impl RoomService {
         let role = member
             .as_ref()
             .map_or(RoomRole::Member, |member| member.role);
-        let (remark_name, display_tag) = member
-            .map(|member| (member.remark_name, member.display_tag))
-            .unwrap_or_default();
+        let (remark_name, display_tag) =
+            member.map_or_default(|member| (member.remark_name, member.display_tag));
         Ok(UserLeftOutboxSnapshot {
             room_id,
             user_id,

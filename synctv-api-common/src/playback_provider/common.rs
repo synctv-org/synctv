@@ -1879,8 +1879,10 @@ mod tests {
         assert_eq!(route, expected_route, "unexpected route for {suffix}");
         if short_lived {
             assert!(claims.expires_at > now, "expired signature for {suffix}");
+            // The signing site re-reads the clock after `now` was captured, so a
+            // second boundary can push expires_at one second past now + TTL.
             assert!(
-                claims.expires_at <= now + HLS_ROLLING_RESOURCE_SIGNATURE_TTL_SECONDS,
+                claims.expires_at <= now + HLS_ROLLING_RESOURCE_SIGNATURE_TTL_SECONDS + 1,
                 "signature for {suffix} exceeded live resource TTL"
             );
         } else {

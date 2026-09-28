@@ -795,7 +795,7 @@ fn parse_video_renderer(value: &serde_json::Value, is_short: bool) -> Option<You
         .get("ownerText")
         .or_else(|| value.get("shortBylineText"))
         .or_else(|| value.get("longBylineText"));
-    let channel_name = channel.map(text_value).unwrap_or_default();
+    let channel_name = channel.map_or_default(text_value);
     let channel_id = channel
         .and_then(|value| value.get("runs"))
         .and_then(serde_json::Value::as_array)
@@ -844,14 +844,8 @@ fn parse_video_renderer(value: &serde_json::Value, is_short: bool) -> Option<You
         channel_name,
         channel_id,
         duration_seconds,
-        view_count_text: value
-            .get("viewCountText")
-            .map(text_value)
-            .unwrap_or_default(),
-        published_time_text: value
-            .get("publishedTimeText")
-            .map(text_value)
-            .unwrap_or_default(),
+        view_count_text: value.get("viewCountText").map_or_default(text_value),
+        published_time_text: value.get("publishedTimeText").map_or_default(text_value),
         thumbnail,
         is_live,
         is_short,

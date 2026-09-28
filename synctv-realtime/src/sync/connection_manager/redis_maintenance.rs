@@ -970,8 +970,7 @@ impl ConnectionManager {
         let conn_ids: Vec<String> = self
             .actor_connections
             .get(&Self::user_actor_key(user_id))
-            .map(|ids| ids.clone())
-            .unwrap_or_default();
+            .map_or_default(|ids| ids.clone());
 
         // Find the first connection that's in the specified room
         for conn_id in &conn_ids {
@@ -1143,8 +1142,7 @@ impl ConnectionManager {
         let conn_ids: Vec<String> = self
             .room_connections
             .get(room_id)
-            .map(|ids| ids.clone())
-            .unwrap_or_default();
+            .map_or_default(|ids| ids.clone());
 
         conn_ids
             .iter()

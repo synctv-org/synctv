@@ -112,14 +112,13 @@ impl YoutubeFormat {
             .split("codecs=\"")
             .nth(1)
             .and_then(|value| value.split('"').next())
-            .map(|value| {
+            .map_or_default(|value| {
                 value
                     .split(',')
                     .map(|codec| codec.trim().to_string())
                     .filter(|codec| !codec.is_empty())
                     .collect()
             })
-            .unwrap_or_default()
     }
 }
 

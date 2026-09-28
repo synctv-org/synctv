@@ -93,8 +93,7 @@ impl S3CompatibleFileStorageService {
                 .operator
                 .read(object_key)
                 .await
-                .map(|bytes| bytes.to_vec())
-                .unwrap_or_default();
+                .map_or_default(|bytes| bytes.to_vec());
             if object.len() < offset {
                 object.resize(offset, 0);
             }

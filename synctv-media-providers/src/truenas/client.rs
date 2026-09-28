@@ -171,16 +171,13 @@ fn paginate(items: Vec<TrueNasFileItem>, page: u64, page_size: u32) -> TrueNasLi
     let page_size = page_size.clamp(1, 200);
     let total = items.len() as u64;
     let start = page.saturating_sub(1).saturating_mul(u64::from(page_size));
-    let items = usize::try_from(start)
-        .ok()
-        .map(|start| {
-            items
-                .into_iter()
-                .skip(start)
-                .take(page_size as usize)
-                .collect()
-        })
-        .unwrap_or_default();
+    let items = usize::try_from(start).ok().map_or_default(|start| {
+        items
+            .into_iter()
+            .skip(start)
+            .take(page_size as usize)
+            .collect()
+    });
     TrueNasList {
         items,
         total,

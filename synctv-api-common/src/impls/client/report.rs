@@ -348,8 +348,7 @@ fn content_report_row_to_client_proto(
         target_chat_message_id: row.target_chat_message_id.unwrap_or_default(),
         target_chat_message_created_at: row
             .target_chat_message_created_at
-            .map(|time| time.timestamp())
-            .unwrap_or_default(),
+            .map_or_default(|time| time.timestamp()),
         target_chat_message_preview: row.target_chat_message_preview.clone(),
         reason_code: row.reason_code.clone(),
         reason: row.reason.clone(),
@@ -357,10 +356,7 @@ fn content_report_row_to_client_proto(
         status: content_report_status_to_client_proto(row.status),
         reviewed_by: encode_optional_user_id(public_id_codec, row.reviewed_by)?,
         reviewed_by_username: row.reviewed_by_username.clone(),
-        reviewed_at: row
-            .reviewed_at
-            .map(|time| time.timestamp())
-            .unwrap_or_default(),
+        reviewed_at: row.reviewed_at.map_or_default(|time| time.timestamp()),
         resolution_note: row.resolution_note.clone(),
         created_at: row.created_at.timestamp(),
         updated_at: row.updated_at.timestamp(),

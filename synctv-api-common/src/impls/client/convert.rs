@@ -3045,8 +3045,7 @@ fn media_resource_metadata_to_proto(
                 "https://www.acfun.cn/bangumi/{bangumi_id}{}",
                 episode_query
                     .as_deref()
-                    .map(|query| format!("?{query}"))
-                    .unwrap_or_default()
+                    .map_or_default(|query| format!("?{query}"))
             ),
             synctv_core::models::AcFunMediaSourceConfig::Live { author_id } => {
                 format!("https://live.acfun.cn/live/{author_id}")
@@ -3328,8 +3327,7 @@ pub fn playback_history_page_to_proto(
                 playlist_name: entry.playlist_name.unwrap_or_default(),
                 source_provider: entry
                     .source_provider
-                    .map(core_source_provider_to_proto)
-                    .unwrap_or_default(),
+                    .map_or_default(core_source_provider_to_proto),
                 provider_instance_name: entry.provider_instance_name.unwrap_or_default(),
             })
         })

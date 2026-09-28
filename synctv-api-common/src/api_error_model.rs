@@ -116,8 +116,7 @@ impl GoogleApiError {
             let mut metadata = self
                 .details
                 .error_info()
-                .map(|detail| detail.metadata.clone())
-                .unwrap_or_default();
+                .map_or_default(|detail| detail.metadata.clone());
             let reason = self
                 .details
                 .error_info()

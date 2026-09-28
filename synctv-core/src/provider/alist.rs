@@ -360,11 +360,7 @@ fn subtitle_format_from_name(name: &str) -> String {
 
 fn external_subtitle_language(name: &str) -> String {
     let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem);
-    let token = stem
-        .rsplit(['.', '_'])
-        .next()
-        .map(str::trim)
-        .unwrap_or_default();
+    let token = stem.rsplit(['.', '_']).next().map_or_default(str::trim);
 
     if token.is_empty() || token == stem || token.len() > 16 {
         return "und".to_string();

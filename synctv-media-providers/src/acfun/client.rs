@@ -106,8 +106,7 @@ impl AcFunClient {
         }
         let parts = url
             .path_segments()
-            .map(|parts| parts.filter(|part| !part.is_empty()).collect::<Vec<_>>())
-            .unwrap_or_default();
+            .map_or_default(|parts| parts.filter(|part| !part.is_empty()).collect::<Vec<_>>());
         let query = url.query().map(str::to_string);
         match parts.as_slice() {
             ["v" | "bangumi", id] => parse_identifier(id, query),
@@ -556,9 +555,7 @@ fn live_metadata(
             .and_then(|value| nonempty(&value.caption))
             .or_else(|| public.and_then(|value| value.title.clone()))
             .unwrap_or_else(|| "AcFun live".to_string()),
-        author: public
-            .map(|value| value.user.name.clone())
-            .unwrap_or_default(),
+        author: public.map_or_default(|value| value.user.name.clone()),
         author_id: Some(author_id.to_string()),
         category: None,
         thumbnail_url: public

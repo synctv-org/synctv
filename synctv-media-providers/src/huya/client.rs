@@ -77,14 +77,11 @@ impl HuyaClient {
                 "URL is not a Huya resource".to_string(),
             ));
         }
-        let segments = url
-            .path_segments()
-            .map(|segments| {
-                segments
-                    .filter(|value| !value.is_empty())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        let segments = url.path_segments().map_or_default(|segments| {
+            segments
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>()
+        });
         if let ["video", "play", file] = segments.as_slice() {
             return parse_huya_id(
                 file.strip_suffix(".html").unwrap_or(file),

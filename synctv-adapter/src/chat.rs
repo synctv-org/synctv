@@ -307,8 +307,7 @@ pub fn chat_message_receive_to_proto(
         deleted_at: message.deleted_at.map_or(0, |ts| ts.timestamp()),
         reply_to_message_id: message
             .reply_to_message_id
-            .map(|id| id.to_string())
-            .unwrap_or_default(),
+            .map_or_default(|id| id.to_string()),
         attachments: value
             .attachments
             .iter()

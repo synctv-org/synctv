@@ -96,14 +96,11 @@ impl DouyinClient {
                 "URL is outside Douyin".to_string(),
             ));
         }
-        let segments = url
-            .path_segments()
-            .map(|segments| {
-                segments
-                    .filter(|value| !value.is_empty())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        let segments = url.path_segments().map_or_default(|segments| {
+            segments
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>()
+        });
         if let Some(index) = segments.iter().position(|value| *value == "video") {
             return numeric_resource(segments.get(index + 1).copied(), false);
         }
@@ -568,11 +565,7 @@ fn media_from_live(
         .as_ref()
         .or(fallback_author)
         .unwrap_or(&default_author);
-    let variants = room
-        .stream_url
-        .as_ref()
-        .map(variants_from_live)
-        .unwrap_or_default();
+    let variants = room.stream_url.as_ref().map_or_default(variants_from_live);
     Ok(DouyinMedia {
         resource: DouyinResource::Live {
             web_rid: web_rid.to_string(),
@@ -631,17 +624,13 @@ fn variants_from_live(stream_url: &RawStreamUrl) -> Vec<DouyinVariant> {
 }
 
 fn append_pull_data(output: &mut Vec<DouyinVariant>, data: &RawPullData) {
-    let qualities = data
-        .options
-        .as_ref()
-        .map(|options| {
-            options
-                .qualities
-                .iter()
-                .map(|quality| (quality.sdk_key.as_str(), quality))
-                .collect::<HashMap<_, _>>()
-        })
-        .unwrap_or_default();
+    let qualities = data.options.as_ref().map_or_default(|options| {
+        options
+            .qualities
+            .iter()
+            .map(|quality| (quality.sdk_key.as_str(), quality))
+            .collect::<HashMap<_, _>>()
+    });
     let Some(streams) = data
         .stream_data
         .get("data")

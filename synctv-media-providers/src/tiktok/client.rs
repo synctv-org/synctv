@@ -90,14 +90,11 @@ impl TikTokClient {
                 "URL is outside TikTok".to_string(),
             ));
         }
-        let segments = url
-            .path_segments()
-            .map(|segments| {
-                segments
-                    .filter(|value| !value.is_empty())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        let segments = url.path_segments().map_or_default(|segments| {
+            segments
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>()
+        });
         if let Some(index) = segments.iter().position(|value| *value == "video") {
             return video_resource(segments.get(index + 1).copied());
         }
@@ -412,11 +409,8 @@ fn media_from_item(item: RawItem) -> Result<TikTokMedia, ProviderClientError> {
             let Some(address) = &bitrate.play_addr else {
                 continue;
             };
-            let (codec, quality, parsed_bitrate) = address
-                .url_key
-                .as_deref()
-                .map(parse_url_key)
-                .unwrap_or_default();
+            let (codec, quality, parsed_bitrate) =
+                address.url_key.as_deref().map_or_default(parse_url_key);
             if codec.as_deref() == Some("vvc") {
                 continue;
             }
@@ -499,28 +493,26 @@ fn media_from_item(item: RawItem) -> Result<TikTokMedia, ProviderClientError> {
     deduplicate_variants(&mut variants);
     let author = author_from_raw(item.author.as_ref(), "");
     let stats = item.stats.as_ref();
-    let subtitles = video
-        .map(|video| {
-            video
-                .subtitle_infos
-                .iter()
-                .filter_map(|subtitle| {
-                    Some(TikTokSubtitle {
-                        language: subtitle
-                            .language_code_name
-                            .clone()
-                            .unwrap_or_else(|| "und".to_string()),
-                        format: subtitle
-                            .format
-                            .clone()
-                            .unwrap_or_else(|| "vtt".to_string())
-                            .to_ascii_lowercase(),
-                        url: normalize_url(subtitle.url.as_deref()?),
-                    })
+    let subtitles = video.map_or_default(|video| {
+        video
+            .subtitle_infos
+            .iter()
+            .filter_map(|subtitle| {
+                Some(TikTokSubtitle {
+                    language: subtitle
+                        .language_code_name
+                        .clone()
+                        .unwrap_or_else(|| "und".to_string()),
+                    format: subtitle
+                        .format
+                        .clone()
+                        .unwrap_or_else(|| "vtt".to_string())
+                        .to_ascii_lowercase(),
+                    url: normalize_url(subtitle.url.as_deref()?),
                 })
-                .collect()
-        })
-        .unwrap_or_default();
+            })
+            .collect()
+    });
     let title = item_title(&item);
     Ok(TikTokMedia {
         resource: TikTokResource::Video {
@@ -566,8 +558,7 @@ fn media_from_live(unique_id: &str, room: RawLiveRoom) -> Result<TikTokMedia, Pr
         .stream_data
         .as_ref()
         .and_then(|data| data.pull_data.as_ref())
-        .map(|data| live_variants(&data.stream_data))
-        .unwrap_or_default();
+        .map_or_default(|data| live_variants(&data.stream_data));
     let is_live = room.status == Some(2);
     let owner = author_from_raw(room.owner_info.as_ref(), unique_id);
     Ok(TikTokMedia {

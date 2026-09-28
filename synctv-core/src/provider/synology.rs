@@ -2041,8 +2041,7 @@ async fn generate_video_playback(
             .client
             .list_audio_tracks(api, sid, file_id)
             .await
-            .map(|tracks| tracks.trackinfo)
-            .unwrap_or_default(),
+            .map_or_default(|tracks| tracks.trackinfo),
         None => Vec::new(),
     };
     let subtitles = match auth.apis.get("SYNO.VideoStation.Subtitle") {

@@ -95,14 +95,11 @@ impl TwitchClient {
             ProviderClientError::InvalidConfig(format!("invalid Twitch URL: {error}"))
         })?;
         let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
-        let segments = url
-            .path_segments()
-            .map(|segments| {
-                segments
-                    .filter(|segment| !segment.is_empty())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        let segments = url.path_segments().map_or_default(|segments| {
+            segments
+                .filter(|segment| !segment.is_empty())
+                .collect::<Vec<_>>()
+        });
         if host == "clips.twitch.tv" {
             let id = segments.first().copied().unwrap_or_default();
             return resource(TwitchResourceKind::Clip, id);

@@ -151,8 +151,7 @@ impl S3CompatibleFileStorageService {
                 .unwrap_or_else(|| "application/octet-stream".to_string());
             let content_manifest_sha256 = object
                 .as_ref()
-                .map(|object| object.content_manifest_sha256.clone())
-                .unwrap_or_default();
+                .map_or_default(|object| object.content_manifest_sha256.clone());
             let metadata = object
                 .as_ref()
                 .map_or_else(Default::default, |object| object.metadata.clone());
@@ -201,8 +200,7 @@ impl S3CompatibleFileStorageService {
             .unwrap_or_else(|| "application/octet-stream".to_string());
         let content_manifest_sha256 = object
             .as_ref()
-            .map(|object| object.content_manifest_sha256.clone())
-            .unwrap_or_default();
+            .map_or_default(|object| object.content_manifest_sha256.clone());
         let metadata = object
             .as_ref()
             .map_or_else(Default::default, |object| object.metadata.clone());

@@ -1121,15 +1121,12 @@ impl RoomMessageHub {
     /// Get all subscribers in a room (for debugging/monitoring)
     #[must_use]
     pub fn get_room_subscribers(&self, room_id: &RoomId) -> Vec<(RealtimeActor, ConnectionId)> {
-        self.rooms
-            .get(room_id)
-            .map(|subscribers| {
-                subscribers
-                    .values()
-                    .map(|sub| (sub.actor.clone(), sub.connection_id.clone()))
-                    .collect()
-            })
-            .unwrap_or_default()
+        self.rooms.get(room_id).map_or_default(|subscribers| {
+            subscribers
+                .values()
+                .map(|sub| (sub.actor.clone(), sub.connection_id.clone()))
+                .collect()
+        })
     }
 
     /// Get all subscribers in a room across all replicas (from Redis).

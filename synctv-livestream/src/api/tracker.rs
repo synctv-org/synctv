@@ -227,15 +227,11 @@ impl StreamTracker {
     #[must_use]
     pub fn get_user_streams(&self, user_id: &str) -> Vec<(String, String)> {
         let inner = self.inner.read();
-        inner
-            .by_user
-            .get(user_id)
-            .map(|set| {
-                set.iter()
-                    .filter_map(|key| Self::parse_stream_key(key))
-                    .collect()
-            })
-            .unwrap_or_default()
+        inner.by_user.get(user_id).map_or_default(|set| {
+            set.iter()
+                .filter_map(|key| Self::parse_stream_key(key))
+                .collect()
+        })
     }
 
     /// Get all `media_ids` currently publishing in a room.
@@ -245,8 +241,7 @@ impl StreamTracker {
         inner
             .by_room
             .get(room_id)
-            .map(|set| set.iter().cloned().collect())
-            .unwrap_or_default()
+            .map_or_default(|set| set.iter().cloned().collect())
     }
 
     /// Get `user_id` publishing a specific (`room_id`, `media_id`).

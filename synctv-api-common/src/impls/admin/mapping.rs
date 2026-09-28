@@ -583,8 +583,7 @@ pub(in crate::impls::admin) fn try_admin_user_to_proto(
             .map_or(0, |value| value.timestamp()),
         deletion_source: lifecycle
             .and_then(|metadata| metadata.deletion_source)
-            .map(|source| source.as_str().to_string())
-            .unwrap_or_default(),
+            .map_or_default(|source| source.as_str().to_string()),
         deleted_by: encode_optional_user_id(
             public_id_codec,
             lifecycle.and_then(|metadata| metadata.deleted_by),

@@ -568,8 +568,7 @@ pub(super) fn chat_read_state_to_proto(
             last_read_message_id: state
                 .state
                 .last_read_message_id
-                .map(|id| id.to_string())
-                .unwrap_or_default(),
+                .map_or_default(|id| id.to_string()),
             last_read_event_id: state.state.last_read_event_id.unwrap_or_default(),
             last_read_event_sequence: state.state.last_read_event_sequence.unwrap_or_default(),
             updated_at: state.state.updated_at.timestamp(),

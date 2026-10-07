@@ -76,7 +76,7 @@ unnecessary_wraps = "allow"
 
 [workspace.dependencies]
 # Async Runtime
-tokio = { version = "=1.53.1", features = [
+tokio = { version = "=1.53.2", features = [
     "rt-multi-thread",
     "macros",
     "net",
@@ -176,7 +176,7 @@ webauthn-rs-proto = "=0.6.1-dev"
 aes-gcm = "=0.11.1"
 aes = "=0.9.3"
 cbc = { version = "=0.2.1", features = ["alloc", "block-padding"] }
-ammonia = "=4.2.0"
+ammonia = "=4.2.1"
 http-acl = "=0.13.0"
 hkdf = "=0.13.0"
 sha1 = "=0.11.0"
@@ -208,7 +208,7 @@ lru = "=0.18.5"
 
 # IDs & Crypto
 nanoid = "=0.5.0"
-uuid = { version = "=1.26.1", features = ["v4", "v5", "serde"] }
+uuid = { version = "=1.27.0", features = ["v4", "v5", "serde"] }
 sqids = "=0.4.2"
 rand = "=0.10.3"
 rand_08 = { package = "rand", version = "=0.8.6" }
@@ -253,7 +253,7 @@ tracing-appender = "=0.2.5"
 dotenvy = "=0.15.7"
 
 # Configuration
-config = { version = "=0.15.26", default-features = false, features = ["yaml", "json", "toml"] }
+config = { version = "=0.15.27", default-features = false, features = ["yaml", "json", "toml"] }
 clap = { version = "=4.6.7", features = ["wrap_help", "derive"] }
 clap_complete = "=4.6.11"
 
@@ -292,7 +292,7 @@ kube = { version = "=4.2.0", default-features = false, features = ["client", "gz
 k8s-openapi = { version = "=0.28.0", features = ["latest"] }
 
 # TLS
-tokio-rustls = { version = "=0.26.5", default-features = false, features = ["tls12", "brotli", "zlib"] }
+tokio-rustls = { version = "=0.26.6", default-features = false, features = ["tls12", "brotli", "zlib"] }
 rustls = { version = "=0.23.45", default-features = false, features = ["std", "tls12", "brotli", "zlib"] }
 rustls-pemfile = "=2.2.0"
 hyper-util = { version = "=0.1.21", default-features = false, features = ["tokio"] }

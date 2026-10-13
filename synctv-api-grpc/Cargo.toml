@@ -97,7 +97,6 @@ futures.workspace = true
 # gRPC
 tonic.workspace = true
 tonic-prost.workspace = true
-tonic-web.workspace = true
 tonic-reflection.workspace = true
 tonic-health.workspace = true
 tonic-types.workspace = true
@@ -112,7 +111,6 @@ pbjson-types.workspace = true
 # HTTP
 axum.workspace = true
 tower.workspace = true
-tower-http.workspace = true
 hyper.workspace = true
 reqwest.workspace = true
 http-body-util.workspace = true
@@ -160,7 +158,6 @@ chrono.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
-clap.workspace = true
 regex.workspace = true
 ammonia.workspace = true
 

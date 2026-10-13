@@ -28,130 +28,6 @@ pub struct MediaSwarmPeer {
     pub connection_id: String,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct HangingRedisRuntime;
-
-    #[async_trait::async_trait]
-    impl RedisConnectionRuntime for HangingRedisRuntime {
-        async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
-            std::future::pending().await
-        }
-
-        fn operation_timeout(&self) -> Duration {
-            Duration::from_millis(10)
-        }
-    }
-
-    #[tokio::test]
-    async fn local_tracker_bounds_candidates_and_excludes_announcing_connection() {
-        let tracker = MediaSwarmTracker::new(None, "test:");
-        let room_id = RoomId::expect_positive(1);
-        for index in 0..(MAX_MEDIA_SWARM_PEERS + 5) {
-            tracker
-                .announce(
-                    room_id,
-                    format!("usr_{index}"),
-                    format!("conn_{index}"),
-                    "swarm-a",
-                )
-                .await
-                .expect("announce should succeed");
-        }
-        let peers = tracker
-            .announce(
-                room_id,
-                "usr_current".to_string(),
-                "conn_current".to_string(),
-                "swarm-a",
-            )
-            .await
-            .expect("discovery should succeed");
-
-        assert_eq!(peers.len(), MAX_MEDIA_SWARM_PEERS);
-        assert!(peers
-            .iter()
-            .all(|peer| peer.connection_id != "conn_current"));
-    }
-
-    #[tokio::test]
-    async fn local_tracker_isolates_rooms_and_swarms_and_removes_leaves() {
-        let tracker = MediaSwarmTracker::new(None, "test:");
-        let room_a = RoomId::expect_positive(1);
-        let room_b = RoomId::expect_positive(2);
-        tracker
-            .announce(room_a, "usr_a".into(), "conn_a".into(), "swarm-a")
-            .await
-            .expect("first announce should succeed");
-
-        assert!(tracker
-            .announce(room_a, "usr_b".into(), "conn_b".into(), "swarm-b")
-            .await
-            .expect("other swarm announce should succeed")
-            .is_empty());
-        assert!(tracker
-            .announce(room_b, "usr_c".into(), "conn_c".into(), "swarm-a")
-            .await
-            .expect("other room announce should succeed")
-            .is_empty());
-        tracker
-            .leave(room_a, "usr_a", "conn_a", "swarm-a")
-            .await
-            .expect("leave should succeed");
-        assert!(tracker
-            .announce(room_a, "usr_d".into(), "conn_d".into(), "swarm-a")
-            .await
-            .expect("post-leave discovery should succeed")
-            .is_empty());
-    }
-
-    #[tokio::test]
-    async fn local_membership_lookup_requires_exact_actor_connection_and_swarm() {
-        let tracker = MediaSwarmTracker::new(None, "test:");
-        let room_id = RoomId::expect_positive(1);
-        tracker
-            .announce(
-                room_id,
-                "usr_a".to_string(),
-                "conn_a".to_string(),
-                "swarm-a",
-            )
-            .await
-            .expect("membership announcement should succeed");
-
-        assert!(tracker
-            .contains(room_id, "usr_a", "conn_a", "swarm-a")
-            .await
-            .expect("membership lookup should succeed"));
-        assert!(!tracker
-            .contains(room_id, "usr_b", "conn_a", "swarm-a")
-            .await
-            .expect("actor mismatch lookup should succeed"));
-        assert!(!tracker
-            .contains(room_id, "usr_a", "conn_a", "swarm-b")
-            .await
-            .expect("swarm mismatch lookup should succeed"));
-    }
-
-    #[tokio::test]
-    async fn redis_snapshot_is_bounded_by_runtime_operation_timeout() {
-        let tracker = MediaSwarmTracker::new(Some(Arc::new(HangingRedisRuntime)), "test:");
-        let error = tracker
-            .announce(
-                RoomId::expect_positive(1),
-                "usr_a".to_string(),
-                "conn_a".to_string(),
-                "swarm-a",
-            )
-            .await
-            .expect_err("hanging Redis snapshot should time out");
-
-        assert!(error.contains("Redis timeout during connection snapshot"));
-    }
-}
-
 #[derive(Clone)]
 struct LocalMembership {
     peer: MediaSwarmPeer,
@@ -368,5 +244,129 @@ impl MediaSwarmTracker {
             room_id,
             hex::encode(swarm_id)
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct HangingRedisRuntime;
+
+    #[async_trait::async_trait]
+    impl RedisConnectionRuntime for HangingRedisRuntime {
+        async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
+            std::future::pending().await
+        }
+
+        fn operation_timeout(&self) -> Duration {
+            Duration::from_millis(10)
+        }
+    }
+
+    #[tokio::test]
+    async fn local_tracker_bounds_candidates_and_excludes_announcing_connection() {
+        let tracker = MediaSwarmTracker::new(None, "test:");
+        let room_id = RoomId::expect_positive(1);
+        for index in 0..(MAX_MEDIA_SWARM_PEERS + 5) {
+            tracker
+                .announce(
+                    room_id,
+                    format!("usr_{index}"),
+                    format!("conn_{index}"),
+                    "swarm-a",
+                )
+                .await
+                .expect("announce should succeed");
+        }
+        let peers = tracker
+            .announce(
+                room_id,
+                "usr_current".to_string(),
+                "conn_current".to_string(),
+                "swarm-a",
+            )
+            .await
+            .expect("discovery should succeed");
+
+        assert_eq!(peers.len(), MAX_MEDIA_SWARM_PEERS);
+        assert!(peers
+            .iter()
+            .all(|peer| peer.connection_id != "conn_current"));
+    }
+
+    #[tokio::test]
+    async fn local_tracker_isolates_rooms_and_swarms_and_removes_leaves() {
+        let tracker = MediaSwarmTracker::new(None, "test:");
+        let room_a = RoomId::expect_positive(1);
+        let room_b = RoomId::expect_positive(2);
+        tracker
+            .announce(room_a, "usr_a".into(), "conn_a".into(), "swarm-a")
+            .await
+            .expect("first announce should succeed");
+
+        assert!(tracker
+            .announce(room_a, "usr_b".into(), "conn_b".into(), "swarm-b")
+            .await
+            .expect("other swarm announce should succeed")
+            .is_empty());
+        assert!(tracker
+            .announce(room_b, "usr_c".into(), "conn_c".into(), "swarm-a")
+            .await
+            .expect("other room announce should succeed")
+            .is_empty());
+        tracker
+            .leave(room_a, "usr_a", "conn_a", "swarm-a")
+            .await
+            .expect("leave should succeed");
+        assert!(tracker
+            .announce(room_a, "usr_d".into(), "conn_d".into(), "swarm-a")
+            .await
+            .expect("post-leave discovery should succeed")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn local_membership_lookup_requires_exact_actor_connection_and_swarm() {
+        let tracker = MediaSwarmTracker::new(None, "test:");
+        let room_id = RoomId::expect_positive(1);
+        tracker
+            .announce(
+                room_id,
+                "usr_a".to_string(),
+                "conn_a".to_string(),
+                "swarm-a",
+            )
+            .await
+            .expect("membership announcement should succeed");
+
+        assert!(tracker
+            .contains(room_id, "usr_a", "conn_a", "swarm-a")
+            .await
+            .expect("membership lookup should succeed"));
+        assert!(!tracker
+            .contains(room_id, "usr_b", "conn_a", "swarm-a")
+            .await
+            .expect("actor mismatch lookup should succeed"));
+        assert!(!tracker
+            .contains(room_id, "usr_a", "conn_a", "swarm-b")
+            .await
+            .expect("swarm mismatch lookup should succeed"));
+    }
+
+    #[tokio::test]
+    async fn redis_snapshot_is_bounded_by_runtime_operation_timeout() {
+        let tracker = MediaSwarmTracker::new(Some(Arc::new(HangingRedisRuntime)), "test:");
+        let error = tracker
+            .announce(
+                RoomId::expect_positive(1),
+                "usr_a".to_string(),
+                "conn_a".to_string(),
+                "swarm-a",
+            )
+            .await
+            .expect_err("hanging Redis snapshot should time out");
+
+        assert!(error.contains("Redis timeout during connection snapshot"));
     }
 }

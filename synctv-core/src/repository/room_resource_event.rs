@@ -76,10 +76,10 @@ impl RoomResourceKind {
     }
 }
 
-impl TryFrom<&str> for RoomResourceKind {
-    type Error = String;
+impl core::str::FromStr for RoomResourceKind {
+    type Err = String;
 
-    fn try_from(value: &str) -> std::result::Result<Self, Self::Error> {
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
         match value {
             "playback_state" => Ok(Self::PlaybackState),
             "playback" => Ok(Self::Playback),
@@ -279,8 +279,7 @@ impl TryFrom<RoomResourceEventLogRow> for RoomResourceEventLog {
         Ok(Self {
             event_id: row.event_id,
             sequence: row.sequence,
-            resource_type: RoomResourceKind::try_from(row.resource_type.as_str())
-                .map_err(Error::Internal)?,
+            resource_type: row.resource_type.parse().map_err(Error::Internal)?,
             event_type: row.event_type,
             payload: row.payload.map(|payload| payload.0),
         })

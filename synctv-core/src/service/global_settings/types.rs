@@ -188,92 +188,6 @@ impl std::str::FromStr for PermissionSet {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{
-        parse_rtmp_advertise_address, validate_webrtc_settings, IceServerList, PermissionSet,
-        WebRtcRuntimeSettings,
-    };
-    use crate::models::RoomAdminPermissionBits;
-    use std::str::FromStr;
-
-    #[test]
-    fn permission_set_accepts_exact_canonical_names() {
-        let permissions = PermissionSet::from_str(
-            r#"["manage_live_streams","view_members","view_playback_history"]"#,
-        )
-        .expect("canonical permission names should parse");
-
-        assert_eq!(
-            permissions.bits().0,
-            RoomAdminPermissionBits::MANAGE_LIVE_STREAMS
-                | RoomAdminPermissionBits::VIEW_MEMBERS
-                | RoomAdminPermissionBits::VIEW_PLAYBACK_HISTORY
-        );
-    }
-
-    #[test]
-    fn permission_set_preserves_playback_history_in_display_round_trip() {
-        let original = PermissionSet::from_bits(crate::models::RoomPermissionSet(
-            RoomAdminPermissionBits::VIEW_PLAYBACK_HISTORY,
-        ));
-        let restored = PermissionSet::from_str(&original.to_string())
-            .expect("displayed permission names should parse");
-
-        assert_eq!(restored, original);
-    }
-
-    #[test]
-    fn voice_participant_limit_accepts_mesh_operating_range() {
-        for max_voice_participants_per_room in [2, 8, 32] {
-            assert!(validate_webrtc_settings(&WebRtcRuntimeSettings {
-                external_ice_servers: IceServerList::new(),
-                max_voice_participants_per_room,
-            })
-            .is_ok());
-        }
-        for max_voice_participants_per_room in [1, 33] {
-            assert!(validate_webrtc_settings(&WebRtcRuntimeSettings {
-                external_ice_servers: IceServerList::new(),
-                max_voice_participants_per_room,
-            })
-            .is_err());
-        }
-    }
-
-    #[test]
-    fn rtmp_advertise_address_accepts_origin_without_business_path() {
-        let plain = parse_rtmp_advertise_address("rtmp://live.example.com")
-            .expect("RTMP origin should be accepted");
-        assert_eq!(plain.scheme(), "rtmp");
-        assert_eq!(plain.host_str(), Some("live.example.com"));
-        assert_eq!(plain.port(), None);
-
-        let secure = parse_rtmp_advertise_address("rtmps://live.example.com:8443")
-            .expect("RTMPS origin with an explicit port should be accepted");
-        assert_eq!(secure.scheme(), "rtmps");
-        assert_eq!(secure.host_str(), Some("live.example.com"));
-        assert_eq!(secure.port(), Some(8443));
-    }
-
-    #[test]
-    fn rtmp_advertise_address_rejects_non_origin_components() {
-        for address in [
-            "",
-            "http://live.example.com",
-            "rtmp://user:secret@live.example.com",
-            "rtmp://live.example.com/app",
-            "rtmp://live.example.com?token=secret",
-            "rtmp://live.example.com#fragment",
-        ] {
-            assert!(
-                parse_rtmp_advertise_address(address).is_err(),
-                "unexpectedly accepted {address}"
-            );
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RoomPasswordPolicy {
@@ -1609,6 +1523,92 @@ impl PublicSettings {
             advertise_address: None,
             email_whitelist_enabled: false,
             email_whitelist_domains: Vec::new(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        parse_rtmp_advertise_address, validate_webrtc_settings, IceServerList, PermissionSet,
+        WebRtcRuntimeSettings,
+    };
+    use crate::models::RoomAdminPermissionBits;
+    use std::str::FromStr;
+
+    #[test]
+    fn permission_set_accepts_exact_canonical_names() {
+        let permissions = PermissionSet::from_str(
+            r#"["manage_live_streams","view_members","view_playback_history"]"#,
+        )
+        .expect("canonical permission names should parse");
+
+        assert_eq!(
+            permissions.bits().0,
+            RoomAdminPermissionBits::MANAGE_LIVE_STREAMS
+                | RoomAdminPermissionBits::VIEW_MEMBERS
+                | RoomAdminPermissionBits::VIEW_PLAYBACK_HISTORY
+        );
+    }
+
+    #[test]
+    fn permission_set_preserves_playback_history_in_display_round_trip() {
+        let original = PermissionSet::from_bits(crate::models::RoomPermissionSet(
+            RoomAdminPermissionBits::VIEW_PLAYBACK_HISTORY,
+        ));
+        let restored = PermissionSet::from_str(&original.to_string())
+            .expect("displayed permission names should parse");
+
+        assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn voice_participant_limit_accepts_mesh_operating_range() {
+        for max_voice_participants_per_room in [2, 8, 32] {
+            assert!(validate_webrtc_settings(&WebRtcRuntimeSettings {
+                external_ice_servers: IceServerList::new(),
+                max_voice_participants_per_room,
+            })
+            .is_ok());
+        }
+        for max_voice_participants_per_room in [1, 33] {
+            assert!(validate_webrtc_settings(&WebRtcRuntimeSettings {
+                external_ice_servers: IceServerList::new(),
+                max_voice_participants_per_room,
+            })
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn rtmp_advertise_address_accepts_origin_without_business_path() {
+        let plain = parse_rtmp_advertise_address("rtmp://live.example.com")
+            .expect("RTMP origin should be accepted");
+        assert_eq!(plain.scheme(), "rtmp");
+        assert_eq!(plain.host_str(), Some("live.example.com"));
+        assert_eq!(plain.port(), None);
+
+        let secure = parse_rtmp_advertise_address("rtmps://live.example.com:8443")
+            .expect("RTMPS origin with an explicit port should be accepted");
+        assert_eq!(secure.scheme(), "rtmps");
+        assert_eq!(secure.host_str(), Some("live.example.com"));
+        assert_eq!(secure.port(), Some(8443));
+    }
+
+    #[test]
+    fn rtmp_advertise_address_rejects_non_origin_components() {
+        for address in [
+            "",
+            "http://live.example.com",
+            "rtmp://user:secret@live.example.com",
+            "rtmp://live.example.com/app",
+            "rtmp://live.example.com?token=secret",
+            "rtmp://live.example.com#fragment",
+        ] {
+            assert!(
+                parse_rtmp_advertise_address(address).is_err(),
+                "unexpectedly accepted {address}"
+            );
         }
     }
 }

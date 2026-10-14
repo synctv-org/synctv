@@ -26,7 +26,6 @@ tower.workspace = true
 tonic-prost.workspace = true
 tonic-health.workspace = true
 prost.workspace = true
-prost-types.workspace = true
 hyper-util.workspace = true
 tokio-rustls.workspace = true
 rustls.workspace = true
@@ -40,7 +39,6 @@ chrono.workspace = true
 html-escape.workspace = true
 
 # Utilities
-anyhow.workspace = true
 thiserror.workspace = true
 bytes.workspace = true
 regex.workspace = true
@@ -121,6 +119,7 @@ workspace = true
 tonic-prost-build.workspace = true
 
 [dev-dependencies]
+anyhow.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 wiremock.workspace = true
 futures.workspace = true

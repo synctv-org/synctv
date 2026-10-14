@@ -170,34 +170,6 @@ fn parse_display_count(value: &str) -> Option<u64> {
     Some(value.round() as u64)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[derive(Deserialize)]
-    struct OptionalCount {
-        #[serde(default, deserialize_with = "deserialize_optional_u64")]
-        value: Option<u64>,
-    }
-
-    fn count(value: &serde_json::Value) -> Option<u64> {
-        serde_json::from_value::<OptionalCount>(serde_json::json!({ "value": value }))
-            .expect("optional display counts should deserialize")
-            .value
-    }
-
-    #[test]
-    fn optional_display_counts_accept_numbers_and_ignore_labels() {
-        assert_eq!(count(&serde_json::json!(483)), Some(483));
-        assert_eq!(count(&serde_json::json!("1,234")), Some(1_234));
-        assert_eq!(count(&serde_json::json!("1.2万")), Some(12_000));
-        assert_eq!(count(&serde_json::json!("3亿")), Some(300_000_000));
-        assert_eq!(count(&serde_json::json!("-1万")), None);
-        assert_eq!(count(&serde_json::json!("点赞")), None);
-        assert_eq!(count(&serde_json::json!("-")), None);
-    }
-}
-
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct PageUser {
     #[serde(default)]
@@ -378,4 +350,32 @@ pub(crate) struct RawDanmaku {
     pub create_time: Option<u64>,
     pub mode: Option<u32>,
     pub size: Option<u32>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Deserialize)]
+    struct OptionalCount {
+        #[serde(default, deserialize_with = "deserialize_optional_u64")]
+        value: Option<u64>,
+    }
+
+    fn count(value: &serde_json::Value) -> Option<u64> {
+        serde_json::from_value::<OptionalCount>(serde_json::json!({ "value": value }))
+            .expect("optional display counts should deserialize")
+            .value
+    }
+
+    #[test]
+    fn optional_display_counts_accept_numbers_and_ignore_labels() {
+        assert_eq!(count(&serde_json::json!(483)), Some(483));
+        assert_eq!(count(&serde_json::json!("1,234")), Some(1_234));
+        assert_eq!(count(&serde_json::json!("1.2万")), Some(12_000));
+        assert_eq!(count(&serde_json::json!("3亿")), Some(300_000_000));
+        assert_eq!(count(&serde_json::json!("-1万")), None);
+        assert_eq!(count(&serde_json::json!("点赞")), None);
+        assert_eq!(count(&serde_json::json!("-")), None);
+    }
 }

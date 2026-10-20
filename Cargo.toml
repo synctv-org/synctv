@@ -74,11 +74,7 @@ unnecessary_wraps = "allow"
 
 [workspace.dependencies]
 # Async Runtime
-# tokio stays on 1.53.2: 1.54.0 changes net readiness behavior such that the
-# raw-TCP chunked-response mocks in synctv-media-providers error_handling_tests
-# fail inside reqwest::get (hyper UnexpectedMessage) before check_response runs.
-# Re-evaluate when tokio ships a follow-up or the mocks are made timing-proof.
-tokio = { version = "=1.53.2", features = [
+tokio = { version = "=1.54.0", features = [
     "rt-multi-thread",
     "macros",
     "net",

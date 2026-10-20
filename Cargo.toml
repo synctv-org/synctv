@@ -346,7 +346,7 @@ utoipa = { version = "=6.0.0", default-features = false, features = [
     "preserve_order",
     "preserve_path_order",
 ] }
-utoipa-swagger-ui = { version = "=10.0.1", default-features = false, features = [
+utoipa-swagger-ui = { version = "=10.0.2", default-features = false, features = [
     "axum",
     "vendored",
 ] }

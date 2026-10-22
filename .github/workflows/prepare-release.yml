@@ -30,7 +30,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-10-20
+          toolchain: nightly-2026-10-22
 
       - name: Normalize release version
         id: version

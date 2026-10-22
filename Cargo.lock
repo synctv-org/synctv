@@ -263,7 +263,7 @@ dependencies = [
  "lazy_static",
  "murmur3",
  "once_cell",
- "parking_lot",
+ "parking_lot 0.12.5",
  "typed-arena",
  "uuid",
 ]
@@ -1964,9 +1964,9 @@ dependencies = [
  "cfg-if",
  "crossbeam-utils",
  "hashbrown 0.14.5",
- "lock_api",
+ "lock_api 0.4.14",
  "once_cell",
- "parking_lot_core",
+ "parking_lot_core 0.9.12",
 ]
 
 [[package]]
@@ -1979,8 +1979,8 @@ dependencies = [
  "crossbeam-utils",
  "equivalent",
  "hashbrown 0.15.5",
- "lock_api",
- "parking_lot_core",
+ "lock_api 0.4.14",
+ "parking_lot_core 0.9.12",
 ]
 
 [[package]]
@@ -2482,7 +2482,7 @@ version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6b1dc7c28e66a8f5dc32b7043b735e93d9eea8ea6e7be5507dae5850ab7ac70"
 dependencies = [
- "parking_lot",
+ "parking_lot 0.12.5",
  "rand 0.8.6",
 ]
 
@@ -2755,8 +2755,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d930c203dd0b6ff06e0201a4a2fe9149b43c684fd4420555b26d21b1a02956f"
 dependencies = [
  "futures-core",
- "lock_api",
- "parking_lot",
+ "lock_api 0.4.14",
+ "parking_lot 0.12.5",
 ]
 
 [[package]]
@@ -2938,7 +2938,7 @@ dependencies = [
  "getrandom 0.3.4",
  "hashbrown 0.16.1",
  "nonzero_ext",
- "parking_lot",
+ "parking_lot 0.12.5",
  "portable-atomic",
  "quanta",
  "rand 0.9.5",
@@ -3163,7 +3163,7 @@ dependencies = [
  "moka",
  "ndk-context",
  "once_cell",
- "parking_lot",
+ "parking_lot 0.12.5",
  "rand 0.10.3",
  "resolv-conf",
  "smallvec",
@@ -4053,9 +4053,9 @@ dependencies = [
 
 [[package]]
 name = "libc"
-version = "0.2.190"
+version = "0.2.191"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce5d3ddc6d3fa000eb1536d85e147bfe31aacaba692ed6a876f95cb7c855be78"
+checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
 name = "libloading"
@@ -4121,6 +4121,15 @@ name = "lock_api"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "224399e74b87b5f3557511d98dff8b14089b3dadafcab6bb93eab67d3aace965"
+dependencies = [
+ "scopeguard",
+]
+
+[[package]]
+name = "lock_api"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65d91b22da179613dcf4d6ec8349563f52a363f6849e03b00dd0a185ec4a59af"
 dependencies = [
  "scopeguard",
 ]
@@ -4317,7 +4326,7 @@ dependencies = [
  "equivalent",
  "event-listener",
  "futures-util",
- "parking_lot",
+ "parking_lot 0.12.5",
  "portable-atomic",
  "smallvec",
  "tagptr",
@@ -5123,8 +5132,18 @@ version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "93857453250e3077bd71ff98b6a65ea6621a19bb0f559a85248955ac12c45a1a"
 dependencies = [
- "lock_api",
- "parking_lot_core",
+ "lock_api 0.4.14",
+ "parking_lot_core 0.9.12",
+]
+
+[[package]]
+name = "parking_lot"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a9cf937ca4e1d0b7578784559063422fc39ae7c5a00f02471f2614d5486fd226"
+dependencies = [
+ "lock_api 0.5.0",
+ "parking_lot_core 0.10.0",
 ]
 
 [[package]]
@@ -5135,7 +5154,19 @@ checksum = "2621685985a2ebf1c516881c026032ac7deafcda1a2c9b7850dc81e3dfcb64c1"
 dependencies = [
  "cfg-if",
  "libc",
- "redox_syscall",
+ "redox_syscall 0.5.18",
+ "smallvec",
+ "windows-link",
+]
+
+[[package]]
+name = "parking_lot_core"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9cfff060068cc18aa7815010fcaf80c68c7fb9e85fc7f5c0f9bf142c21d19826"
+dependencies = [
+ "libc",
+ "redox_syscall 0.9.5",
  "smallvec",
  "windows-link",
 ]
@@ -5699,7 +5730,7 @@ dependencies = [
  "lazy_static",
  "libc",
  "memchr",
- "parking_lot",
+ "parking_lot 0.12.5",
  "procfs",
  "protobuf",
  "thiserror 2.0.21",
@@ -6219,6 +6250,15 @@ name = "redox_syscall"
 version = "0.5.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d"
+dependencies = [
+ "bitflags 2.13.2",
+]
+
+[[package]]
+name = "redox_syscall"
+version = "0.9.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "580c875845b41ecb1564ad1ae4703044cef774145e3d7a94dc2b3fa7c97868fd"
 dependencies = [
  "bitflags 2.13.2",
 ]
@@ -7621,7 +7661,7 @@ version = "0.9.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e"
 dependencies = [
- "lock_api",
+ "lock_api 0.4.14",
 ]
 
 [[package]]
@@ -7636,7 +7676,7 @@ version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d96d2d1d716fb500937168cc09353ffdc7a012be8475ac7308e1bdf0e3923300"
 dependencies = [
- "lock_api",
+ "lock_api 0.4.14",
 ]
 
 [[package]]
@@ -7880,7 +7920,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ffa8a5dbe8b3f0bbe29d4c3225daafaeead63afdc1b65fc4c01a1384166038e6"
 dependencies = [
  "new_debug_unreachable",
- "parking_lot",
+ "parking_lot 0.12.5",
  "phf_shared 0.14.0",
  "precomputed-hash",
 ]
@@ -8198,7 +8238,7 @@ dependencies = [
  "jsonwebtoken",
  "mimalloc",
  "opaque-ke",
- "parking_lot",
+ "parking_lot 0.13.0",
  "percent-encoding",
  "prost",
  "redis",
@@ -8315,7 +8355,7 @@ dependencies = [
  "kube",
  "moka",
  "opaque-ke",
- "parking_lot",
+ "parking_lot 0.13.0",
  "pbjson-types",
  "percent-encoding",
  "prost",
@@ -8390,7 +8430,7 @@ dependencies = [
  "kube",
  "moka",
  "opaque-ke",
- "parking_lot",
+ "parking_lot 0.13.0",
  "pbjson-types",
  "percent-encoding",
  "prost",
@@ -8467,7 +8507,7 @@ dependencies = [
  "kube",
  "moka",
  "opaque-ke",
- "parking_lot",
+ "parking_lot 0.13.0",
  "pbjson-types",
  "percent-encoding",
  "prost",
@@ -8540,7 +8580,7 @@ dependencies = [
  "kube",
  "mockall",
  "moka",
- "parking_lot",
+ "parking_lot 0.13.0",
  "prost",
  "rand 0.10.3",
  "redis",
@@ -8613,7 +8653,7 @@ dependencies = [
  "opaque-ke",
  "opendal",
  "opendal-http-transport-reqwest",
- "parking_lot",
+ "parking_lot 0.13.0",
  "percent-encoding",
  "prometheus",
  "rand 0.10.3",
@@ -8692,7 +8732,7 @@ dependencies = [
  "hostname",
  "jsonwebtoken",
  "moka",
- "parking_lot",
+ "parking_lot 0.13.0",
  "percent-encoding",
  "prost",
  "prost-types",
@@ -8945,7 +8985,7 @@ dependencies = [
  "dashmap 7.0.0-rc2",
  "futures",
  "moka",
- "parking_lot",
+ "parking_lot 0.13.0",
  "prost",
  "redis",
  "serde",
@@ -8999,7 +9039,7 @@ dependencies = [
  "opendal",
  "opendal-http-transport-reqwest",
  "opus",
- "parking_lot",
+ "parking_lot 0.13.0",
  "percent-encoding",
  "rand 0.10.3",
  "reqwest",
@@ -9093,7 +9133,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.5",
  "windows-sys 0.61.2",
@@ -9341,9 +9381,9 @@ dependencies = [
 
 [[package]]
 name = "tokio"
-version = "1.54.0"
+version = "1.54.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0c168a474b95bfecfe908a65d4bdffc523144b649a74c09c286afb35d53e0bc"
+checksum = "b52fd3255258d26fac7264ab5a76b53c13367136dc011d3d6ad4f8ed070396a3"
 dependencies = [
  "bytes",
  "libc",

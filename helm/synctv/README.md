@@ -45,7 +45,7 @@ Install the released OCI chart:
 
 ```bash
 helm install synctv oci://ghcr.io/synctv-org/synctv/charts/synctv \
-  --version 1.0.6 \
+  --version 1.0.7 \
   --namespace synctv \
   --create-namespace
 ```

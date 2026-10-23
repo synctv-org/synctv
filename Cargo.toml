@@ -156,7 +156,7 @@ sqlx = { version = "=0.9.0", default-features = false, features = [
 ] }
 
 # Redis
-redis = { version = "=1.7.1", default-features = false, features = [
+redis = { version = "=1.8.0", default-features = false, features = [
     "tokio-comp",
     "connection-manager",
     "streams",
@@ -177,7 +177,7 @@ ammonia = "=4.2.4"
 http-acl = "=0.14.0"
 hkdf = "=0.13.0"
 sha1 = "=0.11.0"
-sha2 = "=0.11.0"
+sha2 = "=0.11.1"
 sm3 = "=0.5.0"
 md-5 = "=0.11.0"
 hmac = "=0.13.0"
@@ -205,7 +205,7 @@ lru = "=0.19.0"
 
 # IDs & Crypto
 nanoid = "=0.5.0"
-uuid = { version = "=1.28.0", features = ["v4", "v5", "serde"] }
+uuid = { version = "=1.29.0", features = ["v4", "v5", "serde"] }
 sqids = "=0.4.2"
 rand = "=0.10.3"
 rand_08 = { package = "rand", version = "=0.8.6" }
@@ -226,7 +226,7 @@ opus = "=0.4.0"
 fdk-aac = "=0.8.0"
 retina = "=0.4.21"
 rust_h265 = "=0.1.0"
-rusty_aac = { version = "=1.1.1", default-features = false }
+rusty_aac = { version = "=1.1.2", default-features = false }
 rusty_h264 = "=0.16.1"
 ffmpeg-next = { version = "=9.0.0", default-features = false, features = ["build", "format"] }
 ffmpeg-sys-next = { version = "=9.0.1", features = ["build-portable"] }
@@ -297,7 +297,7 @@ hyper-util = { version = "=0.1.21", default-features = false, features = ["tokio
 # Networking
 ipnet = "=2.12.2"
 tokio-socks = "=0.5.3"
-webpki-roots = "=1.0.10"
+webpki-roots = "=1.0.11"
 
 # Email
 lettre = { version = "=0.11.23", default-features = false, features = [

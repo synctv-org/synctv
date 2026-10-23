@@ -74,7 +74,7 @@ unnecessary_wraps = "allow"
 
 [workspace.dependencies]
 # Async Runtime
-tokio = { version = "=1.54.0", features = [
+tokio = { version = "=1.54.1", features = [
     "rt-multi-thread",
     "macros",
     "net",
@@ -258,7 +258,7 @@ clap_complete = "=4.6.11"
 anyhow = "=1.0.104"
 thiserror = "=2.0.21"
 bytes = { version = "=1.12.1", features = ["serde"] }
-parking_lot = "=0.12.5"
+parking_lot = "=0.13.0"
 async-trait = "=0.1.92"
 futures = "=0.3.34"
 futures-util = "=0.3.34"

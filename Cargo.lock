@@ -7017,9 +7017,9 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "rusty_aac"
-version = "1.1.2"
+version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e04c29725b2f5c77bdd84f4f2ef65e902714d1b15ffe8afc8e02c3cecb2b680"
+checksum = "93388483e43ffd3bb3c347794a849edb204438258d8642b8449992a56433798a"
 
 [[package]]
 name = "rusty_alloc"

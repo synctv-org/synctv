@@ -14,7 +14,9 @@ use std::sync::LazyLock;
 
 // ---------------------------------------------------------------------------
 // Frozen snapshot of the original implementation (do not optimize this copy;
-// it exists purely as the behavioral reference).
+// it exists purely as the behavioral reference). Where the original exposed
+// `&self` methods that never read `self` (e.g. the email validator), the
+// snapshot uses the equivalent associated function; behavior is identical.
 // ---------------------------------------------------------------------------
 
 mod reference {
@@ -27,9 +29,6 @@ mod reference {
 
         #[error("Potential security issue detected in input")]
         SecurityRisk,
-
-        #[error("Multiple validation errors: {0}")]
-        Multiple(String),
     }
 
     pub const USERNAME_MIN: usize = 3;
@@ -414,16 +413,12 @@ mod reference {
     static EMAIL_REGEX: LazyLock<Result<regex::Regex, regex::Error>> =
         LazyLock::new(|| regex::Regex::new(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"));
 
-    #[derive(Default)]
+    // The live validator is a unit struct whose `validate` never reads
+    // `self`; the snapshot exposes the same logic as an associated function.
     pub struct EmailValidator {}
 
     impl EmailValidator {
-        #[must_use]
-        pub fn new() -> Self {
-            Self::default()
-        }
-
-        pub fn validate(&self, email: &str) -> Result<(), ValidationError> {
+        pub fn validate(email: &str) -> Result<(), ValidationError> {
             let regex = EMAIL_REGEX
                 .as_ref()
                 .map_err(|error| ValidationError::Field {
@@ -519,7 +514,7 @@ fn assert_equivalent(actual: Result<String, String>, expected: Result<String, St
 }
 
 fn err_string<E: std::fmt::Display>(res: Result<(), E>) -> Result<String, String> {
-    res.map(|_| "ok".to_string()).map_err(|e| e.to_string())
+    res.map(|()| "ok".to_string()).map_err(|e| e.to_string())
 }
 
 #[test]
@@ -547,8 +542,8 @@ fn oracle_username_validator() {
         "mod".into(),
         "MOD".into(),
         "team".into(),
-        "\u{212a}ey_user".into(),       // Kelvin sign (lowercases to ASCII 'k')
-        "\u{0130}admin".into(),         // uppercase dotted I (lowercases to 2 chars)
+        "\u{212a}ey_user".into(), // Kelvin sign (lowercases to ASCII 'k')
+        "\u{0130}admin".into(),   // uppercase dotted I (lowercases to 2 chars)
         "a".repeat(50),
         "a".repeat(51),
         "\u{4e00}".repeat(50),
@@ -557,6 +552,8 @@ fn oracle_username_validator() {
         "trailing_".into(),
         "9start".into(),
         "Ünïcödé".into(),
+        "\u{1F600}".repeat(50), // 4-byte UTF-8 chars
+        "\u{1F600}\u{1F601}\u{1F602}".into(),
     ];
 
     for case in &cases {
@@ -699,7 +696,7 @@ fn oracle_email_validator() {
     for case in &cases {
         assert_equivalent(
             err_string(l::EmailValidator::new().validate(case)),
-            err_string(r::EmailValidator::new().validate(case)),
+            err_string(r::EmailValidator::validate(case)),
             &format!("email {case:?}"),
         );
     }
@@ -742,10 +739,8 @@ fn oracle_room_name_input_and_validator() {
 
     for case in &cases {
         assert_equivalent(
-            l::validate_room_name_input(case)
-                .map_err(|e| e.to_string()),
-            r::validate_room_name_input(case)
-                .map_err(|e| e.to_string()),
+            l::validate_room_name_input(case).map_err(|e| e.to_string()),
+            r::validate_room_name_input(case).map_err(|e| e.to_string()),
             &format!("room_name_input {case:?}"),
         );
         assert_equivalent(
@@ -804,10 +799,8 @@ fn oracle_media_name_and_description_inputs() {
 
     for case in &cases {
         assert_equivalent(
-            l::validate_room_description_input(case)
-                .map_err(|e| e.to_string()),
-            r::validate_room_description_input(case)
-                .map_err(|e| e.to_string()),
+            l::validate_room_description_input(case).map_err(|e| e.to_string()),
+            r::validate_room_description_input(case).map_err(|e| e.to_string()),
             &format!("room_description_input {case:.40?}"),
         );
         assert_equivalent(
@@ -830,6 +823,8 @@ fn oracle_room_password() {
         "a".repeat(129),
         "\u{4e00}".repeat(128),
         "\u{4e00}".repeat(129),
+        "\u{1F600}".repeat(32), // 128 bytes of 4-byte chars
+        "\u{1F600}".repeat(33),
         "  a".repeat(43),
     ];
 

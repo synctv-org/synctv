@@ -80,9 +80,8 @@ mod reference {
                                 if let Ok(nested_val) = u8::from_str_radix(nested_hex, 16) {
                                     if nested_val == 0x2E {
                                         return Err(PathTraversalError {
-                                            reason:
-                                                "must not contain triple-encoded dot character"
-                                                    .to_string(),
+                                            reason: "must not contain triple-encoded dot character"
+                                                .to_string(),
                                         });
                                     }
                                 }
@@ -186,9 +185,10 @@ fn oracle_path_traversal() {
 
     for case in &cases {
         let reference_outcome = run_reference(case);
-        let live_outcome =
-            std::panic::catch_unwind(|| outcome(synctv_common::validation::validate_path_for_traversal(case)))
-                .expect("new implementation must not panic");
+        let live_outcome = std::panic::catch_unwind(|| {
+            outcome(synctv_common::validation::validate_path_for_traversal(case))
+        })
+        .expect("new implementation must not panic");
         if let Some(expected) = reference_outcome {
             assert_eq!(
                 live_outcome, expected,
@@ -198,11 +198,10 @@ fn oracle_path_traversal() {
     }
 }
 
-// The original implementation panics on these inputs (byte slicing through
-// a multi-byte char). Ignored until the optimized implementation lands; the
-// optimization round removes the ignore.
+// The original implementation panicked on these inputs (byte slicing
+// through a multi-byte char); the byte-based implementation returns
+// normally.
 #[test]
-#[ignore = "known panic bug in the baseline implementation; enable after optimization"]
 fn no_panic_on_multibyte_after_percent() {
     // The original implementation panics on these (byte slicing through a
     // multi-byte char); the optimized implementation must return normally.

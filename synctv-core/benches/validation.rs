@@ -75,7 +75,7 @@ fn bench_password(c: &mut Criterion) {
     let max_ascii = "Ab1".repeat(42) + "Ab"; // 128 chars, no long repeats
     let max_cjk = format!("{}Aa1", cjk(125)); // 128 chars, all checks pass
     let fail_no_digit_late = format!("Abc{}", "x".repeat(125)); // no digit anywhere
-    // 123 chars with no long repeats, then a run of four 'a' at the very end.
+                                                                // 123 chars with no long repeats, then a run of four 'a' at the very end.
     let repeated_fail_late = format!("{}aaaa", "Ab1".repeat(41));
 
     let mut group = c.benchmark_group("password/validate");

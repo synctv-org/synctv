@@ -68,41 +68,49 @@ pub fn validate_path_for_traversal(path: &str) -> Result<(), PathTraversalError>
         });
     }
 
-    // Check 4: URL-encoded variants and complex attacks
+    // Check 4: URL-encoded variants and complex attacks. `str::get` is used
+    // instead of direct slicing: `&path[i + 1..i + 3]` panicked when a
+    // multi-byte UTF-8 char straddled the slice (e.g. "%Aé"); `get`
+    // returns `None` for the same slices instead.
     let bytes = path.as_bytes();
     let mut i = 0;
 
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hex = &path[i + 1..i + 3];
-            if let Ok(byte_val) = u8::from_str_radix(hex, 16) {
-                // Reject URL-encoded dot (0x2E)
-                if byte_val == 0x2E {
-                    return Err(PathTraversalError {
-                        reason: "must not contain URL-encoded dot character".to_string(),
-                    });
-                }
+            if let Some(hex) = path.get(i + 1..i + 3) {
+                if let Ok(byte_val) = u8::from_str_radix(hex, 16) {
+                    // Reject URL-encoded dot (0x2E)
+                    if byte_val == 0x2E {
+                        return Err(PathTraversalError {
+                            reason: "must not contain URL-encoded dot character".to_string(),
+                        });
+                    }
 
-                // Reject multi-layer encoded dots:
-                // %252e  -> %2e  -> .  (double-encoded)
-                // %25252e -> %252e -> %2e -> .  (triple-encoded)
-                if byte_val == 0x25 && i + 4 < bytes.len() {
-                    let inner_hex = &path[i + 3..i + 5];
-                    if let Ok(inner_val) = u8::from_str_radix(inner_hex, 16) {
-                        if inner_val == 0x2E {
-                            return Err(PathTraversalError {
-                                reason: "must not contain double-encoded dot character".to_string(),
-                            });
-                        }
-                        // Triple encoding: %25 decodes to %, check next layer
-                        if inner_val == 0x25 && i + 6 < bytes.len() {
-                            let nested_hex = &path[i + 5..i + 7];
-                            if let Ok(nested_val) = u8::from_str_radix(nested_hex, 16) {
-                                if nested_val == 0x2E {
+                    // Reject multi-layer encoded dots:
+                    // %252e  -> %2e  -> .  (double-encoded)
+                    // %25252e -> %252e -> %2e -> .  (triple-encoded)
+                    if byte_val == 0x25 && i + 4 < bytes.len() {
+                        if let Some(inner_hex) = path.get(i + 3..i + 5) {
+                            if let Ok(inner_val) = u8::from_str_radix(inner_hex, 16) {
+                                if inner_val == 0x2E {
                                     return Err(PathTraversalError {
-                                        reason: "must not contain triple-encoded dot character"
+                                        reason: "must not contain double-encoded dot character"
                                             .to_string(),
                                     });
+                                }
+                                // Triple encoding: %25 decodes to %, check next layer
+                                if inner_val == 0x25 && i + 6 < bytes.len() {
+                                    if let Some(nested_hex) = path.get(i + 5..i + 7) {
+                                        if let Ok(nested_val) = u8::from_str_radix(nested_hex, 16) {
+                                            if nested_val == 0x2E {
+                                                return Err(PathTraversalError {
+                                                    reason:
+                                                        "must not contain triple-encoded dot character"
+                                                            .to_string(),
+                                                });
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }

@@ -7,6 +7,7 @@ ignore = [
     { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml is only reached through the intentionally pinned serde_yaml and has no maintained drop-in replacement" },
     { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile is still required for PEM parsing and the advisory has no replacement release to upgrade to" },
     { id = "RUSTSEC-2025-0141", reason = "bincode 2 is still required by the on-disk cache format and the advisory is maintenance-only with no fixed successor release" },
+    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5.5 is only reachable through opaque-ke 4.1.0-pre.2 -> voprf 0.5 -> elliptic-curve 0.13; the fix (>=0.7.6) has no 0.5.x backport and the timing side channel requires co-located measurement of the OPAQUE OPRF evaluation, so this is ignored until opaque-ke moves to elliptic-curve >=0.14" },
 ]
 
 [licenses]

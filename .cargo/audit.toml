@@ -1,14 +1,15 @@
+# cargo-audit project configuration.
+#
+# The ignore list mirrors `deny.toml [advisories].ignore`: advisories with no
+# actionable upgrade that the project has reviewed and accepted.
 [advisories]
 ignore = [
+    # crypto-bigint 0.5 is required transitively by the exactly-pinned
+    # opaque-ke 4.1.0-pre.2 (elliptic-curve ^0.13 line); the fix only exists
+    # in crypto-bigint >=0.7.6, which needs elliptic-curve 0.14. No fixed
+    # release of the opaque-ke dependency line exists yet.
+    "RUSTSEC-2026-0387",
+    # rsa is used directly by media providers and the Marvin-attack advisory
+    # has no fixed upstream release yet.
     "RUSTSEC-2023-0071",
-    "RUSTSEC-2024-0436",
-    "RUSTSEC-2025-0134",
-    "RUSTSEC-2025-0141",
-    "RUSTSEC-2026-0097",
 ]
-informational_warnings = ["notice", "unmaintained", "unsound"]
-
-[output]
-format = "terminal"
-quiet = false
-show_tree = true

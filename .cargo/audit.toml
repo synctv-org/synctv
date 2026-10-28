@@ -5,6 +5,11 @@ ignore = [
     "RUSTSEC-2025-0134",
     "RUSTSEC-2025-0141",
     "RUSTSEC-2026-0097",
+    # crypto-bigint 0.5.5 timing side channel (RUSTSEC-2026-0387): reachable
+    # only via opaque-ke 4.1.0-pre.2 -> voprf 0.5 -> elliptic-curve 0.13, and
+    # the fix (>=0.7.6) has no 0.5.x backport. Ignore until opaque-ke releases
+    # against elliptic-curve >=0.14.
+    "RUSTSEC-2026-0387",
 ]
 informational_warnings = ["notice", "unmaintained", "unsound"]
 

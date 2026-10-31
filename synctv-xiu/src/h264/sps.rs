@@ -179,7 +179,7 @@ impl SpsParser {
             .checked_mul(16)
             .and_then(|v| v.checked_sub(self.sps.frame_crop_left_offset * 2))
             .and_then(|v| v.checked_sub(self.sps.frame_crop_right_offset * 2))
-            .ok_or_else(|| H264Error {
+            .ok_or(H264Error {
                 value: H264ErrorValue::InvalidDimensions(
                     self.sps.pic_width_in_mbs_minus1,
                     self.sps.pic_height_in_map_units_minus1,
@@ -190,7 +190,7 @@ impl SpsParser {
             .and_then(|v| v.checked_mul(16))
             .and_then(|v| v.checked_sub(self.sps.frame_crop_top_offset * 2))
             .and_then(|v| v.checked_sub(self.sps.frame_crop_bottom_offset * 2))
-            .ok_or_else(|| H264Error {
+            .ok_or(H264Error {
                 value: H264ErrorValue::InvalidDimensions(
                     self.sps.pic_width_in_mbs_minus1,
                     self.sps.pic_height_in_map_units_minus1,
@@ -228,7 +228,7 @@ mod tests {
             // ue(v): for n = v+1 and k = floor(log2(n)), emit k zeros, a 1,
             // then k info bits holding n - 2^k.
             let n = u64::from(value) + 1;
-            let k = (u64::BITS - n.leading_zeros() - 1) as usize;
+            let k = (n.bit_width() - 1) as usize;
             let mut bits = self;
             for _ in 0..k {
                 bits = bits.bit(false);

@@ -11,7 +11,7 @@ use super::RoomService;
 use crate::grpc::client_service::streaming::{
     watch_chat_events_event, watch_chat_pin_events_event, watch_playback_event,
     watch_playback_state_event, watch_playlist_items_event, watch_room_member_events_event,
-    watch_room_settings_event, GrpcMessageSender, GrpcStreamMessage, MESSAGE_STREAM_BUFFER_SIZE,
+    watch_room_settings_event, GrpcStreamMessage, MESSAGE_STREAM_BUFFER_SIZE,
 };
 use synctv_api_common::impls::messaging::{
     GuestRealtimeIdentity, MessageConcurrencyConfig, MessageSender, RealtimePrincipal,
@@ -129,8 +129,23 @@ pub(super) async fn message_stream(
     // Create channel for outgoing messages with bounded capacity to prevent memory exhaustion
     let (outgoing_tx, outgoing_rx) = mpsc::channel::<ServerMessage>(MESSAGE_STREAM_BUFFER_SIZE);
 
-    // Create a single shared gRPC message sender (avoids dual-sender from same channel)
-    let grpc_sender = Arc::new(GrpcMessageSender::new(outgoing_tx));
+    // Outbound traffic goes through the per-observation fair queue: control
+    // traffic first, interactive lanes (playback state, WebRTC signaling)
+    // weighted over bulk lanes, FIFO within each observation. The pump below
+    // forwards scheduled messages onto the gRPC response stream; a slow
+    // client fills the fair queue and trips its eviction escalation instead
+    // of silently dropping messages.
+    let (fair_sender, fair_rx) =
+        synctv_api_common::impls::messaging::FairSessionSender::new(Default::default());
+    let fair_pump_outgoing = outgoing_tx.clone();
+    tokio::spawn(async move {
+        let mut fair_rx = fair_rx;
+        while let Some(message) = fair_rx.recv().await {
+            if fair_pump_outgoing.send(message).await.is_err() {
+                break;
+            }
+        }
+    });
 
     // Create StreamMessageHandler with all configuration
     let stream_handler = StreamMessageHandler::new_with_runtime(
@@ -146,7 +161,7 @@ pub(super) async fn message_stream(
             rate_limit_config: service.rate_limit_config.clone(),
             content_filter: service.content_filter.clone(),
             public_id_codec: service.client_api.public_id_codec.clone(),
-            sender: Arc::clone(&grpc_sender) as Arc<dyn MessageSender>,
+            sender: Arc::new(fair_sender.clone()) as Arc<dyn MessageSender>,
             concurrency_config: Arc::new(MessageConcurrencyConfig::default()),
         },
         StreamMessageHandlerRuntime {
@@ -188,12 +203,13 @@ pub(super) async fn message_stream(
 
     // Pump transport input into the shared handler. The handler owns all
     // business logic and cleanup; this task only decodes transport frames.
-    let transport_sender = Arc::clone(&grpc_sender);
     let transport_cancel_token = cancel_token.clone();
+    let transport_response_watch = outgoing_tx.clone();
     tokio::spawn(async move {
         let mut grpc_stream = GrpcStreamMessage {
             client_stream,
-            sender: transport_sender,
+            sender: fair_sender,
+            response_watch: transport_response_watch,
             alive: std::sync::atomic::AtomicBool::new(true),
         };
 
@@ -221,10 +237,9 @@ pub(super) async fn message_stream(
         }
     });
 
-    let response_close_sender = grpc_sender.sender.clone();
     let response_close_token = cancel_token.clone();
     tokio::spawn(async move {
-        response_close_sender.closed().await;
+        outgoing_tx.closed().await;
         response_close_token.cancel();
     });
 

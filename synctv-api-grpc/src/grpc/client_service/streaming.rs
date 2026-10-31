@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use synctv_api_common::impls::messaging::{MessageSender, StreamMessage};
 use synctv_proto::client::{
     ClientMessage, ServerMessage, WatchChatEventsEvent, WatchChatPinEventsEvent,
@@ -138,11 +136,14 @@ impl_watch_event_converter!(
 
 /// gRPC stream implementation of `StreamMessage` trait
 ///
-/// Adapts `tonic::Streaming<ClientMessage>` + `mpsc::Sender<ServerMessage>` to the
-/// unified `StreamMessage` interface, enabling full code reuse with the WebSocket path.
+/// Adapts `tonic::Streaming<ClientMessage>` + the session's fair queue to the
+/// unified `StreamMessage` interface, enabling full code reuse with the WebSocket
+/// path. `response_watch` mirrors the outgoing response channel so `recv` can
+/// stop as soon as the client stops reading the response stream.
 pub(super) struct GrpcStreamMessage {
     pub(super) client_stream: tonic::Streaming<ClientMessage>,
-    pub(super) sender: Arc<GrpcMessageSender>,
+    pub(super) sender: synctv_api_common::impls::messaging::FairSessionSender,
+    pub(super) response_watch: tokio::sync::mpsc::Sender<ServerMessage>,
     pub(super) alive: std::sync::atomic::AtomicBool,
 }
 
@@ -151,7 +152,7 @@ impl StreamMessage for GrpcStreamMessage {
     async fn recv(&mut self) -> Option<Result<ClientMessage, String>> {
         match await_grpc_receive_or_response_close(
             self.client_stream.message(),
-            self.sender.sender.clone(),
+            self.response_watch.clone(),
         )
         .await
         {
@@ -171,7 +172,7 @@ impl StreamMessage for GrpcStreamMessage {
     }
 
     fn send(&self, message: ServerMessage) -> Result<(), String> {
-        MessageSender::send(&*self.sender, message)
+        MessageSender::send(&self.sender, message)
     }
 
     fn is_alive(&self) -> bool {

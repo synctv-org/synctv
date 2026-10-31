@@ -143,6 +143,11 @@ use crate::impls::client::convert::chat_metadata_from_proto;
 mod transport;
 pub use transport::{MessageSender, StreamMessage};
 
+mod fair_session_sender;
+pub use fair_session_sender::{
+    classify_message_lane, FairQueueConfig, FairSessionSender, MessageLane,
+};
+
 mod media_swarm_tracker;
 pub use media_swarm_tracker::{MediaSwarmPeer, MediaSwarmTracker};
 

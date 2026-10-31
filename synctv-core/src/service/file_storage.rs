@@ -100,7 +100,7 @@ pub(super) struct FileReuseTokenPayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct FileObjectReadTokenPayload {
-    pub(super) storage_backend: String,
+    pub(super) backend_slot: String,
     pub(super) object_key: String,
     pub(super) expires_at: i64,
 }
@@ -551,6 +551,13 @@ const FILE_REUSE_GRANTS_UNSUPPORTED: &str = "file reuse grants are not supported
 #[async_trait::async_trait]
 pub trait FileStorageService: Send + Sync {
     fn backend_name(&self) -> &str;
+
+    /// Opaque handle carried by this backend's read tokens; `None` for
+    /// storages that never mint read tokens. The router matches it to
+    /// dispatch downloads without exposing backend names in the payload.
+    fn read_token_backend_slot(&self) -> Option<String> {
+        None
+    }
 
     fn repository(&self) -> Option<Arc<FileStorageRepository>> {
         None
@@ -1636,7 +1643,7 @@ pub(super) fn file_object_read_token_at(
     secret: &str,
 ) -> Result<String> {
     let payload = FileObjectReadTokenPayload {
-        storage_backend: storage_backend.to_string(),
+        backend_slot: file_read_backend_slot(storage_backend, secret),
         object_key: object_key.to_string(),
         expires_at: now.timestamp() + FILE_OBJECT_READ_TOKEN_TTL_SECONDS,
     };
@@ -1654,13 +1661,26 @@ pub(super) fn file_object_read_token_at(
     ))
 }
 
-pub(super) fn file_object_read_token_storage_backend(token: &str) -> Result<String> {
+/// Opaque per-backend handle embedded in read tokens. Token payloads are
+/// base64, not encrypted, so the handle is derived with the same secret as
+/// the signature: it routes downloads without revealing the configured
+/// backend name, and is unguessable without the secret.
+pub(super) fn file_read_backend_slot(backend_name: &str, secret: &str) -> String {
+    let digest = hmac_sha256(
+        format!("synctv:file-read-slot:{secret}").as_bytes(),
+        backend_name.as_bytes(),
+    )
+    .unwrap_or_default();
+    hex::encode(&digest[..8])
+}
+
+pub(super) fn file_object_read_token_backend_slot(token: &str) -> Result<String> {
     let payload: FileObjectReadTokenPayload =
         decode_versioned_hmac_token_payload(token, FILE_OBJECT_READ_TOKEN_VERSION)?;
-    if payload.storage_backend.trim().is_empty() {
+    if payload.backend_slot.trim().is_empty() {
         return Err(Error::InvalidInput("invalid file read token".to_string()));
     }
-    Ok(payload.storage_backend)
+    Ok(payload.backend_slot)
 }
 
 pub(super) fn validate_file_object_read_token(
@@ -1691,7 +1711,7 @@ pub(super) fn validate_file_object_read_token_at(
         format!("synctv:file-read:{secret}").as_bytes(),
         "invalid file read token",
     )?;
-    if payload.storage_backend != storage_backend {
+    if payload.backend_slot != file_read_backend_slot(storage_backend, secret) {
         return Err(Error::InvalidInput("invalid file read token".to_string()));
     }
     if payload.object_key != object_key {

@@ -4559,3 +4559,70 @@ fn file_object_read_token_v1_format_is_rejected() {
         Ok(()) => panic!("v1 read token must be rejected"),
     }
 }
+
+#[test]
+fn file_read_backend_slot_is_opaque_and_secret_bound() {
+    let secret = "slot-secret";
+    let database_slot = file_read_backend_slot("database", secret);
+    let s3_slot = file_read_backend_slot("s3-primary", secret);
+
+    // Deterministic for the same (name, secret), distinct across backends,
+    // and different under another secret.
+    assert_eq!(database_slot, file_read_backend_slot("database", secret));
+    assert_ne!(database_slot, s3_slot);
+    assert_ne!(
+        database_slot,
+        file_read_backend_slot("database", "other-secret")
+    );
+
+    // The token payload must not carry the backend name: decode the payload
+    // segment and verify only the opaque handle appears.
+    let token = ok(
+        file_object_read_token("database", "objects/slot.png", secret),
+        "read token should mint",
+    );
+    let segments: Vec<&str> = token.split('.').collect();
+    assert_eq!(segments.len(), 3);
+    let payload_bytes = base64::Engine::decode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        segments[1],
+    )
+    .expect("payload segment should be base64");
+    let payload = String::from_utf8(payload_bytes).expect("payload should be utf-8");
+    assert!(
+        !payload.contains("database"),
+        "payload must not name the backend: {payload}"
+    );
+    assert!(
+        payload.contains(&database_slot),
+        "payload should carry the slot: {payload}"
+    );
+}
+
+#[test]
+fn file_read_token_rejects_cross_backend_and_cross_secret_replay() {
+    let secret = "slot-replay-secret";
+    let token = ok(
+        file_object_read_token("database", "objects/replay.png", secret),
+        "read token should mint",
+    );
+
+    // Same key under a different backend: slot mismatch must reject.
+    match validate_file_object_read_token("s3-primary", "objects/replay.png", &token, secret) {
+        Err(error) => {
+            let message = error.to_string();
+            assert!(
+                message.contains("invalid file read token"),
+                "unexpected error: {message}"
+            );
+        }
+        Ok(()) => panic!("cross-backend replay must be rejected"),
+    }
+
+    // Same backend under a different secret: signature mismatch must reject.
+    match validate_file_object_read_token("database", "objects/replay.png", &token, "other-secret")
+    {
+        Err(_) => {}
+        Ok(()) => panic!("cross-secret replay must be rejected"),
+    }
+}

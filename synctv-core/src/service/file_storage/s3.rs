@@ -121,6 +121,13 @@ impl FileStorageService for S3CompatibleFileStorageService {
         &self.config.storage_backend
     }
 
+    fn read_token_backend_slot(&self) -> Option<String> {
+        Some(super::file_read_backend_slot(
+            &self.config.storage_backend,
+            &self.config.upload_token_secret,
+        ))
+    }
+
     fn supports_reuse_grants(&self) -> bool {
         true
     }

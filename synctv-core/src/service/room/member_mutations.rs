@@ -6,7 +6,8 @@ use crate::{
 };
 
 use super::{
-    outbox::MemberJoinedEffectsRequest, RealtimeOutboxPermissionChangedEventFactory, RoomService,
+    member_role_policy::validate_add_member_role, outbox::MemberJoinedEffectsRequest,
+    RealtimeOutboxPermissionChangedEventFactory, RoomService,
 };
 
 struct AddActiveMemberTxRequest<'a> {
@@ -165,6 +166,10 @@ impl RoomService {
                 crate::models::RoomPermission::ADD_MEMBERS,
             )
             .await?;
+        // Elevated roles are creator-conferred (same invariant as
+        // validate_creator_member_role_update): a non-creator ADD_MEMBERS
+        // holder may only admit Member or Guest members.
+        validate_add_member_role(&room, &actor_id, role)?;
 
         self.ensure_target_user_can_join(&target_user_id).await?;
 

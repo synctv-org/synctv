@@ -1409,7 +1409,7 @@ pub(crate) async fn set_user_username(
         request_meta,
         require_admin_api,
         move |api, validated, rctx| async move {
-            api.update_user_username(req, &validated.user_id, &rctx)
+            api.update_user_username(req, &validated.user_id, validated.role, &rctx)
                 .await
         },
     )
@@ -1601,7 +1601,8 @@ pub(crate) async fn unban_user(
             request_meta,
             require_admin_api,
             move |api, validated, rctx| async move {
-                api.unban_user(req, &validated.user_id, &rctx).await
+                api.unban_user(req, &validated.user_id, validated.role, &rctx)
+                    .await
             },
         )
         .await?;

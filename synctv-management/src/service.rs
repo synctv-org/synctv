@@ -1955,7 +1955,12 @@ impl ManagementService for ManagementServiceImpl {
             .await?;
         let response = self
             .admin_api
-            .unban_user(UnbanUserCommand { user_id }, &validated.user_id, &ctx)
+            .unban_user(
+                UnbanUserCommand { user_id },
+                validated.role,
+                &validated.user_id,
+                &ctx,
+            )
             .await
             .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
@@ -2248,6 +2253,7 @@ impl ManagementService for ManagementServiceImpl {
                     user_id,
                     new_username: req.new_username,
                 },
+                validated.role,
                 &validated.user_id,
                 &ctx,
             )

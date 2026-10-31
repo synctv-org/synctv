@@ -629,6 +629,7 @@ pub trait AdminRuntime: Send + Sync {
     async fn unban_user(
         &self,
         command: UnbanUserCommand,
+        caller_role: UserRole,
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<admin_proto::AdminUser, RuntimeError>;
@@ -716,6 +717,7 @@ pub trait AdminRuntime: Send + Sync {
     async fn update_user_username(
         &self,
         command: UpdateUserUsernameCommand,
+        caller_role: UserRole,
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<admin_proto::AdminUser, RuntimeError>;

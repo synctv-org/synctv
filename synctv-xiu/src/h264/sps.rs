@@ -1,5 +1,5 @@
 use {
-    super::errors::{H264Error, H264ErrorValue},
+    super::errors::{H264Error, H264ErrorValue, MAX_POC_CYCLE_ENTRIES},
     super::utils,
     crate::bytesio::bits_reader::BitsReader,
     crate::bytesio::bytes_reader::BytesReader,
@@ -130,10 +130,19 @@ impl SpsParser {
                 self.sps.num_ref_frames_in_pic_order_cnt_cycle =
                     utils::read_uev(&mut self.bits_reader)?;
 
-                // Clear and resize the vector before filling to avoid index out of bounds panic
+                // The count is publisher-controlled input; bound it before any
+                // derived allocation. Each loop iteration consumes at least one
+                // bit and the BitsReader errors on exhaustion, so the pushes
+                // grow amortized without an eager reserve.
+                if self.sps.num_ref_frames_in_pic_order_cnt_cycle > MAX_POC_CYCLE_ENTRIES {
+                    return Err(H264Error {
+                        value: H264ErrorValue::InvalidPocCycleCount(
+                            self.sps.num_ref_frames_in_pic_order_cnt_cycle,
+                        ),
+                    });
+                }
                 let count = self.sps.num_ref_frames_in_pic_order_cnt_cycle as usize;
                 self.sps.offset_for_ref_frame.clear();
-                self.sps.offset_for_ref_frame.reserve(count);
                 for _ in 0..count {
                     self.sps
                         .offset_for_ref_frame
@@ -166,16 +175,177 @@ impl SpsParser {
 
         self.sps.vui_parameters_present_flag = self.bits_reader.read_bit()?;
 
-        let width = (self.sps.pic_width_in_mbs_minus1 + 1) * 16
-            - self.sps.frame_crop_left_offset * 2
-            - self.sps.frame_crop_right_offset * 2;
-        let height = ((2 - u32::from(self.sps.frame_mbs_only_flag))
-            * (self.sps.pic_height_in_map_units_minus1 + 1)
-            * 16)
-            - (self.sps.frame_crop_top_offset * 2)
-            - (self.sps.frame_crop_bottom_offset * 2);
+        let width = (self.sps.pic_width_in_mbs_minus1 + 1)
+            .checked_mul(16)
+            .and_then(|v| v.checked_sub(self.sps.frame_crop_left_offset * 2))
+            .and_then(|v| v.checked_sub(self.sps.frame_crop_right_offset * 2))
+            .ok_or_else(|| {
+                H264Error {
+                    value: H264ErrorValue::InvalidDimensions(
+                        self.sps.pic_width_in_mbs_minus1,
+                        self.sps.pic_height_in_map_units_minus1,
+                    ),
+                }
+            })?;
+        let height = (2 - u32::from(self.sps.frame_mbs_only_flag))
+            .checked_mul(self.sps.pic_height_in_map_units_minus1 + 1)
+            .and_then(|v| v.checked_mul(16))
+            .and_then(|v| v.checked_sub(self.sps.frame_crop_top_offset * 2))
+            .and_then(|v| v.checked_sub(self.sps.frame_crop_bottom_offset * 2))
+            .ok_or_else(|| {
+                H264Error {
+                    value: H264ErrorValue::InvalidDimensions(
+                        self.sps.pic_width_in_mbs_minus1,
+                        self.sps.pic_height_in_map_units_minus1,
+                    ),
+                }
+            })?;
 
         tracing::trace!("parsed sps data: {:?}", self.sps);
         Ok((width, height))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SpsParser, H264Error, H264ErrorValue, MAX_POC_CYCLE_ENTRIES};
+    use bytes::BytesMut;
+
+    /// Minimal bit-level SPS builder for parser policy tests (MSB-first).
+    struct SpsBits {
+        bits: Vec<bool>,
+    }
+
+    impl SpsBits {
+        fn new() -> Self {
+            let mut bits = Self { bits: Vec::new() };
+                bits.bits.extend([false; 0]);
+            bits
+        }
+
+        fn bit(mut self, bit: bool) -> Self {
+            self.bits.push(bit);
+            self
+        }
+
+        fn ue(self, value: u32) -> Self {
+            // ue(v): for n = v+1 and k = floor(log2(n)), emit k zeros, a 1,
+            // then k info bits holding n - 2^k.
+            let n = u64::from(value) + 1;
+            let k = (u64::BITS - n.leading_zeros() - 1) as usize;
+            let mut bits = self;
+            for _ in 0..k {
+                bits = bits.bit(false);
+            }
+            bits = bits.bit(true);
+            let remainder = n - (1u64 << k);
+            for i in (0..k).rev() {
+                bits = bits.bit((remainder >> i) & 1 == 1);
+            }
+            bits
+        }
+
+        fn bytes(self) -> BytesMut {
+            let mut out = Vec::new();
+            let mut byte = 0u8;
+            let mut filled = 0;
+            for bit in self.bits {
+                byte = (byte << 1) | u8::from(bit);
+                filled += 1;
+                if filled == 8 {
+                    out.push(byte);
+                    byte = 0;
+                    filled = 0;
+                }
+            }
+            if filled > 0 {
+                out.push(byte << (8 - filled));
+            }
+            BytesMut::from(&out[..])
+        }
+    }
+
+    fn baseline_header() -> SpsBits {
+        // profile_idc=66 (baseline: no high-profile extension), flag=0, level_idc=30
+        let bits = SpsBits::new();
+        let bits = bits
+            .bit(false).bit(true).bit(false).bit(false).bit(false).bit(true).bit(false).bit(false) // 66
+            .bit(false).bit(false).bit(false).bit(false).bit(false).bit(false).bit(false).bit(false) // 0
+            .bit(false).bit(false).bit(false).bit(true).bit(true).bit(true).bit(true).bit(false); // 30
+        bits
+    }
+
+    fn parse(bits: SpsBits) -> Result<(u32, u32), H264Error> {
+        SpsParser::new(crate::bytesio::bytes_reader::BytesReader::new(bits.bytes())).parse()
+    }
+
+    #[test]
+    fn rejects_poc_cycle_count_above_bound() {
+        // seq_parameter_set_id=0, log2_max_frame_num_minus4=0, pic_order_cnt_type=1,
+        // delta flag=0, offsets=0, count=256 (bound is 255)
+        let bits = baseline_header()
+            .ue(0)
+            .ue(0)
+            .ue(1)
+            .bit(false)
+            .ue(0)
+            .ue(0)
+            .ue(MAX_POC_CYCLE_ENTRIES + 1);
+        match parse(bits) {
+            Err(H264Error {
+                value: H264ErrorValue::InvalidPocCycleCount(256),
+            }) => {}
+            other => panic!("expected InvalidPocCycleCount(256), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_u32_max_poc_cycle_count_without_giant_allocation() {
+        // count = u32::MAX encodes as 32 leading zeros + '1' + 32 zero info
+        // bits (n = 2^32, code_num = 2^32 - 1).
+        let bits = baseline_header()
+            .ue(0)
+            .ue(0)
+            .ue(1)
+            .bit(false)
+            .ue(0)
+            .ue(0);
+        let mut bits = bits;
+        for _ in 0..32 {
+            bits = bits.bit(false);
+        }
+        bits = bits.bit(true);
+        for _ in 0..32 {
+            bits = bits.bit(false);
+        }
+        match parse(bits) {
+            Err(H264Error {
+                value: H264ErrorValue::InvalidPocCycleCount(u32::MAX),
+            }) => {}
+            other => panic!("expected InvalidPocCycleCount(u32::MAX), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_small_poc_cycle_count() {
+        // count=1 with one se(v)=0 entry, then minimal tail fields; expects 16x16.
+        let bits = baseline_header()
+            .ue(0)
+            .ue(0)
+            .ue(1)
+            .bit(false)
+            .ue(0)
+            .ue(0)
+            .ue(1)
+            .ue(0) // offset_for_ref_frame[0] = se(0) == ue(0)
+            .ue(0) // max_num_ref_frames
+            .bit(false) // gaps_in_frame_num_value_allowed_flag
+            .ue(0) // pic_width_in_mbs_minus1
+            .ue(0) // pic_height_in_map_units_minus1
+            .bit(true) // frame_mbs_only_flag
+            .bit(true) // direct_8x8_inference_flag
+            .bit(false) // frame_cropping_flag
+            .bit(false); // vui_parameters_present_flag
+        assert_eq!(parse(bits).expect("small count must parse"), (16, 16));
     }
 }

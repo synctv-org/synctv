@@ -4492,3 +4492,70 @@ async fn s3_multipart_completion_uses_all_recorded_parts() {
     );
     assert_eq!(object_content_manifest_sha256, content_manifest_sha256);
 }
+
+#[test]
+fn file_object_read_token_expires_after_ttl() {
+    let secret = "file-read-token-ttl-secret";
+    let backend = "database";
+    let object_key = "objects/ttl-check.png";
+    let minted_at = crate::SystemClock.now();
+    let token = ok(
+        file_object_read_token_at(backend, object_key, minted_at, secret),
+        "read token should mint",
+    );
+
+    // Fresh token validates at mint time and just before expiry.
+    ok(
+        validate_file_object_read_token_at(backend, object_key, &token, minted_at, secret),
+        "fresh token should validate",
+    );
+    let just_before = minted_at + chrono::Duration::seconds(FILE_OBJECT_READ_TOKEN_TTL_SECONDS - 1);
+    ok(
+        validate_file_object_read_token_at(backend, object_key, &token, just_before, secret),
+        "token should validate until its expiry",
+    );
+
+    // Past the TTL the token is rejected: captured URLs stop working after
+    // the holder loses access instead of living forever.
+    let past = minted_at + chrono::Duration::seconds(FILE_OBJECT_READ_TOKEN_TTL_SECONDS);
+    match validate_file_object_read_token_at(backend, object_key, &token, past, secret) {
+        Err(error) => {
+            let message = error.to_string();
+            assert!(message.contains("expired"), "unexpected error: {message}");
+        }
+        Ok(()) => panic!("expired read token must be rejected"),
+    }
+}
+
+#[test]
+fn file_object_read_token_v1_format_is_rejected() {
+    let secret = "file-read-token-v1-secret";
+    let backend = "database";
+    let object_key = "objects/v1-reject.png";
+    // Hand-build a v1 token: same signing scheme, no expires_at payload field.
+    let payload = format!("{{\"storage_backend\":\"{backend}\",\"object_key\":\"{object_key}\"}}");
+    let signature = hex::encode(
+        hmac_sha256(
+            format!("synctv:file-read:{secret}").as_bytes(),
+            payload.as_bytes(),
+        )
+        .expect("signature should compute"),
+    );
+    let encoded_payload = base64::Engine::encode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        payload.as_bytes(),
+    );
+    let token = format!("v1.{encoded_payload}.{signature}");
+
+    // v1 tokens never carried an expiry, so they must not validate at all.
+    match validate_file_object_read_token(backend, object_key, &token, secret) {
+        Err(error) => {
+            let message = error.to_string();
+            assert!(
+                message.contains("invalid file read token"),
+                "unexpected error: {message}"
+            );
+        }
+        Ok(()) => panic!("v1 read token must be rejected"),
+    }
+}

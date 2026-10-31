@@ -51,7 +51,12 @@ const FILE_UPLOAD_TOKEN_VERSION: &str = "v1";
 const FILE_REUSE_TOKEN_VERSION: &str = "v1";
 const FILE_REUSE_TOKEN_KIND: &str = "synctv-file-reuse-grant";
 pub const FILE_UPLOAD_TOKEN_HEADER: &str = "x-synctv-file-upload-token";
-const FILE_OBJECT_READ_TOKEN_VERSION: &str = "v1";
+// v2 adds expires_at; v1 tokens carried no expiry and are rejected.
+const FILE_OBJECT_READ_TOKEN_VERSION: &str = "v2";
+/// Read tokens are re-minted on every authorized view, so current members
+/// always hold fresh URLs; this TTL bounds how long a captured URL keeps
+/// working after the holder loses access (kick, ban, leave, room lockdown).
+pub(super) const FILE_OBJECT_READ_TOKEN_TTL_SECONDS: i64 = 3600;
 pub(super) const MAX_DATABASE_FILE_UPLOAD_PART_SIZE_BYTES: usize = 64 * 1024 * 1024;
 pub(super) const DEFAULT_RESUMABLE_UPLOAD_PART_SIZE_BYTES: i64 = 8 * 1024 * 1024;
 pub(super) const FILE_UPLOAD_CHECKSUM_ALGORITHM_SHA256: &str = "sha256";
@@ -97,6 +102,7 @@ pub(super) struct FileReuseTokenPayload {
 pub(super) struct FileObjectReadTokenPayload {
     pub(super) storage_backend: String,
     pub(super) object_key: String,
+    pub(super) expires_at: i64,
 }
 
 // File storage contract:
@@ -1615,9 +1621,24 @@ pub(super) fn file_object_read_token(
     object_key: &str,
     secret: &str,
 ) -> Result<String> {
+    file_object_read_token_at(
+        storage_backend,
+        object_key,
+        crate::SystemClock.now(),
+        secret,
+    )
+}
+
+pub(super) fn file_object_read_token_at(
+    storage_backend: &str,
+    object_key: &str,
+    now: DateTime<Utc>,
+    secret: &str,
+) -> Result<String> {
     let payload = FileObjectReadTokenPayload {
         storage_backend: storage_backend.to_string(),
         object_key: object_key.to_string(),
+        expires_at: now.timestamp() + FILE_OBJECT_READ_TOKEN_TTL_SECONDS,
     };
     let payload_bytes = serde_json::to_vec(&payload)?;
     let signature = hex::encode(hmac_sha256(
@@ -1648,6 +1669,22 @@ pub(super) fn validate_file_object_read_token(
     token: &str,
     secret: &str,
 ) -> Result<()> {
+    validate_file_object_read_token_at(
+        storage_backend,
+        object_key,
+        token,
+        crate::SystemClock.now(),
+        secret,
+    )
+}
+
+pub(super) fn validate_file_object_read_token_at(
+    storage_backend: &str,
+    object_key: &str,
+    token: &str,
+    now: DateTime<Utc>,
+    secret: &str,
+) -> Result<()> {
     let payload: FileObjectReadTokenPayload = validate_versioned_hmac_token(
         token,
         FILE_OBJECT_READ_TOKEN_VERSION,
@@ -1659,6 +1696,11 @@ pub(super) fn validate_file_object_read_token(
     }
     if payload.object_key != object_key {
         return Err(Error::InvalidInput("invalid file read token".to_string()));
+    }
+    if payload.expires_at <= now.timestamp() {
+        return Err(Error::InvalidInput(
+            "file read token has expired".to_string(),
+        ));
     }
     Ok(())
 }

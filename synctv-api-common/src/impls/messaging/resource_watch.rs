@@ -13,7 +13,10 @@ use crate::impls::room_settings_snapshot::RoomSettingsSnapshotService;
 use synctv_proto::client::ObserveResource;
 use synctv_realtime::sync::ConnectionRuntime;
 
-use super::event_policy::{watch_admin_event_matches, watch_disconnect_signal_matches};
+use super::event_policy::{
+    watch_admin_event_matches, watch_disconnect_signal_matches,
+    watch_guest_access_revocation_reason,
+};
 use super::identity::{classify_realtime_join_error_message, RealtimeJoinError, RealtimePrincipal};
 use super::membership::{RealtimeMembershipAccess, RealtimeMembershipProbe};
 use super::resource_observer::{ResourceObserver, ResourceObserverParams};
@@ -270,6 +273,19 @@ impl PreparedResourceWatchSession {
                         let Some(event) = event else {
                             break Err("Realtime event channel closed".to_string());
                         };
+                        if let Some(reason) = watch_guest_access_revocation_reason(
+                            session.principal.is_guest(),
+                            &event,
+                            &session.room_id,
+                        ) {
+                            tracing::info!(
+                                actor = ?session.principal,
+                                room_id = %session.room_id,
+                                reason,
+                                "Resource watch terminating after guest access revocation"
+                            );
+                            break Ok(());
+                        }
                         if watch_admin_event_matches(
                             &event,
                             session.principal.user_id(),
@@ -350,6 +366,19 @@ impl PreparedResourceWatchSession {
                                     .await;
                             }
                             Ok(event) => {
+                                if let Some(reason) = watch_guest_access_revocation_reason(
+                                    session.principal.is_guest(),
+                                    &event,
+                                    &session.room_id,
+                                ) {
+                                    tracing::info!(
+                                        actor = ?session.principal,
+                                        room_id = %session.room_id,
+                                        reason,
+                                        "Resource watch terminating after guest access revocation"
+                                    );
+                                    break Ok(());
+                                }
                                 if watch_admin_event_matches(
                                     &event,
                                     session.principal.user_id(),

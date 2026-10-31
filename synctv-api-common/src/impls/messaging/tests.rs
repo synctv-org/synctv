@@ -10439,3 +10439,49 @@ async fn test_connection_reservation_user_slot() {
     // But the next should fail again
     assert!(mgr.reserve_user_slot(&uid).is_err());
 }
+
+#[test]
+fn watch_guest_access_revocation_is_terminal_only_for_guest_sessions() {
+    use super::event_policy::watch_guest_access_revocation_reason;
+
+    let room_id = RoomId::expect_positive(42);
+    let other_room = RoomId::expect_positive(43);
+    let event = RealtimeEvent::GuestAccessRevoked {
+        event_id: "guest-access-revoked-watch".to_string(),
+        room_id,
+        reason: "This room is no longer public".to_string(),
+        timestamp: now(),
+    };
+
+    // Guest-principal watch sessions terminate with the revocation reason.
+    let guest = test_guest_principal_with_permissions(RoomPermissionSet::default_guest());
+    assert_eq!(
+        watch_guest_access_revocation_reason(guest.is_guest(), &event, &room_id),
+        Some("This room is no longer public")
+    );
+
+    // User-principal sessions in the same room keep running.
+    let user = RealtimePrincipal::user(UserId::expect_positive(7), "member".to_string());
+    assert_eq!(
+        watch_guest_access_revocation_reason(user.is_guest(), &event, &room_id),
+        None
+    );
+
+    // Revocation of a different room does not terminate the session.
+    assert_eq!(
+        watch_guest_access_revocation_reason(guest.is_guest(), &event, &other_room),
+        None
+    );
+
+    // Other events are not guest revocations.
+    let kick = RealtimeEvent::RoomDeleted {
+        event_id: "room-deleted".to_string(),
+        room_id,
+        deleted_by: UserId::expect_positive(1),
+        timestamp: now(),
+    };
+    assert_eq!(
+        watch_guest_access_revocation_reason(guest.is_guest(), &kick, &room_id),
+        None
+    );
+}

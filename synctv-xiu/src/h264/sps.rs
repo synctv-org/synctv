@@ -179,26 +179,22 @@ impl SpsParser {
             .checked_mul(16)
             .and_then(|v| v.checked_sub(self.sps.frame_crop_left_offset * 2))
             .and_then(|v| v.checked_sub(self.sps.frame_crop_right_offset * 2))
-            .ok_or_else(|| {
-                H264Error {
-                    value: H264ErrorValue::InvalidDimensions(
-                        self.sps.pic_width_in_mbs_minus1,
-                        self.sps.pic_height_in_map_units_minus1,
-                    ),
-                }
+            .ok_or_else(|| H264Error {
+                value: H264ErrorValue::InvalidDimensions(
+                    self.sps.pic_width_in_mbs_minus1,
+                    self.sps.pic_height_in_map_units_minus1,
+                ),
             })?;
         let height = (2 - u32::from(self.sps.frame_mbs_only_flag))
             .checked_mul(self.sps.pic_height_in_map_units_minus1 + 1)
             .and_then(|v| v.checked_mul(16))
             .and_then(|v| v.checked_sub(self.sps.frame_crop_top_offset * 2))
             .and_then(|v| v.checked_sub(self.sps.frame_crop_bottom_offset * 2))
-            .ok_or_else(|| {
-                H264Error {
-                    value: H264ErrorValue::InvalidDimensions(
-                        self.sps.pic_width_in_mbs_minus1,
-                        self.sps.pic_height_in_map_units_minus1,
-                    ),
-                }
+            .ok_or_else(|| H264Error {
+                value: H264ErrorValue::InvalidDimensions(
+                    self.sps.pic_width_in_mbs_minus1,
+                    self.sps.pic_height_in_map_units_minus1,
+                ),
             })?;
 
         tracing::trace!("parsed sps data: {:?}", self.sps);
@@ -208,7 +204,7 @@ impl SpsParser {
 
 #[cfg(test)]
 mod tests {
-    use super::{SpsParser, H264Error, H264ErrorValue, MAX_POC_CYCLE_ENTRIES};
+    use super::{H264Error, H264ErrorValue, SpsParser, MAX_POC_CYCLE_ENTRIES};
     use bytes::BytesMut;
 
     /// Minimal bit-level SPS builder for parser policy tests (MSB-first).
@@ -219,7 +215,7 @@ mod tests {
     impl SpsBits {
         fn new() -> Self {
             let mut bits = Self { bits: Vec::new() };
-                bits.bits.extend([false; 0]);
+            bits.bits.extend([false; 0]);
             bits
         }
 
@@ -269,9 +265,30 @@ mod tests {
         // profile_idc=66 (baseline: no high-profile extension), flag=0, level_idc=30
         let bits = SpsBits::new();
         let bits = bits
-            .bit(false).bit(true).bit(false).bit(false).bit(false).bit(true).bit(false).bit(false) // 66
-            .bit(false).bit(false).bit(false).bit(false).bit(false).bit(false).bit(false).bit(false) // 0
-            .bit(false).bit(false).bit(false).bit(true).bit(true).bit(true).bit(true).bit(false); // 30
+            .bit(false)
+            .bit(true)
+            .bit(false)
+            .bit(false)
+            .bit(false)
+            .bit(true)
+            .bit(false)
+            .bit(false) // 66
+            .bit(false)
+            .bit(false)
+            .bit(false)
+            .bit(false)
+            .bit(false)
+            .bit(false)
+            .bit(false)
+            .bit(false) // 0
+            .bit(false)
+            .bit(false)
+            .bit(false)
+            .bit(true)
+            .bit(true)
+            .bit(true)
+            .bit(true)
+            .bit(false); // 30
         bits
     }
 
@@ -303,13 +320,7 @@ mod tests {
     fn rejects_u32_max_poc_cycle_count_without_giant_allocation() {
         // count = u32::MAX encodes as 32 leading zeros + '1' + 32 zero info
         // bits (n = 2^32, code_num = 2^32 - 1).
-        let bits = baseline_header()
-            .ue(0)
-            .ue(0)
-            .ue(1)
-            .bit(false)
-            .ue(0)
-            .ue(0);
+        let bits = baseline_header().ue(0).ue(0).ue(1).bit(false).ue(0).ue(0);
         let mut bits = bits;
         for _ in 0..32 {
             bits = bits.bit(false);

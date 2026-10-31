@@ -65,7 +65,6 @@ axum.workspace = true
 tonic.workspace = true
 tonic-prost.workspace = true
 prost.workspace = true
-prost-types.workspace = true
 tokio-stream.workspace = true
 
 # Streaming

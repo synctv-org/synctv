@@ -8745,7 +8745,6 @@ dependencies = [
  "parking_lot 0.13.0",
  "percent-encoding",
  "prost",
- "prost-types",
  "rand 0.10.3",
  "redis",
  "reqwest",

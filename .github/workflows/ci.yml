@@ -287,8 +287,9 @@ jobs:
         run: make deny-sources
         continue-on-error: false # Fail on untrusted sources
 
-  # Check for unused dependencies
-  udeps:
+  # Fail on unused dependencies via the denied cargo::unused_dependencies
+  # lint ([workspace.lints.cargo]) - enforced on every cargo invocation.
+  unused-dependencies:
     name: Unused Dependencies
     runs-on: ubuntu-latest
     steps:
@@ -308,9 +309,5 @@ jobs:
           cache-on-failure: true
           cache-workspace-crates: true
 
-      - name: Install cargo-udeps
-        run: make install-cargo-udeps
-
       - name: Check for unused dependencies
-        run: make udeps
-        continue-on-error: true # Don't fail the build, just report
+        run: make check-all-targets

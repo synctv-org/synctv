@@ -59,6 +59,9 @@ pub struct S3CompatibleFileStorageService {
     pub(crate) operator: Operator,
     pub(crate) repository: Option<Arc<FileStorageRepository>>,
     http_client: reqwest::Client,
+    /// Cached once at construction; the secret and backend name are
+    /// immutable for the process lifetime.
+    read_backend_slot: String,
     #[cfg(test)]
     test_multipart_upload_id: Option<String>,
     #[cfg(test)]
@@ -76,11 +79,14 @@ impl S3CompatibleFileStorageService {
     ) -> Result<Self> {
         validate_s3_file_storage_config(&config)?;
         let operator = s3_operator_from_config(&config)?;
+        let read_backend_slot =
+            super::file_read_backend_slot(&config.storage_backend, &config.upload_token_secret);
         Ok(Self {
             config,
             operator,
             repository,
             http_client: s3_http_client()?,
+            read_backend_slot,
             #[cfg(test)]
             test_multipart_upload_id: None,
             #[cfg(test)]
@@ -119,6 +125,10 @@ impl S3CompatibleFileStorageService {
 impl FileStorageService for S3CompatibleFileStorageService {
     fn backend_name(&self) -> &str {
         &self.config.storage_backend
+    }
+
+    fn read_token_backend_slot(&self) -> Option<&str> {
+        Some(&self.read_backend_slot)
     }
 
     fn supports_reuse_grants(&self) -> bool {

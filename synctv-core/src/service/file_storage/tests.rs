@@ -4492,3 +4492,154 @@ async fn s3_multipart_completion_uses_all_recorded_parts() {
     );
     assert_eq!(object_content_manifest_sha256, content_manifest_sha256);
 }
+
+#[test]
+fn file_object_read_token_expires_after_ttl() {
+    let secret = "file-read-token-ttl-secret";
+    let backend = "database";
+    let object_key = "objects/ttl-check.png";
+    let minted_at = crate::SystemClock.now();
+    let token = ok(
+        file_object_read_token_at(backend, object_key, minted_at, secret),
+        "read token should mint",
+    );
+
+    // Fresh token validates at mint time and just before expiry.
+    ok(
+        validate_file_object_read_token_at(backend, object_key, &token, minted_at, secret),
+        "fresh token should validate",
+    );
+    let just_before = minted_at + chrono::Duration::seconds(FILE_OBJECT_READ_TOKEN_TTL_SECONDS - 1);
+    ok(
+        validate_file_object_read_token_at(backend, object_key, &token, just_before, secret),
+        "token should validate until its expiry",
+    );
+
+    // Past the TTL the token is rejected: captured URLs stop working after
+    // the holder loses access instead of living forever.
+    let past = minted_at + chrono::Duration::seconds(FILE_OBJECT_READ_TOKEN_TTL_SECONDS);
+    match validate_file_object_read_token_at(backend, object_key, &token, past, secret) {
+        Err(error) => {
+            let message = error.to_string();
+            assert!(message.contains("expired"), "unexpected error: {message}");
+        }
+        Ok(()) => panic!("expired read token must be rejected"),
+    }
+}
+
+#[test]
+fn file_object_read_token_v1_format_is_rejected() {
+    let secret = "file-read-token-v1-secret";
+    let backend = "database";
+    let object_key = "objects/v1-reject.png";
+    // Hand-build a v1 token: same signing scheme, no expires_at payload field.
+    let payload = format!("{{\"storage_backend\":\"{backend}\",\"object_key\":\"{object_key}\"}}");
+    let signature = hex::encode(
+        hmac_sha256(
+            format!("synctv:file-read:{secret}").as_bytes(),
+            payload.as_bytes(),
+        )
+        .expect("signature should compute"),
+    );
+    let encoded_payload = base64::Engine::encode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        payload.as_bytes(),
+    );
+    let token = format!("v1.{encoded_payload}.{signature}");
+
+    // v1 tokens never carried an expiry, so they must not validate at all.
+    match validate_file_object_read_token_at(
+        backend,
+        object_key,
+        &token,
+        crate::SystemClock.now(),
+        secret,
+    ) {
+        Err(error) => {
+            let message = error.to_string();
+            assert!(
+                message.contains("invalid file read token"),
+                "unexpected error: {message}"
+            );
+        }
+        Ok(()) => panic!("v1 read token must be rejected"),
+    }
+}
+
+#[test]
+fn file_read_backend_slot_is_opaque_and_secret_bound() {
+    let secret = "slot-secret";
+    let database_slot = file_read_backend_slot("database", secret);
+    let s3_slot = file_read_backend_slot("s3-primary", secret);
+
+    // Deterministic for the same (name, secret), distinct across backends,
+    // and different under another secret.
+    assert_eq!(database_slot, file_read_backend_slot("database", secret));
+    assert_ne!(database_slot, s3_slot);
+    assert_ne!(
+        database_slot,
+        file_read_backend_slot("database", "other-secret")
+    );
+
+    // The token payload must not carry the backend name: decode the payload
+    // segment and verify only the opaque handle appears.
+    let token = ok(
+        file_object_read_token("database", "objects/slot.png", secret),
+        "read token should mint",
+    );
+    let segments: Vec<&str> = token.split('.').collect();
+    assert_eq!(segments.len(), 3);
+    let payload_bytes = base64::Engine::decode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        segments[1],
+    )
+    .expect("payload segment should be base64");
+    let payload = String::from_utf8(payload_bytes).expect("payload should be utf-8");
+    assert!(
+        !payload.contains("database"),
+        "payload must not name the backend: {payload}"
+    );
+    assert!(
+        payload.contains(&database_slot),
+        "payload should carry the slot: {payload}"
+    );
+}
+
+#[test]
+fn file_read_token_rejects_cross_backend_and_cross_secret_replay() {
+    let secret = "slot-replay-secret";
+    let token = ok(
+        file_object_read_token("database", "objects/replay.png", secret),
+        "read token should mint",
+    );
+
+    // Same key under a different backend: slot mismatch must reject.
+    match validate_file_object_read_token_at(
+        "s3-primary",
+        "objects/replay.png",
+        &token,
+        crate::SystemClock.now(),
+        secret,
+    ) {
+        Err(error) => {
+            let message = error.to_string();
+            assert!(
+                message.contains("invalid file read token"),
+                "unexpected error: {message}"
+            );
+        }
+        Ok(()) => panic!("cross-backend replay must be rejected"),
+    }
+
+    // Same backend under a different secret: signature mismatch must reject.
+    match validate_file_object_read_token_at(
+        "database",
+        "objects/replay.png",
+        &token,
+        crate::SystemClock.now(),
+        "other-secret",
+    ) {
+        Err(_) => {}
+        Ok(()) => panic!("cross-secret replay must be rejected"),
+    }
+}

@@ -10,7 +10,7 @@ use crate::{
         StoreFileUpload, StoreFileUploadResult, SubmittedFileReference, SubmittedFileReferenceKind,
     },
     service::file_storage::{
-        file_object_read_token_storage_backend, file_upload_token_storage_backend,
+        file_object_read_token_backend_slot, file_upload_token_storage_backend,
         prepare_upload_reference_file, upload_session_reference_target,
         validation::validate_stored_files, CreateFileReuseGrant, FileObjectReader, FileReuseGrant,
         FileStorageCleanupOrigin, FileStorageContext, FileStorageService, ValidatedFileReuseGrant,
@@ -54,6 +54,18 @@ impl FileStorageBackendRegistry {
         self.backends.get(name).cloned().ok_or_else(|| {
             Error::InvalidInput(format!("file storage backend '{name}' is not configured"))
         })
+    }
+
+    /// Resolve the backend a read token belongs to by its opaque slot. Slots
+    /// are derived per backend with the token secret, so downloads dispatch
+    /// without the payload ever carrying a backend name.
+    fn backend_for_read_token(&self, token: &str) -> Result<Arc<dyn FileStorageService>> {
+        let slot = file_object_read_token_backend_slot(token)?;
+        self.backends
+            .values()
+            .find(|backend| backend.read_token_backend_slot() == Some(slot.as_str()))
+            .cloned()
+            .ok_or_else(|| Error::InvalidInput("invalid file read token".to_string()))
     }
 }
 
@@ -317,17 +329,15 @@ impl FileStorageService for RoutedFileStorageService {
     }
 
     async fn get_object(&self, request: GetFileObject) -> Result<FileBlob> {
-        let backend_name = file_object_read_token_storage_backend(&request.read_token)?;
         self.registry
-            .backend(&backend_name)?
+            .backend_for_read_token(&request.read_token)?
             .get_object(request)
             .await
     }
 
     async fn get_object_stream(&self, request: GetFileObject) -> Result<FileObjectDownload> {
-        let backend_name = file_object_read_token_storage_backend(&request.read_token)?;
         self.registry
-            .backend(&backend_name)?
+            .backend_for_read_token(&request.read_token)?
             .get_object_stream(request)
             .await
     }

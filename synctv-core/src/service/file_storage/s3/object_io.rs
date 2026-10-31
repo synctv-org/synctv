@@ -9,8 +9,7 @@ use crate::{
     },
     repository::UpsertFileObject,
     service::file_storage::{
-        decode_file_object_key, encode_file_object_key, payload_len_i64,
-        validate_file_object_read_token, FileObjectReader,
+        decode_file_object_key, encode_file_object_key, payload_len_i64, FileObjectReader,
     },
     Error, Result,
 };
@@ -104,8 +103,8 @@ impl S3CompatibleFileStorageService {
         request: GetFileObject,
     ) -> Result<FileObjectDownload> {
         let object_key = decode_file_object_key(&request.encoded_object_key)?;
-        validate_file_object_read_token(
-            &self.config.storage_backend,
+        super::super::validate_file_object_read_token_with_slot(
+            &self.read_backend_slot,
             &object_key,
             &request.read_token,
             &self.config.upload_token_secret,

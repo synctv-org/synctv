@@ -8752,7 +8752,6 @@ dependencies = [
  "serde_json",
  "serde_urlencoded",
  "subtle",
- "synctv-cluster",
  "synctv-common",
  "synctv-core",
  "synctv-core-testing",

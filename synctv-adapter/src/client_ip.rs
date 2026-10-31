@@ -56,8 +56,12 @@ fn parse_forwarded_ip_header(
     let raw = value
         .to_str()
         .map_err(|_| ClientIpHeaderError::NonAscii { header })?;
+    // Only the direct peer is authenticated. Under append-mode forwarding
+    // (e.g. nginx $proxy_add_x_forwarded_for) that peer appends the address
+    // it saw at the END of the header, so the rightmost entry is the only
+    // value this hop vouches for; entries to its left are client-supplied.
     let value = if comma_separated {
-        raw.split(',').next().unwrap_or("").trim()
+        raw.rsplit(',').next().unwrap_or("").trim()
     } else {
         raw.trim()
     };
@@ -84,9 +88,11 @@ mod tests {
     #[test]
     fn extract_client_ip_from_headers_uses_forwarded_for_when_proxy_trusted() -> TestResult {
         let mut headers = HeaderMap::new();
+        // Append-mode forwarding: the leftmost entry is client-supplied and
+        // must not be trusted; the trusted proxy appended 70.41.3.18.
         headers.insert("x-forwarded-for", "203.0.113.50, 70.41.3.18".parse()?);
         let peer_ip = "127.0.0.1".parse::<std::net::IpAddr>()?;
-        let expected_ip = "203.0.113.50".parse::<std::net::IpAddr>()?;
+        let expected_ip = "70.41.3.18".parse::<std::net::IpAddr>()?;
 
         assert_eq!(
             extract_client_ip_from_headers(|ip| *ip == peer_ip, peer_ip, &headers),
@@ -141,9 +147,21 @@ mod tests {
     }
 
     #[test]
-    fn forwarded_header_ip_rejects_empty_first_forwarded_for_entry() -> TestResult {
+    fn forwarded_header_ip_ignores_empty_client_supplied_entry() -> TestResult {
         let mut headers = HeaderMap::new();
+        // The client-supplied leftmost entry is empty; the trusted proxy
+        // appended 198.51.100.42 last, which is the selected hop.
         headers.insert("x-forwarded-for", ", 198.51.100.42".parse()?);
+        let expected_ip = "198.51.100.42".parse::<std::net::IpAddr>()?;
+
+        assert_eq!(forwarded_header_ip(&headers), Ok(Some(expected_ip)));
+        Ok(())
+    }
+
+    #[test]
+    fn forwarded_header_ip_rejects_empty_last_forwarded_for_entry() -> TestResult {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "198.51.100.42, ".parse()?);
 
         assert!(matches!(
             forwarded_header_ip(&headers),

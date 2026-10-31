@@ -73,11 +73,12 @@ impl AdminApiImpl {
         let role = create_user_role(req.role)?;
         let status = user_status_filter(req.status)?;
         let password = (!req.password.is_empty()).then_some(req.password);
-        if role == Some(synctv_core::models::UserRole::Root)
-            && caller_role != synctv_core::models::UserRole::Root
-        {
+        // Elevated roles are root-conferred, matching every other admin-granting
+        // path (update_user_role, add_admin, password reset): a non-root admin
+        // may only create ordinary users.
+        if role.is_some_and(|r| r.is_admin_or_above()) && caller_role != UserRole::Root {
             return Err(ApiError::Authorization(
-                "Only root users can create root users".to_string(),
+                "Only root users can create admin or root users".to_string(),
             ));
         }
 
@@ -105,7 +106,13 @@ impl AdminApiImpl {
             synctv_core::models::AuditAction::UserCreated,
             synctv_core::models::AuditTargetType::User,
             Some(user.id.to_string()),
-            AuditDetails::reason("User created via admin panel"),
+            AuditDetails {
+                target_user_id: Some(user.id.to_string()),
+                target_username: Some(user.username.clone()),
+                new_role: role.map(|r| format!("{r:?}")),
+                caller_role: Some(format!("{caller_role:?}")),
+                ..AuditDetails::reason("User created via admin panel")
+            },
             ctx,
         )
         .await;
@@ -217,6 +224,7 @@ impl AdminApiImpl {
         &self,
         req: synctv_proto::admin::UpdateUserUsernameRequest,
         admin_user_id: &UserId,
+        caller_role: UserRole,
         ctx: &RequestContext,
     ) -> Result<synctv_proto::admin::AdminUser, ApiError> {
         crate::impls::validate_proto_request(&req)?;
@@ -227,6 +235,7 @@ impl AdminApiImpl {
             .get_user(&uid)
             .await
             .map_err(ApiError::from)?;
+        check_role_hierarchy(caller_role, user.role, "rename")?;
         let old_username = user.username.clone();
         let updated = self
             .user_service
@@ -292,6 +301,7 @@ impl AdminApiImpl {
         &self,
         req: synctv_proto::admin::UnbanUserRequest,
         admin_user_id: &UserId,
+        caller_role: UserRole,
         ctx: &RequestContext,
     ) -> Result<synctv_proto::admin::AdminUser, ApiError> {
         crate::impls::validate_proto_request(&req)?;
@@ -305,6 +315,10 @@ impl AdminApiImpl {
         if !user.is_banned {
             return Err(ApiError::InvalidInput("User is not banned".to_string()));
         }
+
+        // Unban reverses a root-ordered ban, so it carries the same
+        // per-target hierarchy control as every sibling user mutation.
+        check_role_hierarchy(caller_role, user.role, "unban")?;
 
         let affected_room_ids = self
             .list_active_user_room_ids(&uid)
@@ -330,6 +344,7 @@ impl AdminApiImpl {
             AuditDetails {
                 target_user_id: Some(uid.to_string()),
                 target_username: Some(updated.username.clone()),
+                caller_role: Some(format!("{caller_role:?}")),
                 ..Default::default()
             },
             ctx,

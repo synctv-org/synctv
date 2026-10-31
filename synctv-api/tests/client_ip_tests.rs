@@ -59,13 +59,15 @@ fn test_xff_multiple_hops() {
     let config = config_with_proxies(vec!["10.0.0.1"]);
     let socket_addr = socket([10, 0, 0, 1], 5000);
     let mut headers = axum::http::HeaderMap::new();
+    // Append-mode forwarding: the leftmost entry is client-supplied; the
+    // trusted proxy appended 172.16.0.1 last, so it is the selected hop.
     headers.insert(
         "x-forwarded-for",
         "203.0.113.50, 172.16.0.1".parse().unwrap(),
     );
 
     let ip = extract_client_ip(&config, socket_addr, &headers).expect("client ip should parse");
-    assert_eq!(ip, "203.0.113.50".parse::<IpAddr>().unwrap());
+    assert_eq!(ip, "172.16.0.1".parse::<IpAddr>().unwrap());
 }
 
 #[test]
@@ -100,7 +102,7 @@ fn test_xff_with_whitespace_trimmed() {
     );
 
     let ip = extract_client_ip(&config, socket_addr, &headers).expect("client ip should parse");
-    assert_eq!(ip, "203.0.113.50".parse::<IpAddr>().unwrap());
+    assert_eq!(ip, "172.16.0.1".parse::<IpAddr>().unwrap());
 }
 
 #[test]

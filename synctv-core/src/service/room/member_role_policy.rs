@@ -17,6 +17,24 @@ pub(in crate::service::room) fn validate_role_can_be_assigned(role: RoomRole) ->
     Ok(())
 }
 
+/// Elevated roles are creator-conferred (the same invariant as
+/// `validate_creator_member_role_update` and join-request review): a
+/// non-creator ADD_MEMBERS holder may only admit Member or Guest members.
+pub(in crate::service::room) fn validate_add_member_role(
+    room: &Room,
+    actor_id: &UserId,
+    role: RoomRole,
+) -> Result<()> {
+    validate_role_can_be_assigned(role)?;
+    if role == RoomRole::Admin && room.created_by != *actor_id {
+        return Err(Error::Authorization(
+            "Only room creator can grant the admin role".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
 pub(in crate::service::room) fn validate_creator_member_role_update(
     room: &Room,
     actor_id: &UserId,

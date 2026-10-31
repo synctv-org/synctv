@@ -5,6 +5,12 @@ use crate::bytesio::bits_errors::BitError;
 /// A 32-bit value requires at most 32 leading zeros.
 pub const MAX_EXP_GOLOMB_LEADING_ZEROS: usize = 32;
 
+/// Upper bound for `num_ref_frames_in_pic_order_cnt_cycle`.
+/// The value controls per-entry parsing loop iterations, so it must be
+/// bounded before any derived allocation. Spec-plausible streams stay far
+/// below this; H.264 conformance uses at most a handful of entries.
+pub const MAX_POC_CYCLE_ENTRIES: u32 = 255;
+
 #[derive(Debug, thiserror::Error)]
 pub enum H264ErrorValue {
     #[error("bit error")]
@@ -19,6 +25,12 @@ pub enum H264ErrorValue {
     ExpGolombSignedValueOutOfRange(i64),
     #[error("Invalid chroma_format_idc value: {0}. Valid values are 0, 1, 2, 3")]
     InvalidChromaFormatIdc(u32),
+    #[error(
+        "Invalid num_ref_frames_in_pic_order_cnt_cycle value: {0} (max {MAX_POC_CYCLE_ENTRIES})"
+    )]
+    InvalidPocCycleCount(u32),
+    #[error("Invalid cropped picture dimensions: width={0}, height={1}")]
+    InvalidDimensions(u32, u32),
 }
 
 #[derive(Debug, thiserror::Error)]

@@ -1,4 +1,4 @@
-use super::member_role_policy::validate_override_bits_for_role;
+use super::member_role_policy::{validate_add_member_role, validate_override_bits_for_role};
 use crate::models::{
     room_settings::{GuestAddedPermissions, MemberAddedPermissions},
     RoomGuestPermissionBits, RoomId, RoomMember, RoomMemberPermissionBits, RoomPermissionSet,
@@ -344,4 +344,42 @@ fn test_room_creation_blocked_when_disabled() {
 #[test]
 fn test_room_creation_allowed_when_enabled() {
     assert!(check_room_creation_allowed(true).is_ok());
+}
+
+#[test]
+fn test_add_member_role_policy_guards_elevated_roles() {
+    let creator = RoomFixture::new().build();
+    let creator_id = creator.created_by;
+    let other_admin = RoomFixture::new().build().created_by;
+    assert_ne!(creator_id, other_admin);
+
+    // Non-creator ADD_MEMBERS holders may only admit Member or Guest.
+    let error = err(
+        validate_add_member_role(&creator, &other_admin, RoomRole::Admin),
+        "non-creator granting admin role must be rejected",
+    );
+    assert!(matches!(error, Error::Authorization(_)));
+
+    // The creator confers elevated roles.
+    ok(
+        validate_add_member_role(&creator, &creator_id, RoomRole::Admin),
+        "creator granting admin role must be allowed",
+    );
+
+    // Ordinary roles remain available to any ADD_MEMBERS holder.
+    ok(
+        validate_add_member_role(&creator, &other_admin, RoomRole::Member),
+        "member role must be allowed",
+    );
+    ok(
+        validate_add_member_role(&creator, &other_admin, RoomRole::Guest),
+        "guest role must be allowed",
+    );
+
+    // The creator role is bound to ownership on every path.
+    let error = err(
+        validate_add_member_role(&creator, &creator_id, RoomRole::Creator),
+        "creator role assignment must be rejected",
+    );
+    assert!(matches!(error, Error::InvalidInput(_)));
 }

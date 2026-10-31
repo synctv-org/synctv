@@ -9,7 +9,6 @@ license.workspace = true
 default = ["tls-aws-lc", "tls-webpki-roots"]
 tls-aws-lc = [
     "synctv-core/tls-aws-lc",
-    "synctv-cluster/tls-aws-lc",
     "synctv-media-providers/tls-aws-lc",
     "synctv-common/tls-aws-lc",
     "synctv-xiu/tls-aws-lc",
@@ -18,7 +17,6 @@ tls-aws-lc = [
 ]
 tls-ring = [
     "synctv-core/tls-ring",
-    "synctv-cluster/tls-ring",
     "synctv-media-providers/tls-ring",
     "synctv-common/tls-ring",
     "synctv-xiu/tls-ring",
@@ -27,7 +25,6 @@ tls-ring = [
 ]
 tls-webpki-roots = [
     "synctv-core/tls-webpki-roots",
-    "synctv-cluster/tls-webpki-roots",
     "synctv-media-providers/tls-webpki-roots",
     "synctv-common/tls-webpki-roots",
     "synctv-xiu/tls-webpki-roots",
@@ -37,7 +34,6 @@ tls-webpki-roots = [
 ]
 tls-native-roots = [
     "synctv-core/tls-native-roots",
-    "synctv-cluster/tls-native-roots",
     "synctv-media-providers/tls-native-roots",
     "synctv-common/tls-native-roots",
     "synctv-xiu/tls-native-roots",
@@ -48,7 +44,6 @@ tls-native-roots = [
 [dependencies]
 # Internal
 synctv-core = { workspace = true, default-features = false }
-synctv-cluster = { workspace = true, default-features = false }
 synctv-media-providers = { workspace = true, default-features = false }
 synctv-common = { workspace = true, default-features = false }
 

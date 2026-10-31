@@ -308,9 +308,5 @@ jobs:
           cache-on-failure: true
           cache-workspace-crates: true
 
-      - name: Install cargo-udeps
-        run: make install-cargo-udeps
-
       - name: Check for unused dependencies
         run: make udeps
-        continue-on-error: true # Don't fail the build, just report

@@ -37,6 +37,13 @@ license = "MIT"
 [workspace.lints.rust]
 unsafe_code = "deny"
 
+# Fail every cargo invocation on unused dependencies. Replaces the
+# cargo-udeps CI job, whose vendored cargo cannot parse this workspace's
+# manifest (profile trim-paths). Dependencies kept only for feature-graph
+# forwarding trip this lint; forward from a crate that also links them.
+[workspace.lints.cargo]
+unused_dependencies = "deny"
+
 [workspace.lints.clippy]
 pedantic = { level = "deny", priority = -1 }
 style = { level = "deny", priority = -1 }

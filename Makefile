@@ -119,7 +119,7 @@ export SYNCTV_MANAGEMENT_TRANSPORT=unix; \
 export SYNCTV_MANAGEMENT_UNIX_SOCKET_PATH="$(DEV_SOCKET)"
 endef
 
-.PHONY: help clean compose-init compose-config compose-pull compose-up compose-down compose-logs compose-ps dev-check dev-env dev-up dev-stack dev-build release-build web-ui-build web-release-build dev-serve dev-down dev-clean dev-reset dev-data-reset dev-logs dev-ps dev-status dev-wait dev-shell dev-migrate dev-dropdb dev-db dev-redis dev-open dev-smoke fmt fmt-check check check-all-targets build-workspace proto-freshness feature-check feature-check-key-crates-tls-ring-webpki sqlx-prepare nextest nextest-default nextest-ignored doc-test clippy clippy-check install-cargo-audit audit audit-advisories install-cargo-deny deny-check deny-advisories deny-licenses deny-bans deny-sources install-cargo-udeps udeps cargo-workspace-version set-release-version validate-helm require-cross install-cross cross-linux-check cross-windows-check cross-darwin-check cross-linux-clippy cross-windows-clippy cross-darwin-clippy
+.PHONY: help clean compose-init compose-config compose-pull compose-up compose-down compose-logs compose-ps dev-check dev-env dev-up dev-stack dev-build release-build web-ui-build web-release-build dev-serve dev-down dev-clean dev-reset dev-data-reset dev-logs dev-ps dev-status dev-wait dev-shell dev-migrate dev-dropdb dev-db dev-redis dev-open dev-smoke fmt fmt-check check check-all-targets build-workspace proto-freshness feature-check feature-check-key-crates-tls-ring-webpki sqlx-prepare nextest nextest-default nextest-ignored doc-test clippy clippy-check install-cargo-audit audit audit-advisories install-cargo-deny deny-check deny-advisories deny-licenses deny-bans deny-sources udeps cargo-workspace-version set-release-version validate-helm require-cross install-cross cross-linux-check cross-windows-check cross-darwin-check cross-linux-clippy cross-windows-clippy cross-darwin-clippy
 
 help: ## Show available targets.
 	@awk 'BEGIN {FS = ":.*##"; printf "SyncTV targets:\n"} /^[a-zA-Z0-9_.-]+:.*##/ {printf "  %-18s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -402,11 +402,11 @@ deny-bans:
 deny-sources:
 	$(CARGO) deny check sources
 
-install-cargo-udeps: ## Install cargo-udeps for unused dependency checks.
-	$(CARGO) install cargo-udeps $(CARGO_LOCKED)
-
 udeps: ## Check all workspace targets for unused dependencies.
-	SQLX_OFFLINE=true $(CARGO) udeps $(CARGO_WORKSPACE_ALL_TARGETS_BUILD_ARGS)
+## Uses cargo's built-in unused_dependencies lint (denied in
+## [workspace.lints.cargo]); cargo-udeps was removed because its vendored
+## cargo cannot parse this workspace's manifest.
+	SQLX_OFFLINE=true $(CARGO) check $(CARGO_WORKSPACE_ALL_TARGETS_BUILD_ARGS)
 
 cargo-workspace-version: ## Print the Cargo workspace version.
 	@$(CARGO) metadata --format-version 1 --no-deps $(CARGO_LOCKED) | node -e 'const fs = require("fs"); const meta = JSON.parse(fs.readFileSync(0, "utf8")); const id = meta.workspace_default_members[0]; process.stdout.write((meta.packages.find((pkg) => pkg.id === id) || meta.packages[0]).version);'

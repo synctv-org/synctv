@@ -17,10 +17,7 @@ pub fn crypto_provider() -> Arc<rustls::crypto::CryptoProvider> {
     let provider = rustls::crypto::aws_lc_rs::default_provider();
     // A concurrent installer may win the race; either provider is fine.
     let _ = provider.clone().install_default();
-    rustls::crypto::CryptoProvider::get_default().map_or_else(
-        || Arc::new(provider),
-        Arc::clone,
-    )
+    rustls::crypto::CryptoProvider::get_default().map_or_else(|| Arc::new(provider), Arc::clone)
 }
 
 fn server_config_builder() -> rustls::ConfigBuilder<rustls::ServerConfig, rustls::WantsVerifier> {

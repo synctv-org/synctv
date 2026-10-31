@@ -13,5 +13,5 @@ pub use synctv_api_http::{
 };
 pub use synctv_api_http::{
     create_realtime_session, delete_realtime_session, get_server_info, realtime_session_events,
-    send_realtime_session_message,
+    send_realtime_session_message, RoomWebTransportHandler, WEBTRANSPORT_ROOMS_PATH,
 };

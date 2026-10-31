@@ -17,6 +17,8 @@
 mod bridge;
 mod frames;
 mod server;
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing;
 mod tls;
 mod webtransport;
 
@@ -31,6 +33,11 @@ pub use tls::{
 pub use webtransport::{
     is_webtransport_connect, WebTransportHandler, WtBidiStream, WEBTRANSPORT_PROTOCOL,
 };
+
+// Re-exported so downstream crates can name stream traits without depending
+// on the h3 stack directly.
+pub use h3;
+pub use h3_quinn;
 
 /// ALPN protocol identifier for HTTP/3.
 pub const H3_ALPN: &[&str] = &["h3"];

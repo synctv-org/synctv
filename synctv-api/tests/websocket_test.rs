@@ -4782,12 +4782,17 @@ mod websocket_e2e {
         }
         let mut sse = SseReader::new(response);
 
-        // The initial observation snapshot arrives as `observed`.
-        let (first_name, _) = sse
+        // The initial observation snapshot arrives as a uniform `message`
+        // envelope carrying the full ServerMessage.
+        let (first_name, first_data) = sse
             .next_event(std::time::Duration::from_secs(5))
             .await
             .expect("initial observed event");
-        assert_eq!(first_name, "observed");
+        assert_eq!(first_name, "message");
+        assert!(
+            first_data.contains("resourceObserved"),
+            "expected resourceObserved envelope, got {first_data}"
+        );
 
         // Uplink: a heartbeat posted over REST is acknowledged over SSE.
         let status = http
@@ -4803,18 +4808,18 @@ mod websocket_e2e {
         assert_eq!(status, reqwest::StatusCode::NO_CONTENT);
         let ack = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
-                let (name, _) = sse
+                let (name, data) = sse
                     .next_event(std::time::Duration::from_secs(5))
                     .await
                     .expect("event while waiting for heartbeat_ack");
-                if name == "heartbeat_ack" {
-                    return name;
+                if name == "message" && data.contains("heartbeatAck") {
+                    return data;
                 }
             }
         })
         .await
         .expect("heartbeat_ack over SSE");
-        assert_eq!(ack, "heartbeat_ack");
+        assert!(ack.contains("heartbeatAck"));
 
         // Room events reach the session: user2 joins over WebSocket.
         let mut ws2 = ws_connect(&server.addr, &room_id, &user2_token).await;
@@ -4825,7 +4830,7 @@ mod websocket_e2e {
                     .next_event(std::time::Duration::from_secs(5))
                     .await
                     .expect("event while waiting for member join");
-                if name == "changed" && data.contains("roomMemberEvent") {
+                if name == "message" && data.contains("roomMemberEvent") {
                     return data;
                 }
             }

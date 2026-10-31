@@ -400,6 +400,7 @@ synctv-web-ui = { path = "synctv-web-ui" }
 synctv-api-grpc = { path = "synctv-api-grpc", default-features = false }
 synctv-cluster = { path = "synctv-cluster", default-features = false }
 synctv-realtime = { path = "synctv-realtime", default-features = false }
+synctv-quic = { path = "synctv-quic", default-features = false }
 synctv-media-providers = { path = "synctv-media-providers", default-features = false }
 synctv-management = { path = "synctv-management", default-features = false }
 synctv-proxy = { path = "synctv-proxy", default-features = false }

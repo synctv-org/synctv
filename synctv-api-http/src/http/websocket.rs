@@ -76,9 +76,9 @@ impl RealtimeTransportFormat {
 #[derive(Debug, Default, serde::Deserialize)]
 pub struct WsQuery {
     #[serde(default)]
-    ticket: String,
+    pub(crate) ticket: String,
     #[serde(default)]
-    format: Option<String>,
+    pub(crate) format: Option<String>,
 }
 
 fn websocket_connect_request(query: &WsQuery) -> synctv_proto::client::WebSocketConnectRequest {
@@ -116,8 +116,8 @@ struct TicketAuthCommit {
 }
 
 #[derive(Debug, Clone)]
-struct HandshakeAuthContext {
-    principal: RealtimePrincipal,
+pub(crate) struct HandshakeAuthContext {
+    pub(crate) principal: RealtimePrincipal,
     ticket_commit: Option<TicketAuthCommit>,
 }
 
@@ -230,7 +230,7 @@ fn extract_authorization_bearer_token(headers: &HeaderMap) -> Result<Option<Stri
 }
 
 /// Extract user identity for the WebSocket handshake using explicit request execution.
-async fn extract_handshake_auth(
+pub(crate) async fn extract_handshake_auth(
     state: &AppState,
     request_meta: &ApiRequestMetadata,
     query: &WsQuery,
@@ -385,7 +385,7 @@ fn map_websocket_membership_probe_error(error: synctv_core::Error) -> AppError {
     AppError::from(error)
 }
 
-async fn validate_websocket_room_membership(
+pub(crate) async fn validate_websocket_room_membership(
     room_service: &synctv_core::service::RoomService,
     room: &synctv_core::models::Room,
     user_id: &UserId,
@@ -396,7 +396,7 @@ async fn validate_websocket_room_membership(
         .map_err(map_websocket_membership_probe_error)
 }
 
-fn validate_websocket_origin(
+pub(crate) fn validate_websocket_origin(
     headers: &HeaderMap,
     allowed_origins: &[String],
     direct_peer_ip: Option<std::net::IpAddr>,
@@ -540,7 +540,10 @@ fn validate_websocket_runtime_dependency_flags(
     Ok(())
 }
 
-async fn load_websocket_username(state: &AppState, user_id: &UserId) -> Result<String, AppError> {
+pub(crate) async fn load_websocket_username(
+    state: &AppState,
+    user_id: &UserId,
+) -> Result<String, AppError> {
     state
         .user_service
         .get_username(user_id)
@@ -852,7 +855,7 @@ pub async fn websocket_handler(
         .on_upgrade(move |socket| handle_socket(socket, state, prepared, transport_format)))
 }
 
-async fn commit_prevalidated_ticket(
+pub(crate) async fn commit_prevalidated_ticket(
     state: &AppState,
     room_id: &RoomId,
     auth: &HandshakeAuthContext,

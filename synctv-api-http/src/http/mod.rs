@@ -31,6 +31,7 @@ pub(crate) mod validation;
 pub(crate) mod web_ui;
 pub(crate) mod webrtc;
 pub(crate) mod websocket;
+pub(crate) mod webtransport;
 
 use crate::providers;
 use axum::{

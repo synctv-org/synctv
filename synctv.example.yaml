@@ -74,6 +74,21 @@ server:
   # Maximum time in seconds to wait for active connections to drain during shutdown.
   # Defaults to 30 seconds. Increase for deployments with many long-lived connections.
   shutdown_drain_timeout_seconds: 30
+  # HTTP/3 (QUIC) listener: serves the same API over UDP with the h3 ALPN and
+  # accepts WebTransport room realtime sessions on the same socket.
+  # TLS is mandatory for QUIC; cert/key paths follow the same rules as the
+  # static TLS files above (relative to this config file, not rebased through data_dir).
+  # When enabled, TCP responses carry an Alt-Svc header advertising the h3 endpoint.
+  quic:
+    enabled: false
+    # UDP port; defaults to the TCP API port when unset.
+    # port: 8080
+    # cert_path: "./tls/api.crt"
+    # key_path: "./tls/api.key"
+    # Maximum concurrent WebTransport sessions on the QUIC listener.
+    # max_webtransport_sessions: 256
+    # Alt-Svc max-age in seconds advertised on TCP responses.
+    # alt_svc_max_age_seconds: 86400
   logging:
     level: "info"
     format: "text"

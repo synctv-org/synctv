@@ -10,73 +10,13 @@ use std::sync::Arc;
 use bytes::{Buf, Bytes};
 use http::{Request, Response, StatusCode};
 use http_body_util::{BodyExt, Full};
+use synctv_quic::testing::insecure_client_config;
 use synctv_quic::{
-    crypto_provider, generate_self_signed_config, read_frame, serve_quic, write_frame,
-    QuicServerConfig, WebTransportHandler, WtBidiStream,
+    generate_self_signed_config, read_frame, serve_quic, write_frame, QuicServerConfig,
+    WebTransportHandler, WtBidiStream,
 };
 use tokio_util::sync::CancellationToken;
 use tower::service_fn;
-
-/// Accepts every certificate: the server uses an ephemeral self-signed one.
-#[derive(Debug)]
-struct AcceptAnyServerCert(Arc<rustls::crypto::CryptoProvider>);
-
-impl rustls::client::danger::ServerCertVerifier for AcceptAnyServerCert {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &rustls::pki_types::CertificateDer<'_>,
-        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
-        _server_name: &rustls::pki_types::ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: rustls::pki_types::UnixTime,
-    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        Ok(rustls::client::danger::ServerCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        message: &[u8],
-        cert: &rustls::pki_types::CertificateDer<'_>,
-        dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls12_signature(
-            message,
-            cert,
-            dss,
-            &self.0.signature_verification_algorithms,
-        )
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        message: &[u8],
-        cert: &rustls::pki_types::CertificateDer<'_>,
-        dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls13_signature(
-            message,
-            cert,
-            dss,
-            &self.0.signature_verification_algorithms,
-        )
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        self.0.signature_verification_algorithms.supported_schemes()
-    }
-}
-
-fn insecure_client_config() -> rustls::ClientConfig {
-    let provider = crypto_provider();
-    let mut config = rustls::ClientConfig::builder_with_provider(Arc::clone(&provider))
-        .with_safe_default_protocol_versions()
-        .expect("TLS 1.3 available")
-        .dangerous()
-        .with_custom_certificate_verifier(Arc::new(AcceptAnyServerCert(provider)))
-        .with_no_client_auth();
-    config.alpn_protocols = vec![b"h3".to_vec()];
-    config
-}
 
 /// Echoes every frame back; rejects any path other than `/wt/echo`.
 struct EchoHandler;

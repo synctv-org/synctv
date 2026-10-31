@@ -174,41 +174,25 @@ impl SessionTap {
     }
 }
 
-/// Encodes a full `ServerMessage` as an SSE event. Resource messages reuse
-/// the per-resource watch framing (`observed`/`changed`/`error` with cursor
-/// ids) so clients share decoders across both SSE surfaces; session-scoped
-/// messages get their own event names.
+/// Encodes a full `ServerMessage` as one uniform SSE event: every session
+/// message uses the `message` event with the complete envelope as data
+/// (proto3 JSON, or base64-encoded protobuf), so clients decode the
+/// downlink with the same decoder as the WebSocket and WebTransport
+/// transports. Resource events additionally carry the cursor as the SSE
+/// event id for diagnostics.
 fn session_sse_event(
     format: RealtimeTransportFormat,
     message: ServerMessage,
 ) -> Option<Result<Event, Infallible>> {
     use synctv_proto::client::server_message::Message;
 
-    if matches!(
-        message.message.as_ref(),
-        Some(
-            Message::ResourceObserved(_)
-                | Message::ResourceEvent(_)
-                | Message::ResourceObserveError(_)
-        )
-    ) {
-        return crate::http::room::watch::sse_event_from_server_message(format, message);
-    }
-
-    let (event_name, payload) = match message.message.as_ref()? {
-        Message::HeartbeatAck(ack) => ("heartbeat_ack", encode_sse_payload(format, ack)),
-        Message::Termination(termination) => {
-            ("termination", encode_sse_payload(format, termination))
+    let event_id = match message.message.as_ref()? {
+        Message::ResourceEvent(changed) => {
+            crate::http::room::watch::sse_event_id_from_resource_event(changed)
         }
-        Message::Notification(notification) => {
-            ("notification", encode_sse_payload(format, notification))
-        }
-        Message::Error(error) => ("server_error", encode_sse_payload(format, error)),
-        Message::ResourceObserved(_)
-        | Message::ResourceEvent(_)
-        | Message::ResourceObserveError(_) => unreachable!("handled above"),
+        _ => None,
     };
-    let data = match payload {
+    let data = match encode_sse_payload(format, &message) {
         Ok(data) => data,
         Err(error) => {
             tracing::warn!(error = %error, "Failed to serialize realtime session SSE event");
@@ -217,7 +201,11 @@ fn session_sse_event(
             )));
         }
     };
-    Some(Ok(Event::default().event(event_name).data(data)))
+    let mut event = Event::default().event("message").data(data);
+    if let Some(event_id) = event_id {
+        event = event.id(event_id);
+    }
+    Some(Ok(event))
 }
 
 fn encode_sse_payload<M>(

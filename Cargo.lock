@@ -8320,6 +8320,7 @@ dependencies = [
  "parking_lot 0.13.0",
  "percent-encoding",
  "prost",
+ "rcgen",
  "redis",
  "reqwest",
  "rustls",
@@ -8341,10 +8342,12 @@ dependencies = [
  "synctv-media-providers",
  "synctv-proto",
  "synctv-proxy",
+ "synctv-quic",
  "synctv-realtime",
  "synctv-xiu",
  "tempfile",
  "tikv-jemallocator",
+ "time",
  "tokio",
  "tokio-rustls",
  "tokio-stream",
@@ -8357,6 +8360,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "wtransport",
 ]
 
 [[package]]
@@ -8618,6 +8622,7 @@ dependencies = [
  "synctv-media-providers",
  "synctv-proto",
  "synctv-proxy",
+ "synctv-quic",
  "synctv-realtime",
  "synctv-web-ui",
  "tempfile",

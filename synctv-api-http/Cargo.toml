@@ -80,6 +80,7 @@ tls-native-roots = [
 ]
 
 [dependencies]
+synctv-quic = { workspace = true, default-features = false }
 # Internal
 synctv-api-common = { workspace = true, default-features = false }
 synctv-adapter = { workspace = true, default-features = false }

@@ -145,7 +145,7 @@ pub(in crate::http) fn sse_event_from_server_message(
     Some(Ok(event))
 }
 
-pub(in crate::http::room) fn sse_event_id_from_resource_event(
+pub(in crate::http) fn sse_event_id_from_resource_event(
     changed: &synctv_proto::client::ResourceEvent,
 ) -> Option<String> {
     changed

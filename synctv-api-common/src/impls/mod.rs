@@ -23,6 +23,7 @@ pub mod oauth2;
 pub mod pagination;
 pub mod playback;
 pub mod playlist_items_snapshot;
+pub mod realtime_sessions;
 pub mod request_context;
 pub mod room_members_snapshot;
 pub mod room_settings_snapshot;
@@ -48,6 +49,9 @@ pub use messaging::{
 };
 pub use notification::NotificationApiImpl;
 pub use oauth2::OAuth2ApiImpl;
+pub use realtime_sessions::{
+    ManagedRealtimeSession, RealtimeSessionRegistry, SessionLease, REALTIME_SESSION_LEASE_TTL,
+};
 pub use request_context::{
     ApiRequestContext, EndpointRateLimitCategory, EndpointRateLimitScope, RequestExecutor,
     RequestMetadata, TransportProtocol,

@@ -8317,6 +8317,7 @@ dependencies = [
  "opaque-ke",
  "prost",
  "redis",
+ "reqwest",
  "serde",
  "serde_json",
  "serde_urlencoded",

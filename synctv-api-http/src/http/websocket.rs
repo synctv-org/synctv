@@ -899,14 +899,14 @@ async fn run_websocket_handshake_with_timeout<T>(
         .map_err(|_| AppError::new(StatusCode::REQUEST_TIMEOUT, "WebSocket handshake timed out"))?
 }
 
-struct ReservationCleanupGuard {
+pub(crate) struct ReservationCleanupGuard {
     connection_service: Arc<dyn ConnectionRuntime>,
     reservation: HandshakeReservation,
     armed: bool,
 }
 
 impl ReservationCleanupGuard {
-    const fn new(
+    pub(crate) const fn new(
         connection_service: Arc<dyn ConnectionRuntime>,
         reservation: HandshakeReservation,
     ) -> Self {
@@ -917,7 +917,7 @@ impl ReservationCleanupGuard {
         }
     }
 
-    const fn disarm(&mut self) {
+    pub(crate) const fn disarm(&mut self) {
         self.armed = false;
     }
 }
@@ -933,19 +933,19 @@ impl Drop for ReservationCleanupGuard {
 }
 
 #[derive(Debug, Clone)]
-struct HandshakeReservation {
+pub(crate) struct HandshakeReservation {
     room_id: RoomId,
     actor: synctv_core::models::RealtimeActor,
 }
 
 impl HandshakeReservation {
-    fn release(&self, connection_service: &dyn ConnectionRuntime) {
+    pub(crate) fn release(&self, connection_service: &dyn ConnectionRuntime) {
         connection_service.release_room_reservation(&self.room_id);
         connection_service.release_actor_reservation(&self.actor);
     }
 }
 
-fn reserve_websocket_upgrade_slots(
+pub(crate) fn reserve_websocket_upgrade_slots(
     connection_service: &dyn ConnectionRuntime,
     room_id: &RoomId,
     actor: &synctv_core::models::RealtimeActor,
@@ -1064,6 +1064,84 @@ fn map_websocket_pre_join_error(error: RealtimeJoinError) -> AppError {
     AppError::from(ApiError::from(error))
 }
 
+/// Builds the transport-agnostic room session handler shared by the WebSocket
+/// and HTTP-realtime-session transports. The caller supplies the outbound
+/// `MessageSender` (typically a `FairSessionSender`) and owns the resulting
+/// handler's lifecycle via `start()`.
+pub(crate) fn build_room_stream_handler(
+    state: &AppState,
+    room_id: RoomId,
+    principal: RealtimePrincipal,
+    connection_id: Option<String>,
+    sender: Arc<dyn MessageSender>,
+) -> Result<StreamMessageHandler, AppError> {
+    let event_service = state.event_service.clone();
+    // Resolve chat_service (required for proper business logic enforcement)
+    let chat_service = if let Some(ref svc) = state.chat_service {
+        svc.clone()
+    } else {
+        return Err(AppError::new(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "chat_service not available; realtime connections are not supported",
+        ));
+    };
+
+    Ok(StreamMessageHandler::new_with_runtime(
+        StreamMessageHandlerConfig {
+            room_id,
+            principal,
+            connection_id,
+            room_service: state.room_service.clone(),
+            chat_service,
+            event_service,
+            connection_service: state.connection_manager.clone(),
+            rate_limiter: state.rate_limiter.clone(),
+            rate_limit_config: state.shared_api_runtime.messaging_rate_limit_config.clone(),
+            content_filter: websocket_content_filter(&state.shared_api_runtime.content_filter),
+            public_id_codec: state.shared_api_runtime.public_id_codec.clone(),
+            sender,
+            concurrency_config: Arc::new(MessageConcurrencyConfig::default()),
+        },
+        build_stream_message_handler_runtime(state),
+    ))
+}
+
+/// Runtime services block shared by every room realtime transport handler.
+pub(crate) fn build_stream_message_handler_runtime(
+    state: &AppState,
+) -> StreamMessageHandlerRuntime {
+    StreamMessageHandlerRuntime {
+        clock: state.shared_api_runtime.client_api.clock.clone(),
+        playback_service: state.shared_api_runtime.client_api.clone(),
+        playlist_items_snapshot_service: state.shared_api_runtime.client_api.clone(),
+        room_members_snapshot_service: state.shared_api_runtime.client_api.clone(),
+        room_settings_snapshot_service:
+            synctv_api_common::impls::room_settings_snapshot::default_room_settings_snapshot_service(
+                state.room_service.clone(),
+            ),
+        playback_fanout: state.shared_api_runtime.client_api.playback_fanout.clone(),
+        chat_event_dispatcher:
+            synctv_api_common::chat_event_dispatcher::default_chat_event_dispatcher(
+                state.event_service.clone(),
+            ),
+        presence_service: state.presence_service.clone(),
+        notification_service: state.notification_service.clone(),
+        ws_message_rate_limit: state
+            .runtime_settings
+            .connection_limits
+            .ws_message_rate_limit_per_second,
+        heartbeat_schedule: state.shared_api_runtime.heartbeat_schedule,
+        filter_private_ice_candidates: state.runtime_settings.webrtc.filter_private_ice_candidates,
+        swarm_signing_key: state.shared_api_runtime.media_swarm_signing_key.clone(),
+        media_swarm_tracker: state
+            .shared_api_runtime
+            .client_api
+            .media_swarm_tracker
+            .clone(),
+        runtime_settings_store: state.runtime_settings_store.clone(),
+    }
+}
+
 async fn handle_socket(
     socket: axum::extract::ws::WebSocket,
     state: AppState,
@@ -1087,14 +1165,7 @@ async fn handle_socket(
         "WebSocket connection established"
     );
 
-    let event_service = state.event_service.clone();
-
     let _metrics_guard = synctv_core::metrics::http::track_websocket_connection();
-
-    // Use the shared rate limiter from app state
-    let rate_limiter = state.rate_limiter.clone();
-    let rate_limit_config = state.shared_api_runtime.messaging_rate_limit_config.clone();
-    let content_filter = websocket_content_filter(&state.shared_api_runtime.content_filter);
 
     // Outbound path: the fair session queue schedules per-observation lanes
     // (interactive vs bulk, control first) and the forwarder encodes frames
@@ -1110,64 +1181,23 @@ async fn handle_socket(
     let raw_sender_for_ping = control_tx.clone();
     let ws_sender = fair_sender;
 
-    // Resolve chat_service (required for proper business logic enforcement)
-    let chat_service = if let Some(ref svc) = state.chat_service {
-        svc.clone()
-    } else {
-        error!("chat_service not available, WebSocket connection not supported");
-        return;
-    };
-
     // Create StreamMessageHandler with all configuration
-    let stream_handler = StreamMessageHandler::new_with_runtime(
-        StreamMessageHandlerConfig {
-            room_id,
-            principal,
-            connection_id: Some(connection_id.clone()),
-            room_service: state.room_service.clone(),
-            chat_service,
-            event_service: event_service.clone(),
-            connection_service: state.connection_manager.clone(),
-            rate_limiter,
-            rate_limit_config,
-            content_filter,
-            public_id_codec: state.shared_api_runtime.public_id_codec.clone(),
-            sender: ws_sender_for_handler,
-            concurrency_config: Arc::new(MessageConcurrencyConfig::default()),
-        },
-        StreamMessageHandlerRuntime {
-            clock: state.shared_api_runtime.client_api.clock.clone(),
-            playback_service: state.shared_api_runtime.client_api.clone(),
-            playlist_items_snapshot_service: state.shared_api_runtime.client_api.clone(),
-            room_members_snapshot_service: state.shared_api_runtime.client_api.clone(),
-            room_settings_snapshot_service:
-                synctv_api_common::impls::room_settings_snapshot::default_room_settings_snapshot_service(
-                    state.room_service.clone(),
-                ),
-            playback_fanout: state.shared_api_runtime.client_api.playback_fanout.clone(),
-            chat_event_dispatcher: synctv_api_common::chat_event_dispatcher::default_chat_event_dispatcher(
-                event_service.clone(),
-            ),
-            presence_service: state.presence_service.clone(),
-            notification_service: state.notification_service.clone(),
-            ws_message_rate_limit: state
-                .runtime_settings
-                .connection_limits
-                .ws_message_rate_limit_per_second,
-            heartbeat_schedule: state.shared_api_runtime.heartbeat_schedule,
-            filter_private_ice_candidates: state
-                .runtime_settings
-                .webrtc
-                .filter_private_ice_candidates,
-            swarm_signing_key: state.shared_api_runtime.media_swarm_signing_key.clone(),
-            media_swarm_tracker: state
-                .shared_api_runtime
-                .client_api
-                .media_swarm_tracker
-                .clone(),
-            runtime_settings_store: state.runtime_settings_store.clone(),
-        },
-    );
+    let stream_handler = match build_room_stream_handler(
+        &state,
+        room_id,
+        principal,
+        Some(connection_id.clone()),
+        ws_sender_for_handler,
+    ) {
+        Ok(handler) => handler,
+        Err(error) => {
+            error!(
+                error = %error,
+                "Failed to build WebSocket stream handler"
+            );
+            return;
+        }
+    };
     let connection_id = stream_handler.connection_id().to_string();
 
     let (incoming_tx, cancel_token) = match stream_handler.start().await {

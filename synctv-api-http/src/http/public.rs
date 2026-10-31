@@ -82,6 +82,12 @@ pub async fn get_server_info(
         })
         .await
         .map_err(map_api_error)?;
+    // Merge the deployment's listener capabilities (WebSocket/SSE/gRPC,
+    // plus WebTransport when the QUIC listener is enabled).
+    let response = GetServerInfoResponse {
+        transports: state.realtime_transport_advertisement.read().clone(),
+        ..response
+    };
     Ok(Json(response))
 }
 

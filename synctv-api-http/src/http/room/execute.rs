@@ -5,7 +5,7 @@ use std::future::Future;
 use super::{AppState, RequestMetadata};
 use synctv_api_common::impls::{EndpointRateLimitCategory, EndpointRateLimitScope};
 
-pub(in crate::http::room) fn request_metadata(
+pub(in crate::http) fn request_metadata(
     request_meta: RequestMetadata,
 ) -> synctv_api_common::impls::RequestMetadata {
     request_meta.0

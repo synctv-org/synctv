@@ -3243,7 +3243,24 @@ async fn database_storage_resumable_fingerprint_is_scoped_to_uploader_and_scope(
     assert_eq!(resumed.file.object_key, first.file.object_key);
     assert_eq!(second_user.file.object_key, first.file.object_key);
     assert_eq!(second_scope.file.object_key, first.file.object_key);
-    assert_eq!(resumed.upload_object_access, first.upload_object_access);
+    // Same resumed session yields the same access target; read tokens are
+    // minted per call, so compare everything except the expiry claim.
+    assert_eq!(
+        resumed.upload_object_access.as_ref().map(|access| {
+            (
+                &access.object_kind,
+                &access.encoded_object_key,
+                read_token_stable_payload(&access.read_token),
+            )
+        }),
+        first.upload_object_access.as_ref().map(|access| {
+            (
+                &access.object_kind,
+                &access.encoded_object_key,
+                read_token_stable_payload(&access.read_token),
+            )
+        })
+    );
     assert_ne!(second_user.upload_object_access, first.upload_object_access);
     assert_ne!(
         second_scope.upload_object_access,
@@ -4491,6 +4508,25 @@ async fn s3_multipart_completion_uses_all_recorded_parts() {
         "stored S3 file object should load",
     );
     assert_eq!(object_content_manifest_sha256, content_manifest_sha256);
+}
+
+/// Compare read tokens ignoring their time-varying expiry claim. Tokens are
+/// minted per call, so byte-equality only holds when two mints land in the
+/// same second; identity is the rest of the payload.
+fn read_token_stable_payload(token: &str) -> serde_json::Value {
+    let payload = token
+        .split('.')
+        .nth(1)
+        .expect("read token has a payload segment");
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, payload)
+        .expect("read token payload should decode");
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&bytes).expect("read token payload should be JSON");
+    value
+        .as_object_mut()
+        .expect("read token payload should be an object")
+        .remove("expires_at");
+    value
 }
 
 #[test]

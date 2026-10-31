@@ -555,7 +555,8 @@ pub trait FileStorageService: Send + Sync {
     /// Opaque handle carried by this backend's read tokens; `None` for
     /// storages that never mint read tokens. The router matches it to
     /// dispatch downloads without exposing backend names in the payload.
-    fn read_token_backend_slot(&self) -> Option<String> {
+    /// Implementations cache the value at construction.
+    fn read_token_backend_slot(&self) -> Option<&str> {
         None
     }
 
@@ -792,6 +793,9 @@ pub struct DatabaseFileStorageService {
     pub(crate) repository: Arc<FileStorageRepository>,
     pub(crate) upload_token_secret: String,
     pub(crate) compression: DatabaseFileStorageCompressionConfig,
+    /// Cached once at construction; the secret and backend name are
+    /// immutable for the process lifetime.
+    pub(crate) read_backend_slot: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1683,14 +1687,33 @@ pub(super) fn file_object_read_token_backend_slot(token: &str) -> Result<String>
     Ok(payload.backend_slot)
 }
 
-pub(super) fn validate_file_object_read_token(
+#[cfg(test)]
+pub(super) fn validate_file_object_read_token_at(
     storage_backend: &str,
+    object_key: &str,
+    token: &str,
+    now: DateTime<Utc>,
+    secret: &str,
+) -> Result<()> {
+    validate_file_object_read_token_with_slot_at(
+        &file_read_backend_slot(storage_backend, secret),
+        object_key,
+        token,
+        now,
+        secret,
+    )
+}
+
+/// Slot-precomputed variant for serving backends: routing/hold backends
+/// cache their slot at construction, so validation is a pure comparison.
+pub(super) fn validate_file_object_read_token_with_slot(
+    expected_backend_slot: &str,
     object_key: &str,
     token: &str,
     secret: &str,
 ) -> Result<()> {
-    validate_file_object_read_token_at(
-        storage_backend,
+    validate_file_object_read_token_with_slot_at(
+        expected_backend_slot,
         object_key,
         token,
         crate::SystemClock.now(),
@@ -1698,8 +1721,8 @@ pub(super) fn validate_file_object_read_token(
     )
 }
 
-pub(super) fn validate_file_object_read_token_at(
-    storage_backend: &str,
+pub(super) fn validate_file_object_read_token_with_slot_at(
+    expected_backend_slot: &str,
     object_key: &str,
     token: &str,
     now: DateTime<Utc>,
@@ -1711,7 +1734,7 @@ pub(super) fn validate_file_object_read_token_at(
         format!("synctv:file-read:{secret}").as_bytes(),
         "invalid file read token",
     )?;
-    if payload.backend_slot != file_read_backend_slot(storage_backend, secret) {
+    if payload.backend_slot != expected_backend_slot {
         return Err(Error::InvalidInput("invalid file read token".to_string()));
     }
     if payload.object_key != object_key {

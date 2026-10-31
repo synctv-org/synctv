@@ -29,14 +29,13 @@ use crate::{
         upload_session_is_multipart, upload_session_is_single_object, upload_session_metadata,
         upload_session_metadata_with_manifest, upload_session_object_metadata,
         upload_session_parts_progress, upload_session_policy, upload_session_progress,
-        validate_create_file_upload_session, validate_file_mime_type,
-        validate_file_object_read_token, validate_file_reuse_grant, validate_file_upload_token,
-        validate_file_upload_token_context, validate_session_file_for_storage,
-        validate_stored_files, validate_upload_range, validated_upload_manifest,
-        CreateFileReuseGrant, DatabaseFileStorageCompressionConfig, DatabaseFileStorageService,
-        FileObjectReader, FileReuseGrant, FileStorageCleanupOrigin, FileStorageContext,
-        FileStorageService, UploadSessionMetadataInput, ValidatedFileReuseGrant,
-        FILE_UPLOAD_EXPIRES_SECONDS, FILE_UPLOAD_TOKEN_HEADER,
+        validate_create_file_upload_session, validate_file_mime_type, validate_file_reuse_grant,
+        validate_file_upload_token, validate_file_upload_token_context,
+        validate_session_file_for_storage, validate_stored_files, validate_upload_range,
+        validated_upload_manifest, CreateFileReuseGrant, DatabaseFileStorageCompressionConfig,
+        DatabaseFileStorageService, FileObjectReader, FileReuseGrant, FileStorageCleanupOrigin,
+        FileStorageContext, FileStorageService, UploadSessionMetadataInput,
+        ValidatedFileReuseGrant, FILE_UPLOAD_EXPIRES_SECONDS, FILE_UPLOAD_TOKEN_HEADER,
         MAX_DATABASE_FILE_UPLOAD_PART_SIZE_BYTES,
     },
     Error, Result,
@@ -64,11 +63,15 @@ impl DatabaseFileStorageService {
         upload_token_secret: impl Into<String>,
         compression: DatabaseFileStorageCompressionConfig,
     ) -> Self {
+        let storage_backend = storage_backend.into();
+        let upload_token_secret = upload_token_secret.into();
+        let read_backend_slot = file_read_backend_slot(&storage_backend, &upload_token_secret);
         Self {
-            storage_backend: storage_backend.into(),
+            storage_backend,
             repository,
-            upload_token_secret: upload_token_secret.into(),
+            upload_token_secret,
             compression,
+            read_backend_slot,
         }
     }
 
@@ -97,8 +100,8 @@ impl DatabaseFileStorageService {
 
     async fn object_download(&self, request: GetFileObject) -> Result<FileObjectDownload> {
         let object_key = decode_file_object_key(&request.encoded_object_key)?;
-        validate_file_object_read_token(
-            &self.storage_backend,
+        super::validate_file_object_read_token_with_slot(
+            &self.read_backend_slot,
             &object_key,
             &request.read_token,
             &self.upload_token_secret,
@@ -504,11 +507,8 @@ impl FileStorageService for DatabaseFileStorageService {
         &self.storage_backend
     }
 
-    fn read_token_backend_slot(&self) -> Option<String> {
-        Some(file_read_backend_slot(
-            &self.storage_backend,
-            &self.upload_token_secret,
-        ))
+    fn read_token_backend_slot(&self) -> Option<&str> {
+        Some(&self.read_backend_slot)
     }
 
     fn supports_reuse_grants(&self) -> bool {

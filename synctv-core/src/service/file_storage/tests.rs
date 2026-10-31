@@ -4548,7 +4548,13 @@ fn file_object_read_token_v1_format_is_rejected() {
     let token = format!("v1.{encoded_payload}.{signature}");
 
     // v1 tokens never carried an expiry, so they must not validate at all.
-    match validate_file_object_read_token(backend, object_key, &token, secret) {
+    match validate_file_object_read_token_at(
+        backend,
+        object_key,
+        &token,
+        crate::SystemClock.now(),
+        secret,
+    ) {
         Err(error) => {
             let message = error.to_string();
             assert!(
@@ -4608,7 +4614,13 @@ fn file_read_token_rejects_cross_backend_and_cross_secret_replay() {
     );
 
     // Same key under a different backend: slot mismatch must reject.
-    match validate_file_object_read_token("s3-primary", "objects/replay.png", &token, secret) {
+    match validate_file_object_read_token_at(
+        "s3-primary",
+        "objects/replay.png",
+        &token,
+        crate::SystemClock.now(),
+        secret,
+    ) {
         Err(error) => {
             let message = error.to_string();
             assert!(
@@ -4620,8 +4632,13 @@ fn file_read_token_rejects_cross_backend_and_cross_secret_replay() {
     }
 
     // Same backend under a different secret: signature mismatch must reject.
-    match validate_file_object_read_token("database", "objects/replay.png", &token, "other-secret")
-    {
+    match validate_file_object_read_token_at(
+        "database",
+        "objects/replay.png",
+        &token,
+        crate::SystemClock.now(),
+        "other-secret",
+    ) {
         Err(_) => {}
         Ok(()) => panic!("cross-secret replay must be rejected"),
     }

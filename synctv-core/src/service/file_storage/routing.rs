@@ -63,11 +63,7 @@ impl FileStorageBackendRegistry {
         let slot = file_object_read_token_backend_slot(token)?;
         self.backends
             .values()
-            .find(|backend| {
-                backend
-                    .read_token_backend_slot()
-                    .is_some_and(|backend_slot| backend_slot == slot)
-            })
+            .find(|backend| backend.read_token_backend_slot() == Some(slot.as_str()))
             .cloned()
             .ok_or_else(|| Error::InvalidInput("invalid file read token".to_string()))
     }

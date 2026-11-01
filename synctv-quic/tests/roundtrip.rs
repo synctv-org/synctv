@@ -13,29 +13,37 @@ use http_body_util::{BodyExt, Full};
 use synctv_quic::testing::insecure_client_config;
 use synctv_quic::{
     generate_self_signed_config, read_frame, serve_quic, write_frame, QuicServerConfig,
-    WebTransportHandler, WtBidiStream,
+    WebTransportHandler, WtSessionDriver,
 };
 use tokio_util::sync::CancellationToken;
 use tower::service_fn;
 
-/// Echoes every frame back; rejects any path other than `/wt/echo`.
+/// Echoes every frame back on the control stream; `/wt/push` additionally
+/// mirrors every frame onto a server-initiated unidirectional stream.
 struct EchoHandler;
 
 #[async_trait::async_trait]
 impl WebTransportHandler for EchoHandler {
     async fn accept(&self, request: &Request<()>) -> Result<(), StatusCode> {
-        if request.uri().path() == "/wt/echo" {
-            Ok(())
-        } else {
-            Err(StatusCode::NOT_FOUND)
+        match request.uri().path() {
+            "/wt/echo" | "/wt/push" => Ok(()),
+            _ => Err(StatusCode::NOT_FOUND),
         }
     }
 
-    async fn run_session(&self, _request: Request<()>, stream: WtBidiStream) {
-        let (mut send, mut recv) = h3::quic::BidiStream::split(stream);
+    async fn run_session(&self, request: Request<()>, session: WtSessionDriver) {
+        let push = request.uri().path() == "/wt/push";
+        let opener = session.opener();
+        let (mut send, mut recv) = h3::quic::BidiStream::split(session.control_stream);
+        let mut push_stream = if push { opener.open_uni().await } else { None };
         while let Ok(Some(frame)) = read_frame(&mut recv).await {
             if write_frame(&mut send, &frame).await.is_err() {
                 break;
+            }
+            if let Some(stream) = push_stream.as_mut() {
+                if write_frame(stream, &frame).await.is_err() {
+                    break;
+                }
             }
         }
     }
@@ -173,6 +181,38 @@ async fn webtransport_session_round_trips_frames_with_independent_client() {
     assert_eq!(&first[..], b"first frame");
     let second = read_frame(&mut recv).await.unwrap().expect("echo 2");
     assert_eq!(&second[..], b"second frame");
+
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn webtransport_pushes_frames_on_unidirectional_streams() {
+    let (addr, shutdown) = start_server().await;
+
+    let config = wtransport::ClientConfig::builder()
+        .with_bind_default()
+        .with_no_cert_validation()
+        .build();
+    let endpoint = wtransport::Endpoint::client(config).expect("wtransport client");
+    let connection = endpoint
+        .connect(format!("https://127.0.0.1:{}/wt/push", addr.port()))
+        .await
+        .expect("WebTransport session established");
+
+    let (mut send, mut recv) = connection
+        .open_bi()
+        .await
+        .expect("open bi")
+        .await
+        .expect("bi stream ready");
+    write_frame(&mut send, b"mirrored").await.unwrap();
+
+    let echoed = read_frame(&mut recv).await.unwrap().expect("control echo");
+    assert_eq!(&echoed[..], b"mirrored");
+
+    let mut uni = connection.accept_uni().await.expect("push stream");
+    let pushed = read_frame(&mut uni).await.unwrap().expect("pushed frame");
+    assert_eq!(&pushed[..], b"mirrored");
 
     shutdown.cancel();
 }

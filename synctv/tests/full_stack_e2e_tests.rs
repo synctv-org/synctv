@@ -9879,6 +9879,108 @@ async fn full_stack_quic_serves_http3_and_webtransport_realtime() {
 
     let _ = send.shutdown().await;
     drop(connection);
+
+    // Multi-stream session (`streams=1`): the control stream carries control
+    // traffic (heartbeat acks), and each observation lane is pushed on its
+    // own server-initiated unidirectional stream.
+    let create_ticket = post_json(
+        &client,
+        &format!("{}/api/tickets", server.api_base_url),
+        create_ticket_request(&room_id),
+        Some(&token),
+    )
+    .await;
+    assert_eq!(create_ticket.status(), StatusCode::OK);
+    let ticket = response_json(create_ticket).await["ticket"]
+        .as_str()
+        .expect("ticket")
+        .to_string();
+    let connection = endpoint
+        .connect(format!(
+            "https://127.0.0.1:{udp_port}/wt/rooms/{room_id}?ticket={ticket}&format=protobuf&streams=1"
+        ))
+        .await
+        .expect("multi-stream WebTransport room session");
+    let (mut send, mut recv) = connection
+        .open_bi()
+        .await
+        .expect("open control stream")
+        .await
+        .expect("control stream ready");
+
+    let observe = synctv_proto::client::ClientMessage {
+        message: Some(client_message::Message::ObserveResource(
+            synctv_proto::client::ObserveResource {
+                observe_id: "e2e-chat".to_string(),
+                resource: Some(
+                    synctv_proto::client::observe_resource::Resource::ChatEvents(
+                        synctv_proto::client::ObserveChatEvents::default(),
+                    ),
+                ),
+                ..Default::default()
+            },
+        )),
+    };
+    synctv_quic::write_frame(&mut send, &observe.encode_to_vec())
+        .await
+        .expect("write observe frame");
+    synctv_quic::write_frame(&mut send, &heartbeat.encode_to_vec())
+        .await
+        .expect("write heartbeat frame");
+
+    // Observation lane frames arrive on a server-initiated unidirectional
+    // stream; heartbeat acks stay on the control stream.
+    let lane = tokio::time::timeout(Duration::from_secs(10), async {
+        let mut uni = connection
+            .accept_uni()
+            .await
+            .expect("accept observation stream");
+        loop {
+            let frame = synctv_quic::read_frame(&mut uni)
+                .await
+                .expect("read observation frame")
+                .expect("observation stream stays open");
+            let message = synctv_proto::client::ServerMessage::decode(&frame[..])
+                .expect("server message decodes");
+            match &message.message {
+                Some(server_message::Message::ResourceObserved(observed)) => {
+                    return observed.observe_id.clone()
+                }
+                Some(server_message::Message::ResourceEvent(event)) => {
+                    return event.observe_id.clone()
+                }
+                Some(server_message::Message::ResourceObserveError(error)) => {
+                    panic!("observe rejected: {:?}", error.error)
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("observation frames on a unidirectional stream");
+    assert_eq!(lane, "e2e-chat");
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let frame = synctv_quic::read_frame(&mut recv)
+                .await
+                .expect("read control frame")
+                .expect("control stream stays open");
+            let message = synctv_proto::client::ServerMessage::decode(&frame[..])
+                .expect("server message decodes");
+            if matches!(
+                message.message,
+                Some(server_message::Message::HeartbeatAck(_))
+            ) {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("heartbeat ack on the control stream");
+
+    let _ = send.shutdown().await;
+    drop(connection);
     let _ = std::fs::remove_dir_all(&temp_dir);
     drop(server);
 }

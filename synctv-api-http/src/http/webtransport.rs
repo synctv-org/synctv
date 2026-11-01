@@ -2,15 +2,29 @@
 //!
 //! Serves the room realtime session over a WebTransport session (extended
 //! CONNECT under the `webtransport` protocol on the server's HTTP/3
-//! listener). The wire format mirrors the binary WebSocket transport:
-//! length-prefixed protobuf `ClientMessage`/`ServerMessage` frames on one
-//! bidirectional stream, scheduled through the same per-observation fair
-//! queue and driven by the same `StreamMessageHandler` as WS/gRPC.
+//! listener). The wire format mirrors the binary WebSocket transport —
+//! length-prefixed protobuf `ClientMessage`/`ServerMessage` frames — with
+//! one bidirectional control stream, scheduled through the same
+//! per-observation fair queue and driven by the same `StreamMessageHandler`
+//! as WS/gRPC.
+//!
+//! Clients that announce `streams=1` on the CONNECT — multi-stream
+//! revision one — additionally get each observation lane pushed on its own
+//! stream opened unidirectionally by the server, so a bulk snapshot's
+//! packet loss or backpressure never delays heartbeats, terminations, or
+//! unrelated observations. The protocol's only ordering guarantee, FIFO
+//! within one `observe_id`, is preserved because every frame of an
+//! observation stays on that observation's stream, and control traffic
+//! stays on the control stream. Clients that do not announce the revision
+//! keep the single-stream layout on the control stream.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::http::{Request, StatusCode};
-use synctv_quic::{read_frame, write_frame, WebTransportHandler, WtBidiStream};
+use synctv_quic::{
+    read_frame, write_frame, WebTransportHandler, WtSendStream, WtSessionDriver, WtStreamOpener,
+};
 
 use crate::http::websocket::{
     build_room_stream_handler, extract_handshake_auth, load_websocket_username,
@@ -19,7 +33,8 @@ use crate::http::websocket::{
 };
 use crate::http::AppState;
 use synctv_api_common::impls::messaging::{
-    FairQueueConfig, FairSessionSender, MessageSender, ProtoCodec,
+    classify_message_lane, FairQueueConfig, FairSessionSender, MessageLane, MessageSender,
+    ProtoCodec,
 };
 use synctv_api_common::impls::RequestMetadata as ApiRequestMetadata;
 
@@ -30,6 +45,12 @@ pub const WEBTRANSPORT_ROOMS_PATH: &str = "/wt/rooms/";
 
 /// Length of the base path prefix.
 const WEBTRANSPORT_ROOMS_PATH_LEN: usize = WEBTRANSPORT_ROOMS_PATH.len();
+
+/// Upper bound on concurrent per-observation push streams. Mirrors the fair
+/// queue's lane defense: observations beyond the cap share the control
+/// stream instead of refusing them (ordering within each such observation
+/// stays consistent because it never changes streams mid-flight).
+const MAX_OBSERVATION_STREAMS: usize = 32;
 
 /// Parses `/wt/rooms/{roomId}` and its query string from the CONNECT target.
 fn parse_room_target(uri: &axum::http::Uri) -> Option<(String, WsQuery)> {
@@ -63,6 +84,24 @@ fn wt_request_metadata(request: &Request<()>) -> ApiRequestMetadata {
         endpoint_scope: None,
         timeout: None,
     }
+}
+
+/// Returns the client's announced multi-stream revision from the CONNECT
+/// query (`streams=1`). Parsed off the raw query so an old server's typed
+/// query struct never rejects an unknown parameter, and an old client's
+/// query stays valid.
+fn announced_stream_revision(uri: &axum::http::Uri) -> Option<u32> {
+    let query = uri.query()?;
+    query.split('&').find_map(|pair| {
+        let (key, value) = pair.split_once('=')?;
+        (key == "streams").then(|| value.parse::<u32>().ok())?
+    })
+}
+
+/// True when the client announced multi-stream revision 1: per-observation
+/// unidirectional push streams plus the control stream.
+fn negotiated_multi_stream(uri: &axum::http::Uri) -> bool {
+    announced_stream_revision(uri) == Some(1)
 }
 
 /// Room realtime sessions over WebTransport.
@@ -104,8 +143,8 @@ impl WebTransportHandler for RoomWebTransportHandler {
         Ok(())
     }
 
-    async fn run_session(&self, request: Request<()>, stream: WtBidiStream) {
-        if let Err(error) = self.run_session_inner(request, stream).await {
+    async fn run_session(&self, request: Request<()>, session: WtSessionDriver) {
+        if let Err(error) = self.run_session_inner(request, session).await {
             tracing::info!(error = %error, "WebTransport room session ended with error");
         }
     }
@@ -115,7 +154,7 @@ impl RoomWebTransportHandler {
     async fn run_session_inner(
         &self,
         request: Request<()>,
-        stream: WtBidiStream,
+        session: WtSessionDriver,
     ) -> Result<(), String> {
         let state = &self.state;
         let Some((public_room_id, query)) = parse_room_target(request.uri()) else {
@@ -204,30 +243,60 @@ impl RoomWebTransportHandler {
             "WebTransport room session established"
         );
 
-        let (mut send_half, mut recv_half) = synctv_quic::h3::quic::BidiStream::split(stream);
+        let stream_opener = session.opener();
+        let (mut send_half, mut recv_half) =
+            synctv_quic::h3::quic::BidiStream::split(session.control_stream);
+        let multi_stream = negotiated_multi_stream(request.uri());
 
-        // Writer: fair queue -> length-prefixed protobuf frames.
+        // Writer: fair queue -> frames. Control-lane messages always use the
+        // control stream; with `streams=1` negotiated, each observation gets
+        // its own server-initiated unidirectional stream.
         let writer_cancel = cancel_token.clone();
         tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+
             let mut fair_rx = fair_rx;
-            loop {
+            let mut lanes: HashMap<String, WtSendStream> = HashMap::new();
+            let outcome = loop {
                 tokio::select! {
                     message = fair_rx.recv() => {
-                        let Some(message) = message else { break };
+                        let Some(message) = message else { break Ok(()) };
                         let Ok(bytes) = ProtoCodec::encode_server_message(&message) else {
                             continue;
                         };
-                        if write_frame(&mut send_half, &bytes).await.is_err() {
-                            break;
+                        let written = match classify_message_lane(&message) {
+                            MessageLane::Observation { observe_id, .. } if multi_stream => {
+                                write_observation_frame(
+                                    &mut lanes,
+                                    &stream_opener,
+                                    &mut send_half,
+                                    observe_id,
+                                    &bytes,
+                                )
+                                .await
+                            }
+                            // Control lane, and every lane in single-stream
+                            // mode, share the control stream.
+                            _ => write_frame(&mut send_half, &bytes).await.is_ok(),
+                        };
+                        if !written {
+                            break Err("stream write failed".to_string());
                         }
                     }
                     () = writer_cancel.cancelled() => {
-                        use tokio::io::AsyncWriteExt;
-                        let _ = send_half.shutdown().await;
-                        break;
+                        break Ok(());
                     }
                 }
+            };
+            if outcome.is_err() {
+                // A failed write desynchronizes the client: end the session
+                // so it reconnects and resyncs from its observation cursors.
+                writer_cancel.cancel();
             }
+            for (_, mut lane) in lanes {
+                let _ = lane.shutdown().await;
+            }
+            let _ = send_half.shutdown().await;
         });
 
         // Reader: frames -> handler inbound.
@@ -277,4 +346,79 @@ async fn commit_ticket(
     crate::http::websocket::commit_prevalidated_ticket(state, room_id, auth, handshake_control)
         .await
         .map_err(|error| error.to_string())
+}
+
+/// Writes one observation-lane frame, opening the lane's push stream lazily
+/// on first use. Observations beyond [`MAX_OBSERVATION_STREAMS`] — or when
+/// the session can no longer open streams — stay on the control stream for
+/// their entire lifetime, which preserves the protocol's per-observation
+/// FIFO guarantee (an observation never changes streams mid-flight).
+async fn write_observation_frame<W>(
+    lanes: &mut HashMap<String, WtSendStream>,
+    opener: &WtStreamOpener,
+    control: &mut W,
+    observe_id: &str,
+    bytes: &[u8],
+) -> bool
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    if !lanes.contains_key(observe_id) {
+        if lanes.len() >= MAX_OBSERVATION_STREAMS {
+            return write_frame(control, bytes).await.is_ok();
+        }
+        match opener.open_uni().await {
+            Some(stream) => {
+                lanes.insert(observe_id.to_string(), stream);
+            }
+            None => return write_frame(control, bytes).await.is_ok(),
+        }
+    }
+    match lanes.get_mut(observe_id) {
+        Some(stream) => write_frame(stream, bytes).await.is_ok(),
+        // Unreachable: the lane was inserted above.
+        None => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::announced_stream_revision;
+
+    fn uri_with_query(query: &str) -> axum::http::Uri {
+        format!("https://example.test/wt/rooms/room_1?{query}")
+            .parse()
+            .expect("uri parses")
+    }
+
+    #[test]
+    fn multi_stream_revision_is_parsed_from_the_query() {
+        assert_eq!(
+            announced_stream_revision(&uri_with_query("streams=1&format=protobuf")),
+            Some(1)
+        );
+        assert_eq!(
+            announced_stream_revision(&uri_with_query("format=protobuf&streams=1")),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn missing_or_unknown_revision_yields_none() {
+        assert_eq!(
+            announced_stream_revision(&uri_with_query("format=protobuf")),
+            None
+        );
+        assert_eq!(
+            announced_stream_revision(&uri_with_query("streams=2")),
+            Some(2)
+        );
+        assert_eq!(announced_stream_revision(&uri_with_query("streams=")), None);
+        assert_eq!(
+            announced_stream_revision(
+                &"https://example.test/wt/rooms/room_1".parse().expect("uri")
+            ),
+            None
+        );
+    }
 }

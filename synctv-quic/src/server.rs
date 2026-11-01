@@ -230,9 +230,11 @@ fn normalize_authority_host<B>(request: &mut http::Request<B>) {
 }
 
 /// Serves an established WebTransport session: the first bidirectional
-/// stream the client opens becomes the frame channel for the realtime
-/// transport; any further HTTP requests on the connection keep going through
-/// the service.
+/// stream the client opens becomes the control channel for the realtime
+/// transport (which may open server-initiated unidirectional push streams);
+/// any further HTTP requests on the connection keep going through the
+/// service. Client-initiated unidirectional streams are drained defensively
+/// so a confused or hostile client cannot wedge stream flow control.
 async fn drive_webtransport_session<S, ReqBody, ResBody>(
     session: WtSession,
     request: Request<()>,
@@ -249,31 +251,45 @@ async fn drive_webtransport_session<S, ReqBody, ResBody>(
     // Admission already ran before the session handshake (see the accept
     // loop); the CONNECT request is passed through for the session driver.
     let _ = &request;
+    let session = Arc::new(session);
     let mut frame_stream_taken = false;
     loop {
-        match session.accept_bi().await {
-            Ok(Some(h3_webtransport::server::AcceptedBi::BidiStream(_session_id, stream))) => {
-                if frame_stream_taken {
-                    // The realtime protocol uses exactly one frame channel;
-                    // surplus streams are dropped (resetting them).
-                    continue;
-                }
-                frame_stream_taken = true;
-                let handler = Arc::clone(&handler);
-                let request = request.clone();
-                tokio::spawn(async move {
-                    handler.run_session(request, stream).await;
-                });
-            }
-            Ok(Some(h3_webtransport::server::AcceptedBi::Request(request, stream))) => {
-                let mut service = service.clone();
-                tokio::spawn(async move {
-                    if let Err(error) = serve_request(stream, request, &mut service).await {
-                        tracing::debug!(error = %error, "HTTP/3 request failed");
+        tokio::select! {
+            accepted = session.accept_bi() => {
+                match accepted {
+                    Ok(Some(h3_webtransport::server::AcceptedBi::BidiStream(_session_id, stream))) => {
+                        if frame_stream_taken {
+                            // The realtime protocol uses exactly one control
+                            // stream; surplus bidis are dropped (resetting them).
+                            continue;
+                        }
+                        frame_stream_taken = true;
+                        let driver = crate::webtransport::share_session(Arc::clone(&session), stream);
+                        let handler = Arc::clone(&handler);
+                        let request = request.clone();
+                        tokio::spawn(async move {
+                            handler.run_session(request, driver).await;
+                        });
                     }
-                });
+                    Ok(Some(h3_webtransport::server::AcceptedBi::Request(request, stream))) => {
+                        let mut service = service.clone();
+                        tokio::spawn(async move {
+                            if let Err(error) = serve_request(stream, request, &mut service).await {
+                                tracing::debug!(error = %error, "HTTP/3 request failed");
+                            }
+                        });
+                    }
+                    Ok(None) | Err(_) => return,
+                }
             }
-            Ok(None) | Err(_) => return,
+            accepted_uni = session.accept_uni() => {
+                match accepted_uni {
+                    // Drained and dropped: the realtime protocol's uplink is
+                    // the control stream, so client uni streams carry nothing.
+                    Ok(Some(_stream)) => {}
+                    Ok(None) | Err(_) => return,
+                }
+            }
         }
     }
 }

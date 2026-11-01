@@ -32,7 +32,8 @@ pub use tls::{
     rustls_config_with_alpn,
 };
 pub use webtransport::{
-    is_webtransport_connect, WebTransportHandler, WtBidiStream, WEBTRANSPORT_PROTOCOL,
+    is_webtransport_connect, share_session, WebTransportHandler, WtBidiStream, WtSendStream,
+    WtSession, WtSessionDriver, WtStreamOpener, WEBTRANSPORT_PROTOCOL,
 };
 
 // Re-exported so downstream crates can name stream traits without depending

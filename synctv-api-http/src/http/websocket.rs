@@ -169,7 +169,7 @@ where
     }
 }
 
-fn websocket_request_metadata(
+pub(crate) fn websocket_request_metadata(
     runtime_settings: &synctv_api_common::ApiRuntimeSettings,
     headers: &HeaderMap,
     direct_peer_ip: Option<std::net::IpAddr>,
@@ -678,6 +678,17 @@ fn encode_server_frame(
 /// onto the WebSocket sink. Control frames (Ping/Pong/Close) always win so
 /// keepalives never wait behind application traffic.
 ///
+/// Bound on a single WebSocket sink write. A client that stops reading parks
+/// the write once socket buffers fill; without a bound the forwarder (and the
+/// fair queue it drains) is retained until the TCP connection dies.
+const SINK_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Grace after the session ends for the frames it already queued —
+/// terminations above all — to reach the peer before the socket goes away.
+/// Long enough to flush a full lane backlog to a healthy reader, short
+/// enough that a wedged peer cannot pin the forwarder.
+const FORWARDER_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// The fair queue closing means either the session failed its slow-client
 /// escalation or the handler tore the connection down; either way the
 /// connection is marked dead and the disconnect signal is raised (the
@@ -691,18 +702,32 @@ async fn forward_websocket_messages<S>(
     is_alive: Arc<std::sync::atomic::AtomicBool>,
     connection_service: Arc<dyn ConnectionRuntime>,
     connection_id: String,
+    session_cancel: tokio_util::sync::CancellationToken,
 ) where
     S: futures::Sink<axum::extract::ws::Message, Error = axum::Error> + Unpin,
 {
     let mut control_closed = false;
     let mut fair_closed = false;
+    // Once the logical session ends, keep delivering what it already queued
+    // (terminations above all) for a bounded grace instead of dropping the
+    // socket mid-flight: a client must see its termination frames before the
+    // close, and a wedged peer that stops reading cannot pin the fair
+    // queue's lanes past the deadline.
+    let mut drain_deadline: Option<tokio::time::Instant> = None;
 
     loop {
         if control_closed && fair_closed {
             break;
         }
 
-        let msg = if !control_closed {
+        // While draining, control frames (the close frame the input pump
+        // enqueues on cancellation above all) must not preempt what the
+        // session already queued — the client would see the socket close
+        // before its termination. Hold control traffic back until the fair
+        // queue is drained.
+        let control_deferred = drain_deadline.is_some() && !fair_closed;
+
+        let msg = if !control_closed && !control_deferred {
             match control_messages.try_recv() {
                 Ok(msg) => msg,
                 Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
@@ -713,6 +738,12 @@ async fn forward_websocket_messages<S>(
                     tokio::select! {
                         biased;
 
+                        () = session_cancel.cancelled(), if drain_deadline.is_none() => {
+                            drain_deadline = Some(
+                                tokio::time::Instant::now() + FORWARDER_DRAIN_GRACE,
+                            );
+                            continue;
+                        }
                         control = control_messages.recv() => {
                             let Some(msg) = control else {
                                 control_closed = true;
@@ -734,19 +765,58 @@ async fn forward_websocket_messages<S>(
                             };
                             frame
                         }
+                        () = async {
+                            match drain_deadline {
+                                Some(deadline) => tokio::time::sleep_until(deadline).await,
+                                None => std::future::pending::<()>().await,
+                            }
+                        } => {
+                            is_alive.store(false, std::sync::atomic::Ordering::Relaxed);
+                            connection_service.disconnect_connection(&connection_id);
+                            return;
+                        }
                     }
                 }
             }
         } else if !fair_closed {
-            let Some(message) = fair_messages.recv().await else {
-                // The fair queue only closes when the session failed its
-                // slow-client escalation or the handler tore the connection
-                // down. Mark dead and raise the disconnect signal (the
-                // handler's own cleanup also disconnects; duplicates are
-                // idempotent).
-                is_alive.store(false, std::sync::atomic::Ordering::Relaxed);
-                connection_service.disconnect_connection(&connection_id);
-                break;
+            let message = tokio::select! {
+                biased;
+                () = session_cancel.cancelled(), if drain_deadline.is_none() => {
+                    drain_deadline = Some(
+                        tokio::time::Instant::now() + FORWARDER_DRAIN_GRACE,
+                    );
+                    continue;
+                }
+                message = fair_messages.recv() => {
+                    let Some(message) = message else {
+                        if drain_deadline.is_some() {
+                            // Orderly session end: the fair queue handed over
+                            // its final frames — deliver the deferred close
+                            // frame next instead of dropping the socket.
+                            fair_closed = true;
+                            continue;
+                        }
+                        // The fair queue only closes when the session failed its
+                        // slow-client escalation or the handler tore the connection
+                        // down. Mark dead and raise the disconnect signal (the
+                        // handler's own cleanup also disconnects; duplicates are
+                        // idempotent).
+                        is_alive.store(false, std::sync::atomic::Ordering::Relaxed);
+                        connection_service.disconnect_connection(&connection_id);
+                        break;
+                    };
+                    message
+                }
+                () = async {
+                    match drain_deadline {
+                        Some(deadline) => tokio::time::sleep_until(deadline).await,
+                        None => std::future::pending::<()>().await,
+                    }
+                } => {
+                    is_alive.store(false, std::sync::atomic::Ordering::Relaxed);
+                    connection_service.disconnect_connection(&connection_id);
+                    return;
+                }
             };
             let Ok(frame) = encode_server_frame(format, &message) else {
                 error!(
@@ -760,15 +830,28 @@ async fn forward_websocket_messages<S>(
             break;
         };
 
-        if let Err(e) = ws_sender_sink.send(msg).await {
-            error!(
-                connection_id = %connection_id,
-                error = %e,
-                "Failed to send WebSocket message"
-            );
-            is_alive.store(false, std::sync::atomic::Ordering::Relaxed);
-            connection_service.disconnect_connection(&connection_id);
-            break;
+        match tokio::time::timeout(SINK_WRITE_TIMEOUT, ws_sender_sink.send(msg)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                error!(
+                    connection_id = %connection_id,
+                    error = %e,
+                    "Failed to send WebSocket message"
+                );
+                is_alive.store(false, std::sync::atomic::Ordering::Relaxed);
+                connection_service.disconnect_connection(&connection_id);
+                break;
+            }
+            Err(_) => {
+                warn!(
+                    connection_id = %connection_id,
+                    timeout_secs = SINK_WRITE_TIMEOUT.as_secs(),
+                    "WebSocket write stalled; disconnecting slow client"
+                );
+                is_alive.store(false, std::sync::atomic::Ordering::Relaxed);
+                connection_service.disconnect_connection(&connection_id);
+                break;
+            }
         }
     }
 }
@@ -1220,10 +1303,24 @@ async fn handle_socket(
     // Split WebSocket into sender and receiver
     let (mut ws_sender_sink, ws_receiver) = socket.split();
 
+    // Session end must not strand the fair queue's spawned forwarder: closing
+    // the sender lets it hand over any already-queued frames (terminations
+    // above all) and then close the channel the transport forwarder drains,
+    // so the deferred close frame follows the final traffic cleanly.
+    {
+        let fair_closer_sender = ws_sender.clone();
+        let fair_closer_token = cancel_token.clone();
+        tokio::spawn(async move {
+            fair_closer_token.cancelled().await;
+            fair_closer_sender.close();
+        });
+    }
+
     // Spawn task to handle server messages -> WebSocket
     let is_alive_clone = is_alive.clone();
     let connection_service = state.connection_manager.clone();
     let forward_format = transport_format;
+    let forward_cancel_token = cancel_token.clone();
     tokio::spawn(async move {
         forward_websocket_messages(
             fair_rx,
@@ -1233,6 +1330,7 @@ async fn handle_socket(
             is_alive_clone,
             connection_service,
             connection_id,
+            forward_cancel_token,
         )
         .await;
     });

@@ -1484,7 +1484,9 @@ mod websocket_e2e {
     ) -> ServerMessage {
         tokio::time::timeout(timeout, async {
             loop {
-                let msg = recv_server_message(ws).await.expect("stream ended");
+                let msg = recv_server_message(ws)
+                    .await
+                    .unwrap_or_else(|| panic!("stream ended while waiting for {label}"));
                 if predicate(&msg) {
                     return msg;
                 }

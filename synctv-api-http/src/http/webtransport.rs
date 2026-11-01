@@ -65,25 +65,24 @@ fn parse_room_target(uri: &axum::http::Uri) -> Option<(String, WsQuery)> {
     Some((room_id, query))
 }
 
-/// Builds the transport-agnostic request metadata for a WT CONNECT.
-fn wt_request_metadata(request: &Request<()>) -> ApiRequestMetadata {
-    ApiRequestMetadata {
-        transport: synctv_api_common::impls::TransportProtocol::Http,
-        authorization: request
-            .headers()
-            .get(axum::http::header::AUTHORIZATION)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_string),
-        client_ip: None,
-        socket_ip: None,
-        user_agent: request
-            .headers()
-            .get(axum::http::header::USER_AGENT)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_string),
-        endpoint_scope: None,
-        timeout: None,
-    }
+/// Builds the transport-agnostic request metadata for a WT CONNECT, mirroring
+/// the WebSocket handshake metadata: trusted-proxy-aware client IP derived
+/// from the QUIC peer address (`PeerAddress` extension inserted by
+/// synctv-quic for the CONNECT), Realtime endpoint scope, and the shared
+/// handshake timeout, so ticket/guest handshakes rate-limit per peer like WS.
+fn wt_request_metadata(
+    state: &AppState,
+    request: &Request<()>,
+) -> Result<ApiRequestMetadata, crate::http::AppError> {
+    let peer_ip = request
+        .extensions()
+        .get::<synctv_quic::PeerAddress>()
+        .map(|peer| peer.0.ip());
+    crate::http::websocket::websocket_request_metadata(
+        &state.runtime_settings,
+        request.headers(),
+        peer_ip,
+    )
 }
 
 /// Returns the client's announced multi-stream revision from the CONNECT
@@ -111,12 +110,16 @@ pub struct RoomWebTransportHandler {
 
 #[async_trait::async_trait]
 impl WebTransportHandler for RoomWebTransportHandler {
-    /// Cheap admission so obvious rejections (bad path, banned/closed room,
-    /// missing auth material) answer the CONNECT immediately. The full
-    /// handshake (ticket commit, membership, connection limits) runs in
-    /// [`Self::run_session`] before any frames flow.
+    /// Cheap admission so obvious rejections (bad path, missing auth
+    /// material, undecodable id) answer the CONNECT immediately. Room
+    /// existence and banned/closed state are deliberately NOT probed here:
+    /// an unauthenticated peer must not learn them from the CONNECT
+    /// response. [`Self::run_session`] validates the credential first and
+    /// then re-checks the room, tearing the session down for unknown, banned
+    /// or closed rooms — the same outcome an invalid credential already
+    /// produces.
     async fn accept(&self, request: &Request<()>) -> Result<(), StatusCode> {
-        let Some((public_room_id, query)) = parse_room_target(request.uri()) else {
+        let Some((_public_room_id, query)) = parse_room_target(request.uri()) else {
             return Err(StatusCode::NOT_FOUND);
         };
         let has_auth = request
@@ -125,20 +128,6 @@ impl WebTransportHandler for RoomWebTransportHandler {
             || !query.ticket.is_empty();
         if !has_auth {
             return Err(StatusCode::UNAUTHORIZED);
-        }
-        let Ok(room_id) = self
-            .state
-            .shared_api_runtime
-            .public_id_codec
-            .decode_room_id(&public_room_id)
-        else {
-            return Err(StatusCode::BAD_REQUEST);
-        };
-        let Ok(room) = self.state.room_service.get_room(&room_id).await else {
-            return Err(StatusCode::NOT_FOUND);
-        };
-        if room.is_banned || room.status.is_closed() {
-            return Err(StatusCode::FORBIDDEN);
         }
         Ok(())
     }
@@ -175,7 +164,8 @@ impl RoomWebTransportHandler {
         )
         .map_err(|error| error.to_string())?;
 
-        let request_meta = wt_request_metadata(&request);
+        let request_meta =
+            wt_request_metadata(state, &request).map_err(|error| error.to_string())?;
         let handshake_control = ExecutionControl::default();
         let mut auth =
             extract_handshake_auth(state, &request_meta, &query, &room_id, &handshake_control)
@@ -224,7 +214,7 @@ impl RoomWebTransportHandler {
             room_id,
             auth.principal.clone(),
             None,
-            Arc::new(fair_sender) as Arc<dyn MessageSender>,
+            Arc::new(fair_sender.clone()) as Arc<dyn MessageSender>,
         )
         .map_err(|error| error.to_string())?;
 
@@ -233,6 +223,18 @@ impl RoomWebTransportHandler {
             tracing::error!(error = %error, "WebTransport room session failed to join");
             error
         })?;
+
+        // Session end must not strand the fair queue's spawned forwarder:
+        // closing the sender hands over any already-queued frames (final
+        // terminations above all) and then closes the writer's channel.
+        {
+            let fair_closer_sender = fair_sender;
+            let fair_closer_token = cancel_token.clone();
+            tokio::spawn(async move {
+                fair_closer_token.cancelled().await;
+                fair_closer_sender.close();
+            });
+        }
 
         reservation_cleanup.disarm();
         reservation.release(state.connection_manager.as_ref());
@@ -257,8 +259,19 @@ impl RoomWebTransportHandler {
 
             let mut fair_rx = fair_rx;
             let mut lanes: HashMap<String, WtSendStream> = HashMap::new();
+            // Session end must not drop what the session already queued:
+            // keep writing until the fair channel closes (guaranteed by the
+            // fair-sender closer above) instead of parking mid-drain.
+            let mut draining = false;
             let outcome = loop {
+                if draining && fair_rx.is_empty() {
+                    break Ok(());
+                }
                 tokio::select! {
+                    biased;
+                    () = writer_cancel.cancelled(), if !draining => {
+                        draining = true;
+                    }
                     message = fair_rx.recv() => {
                         let Some(message) = message else { break Ok(()) };
                         let Ok(bytes) = ProtoCodec::encode_server_message(&message) else {
@@ -282,9 +295,6 @@ impl RoomWebTransportHandler {
                         if !written {
                             break Err("stream write failed".to_string());
                         }
-                    }
-                    () = writer_cancel.cancelled() => {
-                        break Ok(());
                     }
                 }
             };

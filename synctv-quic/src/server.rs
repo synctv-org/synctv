@@ -84,7 +84,16 @@ where
     ResBody::Error: std::fmt::Display + Send,
 {
     while let Some(incoming) = endpoint.accept().await {
-        let connection = incoming.await?;
+        // A failed or hostile handshake must terminate only that connection:
+        // surfacing the error here (`?`) would end the accept loop and take
+        // the whole HTTP/3/WebTransport listener down with one packet.
+        let connection = match incoming.await {
+            Ok(connection) => connection,
+            Err(error) => {
+                tracing::warn!(error = %error, "QUIC handshake failed; continuing to accept");
+                continue;
+            }
+        };
         let service = service.clone();
         let webtransport = webtransport.clone();
         tokio::spawn(async move {
@@ -117,6 +126,12 @@ async fn drive_connection<S, ReqBody, ResBody>(
         .enable_extended_connect(webtransport.is_some())
         .enable_datagram(webtransport.is_some())
         .max_webtransport_sessions(max_webtransport_sessions);
+    // The QUIC connection is consumed by the h3 layer below, so capture the
+    // direct peer address now; every request this connection serves carries
+    // it so peer-derived security controls (per-IP rate limiting, brute-force
+    // lockout, audit attribution) bind to the real peer, like the TCP path's
+    // `ConnectInfo`.
+    let peer = crate::PeerAddress(connection.remote_address());
     let mut h3_conn = match builder.build(h3_quinn::Connection::new(connection)).await {
         Ok(connection) => connection,
         Err(error) => {
@@ -142,6 +157,7 @@ async fn drive_connection<S, ReqBody, ResBody>(
             }
         };
         normalize_authority_host(&mut request);
+        request.extensions_mut().insert(peer);
 
         if let Some(handler) = &webtransport {
             if is_webtransport_connect(&request) {
@@ -177,6 +193,7 @@ async fn drive_connection<S, ReqBody, ResBody>(
                             request_for_session,
                             service,
                             Arc::clone(handler),
+                            peer,
                         )
                         .await;
                         return;
@@ -240,6 +257,7 @@ async fn drive_webtransport_session<S, ReqBody, ResBody>(
     request: Request<()>,
     service: S,
     handler: SharedWebTransportHandler,
+    peer: crate::PeerAddress,
 ) where
     S: Service<Request<ReqBody>, Response = http::Response<ResBody>> + Clone + Send + 'static,
     S::Future: Send,
@@ -271,7 +289,11 @@ async fn drive_webtransport_session<S, ReqBody, ResBody>(
                             handler.run_session(request, driver).await;
                         });
                     }
-                    Ok(Some(h3_webtransport::server::AcceptedBi::Request(request, stream))) => {
+                    Ok(Some(h3_webtransport::server::AcceptedBi::Request(mut request, stream))) => {
+                        // Requests arriving on an established WebTransport
+                        // session are rebuilt from the h3 parts, so the peer
+                        // address must be re-attached for them as well.
+                        request.extensions_mut().insert(peer);
                         let mut service = service.clone();
                         tokio::spawn(async move {
                             if let Err(error) = serve_request(stream, request, &mut service).await {

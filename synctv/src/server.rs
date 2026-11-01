@@ -2994,13 +2994,42 @@ impl SyncTvServer {
                             format!("{}:{udp_port}", http_addr.ip())
                                 .parse()
                                 .expect("API address ip parses into the QUIC bind address");
+                        // The HTTP/3 path attaches the QUIC peer address as a
+                        // `PeerAddress` extension (synctv-quic has no axum
+                        // dependency); synthesize the `ConnectInfo<SocketAddr>`
+                        // every extractor already reads so per-IP rate limiting,
+                        // brute-force lockout, and audit attribution work over
+                        // HTTP/3 exactly as they do over TCP.
+                        let h3_router = router.clone().layer(axum::middleware::from_fn(
+                            |mut request: axum::http::Request<axum::body::Body>,
+                             next: axum::middleware::Next| async move {
+                                if request
+                                    .extensions()
+                                    .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+                                    .is_none()
+                                {
+                                    // PeerAddress is Copy; take it out of the
+                                    // immutable borrow before the mutable insert.
+                                    let peer = request
+                                        .extensions()
+                                        .get::<synctv_quic::PeerAddress>()
+                                        .copied();
+                                    if let Some(peer) = peer {
+                                        request
+                                            .extensions_mut()
+                                            .insert(axum::extract::ConnectInfo(peer.0));
+                                    }
+                                }
+                                next.run(request).await
+                            },
+                        ));
                         match synctv_quic::serve_quic::<_, axum::body::Body, axum::body::Body>(
                             bind_addr,
                             synctv_quic::QuicServerConfig {
                                 rustls: rustls_config,
                                 max_webtransport_sessions: quic_config.max_webtransport_sessions,
                             },
-                            router.clone(),
+                            h3_router,
                             Some(wt_handler),
                             graceful_cancel.clone(),
                         )

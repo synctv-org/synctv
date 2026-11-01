@@ -26,7 +26,7 @@
 //!   which then reconnects and resumes from its observation cursors.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use prost::Message as _;
@@ -56,6 +56,12 @@ const DEFAULT_BULK_LANE_BYTES: usize = 4 * 1024 * 1024;
 const DEFAULT_CONTROL_LANE_MESSAGES: usize = 64;
 const DEFAULT_INTERACTIVE_LANE_MESSAGES: usize = 128;
 const DEFAULT_BULK_LANE_MESSAGES: usize = 256;
+
+/// Session-wide retained-byte budget across all lanes. Per-lane budgets bound
+/// each lane in isolation; this bounds their sum so a client registering many
+/// observations and then never reading cannot pin unbounded server heap
+/// (64 bulk lanes x 4 MiB would otherwise retain ~256 MiB per parked session).
+const DEFAULT_SESSION_MAX_BYTES: usize = 32 * 1024 * 1024;
 
 /// Upper bound on concurrent observation lanes. `ResourceObserver` already
 /// caps observations per connection; this defends the queue against
@@ -102,6 +108,10 @@ pub struct FairQueueConfig {
     pub slow_client_drop_threshold: u32,
     pub interactive_weight: u32,
     pub forward_capacity: usize,
+    /// Session-wide retained-byte budget across all lanes; a send that pushes
+    /// the aggregate past it fails the session exactly like control-lane
+    /// overflow.
+    pub session_max_bytes: usize,
 }
 
 impl Default for FairQueueConfig {
@@ -117,6 +127,7 @@ impl Default for FairQueueConfig {
             slow_client_drop_threshold: DEFAULT_SLOW_CLIENT_DROP_THRESHOLD,
             interactive_weight: DEFAULT_INTERACTIVE_WEIGHT,
             forward_capacity: DEFAULT_FORWARD_CAPACITY,
+            session_max_bytes: DEFAULT_SESSION_MAX_BYTES,
         }
     }
 }
@@ -139,11 +150,14 @@ impl Lane {
     }
 
     /// Enqueues `message`, evicting oldest entries until it fits both the
-    /// message-count and byte budgets. Returns the number of evictions; an
-    /// oversized single message still enqueues (newest state wins) unless
-    /// even the front slot cannot be freed.
-    fn push_bounded(&mut self, message: ServerMessage, config: &FairQueueConfig) -> usize {
+    /// message-count and byte budgets. Returns the number of evictions and
+    /// the net byte delta of the lane (pushed minus evicted) so callers can
+    /// maintain the session-wide aggregate; an oversized single message still
+    /// enqueues (newest state wins) unless even the front slot cannot be
+    /// freed.
+    fn push_bounded(&mut self, message: ServerMessage, config: &FairQueueConfig) -> (usize, i64) {
         let size = message.encoded_len().max(1);
+        let bytes_before = self.bytes;
         let message_capacity = self.class.message_capacity(config);
         let byte_capacity = self.class.byte_capacity(config);
 
@@ -166,7 +180,10 @@ impl Lane {
             self.bytes += size;
             self.messages.push_back((message, size));
         }
-        evicted
+        let bytes_delta = i64::try_from(self.bytes)
+            .unwrap_or(i64::MAX)
+            .saturating_sub(i64::try_from(bytes_before).unwrap_or(i64::MAX));
+        (evicted, bytes_delta)
     }
 }
 
@@ -181,6 +198,9 @@ struct Lanes {
     /// Cumulative evictions across all lanes; kept at this level so reaping
     /// an empty lane does not lose its history.
     total_evicted: u64,
+    /// Sum of `control.bytes` and every lane's `bytes`, maintained on every
+    /// push, eviction, and pop so the session-wide budget check is O(1).
+    total_bytes: usize,
 }
 
 impl Lanes {
@@ -191,6 +211,7 @@ impl Lanes {
             rotation: VecDeque::new(),
             current_picks: 0,
             total_evicted: 0,
+            total_bytes: 0,
         }
     }
 
@@ -215,17 +236,30 @@ impl Lanes {
         self.total_evicted
     }
 
+    /// Applies a lane's net byte delta to the session-wide aggregate.
+    fn apply_bytes_delta(&mut self, bytes_delta: i64) {
+        if bytes_delta >= 0 {
+            self.total_bytes = self
+                .total_bytes
+                .saturating_add(usize::try_from(bytes_delta).unwrap_or(usize::MAX));
+        } else {
+            self.total_bytes = self
+                .total_bytes
+                .saturating_sub(usize::try_from(bytes_delta.unsigned_abs()).unwrap_or(usize::MAX));
+        }
+    }
+
     /// Pops the next message according to the scheduling policy: control
     /// lane first, then weighted round-robin across observation lanes.
     /// Lanes drained to empty are reaped so stale observations do not pin
     /// memory or lane-quota.
     fn pop_weighted(&mut self, interactive_weight: u32) -> Option<ServerMessage> {
         if !self.control.messages.is_empty() {
-            return self
-                .control
-                .messages
-                .pop_front()
-                .map(|(message, _)| message);
+            let popped = self.control.messages.pop_front();
+            if let Some((_, size)) = &popped {
+                self.total_bytes = self.total_bytes.saturating_sub(*size);
+            }
+            return popped.map(|(message, _)| message);
         }
 
         while let Some(front_id) = self.rotation.front().cloned() {
@@ -235,6 +269,7 @@ impl Lanes {
                 continue;
             };
             if lane.messages.is_empty() {
+                self.total_bytes = self.total_bytes.saturating_sub(lane.bytes);
                 self.by_observe_id.remove(&front_id);
                 self.rotation.pop_front();
                 self.current_picks = 0;
@@ -246,7 +281,10 @@ impl Lanes {
                     LaneClass::Bulk | LaneClass::Control => 1,
                 };
             }
-            let message = lane.messages.pop_front().map(|(message, _)| message);
+            let popped = lane.messages.pop_front();
+            if let Some((_, size)) = &popped {
+                self.total_bytes = self.total_bytes.saturating_sub(*size);
+            }
             self.current_picks = self.current_picks.saturating_sub(1);
             let visit_finished = self.current_picks == 0;
             if visit_finished {
@@ -254,16 +292,22 @@ impl Lanes {
             }
             if lane.messages.is_empty() {
                 // Reap immediately so the lane quota frees up for new
-                // observations. When the visit already finished, the entry
-                // moved to the back and is cleaned up lazily on its next
-                // turn.
+                // observations. The visited rotation entry must leave too:
+                // after `rotate_left(1)` it sits at the back, otherwise it is
+                // still at the front. Leaving it behind lets the next
+                // map-miss `lane_for` push a duplicate, which multiplies the
+                // lane's picks per rotation cycle and grows `rotation`
+                // without any bound.
+                self.total_bytes = self.total_bytes.saturating_sub(lane.bytes);
                 self.by_observe_id.remove(&front_id);
-                if !visit_finished {
+                if visit_finished {
+                    self.rotation.pop_back();
+                } else {
                     self.rotation.pop_front();
                     self.current_picks = 0;
                 }
             }
-            return message;
+            return popped.map(|(message, _)| message);
         }
         None
     }
@@ -275,6 +319,14 @@ struct FairShared {
     failed: AtomicBool,
     consecutive_drops: AtomicU32,
     config: FairQueueConfig,
+    /// Total messages handed to the transport forwarder; the liveness probe
+    /// (`FairSessionSender::ping`) compares this across probes to detect a
+    /// stalled downlink (backlog persisting with zero drain progress).
+    pops: AtomicU64,
+    /// Drain progress and backlog state observed by the previous liveness
+    /// probe.
+    last_probe_pops: AtomicU64,
+    last_probe_backlog: AtomicBool,
 }
 
 impl FairShared {
@@ -295,7 +347,8 @@ impl FairShared {
 
         let evicted = match observe_id.as_deref() {
             None => {
-                let evicted = lanes.control.push_bounded(message, &self.config);
+                let (evicted, bytes_delta) = lanes.control.push_bounded(message, &self.config);
+                lanes.apply_bytes_delta(bytes_delta);
                 if evicted > 0 {
                     // Control traffic (errors, terminations, stateful
                     // notifications) must never be evicted: escalate so the
@@ -315,9 +368,24 @@ impl FairShared {
                         "Observation lane limit ({max_lanes}) exceeded: slow client disconnected"
                     ));
                 };
-                lane.push_bounded(message, &self.config)
+                let (evicted, bytes_delta) = lane.push_bounded(message, &self.config);
+                lanes.apply_bytes_delta(bytes_delta);
+                evicted
             }
         };
+
+        // Session-wide retained-byte budget: per-lane caps bound each lane in
+        // isolation, but a client holding many parked lanes at their caps
+        // would otherwise pin unbounded aggregate heap with zero evictions
+        // (and therefore no escalation). Fail exactly like control-lane
+        // overflow so the slow-client policy disconnects the session.
+        if lanes.total_bytes > self.config.session_max_bytes {
+            self.fail();
+            return Err(format!(
+                "Session retained-byte budget ({}) exceeded: slow client disconnected",
+                self.config.session_max_bytes
+            ));
+        }
 
         if evicted == 0 {
             self.consecutive_drops.store(0, Ordering::Relaxed);
@@ -472,6 +540,9 @@ impl FairSessionSender {
                 failed: AtomicBool::new(false),
                 consecutive_drops: AtomicU32::new(0),
                 config,
+                pops: AtomicU64::new(0),
+                last_probe_pops: AtomicU64::new(0),
+                last_probe_backlog: AtomicBool::new(false),
             }),
         }
     }
@@ -481,7 +552,11 @@ impl FairSessionSender {
     #[must_use]
     pub fn try_pop(&self) -> Option<ServerMessage> {
         let mut lanes = self.shared.lanes.lock();
-        lanes.pop_weighted(self.shared.config.interactive_weight)
+        let popped = lanes.pop_weighted(self.shared.config.interactive_weight);
+        if popped.is_some() {
+            self.shared.pops.fetch_add(1, Ordering::Relaxed);
+        }
+        popped
     }
 
     /// Waits until a message might be available (lane push or failure).
@@ -500,6 +575,16 @@ impl FairSessionSender {
     #[must_use]
     pub fn total_evicted(&self) -> u64 {
         self.shared.lanes.lock().total_evicted()
+    }
+
+    /// Ends the session's send side: messages already queued are still
+    /// delivered by the spawned forwarder, which then stops and drops the
+    /// transport receiver's channel — so a transport draining at session
+    /// end observes a clean close once the final frames (terminations above
+    /// all) have been handed over, instead of the channel staying open for
+    /// the lifetime of the spawned task.
+    pub fn close(&self) {
+        self.shared.fail();
     }
 
     async fn run(self, tx: tokio::sync::mpsc::Sender<ServerMessage>) {
@@ -527,6 +612,34 @@ impl MessageSender for FairSessionSender {
 
     fn is_alive(&self) -> bool {
         !self.shared.failed.load(Ordering::Acquire)
+    }
+
+    /// Downlink liveness probe for the heartbeat task: fails when a backlog
+    /// has persisted across two probes with zero drain progress — a parked
+    /// client that stopped reading while its lanes sit at their caps (a state
+    /// that produces no evictions and therefore never trips the
+    /// eviction-based escalation).
+    fn ping(&self) -> Result<(), String> {
+        if !self.is_alive() {
+            return Err("Fair queue already failed: session is closing".to_string());
+        }
+        let backlog = {
+            let lanes = self.shared.lanes.lock();
+            lanes.total_bytes > 0 || !lanes.control.messages.is_empty()
+        };
+        let pops = self.shared.pops.load(Ordering::Acquire);
+        let previous_pops = self.shared.last_probe_pops.swap(pops, Ordering::AcqRel);
+        let previous_backlog = self
+            .shared
+            .last_probe_backlog
+            .swap(backlog, Ordering::AcqRel);
+        if backlog && previous_backlog && previous_pops == pops {
+            return Err(
+                "Fair queue downlink stalled: backlog with no drain progress between liveness probes"
+                    .to_string(),
+            );
+        }
+        Ok(())
     }
 }
 
@@ -796,5 +909,98 @@ mod tests {
         let second = rx.recv().await.expect("second message");
         assert!(matches!(second.message, Some(SMMessage::ResourceEvent(_))));
         drop(sender);
+    }
+
+    #[test]
+    fn session_retained_byte_budget_fails_parked_queue() {
+        // Aggregate bound: lanes parked at their per-lane caps produce zero
+        // evictions, so only the session-wide byte budget disconnects the
+        // slow client (regression: aggregate-lane-retention).
+        let mut config = FairQueueConfig::default();
+        config.session_max_bytes = 8 * 1024;
+        let sender = FairSessionSender::unspawned(config.clone());
+        let big = "x".repeat(4 * 1024);
+        for lane in ["a", "b"] {
+            for _ in 0..8 {
+                let message = ServerMessage {
+                    message: Some(SMMessage::ResourceEvent(ResourceEvent {
+                        observe_id: lane.to_string(),
+                        payload: Some(resource_event::Payload::ChatEvent(
+                            synctv_proto::client::ChatMessageEvent {
+                                event_id: big.clone(),
+                                ..Default::default()
+                            },
+                        )),
+                        event_cursor: None,
+                    })),
+                };
+                let result = sender.send(message);
+                if result.is_err() {
+                    assert!(sender.is_failed(), "failure must trip escalation");
+                }
+            }
+        }
+        assert!(
+            sender.is_failed(),
+            "aggregate retained bytes must fail the session"
+        );
+        let closing_error = sender
+            .send(event_message("c", None))
+            .expect_err("aggregate retained bytes must fail the session");
+        assert!(closing_error.contains("session is closing"));
+    }
+
+    #[test]
+    fn rotation_stays_symmetric_with_by_observe_id() {
+        // Drain-to-empty reap keeps `rotation` and `by_observe_id`
+        // consistent: re-creating a reaped lane must not duplicate its
+        // rotation entry (regression: rotation-duplicate-unbounded-growth).
+        let sender = FairSessionSender::unspawned(FairQueueConfig::default());
+        for _ in 0..8 {
+            sender
+                .send(event_message("a", None))
+                .expect("send must succeed");
+            assert!(sender.try_pop().is_some(), "lane a must drain to empty");
+        }
+        // Re-create the reaped lane plus a peer, then interleave.
+        for lane in ["a", "b"] {
+            for _ in 0..12 {
+                sender
+                    .send(event_message(lane, None))
+                    .expect("send must succeed");
+            }
+        }
+        let drained = drain_all(&sender);
+        let first_b = drained
+            .iter()
+            .position(|entry| entry == "event:b")
+            .expect("peer lane must be served");
+        assert_eq!(
+            first_b, 1,
+            "one rotation entry per live lane: perfect alternation, got {drained:?}"
+        );
+    }
+
+    #[test]
+    fn ping_fails_when_backlog_makes_no_progress() {
+        // A parked backlog with zero drain progress between two liveness
+        // probes must fail ping() so the heartbeat disconnects the session.
+        let sender = FairSessionSender::unspawned(FairQueueConfig::default());
+        for _ in 0..4 {
+            sender
+                .send(event_message("a", None))
+                .expect("send must succeed");
+        }
+        sender.ping().expect("first probe records baseline");
+        let err = sender
+            .ping()
+            .expect_err("stalled backlog with no progress must fail");
+        assert!(err.contains("stalled"));
+        // Drain progress resets the stall signal.
+        while sender.try_pop().is_some() {}
+        sender
+            .ping()
+            .expect("probe after drain records clean baseline");
+        sender.ping().expect("no backlog, no stall");
     }
 }

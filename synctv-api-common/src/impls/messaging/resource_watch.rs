@@ -490,16 +490,52 @@ impl ResourceWatchSession {
         }
     }
 
-    async fn check_realtime_permission(&self, permission: RoomPermission) -> Result<(), String> {
-        if let Some(user_id) = self.principal.user_id() {
-            self.room_service
-                .check_permission(&self.room_id, &user_id, permission)
+    async fn ensure_observe_resource_allowed(
+        &self,
+        observe: &ObserveResource,
+    ) -> Result<(), String> {
+        ensure_observe_resource_allowed_for(
+            &self.room_id,
+            &self.principal,
+            &self.room_service,
+            observe,
+        )
+        .await
+    }
+}
+
+/// Standalone observe admission gate shared by [`ResourceWatchSession`] and
+/// the handler's permission revalidation, so both run the exact same checks
+/// against live permission state.
+async fn ensure_observe_resource_allowed_for(
+    room_id: &synctv_core::models::id::RoomId,
+    principal: &RealtimePrincipal,
+    room_service: &std::sync::Arc<RoomService>,
+    observe: &ObserveResource,
+) -> Result<(), String> {
+    let Some(resource) = observe.resource.as_ref() else {
+        return Err("observe resource is required".to_string());
+    };
+
+    let guest_admission = || async {
+        match RealtimeMembershipProbe::new(room_service)
+            .guest_admission_denial_reason(room_id, principal)
+            .await
+        {
+            Ok(Some(reason)) => Err(reason),
+            Ok(None) => Ok(()),
+            Err(error) => Err(error.to_string()),
+        }
+    };
+    let check_permission = |permission: RoomPermission| async move {
+        if let Some(user_id) = principal.user_id() {
+            room_service
+                .check_permission(room_id, &user_id, permission)
                 .await
                 .map_err(|error| error.to_string())
         } else {
-            let permissions = self
-                .room_service
-                .get_guest_permissions(&self.room_id)
+            let permissions = room_service
+                .get_guest_permissions(room_id)
                 .await
                 .map_err(|error| error.to_string())?;
             if permissions.has(permission) {
@@ -508,63 +544,88 @@ impl ResourceWatchSession {
                 Err("Guests do not have permission to perform this action".to_string())
             }
         }
-    }
+    };
 
-    async fn ensure_observe_resource_allowed(
-        &self,
-        observe: &ObserveResource,
-    ) -> Result<(), String> {
-        let Some(resource) = observe.resource.as_ref() else {
-            return Err("observe resource is required".to_string());
-        };
-
-        match resource {
-            synctv_proto::client::observe_resource::Resource::PlaybackState(_)
-            | synctv_proto::client::observe_resource::Resource::RoomSettings(_)
-            | synctv_proto::client::observe_resource::Resource::OnlineCount(_)
-            | synctv_proto::client::observe_resource::Resource::SelfRoomMember(_) => {
-                if self.principal.is_guest() {
-                    self.ensure_guest_admission_for_action().await?;
-                }
+    match resource {
+        synctv_proto::client::observe_resource::Resource::PlaybackState(_)
+        | synctv_proto::client::observe_resource::Resource::RoomSettings(_)
+        | synctv_proto::client::observe_resource::Resource::OnlineCount(_)
+        | synctv_proto::client::observe_resource::Resource::SelfRoomMember(_)
+        | synctv_proto::client::observe_resource::Resource::Playback(_) => {
+            if principal.is_guest() {
+                guest_admission().await?;
+            }
+            Ok(())
+        }
+        synctv_proto::client::observe_resource::Resource::PlaylistItems(_) => {
+            if principal.is_guest() {
+                Err("Guests cannot observe playlist items".to_string())
+            } else {
                 Ok(())
             }
-            synctv_proto::client::observe_resource::Resource::PlaylistItems(_) => {
-                if self.principal.is_guest() {
-                    Err("Guests cannot observe playlist items".to_string())
-                } else {
-                    Ok(())
+        }
+        synctv_proto::client::observe_resource::Resource::PlaybackHistory(_) => {
+            if principal.is_guest() {
+                return Err("Guests cannot observe playback history".to_string());
+            }
+            check_permission(RoomPermission::VIEW_PLAYBACK_HISTORY).await
+        }
+        synctv_proto::client::observe_resource::Resource::RoomMemberEvents(_)
+        | synctv_proto::client::observe_resource::Resource::OnlineEvent(_) => {
+            if principal.is_guest() {
+                guest_admission().await?;
+            }
+            check_permission(RoomPermission::VIEW_MEMBERS).await
+        }
+        synctv_proto::client::observe_resource::Resource::ChatEvents(_)
+        | synctv_proto::client::observe_resource::Resource::ChatPinEvents(_) => {
+            if principal.is_guest() {
+                guest_admission().await?;
+            }
+            check_permission(RoomPermission::VIEW_CHAT_HISTORY).await
+        }
+    }
+}
+
+impl super::StreamMessageHandler {
+    /// Re-runs the observe admission gate for every established observation
+    /// after a permission-affecting event: a `PermissionChanged` for this
+    /// principal (role/permission change) or a `RoomSettingsChanged` (guest
+    /// permission defaults). Observations whose gate now fails are revoked
+    /// with a `ResourceObserveError`, so revoked members stop receiving chat
+    /// history, member events, or other permission-gated streams instead of
+    /// keeping them until disconnect.
+    pub(super) async fn revalidate_observe_permissions(&self, event: &RealtimeEvent) {
+        let applies_to_this_connection = match event {
+            RealtimeEvent::PermissionChanged { target_user_id, .. } => {
+                match self.principal.user_id() {
+                    Some(user_id) => user_id == *target_user_id,
+                    None => true,
                 }
             }
-            synctv_proto::client::observe_resource::Resource::PlaybackHistory(_) => {
-                if self.principal.is_guest() {
-                    return Err("Guests cannot observe playback history".to_string());
-                }
-                self.check_realtime_permission(RoomPermission::VIEW_PLAYBACK_HISTORY)
-                    .await
-            }
-            synctv_proto::client::observe_resource::Resource::RoomMemberEvents(_)
-            | synctv_proto::client::observe_resource::Resource::OnlineEvent(_) => {
-                if self.principal.is_guest() {
-                    self.ensure_guest_admission_for_action().await?;
-                }
-                self.check_realtime_permission(RoomPermission::VIEW_MEMBERS)
-                    .await
-            }
-            synctv_proto::client::observe_resource::Resource::ChatEvents(_)
-            | synctv_proto::client::observe_resource::Resource::ChatPinEvents(_) => {
-                if self.principal.is_guest() {
-                    self.ensure_guest_admission_for_action().await?;
-                }
-                self.check_realtime_permission(RoomPermission::VIEW_CHAT_HISTORY)
-                    .await
-            }
-            synctv_proto::client::observe_resource::Resource::Playback(_) => {
-                if self.principal.is_guest() {
-                    self.ensure_guest_admission_for_action().await?;
-                    Ok(())
-                } else {
-                    Ok(())
-                }
+            RealtimeEvent::RoomSettingsChanged { .. } => true,
+            _ => return,
+        };
+        if !applies_to_this_connection {
+            return;
+        }
+        for observe in self.resource_observer.observation_requests().await {
+            if let Err(error) = ensure_observe_resource_allowed_for(
+                &self.room_id,
+                &self.principal,
+                &self.room_service,
+                &observe,
+            )
+            .await
+            {
+                tracing::info!(
+                    observe_id = %observe.observe_id,
+                    reason = %error,
+                    "Revoking observation after permission change"
+                );
+                self.resource_observer
+                    .revoke_observation(&observe.observe_id, error)
+                    .await;
             }
         }
     }

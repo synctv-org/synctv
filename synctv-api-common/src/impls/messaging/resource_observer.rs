@@ -115,6 +115,10 @@ struct ResourceObservation {
     resource: ObservedResource,
     expires_at: Option<i64>,
     last_sent_event_sequence: i64,
+    /// The original observe request, retained so permission revalidation
+    /// (permission/role/settings changes) can re-run the exact admission
+    /// gate the observation passed at ObserveResource time.
+    request: synctv_proto::client::ObserveResource,
 }
 
 #[derive(Debug, Clone)]
@@ -2490,6 +2494,7 @@ impl ResourceObserver {
             resource,
             expires_at: None,
             last_sent_event_sequence: 0,
+            request: request.clone(),
         })
     }
 
@@ -2925,6 +2930,41 @@ impl ResourceObserver {
             .unregister_observation(&self.connection_id, observe_id)
             .await;
         Ok(())
+    }
+
+    /// Snapshot of the original observe requests backing this connection's
+    /// established observations, for permission revalidation.
+    pub(super) async fn observation_requests(
+        self: &Arc<Self>,
+    ) -> Vec<synctv_proto::client::ObserveResource> {
+        let state = self.state.lock().await;
+        state
+            .observations
+            .values()
+            .map(|observation| observation.request.clone())
+            .collect()
+    }
+
+    /// Revokes an established observation after a permission revalidation
+    /// failure: stops the subscription locally and in the room hub, and tells
+    /// the client why (the same `ResourceObserveError` shape an observe
+    /// request would have received).
+    pub(super) async fn revoke_observation(self: &Arc<Self>, observe_id: &str, error: String) {
+        self.remove_local_observation(observe_id).await;
+        self.room_hub
+            .unregister_observation(&self.connection_id, observe_id)
+            .await;
+        let send_result = self.send_server_message(Self::resource_observe_error_message(
+            observe_id.to_string(),
+            crate::impls::ApiError::Authorization(error),
+        ));
+        if let Err(send_error) = send_result {
+            tracing::warn!(
+                observe_id = %observe_id,
+                error = %send_error,
+                "Failed to deliver observation revocation notice"
+            );
+        }
     }
 
     pub(super) async fn next_expired_resource_refresh_deadline(
@@ -3768,6 +3808,7 @@ mod tests {
             },
             expires_at: None,
             last_sent_event_sequence: 0,
+            request: synctv_proto::client::ObserveResource::default(),
         }
     }
 
@@ -3779,6 +3820,7 @@ mod tests {
             resource: ObservedResource::PlaybackState,
             expires_at: None,
             last_sent_event_sequence: 0,
+            request: synctv_proto::client::ObserveResource::default(),
         }
     }
 
@@ -3792,6 +3834,7 @@ mod tests {
             },
             expires_at: None,
             last_sent_event_sequence: 0,
+            request: synctv_proto::client::ObserveResource::default(),
         }
     }
 

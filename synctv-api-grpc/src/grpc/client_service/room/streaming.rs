@@ -201,6 +201,18 @@ pub(super) async fn message_stream(
         .await
         .map_err(|error| map_message_stream_join_error(error.into()))?;
 
+    // Session end must not strand the fair queue's spawned forwarder: closing
+    // the sender lets it hand over any already-queued frames (terminations
+    // above all) and then close the response stream's channel chain.
+    {
+        let fair_closer_sender = fair_sender.clone();
+        let fair_closer_token = cancel_token.clone();
+        tokio::spawn(async move {
+            fair_closer_token.cancelled().await;
+            fair_closer_sender.close();
+        });
+    }
+
     // Pump transport input into the shared handler. The handler owns all
     // business logic and cleanup; this task only decodes transport frames.
     let transport_cancel_token = cancel_token.clone();

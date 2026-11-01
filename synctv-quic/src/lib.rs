@@ -25,6 +25,14 @@ mod webtransport;
 pub use bridge::serve_request;
 pub use frames::{read_frame, write_frame, MAX_FRAME_BYTES};
 pub use server::{serve_quic, QuicServerConfig};
+
+/// Direct peer address of a QUIC connection, attached to every request the
+/// HTTP/3 listener serves (plain requests, WebTransport CONNECTs, and
+/// requests riding an established session) so peer-derived security controls
+/// bind to the real peer — the HTTP/3 equivalent of the TCP path's
+/// `ConnectInfo<SocketAddr>`.
+#[derive(Clone, Copy, Debug)]
+pub struct PeerAddress(pub std::net::SocketAddr);
 #[cfg(any(test, feature = "test-support"))]
 pub use tls::generate_self_signed_config;
 pub use tls::{

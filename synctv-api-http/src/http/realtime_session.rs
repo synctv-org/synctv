@@ -302,7 +302,7 @@ pub async fn create_realtime_session(
         room_id,
         principal.clone(),
         None,
-        Arc::new(fair_sender) as Arc<dyn MessageSender>,
+        Arc::new(fair_sender.clone()) as Arc<dyn MessageSender>,
     )?;
     let session_id = handler.connection_id().to_string();
 
@@ -331,17 +331,27 @@ pub async fn create_realtime_session(
     });
 
     // Drain the fair queue into the tap until the handler stops; the session
-    // ends with it.
+    // ends with it. Cancellation first closes the fair sender so everything
+    // the session already queued (terminations above all) is forwarded into
+    // the tap before the pump ends.
     let pump_session = Arc::clone(&session);
     tokio::spawn(async move {
         let mut fair_rx = fair_rx;
+        let mut draining = false;
         loop {
+            if draining && fair_rx.is_empty() {
+                break;
+            }
             tokio::select! {
+                biased;
+                () = pump_session.cancel_token.cancelled(), if !draining => {
+                    fair_sender.close();
+                    draining = true;
+                }
                 message = fair_rx.recv() => {
                     let Some(message) = message else { break };
                     pump_session.outbound.forward(message);
                 }
-                () = pump_session.cancel_token.cancelled() => break,
             }
         }
         pump_session.cancel_token.cancel();

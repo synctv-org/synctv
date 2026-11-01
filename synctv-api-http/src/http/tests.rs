@@ -3840,3 +3840,114 @@ async fn test_websocket_routes_fail_closed_when_dependencies_missing() -> TestRe
     );
     Ok(())
 }
+
+/// Security-audit regression (WT room oracle): the WebTransport CONNECT
+/// admission check must not disclose room state to unauthenticated peers.
+/// Room existence and banned/closed state are validated only after the
+/// credential inside the session, so garbage credentials get an
+/// indistinguishable admission answer for open, closed, unknown, and
+/// malformed rooms alike.
+#[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
+async fn test_wt_accept_does_not_disclose_room_state_before_authentication() -> TestResult {
+    use synctv_quic::WebTransportHandler as _;
+
+    let (_container, pool) = synctv_core_testing::create_test_pool().await;
+    let state = test_app_state_with_real_chat_runtime(pool.clone()).await;
+    let now = synctv_core::SystemClock.now();
+    let owner = core_ok(
+        synctv_core::repository::UserRepository::new(pool)
+            .create(&synctv_core::models::User {
+                id: synctv_core::models::UserId::new(),
+                username: "wt_accept_regress_owner".to_string(),
+                role: synctv_core::models::UserRole::User,
+                avatar_file_reference_id: None,
+                status: synctv_core::models::UserStatus::Active,
+                signup_method: synctv_core::models::SignupMethod::Email,
+                created_at: now,
+                updated_at: now,
+                version: 0,
+                deleted_at: None,
+                is_banned: false,
+                banned_at: None,
+                banned_by: None,
+                banned_reason: None,
+            })
+            .await,
+    )?;
+    let open_room = core_ok(
+        state
+            .room_service
+            .create_room(
+                "WT Accept Regress Open".to_string(),
+                String::new(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?;
+    let closed_room = core_ok(
+        state
+            .room_service
+            .create_room(
+                "WT Accept Regress Closed".to_string(),
+                String::new(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?;
+    core_ok(
+        state
+            .room_service
+            .update_room_status(&closed_room.id, synctv_core::models::RoomStatus::Closed)
+            .await,
+    )?;
+    let encode = |id: synctv_core::models::RoomId| {
+        state
+            .shared_api_runtime
+            .public_id_codec
+            .encode_room_id(id)
+            .map_err(test_error)
+    };
+    let open_id = encode(open_room.id)?;
+    let closed_id = encode(closed_room.id)?;
+    let handler = super::webtransport::RoomWebTransportHandler { state };
+
+    let connect = |path: String, auth: Option<&str>| {
+        let mut builder = Request::builder()
+            .method("CONNECT")
+            .uri(format!("https://regress.test/wt/rooms/{path}"));
+        if let Some(value) = auth {
+            builder = builder.header(header::AUTHORIZATION, value);
+        }
+        builder.body(()).map_err(|e| test_error(e.to_string()))
+    };
+    let garbage = Some("Bearer garbage-value");
+
+    // Missing auth material is the only pre-auth rejection besides path
+    // shape.
+    let noauth = handler.accept(&connect(open_id.clone(), None)?).await;
+    assert_eq!(noauth.err(), Some(StatusCode::UNAUTHORIZED));
+    let bad_path = handler.accept(&connect("a/b".to_string(), garbage)?).await;
+    assert_eq!(bad_path.err(), Some(StatusCode::NOT_FOUND));
+
+    // Garbage credentials: admission must not distinguish open, closed,
+    // unknown, or malformed rooms — each proceeds to the session, which
+    // validates the credential first and rejects it there.
+    for target in [
+        open_id.clone(),
+        closed_id,
+        "room_999999999".to_string(),
+        "not-a-room-id!!".to_string(),
+    ] {
+        let accepted = handler.accept(&connect(target, garbage)?).await;
+        assert!(
+            accepted.is_ok(),
+            "accept() must not disclose room state before authentication: {accepted:?}"
+        );
+    }
+    Ok(())
+}

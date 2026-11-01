@@ -1569,6 +1569,7 @@ async fn test_forward_websocket_messages_disconnects_connection_on_sink_failure(
         is_alive.clone(),
         manager,
         connection_id.clone(),
+        tokio_util::sync::CancellationToken::new(),
     )
     .await;
 
@@ -1667,6 +1668,7 @@ async fn test_forward_websocket_messages_prioritizes_critical_queue() -> TestRes
         is_alive,
         manager,
         "conn-priority".to_string(),
+        tokio_util::sync::CancellationToken::new(),
     )
     .await;
 

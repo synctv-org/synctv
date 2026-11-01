@@ -592,3 +592,75 @@ async fn test_remove_room_cleans_connection_tracking() -> TestResult {
     assert_eq!(hub.room_count(), 0);
     Ok(())
 }
+
+#[tokio::test(start_paused = true)]
+async fn test_critical_background_delivery_survives_full_queue() -> TestResult {
+    // Regression (critical-events-lossy): the background critical delivery
+    // used by synchronous call sites must not silently drop a critical event
+    // on a full subscriber queue — it waits (bounded) for space, so once the
+    // subscriber drains a slot the critical event arrives.
+    let hub = RoomMessageHub::new_shared();
+    let room_id = RoomId::expect_positive(10_000_171);
+    let user_id = UserId::expect_positive(10_000_172);
+    let mut rx = hub
+        .subscribe(
+            room_id,
+            test_user_actor(user_id),
+            ConnectionId::new("conn-critical-background"),
+        )
+        .await?;
+
+    for _ in 0..SUBSCRIBER_CHANNEL_CAPACITY {
+        let event = RealtimeEvent::ChatMessage {
+            event_id: synctv_common::snanoid!(16),
+            room_id,
+            user_id: UserId::expect_positive(10_000_173),
+            username: "filler".to_string(),
+            message: "fill".to_string(),
+            timestamp: synctv_core::SystemClock.now(),
+            display_position: None,
+            display_color: None,
+        };
+        assert_eq!(hub.broadcast(&room_id, &event), 1);
+    }
+
+    let critical = RealtimeEvent::PermissionChanged {
+        event_id: synctv_common::snanoid!(16),
+        room_id,
+        target_user_id: user_id,
+        target_username: "target".to_string(),
+        target_remark_name: String::new(),
+        target_display_tag: String::new(),
+        changed_by: UserId::expect_positive(10_000_174),
+        changed_by_username: "admin".to_string(),
+        role_changed: true,
+        new_permissions: synctv_core::models::RoomPermissionSet::empty(),
+        role: synctv_core::models::RoomRole::Member,
+        added_permissions: synctv_core::models::RoomPermissionSet::empty(),
+        removed_permissions: synctv_core::models::RoomPermissionSet::empty(),
+        admin_added_permissions: synctv_core::models::RoomPermissionSet::empty(),
+        admin_removed_permissions: synctv_core::models::RoomPermissionSet::empty(),
+        target_is_online: true,
+        target_connection_count: 1,
+        timestamp: synctv_core::SystemClock.now(),
+    };
+
+    let queued = hub.broadcast_critical_spawned(&room_id, &critical);
+    assert_eq!(queued, 0, "queue is full; delivery continues in background");
+
+    // Make room: drain fillers; once one slot frees, the background task
+    // enqueues the critical event (behind the remaining fillers). Drain with
+    // a bounded wait and require the critical event to arrive.
+    let mut saw_critical = false;
+    while let Ok(Some(event)) = tokio::time::timeout(CRITICAL_EVENT_SEND_TIMEOUT, rx.recv()).await {
+        if matches!(event.as_ref(), RealtimeEvent::PermissionChanged { .. }) {
+            saw_critical = true;
+            break;
+        }
+    }
+    assert!(
+        saw_critical,
+        "critical event must arrive after the queue drains"
+    );
+    Ok(())
+}

@@ -182,7 +182,7 @@ impl SessionTap {
 /// event id for diagnostics.
 fn session_sse_event(
     format: RealtimeTransportFormat,
-    message: ServerMessage,
+    message: &ServerMessage,
 ) -> Option<Result<Event, Infallible>> {
     use synctv_proto::client::server_message::Message;
 
@@ -192,7 +192,7 @@ fn session_sse_event(
         }
         _ => None,
     };
-    let data = match encode_sse_payload(format, &message) {
+    let data = match encode_sse_payload(format, message) {
         Ok(data) => data,
         Err(error) => {
             tracing::warn!(error = %error, "Failed to serialize realtime session SSE event");
@@ -415,7 +415,7 @@ pub async fn realtime_session_events(
     let stream = DetachOnDropStream {
         on_drop: Some(Box::new(detach)),
         inner: ReceiverStream::new(rx)
-            .filter_map(move |message| session_sse_event(format, message)),
+            .filter_map(move |message| session_sse_event(format, &message)),
     };
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }

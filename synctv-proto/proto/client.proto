@@ -5268,6 +5268,14 @@ message RealtimeTransportCapability {
   // or `/api/rooms/{roomId}/realtime/sessions`. Informational: clients
   // generally derive concrete URLs from their own server endpoint config.
   string path = 2;
+  // Base64 SHA-256 of the WebTransport listener certificate's DER encoding.
+  // Present on WEB_TRANSPORT capabilities whenever the certificate hash is
+  // readable; clients pass it as a WebTransport `serverCertificateHashes`
+  // entry so self-signed deployments work without manual pinning, refreshing
+  // it from each server-info response. It is delivered inside the
+  // server-info response, so an on-path attacker cannot substitute a pin
+  // without breaking the enclosing channel.
+  string certificate_hash = 3;
 }
 
 message GetServerInfoResponse {

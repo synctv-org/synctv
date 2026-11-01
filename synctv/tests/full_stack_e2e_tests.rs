@@ -9683,6 +9683,27 @@ fn write_self_signed_pem(dir: &std::path::Path) -> (String, String) {
     )
 }
 
+/// Base64 SHA-256 of the first certificate's DER encoding in a PEM file,
+/// computed independently of the production helper so the assertion also
+/// catches a PEM-vs-DER regression.
+async fn local_cert_hash_base64(cert_path: &str) -> String {
+    use base64::Engine as _;
+    use sha2_010::Digest as _;
+
+    let pem = tokio::fs::read(cert_path).await.expect("read cert pem");
+    let b64_body = std::str::from_utf8(&pem)
+        .expect("pem is ascii")
+        .lines()
+        .skip_while(|line| !line.contains("BEGIN CERTIFICATE"))
+        .skip(1)
+        .take_while(|line| !line.contains("END CERTIFICATE"))
+        .collect::<String>();
+    let der = base64::engine::general_purpose::STANDARD
+        .decode(b64_body)
+        .expect("certificate der");
+    base64::engine::general_purpose::STANDARD.encode(sha2_010::Sha256::digest(der))
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "Requires Docker"]
 async fn full_stack_quic_serves_http3_and_webtransport_realtime() {
@@ -9750,6 +9771,25 @@ async fn full_stack_quic_serves_http3_and_webtransport_realtime() {
             "missing {expected:?} in {kinds:?}"
         );
     }
+
+    // The WebTransport capability pins the served certificate so clients can
+    // dial self-signed endpoints without manual configuration.
+    let wt_hash: Vec<&str> = info["transports"]
+        .as_array()
+        .expect("transports")
+        .iter()
+        .filter(|t| {
+            t["kind"].as_i64()
+                == Some(synctv_proto::client::RealtimeTransportKind::WebTransport as i64)
+        })
+        .filter_map(|t| t["certificateHash"].as_str())
+        .collect();
+    assert_eq!(wt_hash.len(), 1, "one WebTransport certificate hash");
+    assert_eq!(
+        wt_hash[0],
+        local_cert_hash_base64(&cert_path).await,
+        "advertised hash matches the served certificate"
+    );
 
     // WebTransport room session: ticket auth, then heartbeat round trip over
     // the length-prefixed protobuf frame channel.

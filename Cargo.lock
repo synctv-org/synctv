@@ -9063,6 +9063,7 @@ version = "1.0.8"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.23.1",
  "bytes",
  "futures",
  "h3",
@@ -9075,6 +9076,7 @@ dependencies = [
  "rcgen",
  "rustls",
  "rustls-pemfile",
+ "sha2 0.11.1",
  "synctv-quic",
  "time",
  "tokio",

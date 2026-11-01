@@ -238,6 +238,7 @@ pub fn default_realtime_transport_advertisement(
         |(kind, path)| synctv_proto::client::RealtimeTransportCapability {
             kind: kind as i32,
             path: path.to_string(),
+            certificate_hash: String::new(),
         },
     )
     .collect()

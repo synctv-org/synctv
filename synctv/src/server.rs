@@ -2969,6 +2969,14 @@ impl SyncTvServer {
                             },
                         ));
 
+                        // Pin the served certificate in the advertisement so
+                        // self-signed deployments work without manual client
+                        // configuration; unreadable hashes pin nothing.
+                        let certificate_hash =
+                            synctv_quic::certificate_hash_base64(&quic_config.cert_path)
+                                .await
+                                .unwrap_or_default();
+
                         shared_http_app_state
                             .realtime_transport_advertisement
                             .write()
@@ -2976,6 +2984,7 @@ impl SyncTvServer {
                                 kind: synctv_proto::client::RealtimeTransportKind::WebTransport
                                     as i32,
                                 path: synctv_api::WEBTRANSPORT_ROOMS_PATH.to_string(),
+                                certificate_hash,
                             });
 
                         let wt_handler = std::sync::Arc::new(synctv_api::RoomWebTransportHandler {

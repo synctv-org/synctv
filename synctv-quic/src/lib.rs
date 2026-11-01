@@ -28,7 +28,8 @@ pub use server::{serve_quic, QuicServerConfig};
 #[cfg(any(test, feature = "test-support"))]
 pub use tls::generate_self_signed_config;
 pub use tls::{
-    crypto_provider, load_tls_server_config, quinn_server_config, rustls_config_with_alpn,
+    certificate_hash_base64, crypto_provider, load_tls_server_config, quinn_server_config,
+    rustls_config_with_alpn,
 };
 pub use webtransport::{
     is_webtransport_connect, WebTransportHandler, WtBidiStream, WEBTRANSPORT_PROTOCOL,

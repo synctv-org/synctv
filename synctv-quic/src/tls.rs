@@ -70,6 +70,28 @@ pub async fn load_tls_server_config(
     Ok(rustls_config_with_alpn(config))
 }
 
+/// Computes the base64 SHA-256 of the first certificate's DER encoding in a
+/// PEM file: the value clients pass as a WebTransport `serverCertificateHashes`
+/// entry.
+///
+/// # Errors
+///
+/// Fails when the file cannot be read or contains no certificate.
+pub async fn certificate_hash_base64(cert_path: &str) -> anyhow::Result<String> {
+    use base64::Engine as _;
+    use sha2::Digest as _;
+
+    let pem = tokio::fs::read(cert_path)
+        .await
+        .map_err(|error| anyhow::anyhow!("failed to read {cert_path}: {error}"))?;
+    let der = rustls_pemfile::certs(&mut std::io::BufReader::new(pem.as_slice()))
+        .next()
+        .transpose()
+        .map_err(|error| anyhow::anyhow!("failed to parse {cert_path}: {error}"))?
+        .ok_or_else(|| anyhow::anyhow!("no PEM certificates found in {cert_path}"))?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(sha2::Sha256::digest(der.as_ref())))
+}
+
 /// Wraps a rustls config into a Quinn server config.
 #[must_use]
 pub fn quinn_server_config(config: rustls::ServerConfig) -> quinn::ServerConfig {
@@ -79,8 +101,8 @@ pub fn quinn_server_config(config: rustls::ServerConfig) -> quinn::ServerConfig 
 }
 
 /// Generates an ephemeral self-signed ECDSA P-256 certificate for local
-/// development and tests. Browsers accept such certificates for
-/// WebTransport only through the `serverCertificateHashes` option, whose
+/// development and tests. Browsers accept such certificates for WebTransport
+/// only through the `serverCertificateHashes` option, whose
 /// constraints (ECDSA, validity of at most 14 days) this helper honors.
 ///
 /// Returns the ready-to-use server config and the DER certificate.
@@ -108,4 +130,45 @@ pub fn generate_self_signed_config() -> (rustls::ServerConfig, Vec<u8>) {
         )
         .expect("fresh self-signed pair is valid");
     (rustls_config_with_alpn(config), der.as_ref().to_vec())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn certificate_hash_matches_the_der_encoding() {
+        use base64::Engine as _;
+        use sha2::Digest as _;
+
+        let dir = std::env::temp_dir().join(format!(
+            "synctv-quic-tls-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock is after the epoch")
+                .as_millis()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+
+        let mut params =
+            rcgen::CertificateParams::new(vec!["localhost".to_string()]).expect("params");
+        params.not_before = time::OffsetDateTime::now_utc() - time::Duration::days(1);
+        params.not_after = time::OffsetDateTime::now_utc() + time::Duration::days(13);
+        let key_pair = rcgen::KeyPair::generate().expect("key pair");
+        let cert = params.self_signed(&key_pair).expect("cert");
+        let cert_path = dir.join("cert.pem");
+        std::fs::write(&cert_path, cert.pem()).expect("write pem");
+
+        let hash = certificate_hash_base64(cert_path.to_str().expect("utf8 path"))
+            .await
+            .expect("hash");
+        assert_eq!(
+            hash,
+            base64::engine::general_purpose::STANDARD
+                .encode(sha2::Sha256::digest(cert.der().as_ref())),
+            "hash covers the DER encoding, not the PEM bytes"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

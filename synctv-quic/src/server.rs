@@ -134,13 +134,14 @@ async fn drive_connection<S, ReqBody, ResBody>(
                 return;
             }
         };
-        let (request, stream) = match resolver.resolve_request().await {
+        let (mut request, stream) = match resolver.resolve_request().await {
             Ok(resolved) => resolved,
             Err(error) => {
                 tracing::debug!(error = %error, "HTTP/3 request resolution failed");
                 return;
             }
         };
+        normalize_authority_host(&mut request);
 
         if let Some(handler) = &webtransport {
             if is_webtransport_connect(&request) {
@@ -212,6 +213,22 @@ async fn drive_connection<S, ReqBody, ResBody>(
 
 type WtSession = h3_webtransport::server::WebTransportSession<h3_quinn::Connection, Bytes>;
 
+/// HTTP/3 carries the request target in the `:authority` pseudo-header; the
+/// h3 crate surfaces it as the request URI's authority, not as a `Host`
+/// header. Origin checks and CORS middleware read `Host`, so synthesize it
+/// from the authority exactly like an HTTP/2 server stack would.
+fn normalize_authority_host<B>(request: &mut http::Request<B>) {
+    if request.headers().contains_key(http::header::HOST) {
+        return;
+    }
+    let Some(authority) = request.uri().authority().cloned() else {
+        return;
+    };
+    if let Ok(value) = http::HeaderValue::from_str(authority.as_str()) {
+        request.headers_mut().insert(http::header::HOST, value);
+    }
+}
+
 /// Serves an established WebTransport session: the first bidirectional
 /// stream the client opens becomes the frame channel for the realtime
 /// transport; any further HTTP requests on the connection keep going through
@@ -258,5 +275,48 @@ async fn drive_webtransport_session<S, ReqBody, ResBody>(
             }
             Ok(None) | Err(_) => return,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_authority_host;
+
+    #[test]
+    fn authority_becomes_host_header_when_missing() {
+        let uri = "https://example.test:8443/api/public/server-info"
+            .parse::<http::Uri>()
+            .expect("uri parses");
+        let mut request = http::Request::builder()
+            .method(http::Method::GET)
+            .uri(uri)
+            .body(())
+            .expect("request builds");
+        normalize_authority_host(&mut request);
+        assert_eq!(
+            request
+                .headers()
+                .get(http::header::HOST)
+                .expect("host synthesized"),
+            "example.test:8443"
+        );
+    }
+
+    #[test]
+    fn explicit_host_header_is_preserved() {
+        let mut request = http::Request::builder()
+            .method(http::Method::GET)
+            .uri("https://example.test/")
+            .header("host", "kept.example.test")
+            .body(())
+            .expect("request builds");
+        normalize_authority_host(&mut request);
+        assert_eq!(
+            request
+                .headers()
+                .get(http::header::HOST)
+                .expect("host kept"),
+            "kept.example.test"
+        );
     }
 }

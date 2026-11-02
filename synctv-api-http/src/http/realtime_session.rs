@@ -72,7 +72,13 @@ static SUBSCRIBER_IDS: AtomicU64 = AtomicU64::new(0);
 fn principal_owner_key(principal: &RealtimePrincipal) -> String {
     match principal.user_id() {
         Some(user_id) => format!("user:{user_id}"),
-        None => format!("guest:{}", principal.username()),
+        // Guest display names share a 6-character prefix ("Guest a1b2c3"),
+        // so keying on them would let one guest into another's session; the
+        // full session id is unambiguous.
+        None => match principal.guest_identity() {
+            Some(identity) => format!("guest:{}", identity.session_id),
+            None => format!("guest:{}", principal.username()),
+        },
     }
 }
 
@@ -128,20 +134,65 @@ impl ManagedRealtimeSession for HttpRealtimeSession {
     }
 }
 
+/// Result of handing one message to the tap.
+#[derive(Debug, PartialEq, Eq)]
+enum TapOutcome {
+    /// Delivered to the subscriber (or buffered for the first attach).
+    Delivered,
+    /// A termination/error was lost and the subscriber can never be told:
+    /// the caller must cancel the session so the client reconnects.
+    LostCritical,
+    /// A routine event was dropped; the client resyncs from cursors.
+    LostTolerated,
+}
+
+/// True for messages whose loss must end the session: the client cannot
+/// recover from a missed termination or session error via cursor resync.
+fn is_critical_message(message: &ServerMessage) -> bool {
+    use synctv_proto::client::server_message::Message;
+    matches!(
+        message.message.as_ref(),
+        Some(Message::Termination(_) | Message::Error(_))
+    )
+}
+
 /// Fans the fair queue's scheduled output to the currently attached SSE
-/// subscriber. With no subscriber attached, messages are dropped: the client
-/// is detached and will resync via re-observed cursors on re-attach, exactly
-/// like a WS reconnect.
+/// subscriber. Until the first attach, messages are buffered (bounded,
+/// drop-oldest) so the initial-observation replies — which race the client's
+/// `GET .../events` — survive the create→attach gap and replay into the first
+/// subscriber. After the first attach, drops follow the detach semantics: the
+/// client is away or slow and resyncs via re-observed cursors on re-attach,
+/// exactly like a WS reconnect.
 struct SessionTap {
     subscriber: parking_lot::Mutex<Option<(u64, tokio::sync::mpsc::Sender<ServerMessage>)>>,
     lease: SharedSessionLease,
+    /// Pre-attach buffer, drained into the first subscriber.
+    pending: parking_lot::Mutex<std::collections::VecDeque<ServerMessage>>,
+    /// Latches on the first attach; later detach gaps resync instead of
+    /// buffering.
+    ever_attached: std::sync::atomic::AtomicBool,
 }
 
 impl SessionTap {
     fn attach(&self) -> (u64, tokio::sync::mpsc::Receiver<ServerMessage>) {
         let id = SUBSCRIBER_IDS.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = tokio::sync::mpsc::channel(SESSION_EVENT_BUFFER);
-        *self.subscriber.lock() = Some((id, tx));
+        // Hold both locks across the transition so a concurrent `forward`
+        // cannot slip between "still buffering" and "subscriber installed".
+        let mut subscriber = self.subscriber.lock();
+        let mut pending = self.pending.lock();
+        for message in pending.drain(..) {
+            // Replay overflow means the client is already too slow to drain
+            // its initial sync; it resyncs from cursors on later events.
+            if tx.try_send(message).is_err() {
+                break;
+            }
+        }
+        self.ever_attached
+            .store(true, std::sync::atomic::Ordering::Release);
+        *subscriber = Some((id, tx));
+        drop(pending);
+        drop(subscriber);
         self.lease.refresh();
         (id, rx)
     }
@@ -153,16 +204,64 @@ impl SessionTap {
         }
     }
 
-    fn forward(&self, message: ServerMessage) {
-        let mut subscriber = self.subscriber.lock();
-        if let Some((_, tx)) = subscriber.as_mut() {
-            // A full buffer drops for this subscriber; the client
-            // resyncs from cursors. A closed sender detaches lazily.
-            if tx.try_send(message).is_err() && tx.is_closed() {
-                *subscriber = None;
+    /// Ends the downlink: the attached subscriber (if any) sees the stream
+    /// end after the final queued messages instead of open-ended keepalives.
+    fn close(&self) {
+        *self.subscriber.lock() = None;
+        self.pending.lock().clear();
+    }
+
+    fn forward(&self, message: ServerMessage) -> TapOutcome {
+        if !self
+            .ever_attached
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            let mut pending = self.pending.lock();
+            // Re-check under the lock: an attach that completed while this
+            // task waited on the mutex must not leave the message orphaned
+            // in the drained buffer.
+            if !self
+                .ever_attached
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                let evicted = if pending.len() >= SESSION_EVENT_BUFFER {
+                    pending.pop_front()
+                } else {
+                    None
+                };
+                pending.push_back(message);
+                return if evicted.as_ref().is_some_and(is_critical_message) {
+                    TapOutcome::LostCritical
+                } else {
+                    TapOutcome::Delivered
+                };
             }
         }
-        // Detached: drop. Lease expiry (or re-attach) follows.
+        let critical = is_critical_message(&message);
+        let mut subscriber = self.subscriber.lock();
+        match subscriber.as_mut() {
+            Some((_, tx)) => {
+                // A full buffer drops for this subscriber; the client
+                // resyncs from cursors. A closed sender detaches lazily.
+                if tx.try_send(message).is_err() {
+                    if tx.is_closed() {
+                        *subscriber = None;
+                    }
+                    if critical {
+                        TapOutcome::LostCritical
+                    } else {
+                        TapOutcome::LostTolerated
+                    }
+                } else {
+                    TapOutcome::Delivered
+                }
+            }
+            // Detached: drop. Lease expiry (or re-attach) follows; a
+            // critical message still ends the session so the client's next
+            // attach 404s instead of parking on a dead session.
+            None if critical => TapOutcome::LostCritical,
+            None => TapOutcome::LostTolerated,
+        }
     }
 
     fn refresh_lease(&self) {
@@ -325,6 +424,8 @@ pub async fn create_realtime_session(
         outbound: SessionTap {
             subscriber: parking_lot::Mutex::new(None),
             lease: session_lease.clone(),
+            pending: parking_lot::Mutex::new(std::collections::VecDeque::new()),
+            ever_attached: std::sync::atomic::AtomicBool::new(false),
         },
         cancel_token: cancel_token.clone(),
         attached: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -337,24 +438,36 @@ pub async fn create_realtime_session(
     let pump_session = Arc::clone(&session);
     tokio::spawn(async move {
         let mut fair_rx = fair_rx;
-        let mut draining = false;
+        let mut closing = false;
         loop {
-            if draining && fair_rx.is_empty() {
-                break;
-            }
             tokio::select! {
                 biased;
-                () = pump_session.cancel_token.cancelled(), if !draining => {
+                () = pump_session.cancel_token.cancelled(), if !closing => {
+                    // Everything already queued is flushed by the forwarder,
+                    // which then closes the channel — `recv()` returning None
+                    // is the authoritative drain-done signal. (An is_empty()
+                    // check here would race the forwarder's final hand-off
+                    // and could cut the drain short.)
                     fair_sender.close();
-                    draining = true;
+                    closing = true;
                 }
                 message = fair_rx.recv() => {
                     let Some(message) = message else { break };
-                    pump_session.outbound.forward(message);
+                    if pump_session.outbound.forward(message)
+                        == TapOutcome::LostCritical
+                    {
+                        // The subscriber can never be told the session ended;
+                        // cancel so the registry reaps it and the client
+                        // reconnects instead of parking on a dead session.
+                        pump_session.cancel_token.cancel();
+                    }
                 }
             }
         }
         pump_session.cancel_token.cancel();
+        // The handler has stopped: end the SSE downlink too, or an attached
+        // client would see open-ended keepalives on a dead session.
+        pump_session.outbound.close();
     });
 
     // Initial observations.

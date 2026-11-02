@@ -2949,51 +2949,12 @@ impl SyncTvServer {
                 {
                     Ok(rustls_config) => {
                         let udp_port = quic_config.port.unwrap_or(http_addr.port());
-                        let alt_svc = format!(
-                            "h3=\":{udp_port}\"; ma={}",
-                            quic_config.alt_svc_max_age_seconds
-                        )
-                        .parse::<axum::http::HeaderValue>()
-                        .expect("Alt-Svc header value is ASCII");
-                        router = router.layer(axum::middleware::from_fn(
-                            move |request: axum::http::Request<axum::body::Body>,
-                                  next: axum::middleware::Next| {
-                                let alt_svc = alt_svc.clone();
-                                async move {
-                                    let mut response = next.run(request).await;
-                                    response
-                                        .headers_mut()
-                                        .insert(axum::http::header::ALT_SVC, alt_svc);
-                                    response
-                                }
-                            },
-                        ));
-
-                        // Pin the served certificate in the advertisement so
-                        // self-signed deployments work without manual client
-                        // configuration; unreadable hashes pin nothing.
-                        let certificate_hash =
-                            synctv_quic::certificate_hash_base64(&quic_config.cert_path)
-                                .await
-                                .unwrap_or_default();
-
-                        shared_http_app_state
-                            .realtime_transport_advertisement
-                            .write()
-                            .push(synctv_proto::client::RealtimeTransportCapability {
-                                kind: synctv_proto::client::RealtimeTransportKind::WebTransport
-                                    as i32,
-                                path: synctv_api::WEBTRANSPORT_ROOMS_PATH.to_string(),
-                                certificate_hash,
-                            });
-
+                        // IPv6 listen addresses only parse via SocketAddr — a
+                        // `ip:port` format string mangles `::` into `::8080`.
+                        let bind_addr = std::net::SocketAddr::new(http_addr.ip(), udp_port);
                         let wt_handler = std::sync::Arc::new(synctv_api::RoomWebTransportHandler {
                             state: (*shared_http_app_state).clone(),
                         });
-                        let bind_addr: std::net::SocketAddr =
-                            format!("{}:{udp_port}", http_addr.ip())
-                                .parse()
-                                .expect("API address ip parses into the QUIC bind address");
                         // The HTTP/3 path attaches the QUIC peer address as a
                         // `PeerAddress` extension (synctv-quic has no axum
                         // dependency); synthesize the `ConnectInfo<SocketAddr>`
@@ -3023,13 +2984,17 @@ impl SyncTvServer {
                                 next.run(request).await
                             },
                         ));
-                        match synctv_quic::serve_quic::<_, axum::body::Body, axum::body::Body>(
+                        match synctv_quic::serve_quic::<_, axum::body::Body, axum::body::Body, _>(
                             bind_addr,
                             synctv_quic::QuicServerConfig {
                                 rustls: rustls_config,
                                 max_webtransport_sessions: quic_config.max_webtransport_sessions,
                             },
                             h3_router,
+                            // Stream the HTTP/3 request body straight into
+                            // axum (bidirectional gRPC and early responses
+                            // work without buffering the upload first).
+                            axum::body::Body::new,
                             Some(wt_handler),
                             graceful_cancel.clone(),
                         )
@@ -3037,6 +3002,48 @@ impl SyncTvServer {
                         {
                             Ok(bound) => {
                                 info!("HTTP/3 (QUIC) server listening on {bound}");
+                                // Advertise only after a successful bind: browsers
+                                // cache Alt-Svc, and a phantom endpoint would
+                                // break the TCP API for clients that honor it.
+                                let alt_svc = format!(
+                                    "h3=\":{}\"; ma={}",
+                                    bound.port(),
+                                    quic_config.alt_svc_max_age_seconds
+                                )
+                                .parse::<axum::http::HeaderValue>()
+                                .expect("Alt-Svc header value is ASCII");
+                                router = router.layer(axum::middleware::from_fn(
+                                    move |request: axum::http::Request<axum::body::Body>,
+                                          next: axum::middleware::Next| {
+                                        let alt_svc = alt_svc.clone();
+                                        async move {
+                                            let mut response = next.run(request).await;
+                                            response
+                                                .headers_mut()
+                                                .insert(axum::http::header::ALT_SVC, alt_svc);
+                                            response
+                                        }
+                                    },
+                                ));
+
+                                // Pin the served certificate in the advertisement so
+                                // self-signed deployments work without manual client
+                                // configuration; unreadable hashes pin nothing.
+                                let certificate_hash =
+                                    synctv_quic::certificate_hash_base64(&quic_config.cert_path)
+                                        .await
+                                        .unwrap_or_default();
+
+                                shared_http_app_state
+                                    .realtime_transport_advertisement
+                                    .write()
+                                    .push(synctv_proto::client::RealtimeTransportCapability {
+                                        kind:
+                                            synctv_proto::client::RealtimeTransportKind::WebTransport
+                                                as i32,
+                                        path: synctv_api::WEBTRANSPORT_ROOMS_PATH.to_string(),
+                                        certificate_hash,
+                                    });
                             }
                             Err(error) => {
                                 error!(

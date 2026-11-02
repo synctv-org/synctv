@@ -723,9 +723,12 @@ async fn forward_websocket_messages<S>(
         // While draining, control frames (the close frame the input pump
         // enqueues on cancellation above all) must not preempt what the
         // session already queued — the client would see the socket close
-        // before its termination. Hold control traffic back until the fair
-        // queue is drained.
-        let control_deferred = drain_deadline.is_some() && !fair_closed;
+        // before its termination. Cancellation counts even before the grace
+        // deadline is armed: the close frame is typically enqueued the moment
+        // the session cancels, so a `drain_deadline`-only check would let
+        // this loop-top grab win the race and drop queued terminations.
+        let control_deferred =
+            (drain_deadline.is_some() || session_cancel.is_cancelled()) && !fair_closed;
 
         let msg = if !control_closed && !control_deferred {
             match control_messages.try_recv() {

@@ -94,7 +94,7 @@ impl RealtimePrincipal {
     }
 
     #[must_use]
-    pub(super) fn guest_identity(&self) -> Option<&GuestRealtimeIdentity> {
+    pub fn guest_identity(&self) -> Option<&GuestRealtimeIdentity> {
         match self {
             Self::Guest { identity, .. } => Some(identity),
             Self::User { .. } => None,

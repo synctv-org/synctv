@@ -1,15 +1,23 @@
 //! Length-prefixed frame codec for WebTransport bidi streams.
 //!
 //! Frames are `4-byte big-endian length + payload` — the same wire shape the
-//! realtime transports use, bounded to the WebSocket message cap.
+//! realtime transports use. Inbound frames are bounded to the WebSocket
+//! message cap (a hostile-client bound); outbound frames get a larger
+//! budget so legitimate snapshots (playlists, chat replay) that the
+//! WebSocket path delivers fine do not kill a WebTransport session.
 
 use std::io;
 
 use bytes::{BufMut, Bytes, BytesMut};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-/// Maximum single-frame payload: matches the WebSocket message size cap.
+/// Maximum single inbound frame payload: matches the WebSocket message size
+/// cap and bounds what a hostile client can make the server allocate.
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;
+
+/// Maximum single outbound frame payload: generous enough for large
+/// resource snapshots, small enough to bound reassembly on the client.
+pub const MAX_OUTBOUND_FRAME_BYTES: usize = 1024 * 1024;
 
 const LENGTH_PREFIX_BYTES: usize = 4;
 
@@ -44,11 +52,11 @@ pub async fn write_frame<W>(write: &mut W, payload: &[u8]) -> io::Result<()>
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
-    if payload.len() > MAX_FRAME_BYTES {
+    if payload.len() > MAX_OUTBOUND_FRAME_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
-                "frame payload {} exceeds {MAX_FRAME_BYTES} bytes",
+                "frame payload {} exceeds {MAX_OUTBOUND_FRAME_BYTES} bytes",
                 payload.len()
             ),
         ));

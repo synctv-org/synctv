@@ -6,35 +6,41 @@ use std::sync::Arc;
 use bytes::Bytes;
 use http::Request;
 use http_body::Body as HttpBody;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 use tower::Service;
 
-use crate::bridge::serve_request;
+use crate::bridge::{serve_request, H3RecvBody};
 use crate::webtransport::{is_webtransport_connect, SharedWebTransportHandler};
 
 /// Configuration for the QUIC listener.
 pub struct QuicServerConfig {
     /// TLS configuration with the `h3` ALPN.
     pub rustls: rustls::ServerConfig,
-    /// Maximum concurrent WebTransport sessions per endpoint. Only effective
-    /// when a handler is installed.
+    /// Maximum concurrent WebTransport sessions across the whole listener.
+    /// Only effective when a handler is installed.
     pub max_webtransport_sessions: u64,
 }
 
 /// Binds a QUIC endpoint and serves `service` over HTTP/3 until `shutdown`
 /// fires. Returns the bound address (useful when binding port 0 in tests).
 ///
+/// `make_body` wraps each request's streaming [`H3RecvBody`] into the
+/// service's request body type; the bridge stays axum-agnostic while callers
+/// keep control over buffering policy.
+///
 /// When `webtransport` is installed, extended-CONNECT WebTransport sessions
 /// are handed to it on the same socket; every other request — including SSE
-/// and, best-effort, gRPC — flows through the service unchanged.
+/// and gRPC — flows through the service unchanged.
 ///
 /// # Errors
 ///
 /// Fails when the UDP socket cannot be bound or QUIC rejects the TLS config.
-pub async fn serve_quic<S, ReqBody, ResBody>(
+pub async fn serve_quic<S, ReqBody, ResBody, F>(
     bind_addr: SocketAddr,
     config: QuicServerConfig,
     service: S,
+    make_body: F,
     webtransport: Option<SharedWebTransportHandler>,
     shutdown: CancellationToken,
 ) -> anyhow::Result<SocketAddr>
@@ -42,7 +48,8 @@ where
     S: Service<Request<ReqBody>, Response = http::Response<ResBody>> + Clone + Send + 'static,
     S::Future: Send,
     S::Error: std::fmt::Display + Send,
-    ReqBody: From<Bytes> + Send + 'static,
+    F: FnOnce(H3RecvBody) -> ReqBody + Clone + Send + 'static,
+    ReqBody: Send + 'static,
     ResBody: HttpBody<Data = Bytes> + Send + Unpin + 'static,
     ResBody::Error: std::fmt::Display + Send,
 {
@@ -51,14 +58,19 @@ where
         .map_err(|error| anyhow::anyhow!("failed to bind QUIC endpoint {bind_addr}: {error}"))?;
     let bound = endpoint.local_addr()?;
 
-    let max_sessions = config.max_webtransport_sessions;
+    // Listener-wide admission cap: the per-connection h3 setting bounds a
+    // single client's sessions; this bounds their sum so many connections
+    // cannot exhaust server memory together.
+    let wt_session_slots = Arc::new(Semaphore::new(
+        usize::try_from(config.max_webtransport_sessions).unwrap_or(usize::MAX),
+    ));
     let shutdown_endpoint = endpoint.clone();
     tokio::spawn(async move {
         tokio::select! {
             () = shutdown.cancelled() => {
                 shutdown_endpoint.close(0u32.into(), b"server shutting down");
             }
-            result = accept_loop(endpoint, service, webtransport, max_sessions) => {
+            result = accept_loop(endpoint, service, make_body, webtransport, wt_session_slots) => {
                 if let Err(error) = result {
                     tracing::error!(error = %error, "QUIC accept loop failed");
                 }
@@ -69,35 +81,47 @@ where
     Ok(bound)
 }
 
-async fn accept_loop<S, ReqBody, ResBody>(
+async fn accept_loop<S, ReqBody, ResBody, F>(
     endpoint: quinn::Endpoint,
     service: S,
+    make_body: F,
     webtransport: Option<SharedWebTransportHandler>,
-    max_webtransport_sessions: u64,
+    wt_session_slots: Arc<Semaphore>,
 ) -> anyhow::Result<()>
 where
     S: Service<Request<ReqBody>, Response = http::Response<ResBody>> + Clone + Send + 'static,
     S::Future: Send,
     S::Error: std::fmt::Display + Send,
-    ReqBody: From<Bytes> + Send + 'static,
+    F: FnOnce(H3RecvBody) -> ReqBody + Clone + Send + 'static,
+    ReqBody: Send + 'static,
     ResBody: HttpBody<Data = Bytes> + Send + Unpin + 'static,
     ResBody::Error: std::fmt::Display + Send,
 {
     while let Some(incoming) = endpoint.accept().await {
-        // A failed or hostile handshake must terminate only that connection:
-        // surfacing the error here (`?`) would end the accept loop and take
-        // the whole HTTP/3/WebTransport listener down with one packet.
-        let connection = match incoming.await {
-            Ok(connection) => connection,
-            Err(error) => {
-                tracing::warn!(error = %error, "QUIC handshake failed; continuing to accept");
-                continue;
-            }
-        };
+        // The handshake runs in its own task: a slow or hostile peer that
+        // parks the handshake must not stall admission for every other
+        // client — the accept loop immediately goes back to the socket.
+        // A failed handshake still terminates only that connection.
         let service = service.clone();
+        let make_body = make_body.clone();
         let webtransport = webtransport.clone();
+        let wt_session_slots = Arc::clone(&wt_session_slots);
         tokio::spawn(async move {
-            drive_connection(connection, service, webtransport, max_webtransport_sessions).await;
+            let connection = match incoming.await {
+                Ok(connection) => connection,
+                Err(error) => {
+                    tracing::warn!(error = %error, "QUIC handshake failed; continuing to accept");
+                    return;
+                }
+            };
+            drive_connection(
+                connection,
+                service,
+                make_body,
+                webtransport,
+                wt_session_slots,
+            )
+            .await;
         });
     }
     Ok(())
@@ -107,16 +131,18 @@ where
 /// the first WebTransport CONNECT converts the connection into
 /// session-driven mode (further HTTP requests still arrive via
 /// `accept_bi` and keep flowing through the service).
-async fn drive_connection<S, ReqBody, ResBody>(
+async fn drive_connection<S, ReqBody, ResBody, F>(
     connection: quinn::Connection,
     service: S,
+    make_body: F,
     webtransport: Option<SharedWebTransportHandler>,
-    max_webtransport_sessions: u64,
+    wt_session_slots: Arc<Semaphore>,
 ) where
     S: Service<Request<ReqBody>, Response = http::Response<ResBody>> + Clone + Send + 'static,
     S::Future: Send,
     S::Error: std::fmt::Display + Send,
-    ReqBody: From<Bytes> + Send + 'static,
+    F: FnOnce(H3RecvBody) -> ReqBody + Clone + Send + 'static,
+    ReqBody: Send + 'static,
     ResBody: HttpBody<Data = Bytes> + Send + Unpin + 'static,
     ResBody::Error: std::fmt::Display + Send,
 {
@@ -125,7 +151,10 @@ async fn drive_connection<S, ReqBody, ResBody>(
         .enable_webtransport(webtransport.is_some())
         .enable_extended_connect(webtransport.is_some())
         .enable_datagram(webtransport.is_some())
-        .max_webtransport_sessions(max_webtransport_sessions);
+        // A connection converts on its first WebTransport CONNECT (below),
+        // so it hosts at most one session; the listener-wide semaphore is
+        // the real concurrency bound.
+        .max_webtransport_sessions(1);
     // The QUIC connection is consumed by the h3 layer below, so capture the
     // direct peer address now; every request this connection serves carries
     // it so peer-derived security controls (per-IP rate limiting, brute-force
@@ -178,6 +207,26 @@ async fn drive_connection<S, ReqBody, ResBody>(
                     }
                     continue;
                 }
+                // Listener-wide admission: the per-connection h3 setting
+                // cannot bound the sum across connections. Reject with 503
+                // instead of queueing — clients retry transport negotiation.
+                let Ok(permit) = Arc::clone(&wt_session_slots).try_acquire_owned() else {
+                    tracing::warn!(
+                        "WebTransport session rejected: listener at max_webtransport_sessions"
+                    );
+                    let mut stream = stream;
+                    let response = http::Response::builder()
+                        .status(http::StatusCode::SERVICE_UNAVAILABLE)
+                        .body(())
+                        .expect("status-only response builds");
+                    if let Err(error) = stream.send_response(response).await {
+                        tracing::debug!(error = %error, "WebTransport overload response failed");
+                    }
+                    if let Err(error) = stream.finish().await {
+                        tracing::debug!(error = %error, "WebTransport overload finish failed");
+                    }
+                    continue;
+                };
                 let request_for_session = request;
                 match h3_webtransport::server::WebTransportSession::accept(
                     request_for_session.clone(),
@@ -192,7 +241,9 @@ async fn drive_connection<S, ReqBody, ResBody>(
                             session,
                             request_for_session,
                             service,
+                            make_body,
                             Arc::clone(handler),
+                            permit,
                             peer,
                         )
                         .await;
@@ -220,8 +271,9 @@ async fn drive_connection<S, ReqBody, ResBody>(
         }
 
         let mut service = service.clone();
+        let make_body = make_body.clone();
         tokio::spawn(async move {
-            if let Err(error) = serve_request(stream, request, &mut service).await {
+            if let Err(error) = serve_request(stream, request, make_body, &mut service).await {
                 tracing::debug!(error = %error, "HTTP/3 request failed");
             }
         });
@@ -252,17 +304,25 @@ fn normalize_authority_host<B>(request: &mut http::Request<B>) {
 /// any further HTTP requests on the connection keep going through the
 /// service. Client-initiated unidirectional streams are drained defensively
 /// so a confused or hostile client cannot wedge stream flow control.
-async fn drive_webtransport_session<S, ReqBody, ResBody>(
+///
+/// `permit` is the listener-wide admission slot; it releases when the
+/// session ends (this function returns).
+async fn drive_webtransport_session<S, ReqBody, ResBody, F>(
     session: WtSession,
     request: Request<()>,
     service: S,
+    make_body: F,
     handler: SharedWebTransportHandler,
+    // The listener-wide admission slot; the underscore-prefixed binding
+    // still lives to end of scope, releasing only when the session ends.
+    _permit: OwnedSemaphorePermit,
     peer: crate::PeerAddress,
 ) where
     S: Service<Request<ReqBody>, Response = http::Response<ResBody>> + Clone + Send + 'static,
     S::Future: Send,
     S::Error: std::fmt::Display + Send,
-    ReqBody: From<Bytes> + Send + 'static,
+    F: FnOnce(H3RecvBody) -> ReqBody + Clone + Send + 'static,
+    ReqBody: Send + 'static,
     ResBody: HttpBody<Data = Bytes> + Send + Unpin + 'static,
     ResBody::Error: std::fmt::Display + Send,
 {
@@ -271,6 +331,14 @@ async fn drive_webtransport_session<S, ReqBody, ResBody>(
     let _ = &request;
     let session = Arc::new(session);
     let mut frame_stream_taken = false;
+    // Fires when the realtime handler's task finishes: the session must then
+    // close instead of lingering established-but-dead.
+    let (session_done_tx, session_done) = tokio::sync::oneshot::channel::<()>();
+    // The sender moves into the (at most once) session task; the receiver
+    // is borrowed by the select each iteration — both need the Option
+    // wrapper to satisfy the loop's move check.
+    let mut session_done_tx = Some(session_done_tx);
+    let mut session_done = Some(session_done);
     loop {
         tokio::select! {
             accepted = session.accept_bi() => {
@@ -285,8 +353,12 @@ async fn drive_webtransport_session<S, ReqBody, ResBody>(
                         let driver = crate::webtransport::share_session(Arc::clone(&session), stream);
                         let handler = Arc::clone(&handler);
                         let request = request.clone();
+                        let done_tx = session_done_tx.take();
                         tokio::spawn(async move {
                             handler.run_session(request, driver).await;
+                            if let Some(done_tx) = done_tx {
+                                let _ = done_tx.send(());
+                            }
                         });
                     }
                     Ok(Some(h3_webtransport::server::AcceptedBi::Request(mut request, stream))) => {
@@ -295,8 +367,9 @@ async fn drive_webtransport_session<S, ReqBody, ResBody>(
                         // address must be re-attached for them as well.
                         request.extensions_mut().insert(peer);
                         let mut service = service.clone();
+                        let make_body = make_body.clone();
                         tokio::spawn(async move {
-                            if let Err(error) = serve_request(stream, request, &mut service).await {
+                            if let Err(error) = serve_request(stream, request, make_body, &mut service).await {
                                 tracing::debug!(error = %error, "HTTP/3 request failed");
                             }
                         });
@@ -311,6 +384,27 @@ async fn drive_webtransport_session<S, ReqBody, ResBody>(
                     Ok(Some(_stream)) => {}
                     Ok(None) | Err(_) => return,
                 }
+            }
+            // The realtime session ended (handler finished or failed):
+            // without this, the WebTransport session would linger
+            // established-but-dead — holding its admission slot until the
+            // client eventually disconnects. Returning drops the last
+            // connection handles, which closes the QUIC connection.
+            // The realtime handler finished (session ended or failed).
+            // Without this the WebTransport session would linger
+            // established-but-dead — holding its admission slot until the
+            // client eventually disconnects. Returning drops the remaining
+            // connection handles, which closes the QUIC connection.
+            _session_done = async {
+                match session_done.as_mut() {
+                    Some(done) => {
+                        let _ = done.await;
+                    }
+                    None => std::future::pending::<()>().await,
+                }
+            } => {
+                tracing::debug!("WebTransport realtime session handler finished; closing session");
+                return;
             }
         }
     }

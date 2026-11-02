@@ -2,7 +2,8 @@
 //!
 //! Serves an existing HTTP service (the SyncTV axum router) natively over
 //! HTTP/3 on a UDP socket, next to the TCP listener. Every regular endpoint —
-//! REST, SSE streams, even gRPC best-effort — inherits QUIC's 0-RTT,
+//! REST, SSE streams, gRPC included (request bodies stream, so
+//! bidirectional RPCs work) — inherits QUIC's 0-RTT,
 //! stream multiplexing, and connection migration.
 //!
 //! On the same socket, WebTransport sessions (extended CONNECT with the
@@ -22,8 +23,8 @@ pub mod testing;
 mod tls;
 mod webtransport;
 
-pub use bridge::serve_request;
-pub use frames::{read_frame, write_frame, MAX_FRAME_BYTES};
+pub use bridge::{serve_request, H3RecvBody};
+pub use frames::{read_frame, write_frame, MAX_FRAME_BYTES, MAX_OUTBOUND_FRAME_BYTES};
 pub use server::{serve_quic, QuicServerConfig};
 
 /// Direct peer address of a QUIC connection, attached to every request the

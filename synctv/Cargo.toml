@@ -56,6 +56,7 @@ tls-aws-lc = [
     "tokio-rustls/aws_lc_rs",
 ]
 tls-ring = [
+    "synctv-quic/tls-ring",
     "synctv-core/tls-ring",
     "synctv-api/tls-ring",
     "synctv-livestream/tls-ring",

@@ -52,6 +52,12 @@ const WEBTRANSPORT_ROOMS_PATH_LEN: usize = WEBTRANSPORT_ROOMS_PATH.len();
 /// stays consistent because it never changes streams mid-flight).
 const MAX_OBSERVATION_STREAMS: usize = 32;
 
+/// Bound on a single WebTransport frame write, mirroring the WebSocket
+/// sink-write timeout. A client that stops reading parks the stream once QUIC
+/// flow control fills; without a bound one parked lane stalls every other
+/// lane (and the session) until the connection dies.
+const WT_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Parses `/wt/rooms/{roomId}` and its query string from the CONNECT target.
 fn parse_room_target(uri: &axum::http::Uri) -> Option<(String, WsQuery)> {
     if !uri.path().starts_with(WEBTRANSPORT_ROOMS_PATH) {
@@ -261,39 +267,56 @@ impl RoomWebTransportHandler {
             let mut lanes: HashMap<String, WtSendStream> = HashMap::new();
             // Session end must not drop what the session already queued:
             // keep writing until the fair channel closes (guaranteed by the
-            // fair-sender closer above) instead of parking mid-drain.
-            let mut draining = false;
+            // fair-sender closer above) instead of parking mid-drain. The
+            // channel close — `recv()` returning `None` — is the
+            // authoritative drain-done signal; an `is_empty()` check would
+            // race the forwarder's final hand-off and could cut the drain
+            // short of the queued terminations.
+            let mut closing = false;
             let outcome = loop {
-                if draining && fair_rx.is_empty() {
-                    break Ok(());
-                }
                 tokio::select! {
                     biased;
-                    () = writer_cancel.cancelled(), if !draining => {
-                        draining = true;
+                    () = writer_cancel.cancelled(), if !closing => {
+                        closing = true;
                     }
                     message = fair_rx.recv() => {
                         let Some(message) = message else { break Ok(()) };
                         let Ok(bytes) = ProtoCodec::encode_server_message(&message) else {
                             continue;
                         };
+                        // Each write is individually bounded: a client that
+                        // stops reading parks the stream once QUIC flow
+                        // control fills, and without a bound one parked lane
+                        // stalls every other lane. A timed-out write may have
+                        // written a partial frame; the session is cancelled
+                        // below either way, so the desynchronized stream
+                        // never carries further frames.
                         let written = match classify_message_lane(&message) {
                             MessageLane::Observation { observe_id, .. } if multi_stream => {
-                                write_observation_frame(
-                                    &mut lanes,
-                                    &stream_opener,
-                                    &mut send_half,
-                                    observe_id,
-                                    &bytes,
+                                tokio::time::timeout(
+                                    WT_WRITE_TIMEOUT,
+                                    write_observation_frame(
+                                        &mut lanes,
+                                        &stream_opener,
+                                        &mut send_half,
+                                        observe_id,
+                                        &bytes,
+                                    ),
                                 )
                                 .await
+                                .unwrap_or(false)
                             }
                             // Control lane, and every lane in single-stream
                             // mode, share the control stream.
-                            _ => write_frame(&mut send_half, &bytes).await.is_ok(),
+                            _ => tokio::time::timeout(
+                                WT_WRITE_TIMEOUT,
+                                async { write_frame(&mut send_half, &bytes).await.is_ok() },
+                            )
+                            .await
+                            .unwrap_or(false),
                         };
                         if !written {
-                            break Err("stream write failed".to_string());
+                            break Err("stream write failed or timed out".to_string());
                         }
                     }
                 }

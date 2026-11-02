@@ -16,7 +16,7 @@ use tower::service_fn;
 
 async fn start_server() -> (std::net::SocketAddr, CancellationToken) {
     let (rustls, _der) = generate_self_signed_config();
-    let service = service_fn(|_request: Request<Full<Bytes>>| async move {
+    let service = service_fn(|_request: Request<synctv_quic::H3RecvBody>| async move {
         Ok::<_, Infallible>(
             Response::builder()
                 .status(StatusCode::OK)
@@ -32,6 +32,7 @@ async fn start_server() -> (std::net::SocketAddr, CancellationToken) {
             max_webtransport_sessions: 8,
         },
         service,
+        |body| body,
         None,
         shutdown.clone(),
     )

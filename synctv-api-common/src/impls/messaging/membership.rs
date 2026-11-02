@@ -193,7 +193,16 @@ impl<'a> RealtimeMembershipProbe<'a> {
         if is_banned {
             return Ok(Some("Account is banned".to_string()));
         }
-        let user = user_service.get_user(user_id).await?;
+        // Lookups filter soft-deleted rows (`deleted_at IS NULL`), so a deleted
+        // account surfaces as NotFound here — deny it instead of propagating a
+        // transient error that would leave the realtime session retrying.
+        let user = match user_service.get_user(user_id).await {
+            Ok(user) => user,
+            Err(synctv_core::Error::NotFound(_)) => {
+                return Ok(Some("Account is deleted".to_string()));
+            }
+            Err(error) => return Err(error),
+        };
         if user.is_deleted() {
             return Ok(Some("Account is deleted".to_string()));
         }

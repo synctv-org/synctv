@@ -73,13 +73,30 @@ impl SessionLease {
     }
 }
 
-/// One registry entry: the session plus the lease it refreshes.
-type RegistryEntry = (Arc<dyn ManagedRealtimeSession>, SessionLease);
+/// One registry entry: the session, the lease it refreshes, and whether that
+/// lease is shared with the session itself (attachment-aware expiry lives in
+/// the session) or registry-owned (the lease is the only expiry signal).
+type RegistryEntry = (Arc<dyn ManagedRealtimeSession>, SessionLease, bool);
 
 /// Registry of live lease-owned sessions keyed by session id.
 #[derive(Default)]
 pub struct RealtimeSessionRegistry {
     sessions: Mutex<HashMap<String, RegistryEntry>>,
+}
+
+/// True when an entry may be reclaimed. Shared leases defer to the session:
+/// its `lease_expired` knows whether a live attachment suspends expiry, and
+/// overruling it here would cancel attached-but-quiet sessions.
+fn entry_expired(
+    session: &dyn ManagedRealtimeSession,
+    lease: &SessionLease,
+    shared_lease: bool,
+) -> bool {
+    if shared_lease {
+        session.lease_expired()
+    } else {
+        lease.expired() || session.lease_expired()
+    }
 }
 
 impl RealtimeSessionRegistry {
@@ -90,12 +107,26 @@ impl RealtimeSessionRegistry {
 
     /// Registers a session and opportunistically reaps expired entries so
     /// registries without a watchdog (tests, short-lived processes) still
-    /// release sessions eventually.
+    /// release sessions eventually. Reaped entries are cancelled outside the
+    /// registry lock so their cleanup can never deadlock against a re-entrant
+    /// registry call.
     pub fn insert(&self, session_id: String, session: Arc<dyn ManagedRealtimeSession>) {
-        {
+        let reaped = {
             let mut sessions = self.sessions.lock();
-            sessions.retain(|_, (_, lease)| !lease.expired());
-            sessions.insert(session_id, (session, SessionLease::new()));
+            let mut reaped = Vec::new();
+            sessions.retain(|_, (existing, lease, shared)| {
+                if entry_expired(existing.as_ref(), lease, *shared) {
+                    reaped.push(Arc::clone(existing));
+                    false
+                } else {
+                    true
+                }
+            });
+            sessions.insert(session_id, (session, SessionLease::new(), false));
+            reaped
+        };
+        for session in reaped {
+            session.cancel();
         }
     }
 
@@ -107,10 +138,22 @@ impl RealtimeSessionRegistry {
         session: Arc<dyn ManagedRealtimeSession>,
         lease: SessionLease,
     ) {
-        {
+        let reaped = {
             let mut sessions = self.sessions.lock();
-            sessions.retain(|_, (_, existing_lease)| !existing_lease.expired());
-            sessions.insert(session_id, (session, lease));
+            let mut reaped = Vec::new();
+            sessions.retain(|_, (existing, existing_lease, shared)| {
+                if entry_expired(existing.as_ref(), existing_lease, *shared) {
+                    reaped.push(Arc::clone(existing));
+                    false
+                } else {
+                    true
+                }
+            });
+            sessions.insert(session_id, (session, lease, true));
+            reaped
+        };
+        for session in reaped {
+            session.cancel();
         }
     }
 
@@ -119,7 +162,7 @@ impl RealtimeSessionRegistry {
         self.sessions
             .lock()
             .get(session_id)
-            .map(|(session, _)| Arc::clone(session))
+            .map(|(session, ..)| Arc::clone(session))
     }
 
     pub fn remove(&self, session_id: &str) -> bool {
@@ -143,12 +186,14 @@ impl RealtimeSessionRegistry {
             let sessions = self.sessions.lock();
             sessions
                 .iter()
-                .filter(|(_, (session, lease))| lease.expired() || session.lease_expired())
+                .filter(|(_, (session, lease, shared))| {
+                    entry_expired(session.as_ref(), lease, *shared)
+                })
                 .map(|(id, _)| id.clone())
                 .collect()
         };
         for id in expired {
-            if let Some((session, _)) = self.sessions.lock().remove(&id) {
+            if let Some((session, ..)) = self.sessions.lock().remove(&id) {
                 session.cancel();
             }
         }
@@ -170,7 +215,7 @@ impl RealtimeSessionRegistry {
                     () = shutdown.cancelled() => {
                         let sessions: Vec<Arc<dyn ManagedRealtimeSession>> = {
                             let mut guard = registry.sessions.lock();
-                            let drained = guard.drain().map(|(_, (session, _))| session).collect();
+                            let drained = guard.drain().map(|(_, (session, ..))| session).collect();
                             drained
                         };
                         for session in sessions {
@@ -189,18 +234,23 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+    /// Models the HTTP realtime session's expiry semantics: attachment
+    /// suspends lease expiry, detachment re-arms it.
     struct FakeSession {
         cancelled: AtomicBool,
         refreshes: AtomicUsize,
+        attached: AtomicBool,
+        lease: SessionLease,
     }
 
     impl ManagedRealtimeSession for FakeSession {
         fn refresh_lease(&self) {
             self.refreshes.fetch_add(1, Ordering::Relaxed);
+            self.lease.refresh();
         }
 
         fn lease_expired(&self) -> bool {
-            false
+            !self.attached.load(Ordering::Relaxed) && self.lease.expired()
         }
 
         fn cancel(&self) {
@@ -216,6 +266,8 @@ mod tests {
         Arc::new(FakeSession {
             cancelled: AtomicBool::new(false),
             refreshes: AtomicUsize::new(0),
+            attached: AtomicBool::new(true),
+            lease: SessionLease::new(),
         })
     }
 
@@ -231,13 +283,15 @@ mod tests {
     #[test]
     fn sweep_cancels_expired_leases() {
         let registry = RealtimeSessionRegistry::new();
-        let lease = SessionLease::new();
-        lease.expire_immediately();
         let session = fake_session();
+        session.attached.store(false, Ordering::Relaxed);
+        session.lease.expire_immediately();
+        // The shared lease is the session's own: the registry entry and the
+        // session see the same deadline.
         registry.insert_with_shared_lease(
             "s1".to_string(),
             Arc::clone(&session) as Arc<dyn ManagedRealtimeSession>,
-            lease,
+            session.lease.clone(),
         );
 
         registry.sweep_once();
@@ -249,10 +303,67 @@ mod tests {
     #[test]
     fn sweep_keeps_fresh_leases() {
         let registry = RealtimeSessionRegistry::new();
-        let lease = SessionLease::new();
-        lease.refresh();
-        registry.insert_with_shared_lease("s1".to_string(), fake_session(), lease);
+        let session = fake_session();
+        session.attached.store(false, Ordering::Relaxed);
+        session.lease.refresh();
+        registry.insert_with_shared_lease(
+            "s1".to_string(),
+            Arc::clone(&session) as Arc<dyn ManagedRealtimeSession>,
+            session.lease.clone(),
+        );
         registry.sweep_once();
         assert_eq!(registry.len(), 1, "fresh leases must survive the sweep");
+    }
+
+    #[test]
+    fn sweep_keeps_attached_sessions_with_expired_leases() {
+        // Regression (sweep-cancelled-attached-session): an attached SSE
+        // downlink suspends lease expiry — the unconditional registry-side
+        // lease check used to cancel attached-but-quiet sessions.
+        let registry = RealtimeSessionRegistry::new();
+        let session = fake_session();
+        session.lease.expire_immediately();
+        registry.insert_with_shared_lease(
+            "s1".to_string(),
+            Arc::clone(&session) as Arc<dyn ManagedRealtimeSession>,
+            session.lease.clone(),
+        );
+
+        registry.sweep_once();
+
+        assert!(
+            !session.cancelled.load(Ordering::Relaxed),
+            "attachment must suspend lease expiry"
+        );
+        assert_eq!(registry.len(), 1);
+    }
+
+    #[test]
+    fn insert_cancels_entries_it_reaps() {
+        // Regression (insert-reap-orphaned-session): the insert-time reap
+        // used to drop expired entries without cancelling them, orphaning
+        // their handlers (presence, room membership) until process exit.
+        let registry = RealtimeSessionRegistry::new();
+        let stale = fake_session();
+        stale.attached.store(false, Ordering::Relaxed);
+        stale.lease.expire_immediately();
+        registry.insert_with_shared_lease(
+            "s1".to_string(),
+            Arc::clone(&stale) as Arc<dyn ManagedRealtimeSession>,
+            stale.lease.clone(),
+        );
+
+        registry.insert_with_shared_lease(
+            "s2".to_string(),
+            fake_session() as Arc<_>,
+            SessionLease::new(),
+        );
+
+        assert!(
+            stale.cancelled.load(Ordering::Relaxed),
+            "the reaped entry must be cancelled, not just dropped"
+        );
+        assert!(registry.get("s1").is_none());
+        assert!(registry.get("s2").is_some());
     }
 }

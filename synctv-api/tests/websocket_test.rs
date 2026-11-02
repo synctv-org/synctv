@@ -1802,10 +1802,8 @@ mod websocket_e2e {
             tcp.write_all(&header).await.expect("send raw frame header");
         }
 
-        // The server must react by closing: read raw bytes from the socket
-        // until EOF or a WebSocket close frame (0x88...) arrives, well
-        // inside the idle-timeout window.
-        let mut seen_close = false;
+        // The server must react by closing the connection - EOF or a
+        // close-family control frame - well inside the idle-timeout window.
         {
             let io = ws.get_mut();
             let tcp = match io {
@@ -1813,22 +1811,19 @@ mod websocket_e2e {
                 other => panic!("test expects a plain TCP stream, got {other:?}"),
             };
             let mut buf = [0u8; 512];
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-            loop {
-                let read = tokio::time::timeout_at(deadline.into(), tcp.read(&mut buf))
-                    .await
-                    .expect("server must react within the deadline")
-                    .expect("tcp read");
-                if read == 0 || buf[..read].iter().any(|byte| *byte & 0xF0 == 0x80) {
-                    seen_close = true; // EOF or a control frame (close family)
-                    break;
+            // Resolves as soon as the server closes; the outer timeout
+            // turns silence into failure.
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                loop {
+                    let read = tcp.read(&mut buf).await.expect("tcp read");
+                    if read == 0 || buf[..read].iter().any(|byte| *byte & 0xF0 == 0x80) {
+                        break;
+                    }
                 }
-            }
+            })
+            .await
+            .expect("server must reject the oversized frame declaration by closing the connection");
         }
-        assert!(
-            seen_close,
-            "server must reject the oversized frame declaration by closing the connection"
-        );
     }
 
     #[tokio::test]

@@ -174,7 +174,14 @@ struct SessionTap {
 }
 
 impl SessionTap {
-    fn attach(&self) -> (u64, tokio::sync::mpsc::Receiver<ServerMessage>) {
+    /// Installs a subscriber and marks the session attached. The `attached`
+    /// flag update happens under the subscriber lock so it serializes with
+    /// [`Self::detach`]: a replaced stream's drop callback can never mark a
+    /// live replacement detached.
+    fn attach(
+        &self,
+        attached: &std::sync::atomic::AtomicBool,
+    ) -> (u64, tokio::sync::mpsc::Receiver<ServerMessage>) {
         let id = SUBSCRIBER_IDS.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = tokio::sync::mpsc::channel(SESSION_EVENT_BUFFER);
         // Hold both locks across the transition so a concurrent `forward`
@@ -191,16 +198,24 @@ impl SessionTap {
         self.ever_attached
             .store(true, std::sync::atomic::Ordering::Release);
         *subscriber = Some((id, tx));
+        attached.store(true, Ordering::Release);
         drop(pending);
         drop(subscriber);
         self.lease.refresh();
         (id, rx)
     }
 
-    fn detach(&self, id: u64) {
+    /// Removes the subscriber with `id` when it is still the active one and,
+    /// only then, marks the session detached and re-arms its lease — a stale
+    /// drop callback from a replaced stream must not expire a live successor.
+    fn detach(&self, id: u64, attached: &std::sync::atomic::AtomicBool) {
         let mut subscriber = self.subscriber.lock();
         if subscriber.as_ref().is_some_and(|(sub_id, _)| *sub_id == id) {
             *subscriber = None;
+            attached.store(false, Ordering::Release);
+            drop(subscriber);
+            // Re-arm the lease from now so brief reconnects survive.
+            self.lease.refresh();
         }
     }
 
@@ -522,16 +537,15 @@ pub async fn realtime_session_events(
 
     let session = load_session(&state, &room_id, &path.session_id, &principal)?;
 
-    let (subscriber_id, rx) = session.outbound.attach();
-    session.attached.store(true, Ordering::Relaxed);
+    let (subscriber_id, rx) = session.outbound.attach(&session.attached);
 
+    // The tap's detach is id-guarded and lock-serialized with attach, so a
+    // replaced stream's late drop callback cannot mark its successor
+    // detached (which would re-arm lease expiry under a live subscriber).
     let detach = {
         let session = Arc::clone(&session);
         move || {
-            session.attached.store(false, Ordering::Relaxed);
-            session.outbound.detach(subscriber_id);
-            // Re-arm the lease from now so brief reconnects survive.
-            session.outbound.refresh_lease();
+            session.outbound.detach(subscriber_id, &session.attached);
         }
     };
 

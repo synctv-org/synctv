@@ -16,6 +16,7 @@
 #![allow(clippy::module_name_repetitions)]
 
 mod bridge;
+mod frame_budget;
 mod frames;
 mod server;
 #[cfg(any(test, feature = "test-support"))]
@@ -24,6 +25,7 @@ mod tls;
 mod webtransport;
 
 pub use bridge::{serve_request, H3RecvBody};
+pub use frame_budget::{BudgetedConnection, MAX_CONTROL_FRAME_LEN};
 pub use frames::{read_frame, write_frame, MAX_FRAME_BYTES, MAX_OUTBOUND_FRAME_BYTES};
 pub use server::{serve_quic, QuicServerConfig};
 

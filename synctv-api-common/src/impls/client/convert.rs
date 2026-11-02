@@ -415,6 +415,12 @@ pub fn chat_message_selection_from_proto_values(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
+    // Deduplicate so a repeated filter value cannot inflate the retained
+    // selection (the selection is held per observation for its lifetime).
+    let mut include_message_types = include_message_types;
+    include_message_types.sort_unstable();
+    include_message_types.dedup();
+
     Ok(synctv_core::models::ChatMessageSelection {
         include_message_types,
     })

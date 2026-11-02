@@ -325,6 +325,12 @@ pub(crate) mod body_limits {
 
     /// Cover database uploads: match the service-level cover cap.
     pub const COVER: usize = 10 * 1024 * 1024;
+
+    /// Realtime sessions (create with initial observations, send message):
+    /// same 64 KiB signaling budget as the WebSocket / WebTransport frame
+    /// caps. Session uplink is signaling only - chat attachments upload via
+    /// their own object routes.
+    pub const REALTIME_SESSION: usize = 64 * 1024;
 }
 
 /// Authentication routes that are mounted inside the strict rate-limit group.
@@ -730,6 +736,9 @@ fn register_realtime_session_routes() -> Router<AppState> {
             "/api/rooms/{roomId}/realtime/sessions/{sessionId}",
             axum::routing::delete(realtime_session::delete_realtime_session),
         )
+        .layer(axum::extract::DefaultBodyLimit::max(
+            body_limits::REALTIME_SESSION,
+        ))
 }
 
 fn register_chat_attachment_object_routes() -> Router<AppState> {

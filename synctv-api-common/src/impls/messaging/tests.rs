@@ -11003,3 +11003,51 @@ async fn test_runtime_default_permission_revocation_tears_down_rtc_after_cache_i
     drop(tx);
     fixture.shutdown().await;
 }
+
+/// Regression (uplink retention): the protovalidate gate on
+/// `handle_client_message_with_control` must bound every retained list on
+/// every live transport. `include_message_types` is capped by
+/// `max_items: 16` (client.proto) - a 17-entry list must fail validation
+/// before any observation state clones it - and a sibling field rule
+/// (`observe_id` max 128 chars) must fail through the same gate.
+#[test]
+fn client_message_proto_rules_bound_retained_lists() {
+    use synctv_proto::client::client_message::Message;
+    use synctv_proto::client::observe_resource::Resource;
+    use synctv_proto::client::{
+        ChatMessageType, ObserveChatEvents, ObserveResource, ResourceDeliveryMode,
+    };
+
+    let observe_with_types =
+        |observe_id: String, types: Vec<i32>| synctv_proto::client::ClientMessage {
+            message: Some(Message::ObserveResource(ObserveResource {
+                observe_id,
+                delivery_mode: ResourceDeliveryMode::PushSnapshot as i32,
+                resource: Some(Resource::ChatEvents(ObserveChatEvents {
+                    after_event_sequence: None,
+                    include_message_types: types,
+                })),
+            })),
+        };
+
+    // Over the cap: rejected by the shared gate before dispatch.
+    let oversized = observe_with_types("chat".to_string(), vec![ChatMessageType::User as i32; 17]);
+    assert!(
+        crate::impls::validate_proto_request(&oversized).is_err(),
+        "17 include_message_types entries must fail the max_items rule"
+    );
+
+    // Sibling field rule through the same gate: observe_id over 128 chars.
+    let long_id = observe_with_types("x".repeat(129), vec![ChatMessageType::User as i32; 1]);
+    assert!(
+        crate::impls::validate_proto_request(&long_id).is_err(),
+        "a 129-char observe_id must fail its own length rule"
+    );
+
+    // At the cap and within every other rule: passes.
+    let at_cap = observe_with_types("chat".to_string(), vec![ChatMessageType::User as i32; 16]);
+    assert!(
+        crate::impls::validate_proto_request(&at_cap).is_ok(),
+        "16 entries at the cap must validate"
+    );
+}

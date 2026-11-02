@@ -9,11 +9,15 @@ use bytes::Bytes;
 pub const WEBTRANSPORT_PROTOCOL: &str = "webtransport";
 
 /// Bidirectional WebTransport stream as driven by the realtime transport.
-pub type WtBidiStream = h3_webtransport::stream::BidiStream<h3_quinn::BidiStream<Bytes>, Bytes>;
+pub type WtBidiStream =
+    h3_webtransport::stream::BidiStream<crate::frame_budget::BudgetedBidiStream<Bytes>, Bytes>;
 
 /// Server-initiated unidirectional WebTransport stream, used for
 /// per-observation push lanes.
-pub type WtSendStream = h3_webtransport::stream::SendStream<h3_quinn::SendStream<Bytes>, Bytes>;
+pub type WtSendStream = h3_webtransport::stream::SendStream<
+    crate::frame_budget::BudgetedSendStream<h3_quinn::SendStream<Bytes>>,
+    Bytes,
+>;
 
 /// Returns true when the HTTP/3 request is a WebTransport session CONNECT.
 ///
@@ -65,7 +69,8 @@ impl WtSessionDriver {
     }
 }
 
-pub type WtSession = h3_webtransport::server::WebTransportSession<h3_quinn::Connection, Bytes>;
+pub type WtSession =
+    h3_webtransport::server::WebTransportSession<crate::frame_budget::BudgetedConnection, Bytes>;
 
 /// Wraps a freshly accepted session so the connection driver and the
 /// application handler can share it.

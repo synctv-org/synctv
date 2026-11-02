@@ -3491,7 +3491,10 @@ message ObserveChatEvents {
   // Empty uses the default user-visible set: USER.
   // System message types, such as SYSTEM_MEMBER_JOINED and SYSTEM_PLAYBACK_CHANGED,
   // are included explicitly.
-  repeated ChatMessageType include_message_types = 2 [(buf.validate.field).repeated.items.enum.defined_only = true];
+  repeated ChatMessageType include_message_types = 2 [(buf.validate.field).repeated = {
+    max_items: 16
+    items: { enum: { defined_only: true } }
+  }];
 }
 
 message ObserveChatPinEvents {
@@ -4885,7 +4888,10 @@ message GetChatHistoryRequest {
   string cursor = 2; // Opaque keyset cursor returned by the server as "<rfc3339_created_at>|<message_id>".
   // Empty uses the default user-visible set: USER.
   // Include system message types explicitly when they should appear in history and cursors.
-  repeated ChatMessageType include_message_types = 3 [(buf.validate.field).repeated.items.enum.defined_only = true];
+  repeated ChatMessageType include_message_types = 3 [(buf.validate.field).repeated = {
+    max_items: 16
+    items: { enum: { defined_only: true } }
+  }];
 }
 
 message GetChatHistoryResponse {
@@ -4953,7 +4959,10 @@ message GetChatPlaybackMessagesRequest {
   double after_seconds = 6;
   int32 limit = 7;
   bool include_deleted = 8;
-  repeated ChatMessageType include_message_types = 9 [(buf.validate.field).repeated.items.enum.defined_only = true];
+  repeated ChatMessageType include_message_types = 9 [(buf.validate.field).repeated = {
+    max_items: 16
+    items: { enum: { defined_only: true } }
+  }];
 }
 
 message GetChatPlaybackMessagesResponse {
@@ -5272,9 +5281,12 @@ message RealtimeTransportCapability {
   // Present on WEB_TRANSPORT capabilities whenever the certificate hash is
   // readable; clients pass it as a WebTransport `serverCertificateHashes`
   // entry so self-signed deployments work without manual pinning, refreshing
-  // it from each server-info response. It is delivered inside the
-  // server-info response, so an on-path attacker cannot substitute a pin
-  // without breaking the enclosing channel.
+  // it from each server-info response. The advertised pin inherits exactly
+  // the delivery channel's trust: clients must apply it only when the
+  // server-info response arrived over a PKI-validated channel (validated
+  // https), and must honor an operator-configured profile pin first; over
+  // an unvalidated channel the pin is attacker-substitutable and must be
+  // ignored.
   string certificate_hash = 3;
 }
 

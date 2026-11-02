@@ -57,6 +57,11 @@ const MAX_OBSERVATION_STREAMS: usize = 32;
 /// flow control fills; without a bound one parked lane stalls every other
 /// lane (and the session) until the connection dies.
 const WT_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Bound on the post-cancellation drain: queued terminations get this long
+/// to reach the wire, then the writer drops the lanes and streams so a peer
+/// trickling flow-control credit cannot pin session resources past the
+/// session's end.
+const WT_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Parses `/wt/rooms/{roomId}` and its query string from the CONNECT target.
 fn parse_room_target(uri: &axum::http::Uri) -> Option<(String, WsQuery)> {
@@ -267,17 +272,32 @@ impl RoomWebTransportHandler {
             let mut lanes: HashMap<String, WtSendStream> = HashMap::new();
             // Session end must not drop what the session already queued:
             // keep writing until the fair channel closes (guaranteed by the
-            // fair-sender closer above) instead of parking mid-drain. The
-            // channel close — `recv()` returning `None` — is the
+            // fair-sender closer above) instead of parking mid-drain - but
+            // the whole drain is bounded by WT_DRAIN_GRACE, so a peer
+            // trickling flow-control credit cannot pace it indefinitely.
+            // The channel close — `recv()` returning `None` — is the
             // authoritative drain-done signal; an `is_empty()` check would
             // race the forwarder's final hand-off and could cut the drain
             // short of the queued terminations.
             let mut closing = false;
+            let mut drain_deadline: Option<tokio::time::Instant> = None;
             let outcome = loop {
                 tokio::select! {
                     biased;
                     () = writer_cancel.cancelled(), if !closing => {
                         closing = true;
+                        // Session end bounds the entire drain, not only
+                        // each write.
+                        drain_deadline =
+                            Some(tokio::time::Instant::now() + WT_DRAIN_GRACE);
+                    }
+                    () = async {
+                        match drain_deadline {
+                            Some(deadline) => tokio::time::sleep_until(deadline).await,
+                            None => std::future::pending::<()>().await,
+                        }
+                    } => {
+                        break Err("post-cancellation drain grace elapsed".to_string());
                     }
                     message = fair_rx.recv() => {
                         let Some(message) = message else { break Ok(()) };
@@ -290,32 +310,49 @@ impl RoomWebTransportHandler {
                         // stalls every other lane. A timed-out write may have
                         // written a partial frame; the session is cancelled
                         // below either way, so the desynchronized stream
-                        // never carries further frames.
-                        let written = match classify_message_lane(&message) {
+                        // never carries further frames. Post-cancellation the
+                        // drain deadline bounds the write too, so an
+                        // in-flight write cannot consume the full
+                        // WT_WRITE_TIMEOUT after the grace expires.
+                        let write_fut: std::pin::Pin<
+                            Box<dyn std::future::Future<Output = bool> + Send>,
+                        > = match classify_message_lane(&message) {
                             MessageLane::Observation { observe_id, .. } if multi_stream => {
-                                tokio::time::timeout(
-                                    WT_WRITE_TIMEOUT,
-                                    write_observation_frame(
-                                        &mut lanes,
-                                        &stream_opener,
-                                        &mut send_half,
-                                        observe_id,
-                                        &bytes,
-                                    ),
-                                )
-                                .await
-                                .unwrap_or(false)
+                                Box::pin(write_observation_frame(
+                                    &mut lanes,
+                                    &stream_opener,
+                                    &mut send_half,
+                                    observe_id,
+                                    &bytes,
+                                ))
                             }
                             // Control lane, and every lane in single-stream
                             // mode, share the control stream.
-                            _ => tokio::time::timeout(
-                                WT_WRITE_TIMEOUT,
-                                async { write_frame(&mut send_half, &bytes).await.is_ok() },
-                            )
-                            .await
-                            .unwrap_or(false),
+                            _ => Box::pin(async {
+                                write_frame(&mut send_half, &bytes).await.is_ok()
+                            }),
+                        };
+                        let written = match drain_deadline {
+                            Some(deadline) => tokio::time::timeout_at(deadline, write_fut)
+                                .await
+                                .unwrap_or(false),
+                            None => tokio::time::timeout(WT_WRITE_TIMEOUT, write_fut)
+                                .await
+                                .unwrap_or(false),
                         };
                         if !written {
+                            // A payload over the frame cap fails before any
+                            // byte is written (frames.rs write_frame): drop
+                            // this one message and keep the session instead
+                            // of desyncing the client into a reconnect loop.
+                            // Real write failures and timeouts stay fatal.
+                            if bytes.len() > synctv_quic::MAX_OUTBOUND_FRAME_BYTES {
+                                tracing::warn!(
+                                    size = bytes.len(),
+                                    "server message exceeds WebTransport frame cap; dropping message"
+                                );
+                                continue;
+                            }
                             break Err("stream write failed or timed out".to_string());
                         }
                     }

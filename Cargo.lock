@@ -9067,6 +9067,7 @@ dependencies = [
  "bytes",
  "futures",
  "h3",
+ "h3-datagram",
  "h3-quinn",
  "h3-webtransport",
  "http",

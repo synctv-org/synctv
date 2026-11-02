@@ -13,6 +13,13 @@ use tower::Service;
 use crate::bridge::{serve_request, H3RecvBody};
 use crate::webtransport::{is_webtransport_connect, SharedWebTransportHandler};
 
+/// Bound on the unauthenticated establishment phase: after the WebTransport
+/// handshake the client must open its control stream (which spawns
+/// `run_session` and validates the credential) within this window or the
+/// session - and its admission permit - is dropped. A server-side timer, so
+/// QUIC keepalive (PING) traffic cannot extend it.
+const WT_ESTABLISHMENT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Configuration for the QUIC listener.
 pub struct QuicServerConfig {
     /// TLS configuration with the `h3` ALPN.
@@ -161,7 +168,18 @@ async fn drive_connection<S, ReqBody, ResBody, F>(
     // lockout, audit attribution) bind to the real peer, like the TCP path's
     // `ConnectInfo`.
     let peer = crate::PeerAddress(connection.remote_address());
-    let mut h3_conn = match builder.build(h3_quinn::Connection::new(connection)).await {
+    // Wrap every inbound stream with the pre-decode frame budget: h3 0.0.8
+    // buffers a non-DATA frame to its declared length before any size
+    // check, so the adapter rejects oversized declarations (HEADERS,
+    // SETTINGS, ...) at header parse. max_field_section_size additionally
+    // bounds the decoded header size and advertises the limit to peers.
+    builder.max_field_section_size(crate::frame_budget::MAX_CONTROL_FRAME_LEN as u64);
+    let mut h3_conn = match builder
+        .build(crate::frame_budget::BudgetedConnection::new(
+            h3_quinn::Connection::new(connection),
+        ))
+        .await
+    {
         Ok(connection) => connection,
         Err(error) => {
             tracing::debug!(error = %error, "HTTP/3 handshake failed");
@@ -280,7 +298,8 @@ async fn drive_connection<S, ReqBody, ResBody, F>(
     }
 }
 
-type WtSession = h3_webtransport::server::WebTransportSession<h3_quinn::Connection, Bytes>;
+type WtSession =
+    h3_webtransport::server::WebTransportSession<crate::frame_budget::BudgetedConnection, Bytes>;
 
 /// HTTP/3 carries the request target in the `:authority` pseudo-header; the
 /// h3 crate surfaces it as the request URI's authority, not as a `Host`
@@ -339,8 +358,19 @@ async fn drive_webtransport_session<S, ReqBody, ResBody, F>(
     // wrapper to satisfy the loop's move check.
     let mut session_done_tx = Some(session_done_tx);
     let mut session_done = Some(session_done);
+    let establishment_deadline = tokio::time::sleep(WT_ESTABLISHMENT_DEADLINE);
+    tokio::pin!(establishment_deadline);
     loop {
         tokio::select! {
+            () = &mut establishment_deadline, if !frame_stream_taken => {
+                tracing::info!(
+                    "WebTransport session closed: no control stream before the establishment deadline"
+                );
+                // Drops the permit and the session handles, closing the
+                // connection: a permit holder must authenticate within the
+                // window or evict itself.
+                return;
+            }
             accepted = session.accept_bi() => {
                 match accepted {
                     Ok(Some(h3_webtransport::server::AcceptedBi::BidiStream(_session_id, stream))) => {
@@ -385,16 +415,13 @@ async fn drive_webtransport_session<S, ReqBody, ResBody, F>(
                     Ok(None) | Err(_) => return,
                 }
             }
-            // The realtime session ended (handler finished or failed):
-            // without this, the WebTransport session would linger
-            // established-but-dead — holding its admission slot until the
-            // client eventually disconnects. Returning drops the last
-            // connection handles, which closes the QUIC connection.
             // The realtime handler finished (session ended or failed).
             // Without this the WebTransport session would linger
             // established-but-dead — holding its admission slot until the
             // client eventually disconnects. Returning drops the remaining
-            // connection handles, which closes the QUIC connection.
+            // connection handles; the realtime writer's post-cancellation
+            // drain is separately bounded (WT_DRAIN_GRACE in
+            // synctv-api-http), after which the QUIC connection closes.
             _session_done = async {
                 match session_done.as_mut() {
                     Some(done) => {

@@ -6,6 +6,24 @@ use synctv_proto::client::{
 };
 
 pub(super) const MESSAGE_STREAM_BUFFER_SIZE: usize = 100;
+
+/// Signaling budget for a single gRPC MessageStream ClientMessage, matching
+/// the WebSocket / WebTransport inbound frame caps. The transport-level
+/// decode limit stays at the service-wide `grpc_max_message_size_bytes`
+/// (other RoomService methods legitimately carry large blobs), so this
+/// post-decode check is what bounds the streaming uplink.
+pub(super) const GRPC_STREAM_UPLINK_MAX_BYTES: usize = 64 * 1024;
+
+/// Per-write bound for response-stream pumps: a client that stops calling
+/// `Recv` parks hyper's response body on h2 flow control; without a bound
+/// the pump waits forever and every outbound sender clone stays alive, so
+/// the response stream can never complete and the session's queued lanes
+/// linger until process restart.
+pub(super) const PUMP_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Grace between session cancellation and force-ending the outbound chain:
+/// lets already-scheduled terminations reach the wire, then guarantees the
+/// response stream ends (trailers included).
+pub(super) const PUMP_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 pub(super) const WATCH_STREAM_BUFFER_SIZE: usize = 64;
 
 #[derive(Debug)]

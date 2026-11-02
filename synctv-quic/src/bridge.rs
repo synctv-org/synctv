@@ -55,13 +55,23 @@ pub struct H3RecvBody {
     /// `None` once the body reached EOF: a fully-read receive half drops
     /// cleanly, an unread one must be drained by [`Drop`] instead of
     /// resetting the stream.
-    stream: Option<h3::server::RequestStream<h3_quinn::RecvStream, Bytes>>,
+    stream: Option<
+        h3::server::RequestStream<
+            crate::frame_budget::BudgetedRecvStream<h3_quinn::RecvStream>,
+            Bytes,
+        >,
+    >,
     received: usize,
 }
 
 impl H3RecvBody {
     /// Wraps the receive half of a request stream with the global byte cap.
-    pub fn new(stream: h3::server::RequestStream<h3_quinn::RecvStream, Bytes>) -> Self {
+    pub fn new(
+        stream: h3::server::RequestStream<
+            crate::frame_budget::BudgetedRecvStream<h3_quinn::RecvStream>,
+            Bytes,
+        >,
+    ) -> Self {
         Self {
             stream: Some(stream),
             received: 0,
@@ -141,7 +151,7 @@ impl HttpBody for H3RecvBody {
 /// over buffering policy. `send_response` is only issued after the service
 /// produces one, so bidirectional streaming works end to end.
 pub async fn serve_request<S, ReqBody, ResBody, F>(
-    stream: h3::server::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
+    stream: h3::server::RequestStream<crate::frame_budget::BudgetedBidiStream<Bytes>, Bytes>,
     request: Request<()>,
     make_body: F,
     service: &mut S,

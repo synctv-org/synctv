@@ -237,6 +237,16 @@ impl Lanes {
     }
 
     /// Applies a lane's net byte delta to the session-wide aggregate.
+    #[cfg(debug_assertions)]
+    fn debug_assert_byte_invariant(&self) {
+        let lane_sum: usize = self.by_observe_id.values().map(|lane| lane.bytes).sum();
+        debug_assert_eq!(
+            self.total_bytes,
+            self.control.bytes + lane_sum,
+            "session byte budget must equal retained control + lane bytes"
+        );
+    }
+
     fn apply_bytes_delta(&mut self, bytes_delta: i64) {
         if bytes_delta >= 0 {
             self.total_bytes = self
@@ -257,8 +267,13 @@ impl Lanes {
         if !self.control.messages.is_empty() {
             let popped = self.control.messages.pop_front();
             if let Some((_, size)) = &popped {
+                // Keep the per-lane counters equal to retained bytes: popped
+                // traffic is no longer queued, so it must leave both the
+                // lane's and the session's budget.
+                self.control.bytes = self.control.bytes.saturating_sub(*size);
                 self.total_bytes = self.total_bytes.saturating_sub(*size);
             }
+            self.debug_assert_byte_invariant();
             return popped.map(|(message, _)| message);
         }
 
@@ -283,6 +298,10 @@ impl Lanes {
             }
             let popped = lane.messages.pop_front();
             if let Some((_, size)) = &popped {
+                // Same retained-bytes invariant as the control branch: the
+                // reap subtractions below must always see lane.bytes == 0
+                // for an emptied lane, never its lifetime throughput.
+                lane.bytes = lane.bytes.saturating_sub(*size);
                 self.total_bytes = self.total_bytes.saturating_sub(*size);
             }
             self.current_picks = self.current_picks.saturating_sub(1);
@@ -297,7 +316,8 @@ impl Lanes {
                 // still at the front. Leaving it behind lets the next
                 // map-miss `lane_for` push a duplicate, which multiplies the
                 // lane's picks per rotation cycle and grows `rotation`
-                // without any bound.
+                // without any bound. With the per-pop decrements above the
+                // subtraction is always 0; kept as a defensive no-op.
                 self.total_bytes = self.total_bytes.saturating_sub(lane.bytes);
                 self.by_observe_id.remove(&front_id);
                 if visit_finished {
@@ -307,6 +327,7 @@ impl Lanes {
                     self.current_picks = 0;
                 }
             }
+            self.debug_assert_byte_invariant();
             return popped.map(|(message, _)| message);
         }
         None
@@ -374,6 +395,7 @@ impl FairShared {
             }
         };
 
+        lanes.debug_assert_byte_invariant();
         // Session-wide retained-byte budget: per-lane caps bound each lane in
         // isolation, but a client holding many parked lanes at their caps
         // would otherwise pin unbounded aggregate heap with zero evictions
@@ -647,7 +669,9 @@ impl MessageSender for FairSessionSender {
 mod tests {
     use super::*;
     use synctv_proto::client::server_message::Message as SMMessage;
-    use synctv_proto::client::{ErrorMessage, ResourceEvent, ResourceObserveError};
+    use synctv_proto::client::{
+        ChatMessageEvent, ErrorMessage, ResourceEvent, ResourceObserveError,
+    };
 
     fn event_message(observe_id: &str, payload: Option<resource_event::Payload>) -> ServerMessage {
         ServerMessage {
@@ -1002,5 +1026,62 @@ mod tests {
             .ping()
             .expect("probe after drain records clean baseline");
         sender.ping().expect("no backlog, no stall");
+    }
+
+    #[test]
+    fn reaped_lane_does_not_erase_other_lanes_from_session_budget() {
+        // Regression (fair-queue budget): popping must decrement lane.bytes,
+        // so a lane drained to empty (and then reaped) subtracts 0 - not its
+        // whole lifetime throughput - from the session budget. Before the
+        // fix the stale counter let true retention exceed session_max_bytes.
+        let mut config = FairQueueConfig::default();
+        config.session_max_bytes = 10 * 1024;
+        let sender = FairSessionSender::unspawned(config);
+        let big = |lane: &str| {
+            event_message(
+                lane,
+                Some(resource_event::Payload::ChatEvent(ChatMessageEvent {
+                    event_id: "x".repeat(4 * 1024),
+                    ..Default::default()
+                })),
+            )
+        };
+        assert!(sender.send(big("a")).is_ok());
+        assert!(sender.send(big("b")).is_ok());
+        assert!(sender.try_pop().is_some()); // drains and reaps lane a; lane b still holds ~4 KiB
+        assert!(sender.send(big("a")).is_ok());
+        let fourth = sender.send(big("a")); // ~12 KiB truly queued > 10 KiB budget
+        assert!(
+            fourth.is_err() && sender.is_failed(),
+            "bytes still queued in lane b must count toward the session budget"
+        );
+    }
+
+    #[test]
+    fn control_lane_bytes_track_popped_control_traffic() {
+        // Regression (control-lane availability): control.bytes must decrease
+        // on control pops - a session whose lifetime control traffic passes
+        // control_lane_bytes must not evict (and thereby disconnect) while
+        // only a couple of control messages are queued.
+        let mut config = FairQueueConfig::default();
+        config.control_lane_bytes = 64;
+        let sender = FairSessionSender::unspawned(config);
+        for _ in 0..40 {
+            // A ServerMessage wrapping a default HeartbeatAck encodes to 2
+            // bytes; 40 popped acks leave 80 stale bytes (> 64) on the
+            // defective source.
+            assert!(sender.send(control_message()).is_ok());
+            assert!(sender.try_pop().is_some());
+        }
+        assert!(sender.send(control_message()).is_ok()); // queue depth 0
+        assert!(sender.send(control_message()).is_ok()); // queue depth 1
+                                                         // Defective source: stale 80 + 2 > 64 finds two messages queued,
+                                                         // evicts one, and fails the session. Fixed source: the lane retains
+                                                         // 6 bytes and the send succeeds.
+        let third = sender.send(control_message());
+        assert!(
+            third.is_ok() && !sender.is_failed(),
+            "control lane bytes must reflect retained, not lifetime, control traffic"
+        );
     }
 }

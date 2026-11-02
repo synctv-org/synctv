@@ -934,9 +934,15 @@ pub async fn websocket_handler(
 
     // Authentication and membership verified, upgrade to WebSocket.
     // Reservations are released inside handle_socket after join_room completes.
-    // Limit max message size to 64KB (default is 64MB which is excessive for signaling)
+    // Limit both the assembled message and each single frame to 64KB
+    // (defaults are 64MB message / 16MB frame, excessive for signaling).
+    // max_frame_size matters most: tungstenite checks it at header parse,
+    // before reserving the declared payload length into the read buffer;
+    // max_message_size alone is enforced only after a frame is fully
+    // buffered.
     Ok(ws
         .max_message_size(64 * 1024)
+        .max_frame_size(64 * 1024)
         .on_failed_upgrade(failed_upgrade_cleanup)
         .on_upgrade(move |socket| handle_socket(socket, state, prepared, transport_format)))
 }

@@ -2856,6 +2856,13 @@ impl StreamMessageHandler {
     ) -> Result<(), String> {
         use synctv_proto::client::client_message::Message;
 
+        // Enforce the protovalidate rules (repeated max_items, string
+        // max_len, ...) on every live-transport dispatch path (WS, WT, HTTP
+        // realtime-session send, gRPC MessageStream) before any field is
+        // cloned into retained state. The HTTP create path validates each
+        // initial observation separately.
+        crate::impls::validate_proto_request(msg).map_err(|error| error.to_string())?;
+
         match &msg.message {
             Some(Message::Chat(chat_msg)) => {
                 if self.principal.is_guest() {

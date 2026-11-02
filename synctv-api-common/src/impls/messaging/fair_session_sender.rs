@@ -237,7 +237,10 @@ impl Lanes {
     }
 
     /// Applies a lane's net byte delta to the session-wide aggregate.
-    #[cfg(debug_assertions)]
+    ///
+    /// Compiled in every profile (the `debug_assert_eq!` body is a no-op
+    /// without debug assertions) so call sites stay valid in release
+    /// builds, where the Docker image build caught the cfg mismatch.
     fn debug_assert_byte_invariant(&self) {
         let lane_sum: usize = self.by_observe_id.values().map(|lane| lane.bytes).sum();
         debug_assert_eq!(

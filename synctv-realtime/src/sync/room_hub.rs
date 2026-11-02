@@ -293,6 +293,11 @@ pub struct RoomMessageHub {
     /// Map of `connection_id` -> (`room_id`, actor) for cleanup (local cache)
     connections: Arc<DashMap<ConnectionId, (RoomId, RealtimeActor)>>,
 
+    /// Self-reference for background critical-event deliveries, set by
+    /// [`Self::new_shared`]; hubs constructed bare degrade to delivering
+    /// without timeout eviction.
+    weak_self: std::sync::OnceLock<std::sync::Weak<Self>>,
+
     /// Broadcast sender for room lifecycle events (first join / last leave).
     /// The Redis Pub/Sub subscriber task listens on a receiver to dynamically
     /// subscribe/unsubscribe to specific room channels.
@@ -428,7 +433,25 @@ impl RoomMessageHub {
             ttl_refresh_cancel: Arc::new(Mutex::new(tokio_util::sync::CancellationToken::new())),
             background_tasks_started: Arc::new(AtomicBool::new(false)),
             ttl_refresh_handle: Arc::new(Mutex::new(None)),
+            weak_self: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Creates the hub wrapped in an `Arc` with its self-reference
+    /// initialized, enabling critical-event background deliveries to evict
+    /// subscribers that time out (see [`Self::broadcast_critical_spawned`]).
+    #[must_use]
+    pub fn new_shared() -> Arc<Self> {
+        Self::new().into_shared()
+    }
+
+    /// Wraps a configured hub in an `Arc` with its self-reference
+    /// initialized (see [`Self::new_shared`]).
+    #[must_use]
+    pub fn into_shared(self) -> Arc<Self> {
+        let hub = Arc::new(self);
+        let _ = hub.weak_self.set(Arc::downgrade(&hub));
+        hub
     }
 
     /// Build a room message hub from an optional shared runtime.
@@ -911,6 +934,80 @@ impl RoomMessageHub {
 
         for conn_id in failed_connections {
             self.unsubscribe(&conn_id);
+        }
+
+        sent_count
+    }
+
+    /// Critical-event delivery for synchronous call sites: mirrors
+    /// [`Self::broadcast_reliably`]'s first pass, and for a full subscriber
+    /// queue spawns the same bounded wait (`CRITICAL_EVENT_SEND_TIMEOUT`) in a
+    /// background task instead of blocking the caller, so the sync
+    /// `broadcast`-style signatures can still honor the `is_critical`
+    /// must-not-be-silently-dropped contract. Timed-out or closed deliveries
+    /// evict the subscriber when the hub's self-reference is available
+    /// (see [`Self::new_shared`]).
+    ///
+    /// Returns the number of subscribers the event was immediately queued
+    /// for; background deliveries that succeed later are not counted.
+    pub fn broadcast_critical_spawned(&self, room_id: &RoomId, event: &RealtimeEvent) -> usize {
+        let mut sent_count = 0;
+        let shared_event = Arc::new(event.clone());
+        let weak_hub = self.weak_self.get().cloned();
+        // Closed receivers are collected and unsubscribed after the guard
+        // drops: `unsubscribe` takes the same shard's write lock, so calling
+        // it under this read guard self-deadlocks.
+        let mut closed_connections = Vec::new();
+
+        let subscribers_guard = self.rooms.get(room_id);
+        if let Some(subscribers) = &subscribers_guard {
+            for subscriber in subscribers.values() {
+                match subscriber.sender.try_send(Arc::clone(&shared_event)) {
+                    Ok(()) => {
+                        subscriber.consecutive_drops.store(0, Ordering::Relaxed);
+                        sent_count += 1;
+                    }
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        let sender = subscriber.sender.clone();
+                        let event = Arc::clone(&shared_event);
+                        let room_id = *room_id;
+                        let connection_id = subscriber.connection_id.clone();
+                        let weak_hub = weak_hub.clone();
+                        tokio::spawn(async move {
+                            match deliver_reliable_event(
+                                sender,
+                                event,
+                                room_id,
+                                connection_id.clone(),
+                            )
+                            .await
+                            {
+                                ReliableDeliveryOutcome::Delivered => {}
+                                ReliableDeliveryOutcome::Closed
+                                | ReliableDeliveryOutcome::TimedOut => {
+                                    if let Some(hub) =
+                                        weak_hub.as_ref().and_then(std::sync::Weak::upgrade)
+                                    {
+                                        warn!(
+                                            connection_id = %connection_id,
+                                            "Disconnecting subscriber after critical background delivery failure"
+                                        );
+                                        hub.unsubscribe(&connection_id);
+                                    }
+                                }
+                            }
+                        });
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        closed_connections.push(subscriber.connection_id.clone());
+                    }
+                }
+            }
+        }
+        drop(subscribers_guard);
+
+        for connection_id in closed_connections {
+            self.unsubscribe(&connection_id);
         }
 
         sent_count
@@ -1504,6 +1601,10 @@ impl RoomMessageRuntime for RoomMessageHub {
 
     fn broadcast(&self, room_id: &RoomId, event: &RealtimeEvent) -> usize {
         RoomMessageHub::broadcast(self, room_id, event)
+    }
+
+    fn broadcast_critical_background(&self, room_id: &RoomId, event: &RealtimeEvent) -> usize {
+        RoomMessageHub::broadcast_critical_spawned(self, room_id, event)
     }
 
     async fn broadcast_reliably(&self, room_id: &RoomId, event: RealtimeEvent) -> usize {

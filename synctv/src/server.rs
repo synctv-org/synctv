@@ -2880,6 +2880,7 @@ impl SyncTvServer {
         shared_provider_runtime: &SharedProviderPlaybackRuntime,
     ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
         let api_address = self.config.api_address();
+        let quic_config = self.config.server.quic.clone();
         let grpc_router = self
             .build_grpc_router(
                 &shared_http_app_state.runtime_settings,
@@ -2904,17 +2905,162 @@ impl SyncTvServer {
 
         info!("API server listening on {}", http_addr);
 
+        // Fail fast on unusable HTTP/3 configuration before the server boots.
+        if quic_config.enabled {
+            let (cert_pem, key_pem) = tokio::join!(
+                tokio::fs::read(&quic_config.cert_path),
+                tokio::fs::read(&quic_config.key_path)
+            );
+            anyhow::ensure!(
+                cert_pem.is_ok() && key_pem.is_ok(),
+                "server.quic is enabled but the certificate or key file cannot be read"
+            );
+        }
+
         let handle = tokio::spawn(async move {
             let mut rx = shutdown_rx;
             let proxy_cache_lifecycle =
                 synctv_api::start_proxy_cache_lifecycle(&shared_http_app_state.proxy_slice_cache);
+            let graceful_cancel = tokio_util::sync::CancellationToken::new();
+            let graceful_cancel_clone = graceful_cancel.clone();
             let graceful = async move {
                 if rx.changed().await.is_err() {
                     warn!("API server shutdown signal channel closed");
                 }
+                graceful_cancel_clone.cancel();
             };
 
-            let router = http_router.merge(grpc_router);
+            // Lease sweeper for HTTP realtime sessions; cancels remaining
+            // sessions when the server shuts down gracefully.
+            shared_http_app_state
+                .realtime_sessions
+                .spawn_watchdog(graceful_cancel.clone());
+
+            let mut router = http_router.merge(grpc_router);
+
+            // HTTP/3 (QUIC) listener: same router over UDP, plus WebTransport
+            // room sessions; TCP responses advertise the endpoint via Alt-Svc.
+            if quic_config.enabled {
+                match synctv_quic::load_tls_server_config(
+                    &quic_config.cert_path,
+                    &quic_config.key_path,
+                )
+                .await
+                {
+                    Ok(rustls_config) => {
+                        let udp_port = quic_config.port.unwrap_or(http_addr.port());
+                        // IPv6 listen addresses only parse via SocketAddr — a
+                        // `ip:port` format string mangles `::` into `::8080`.
+                        let bind_addr = std::net::SocketAddr::new(http_addr.ip(), udp_port);
+                        let wt_handler = std::sync::Arc::new(synctv_api::RoomWebTransportHandler {
+                            state: (*shared_http_app_state).clone(),
+                        });
+                        // The HTTP/3 path attaches the QUIC peer address as a
+                        // `PeerAddress` extension (synctv-quic has no axum
+                        // dependency); synthesize the `ConnectInfo<SocketAddr>`
+                        // every extractor already reads so per-IP rate limiting,
+                        // brute-force lockout, and audit attribution work over
+                        // HTTP/3 exactly as they do over TCP.
+                        let h3_router = router.clone().layer(axum::middleware::from_fn(
+                            |mut request: axum::http::Request<axum::body::Body>,
+                             next: axum::middleware::Next| async move {
+                                if request
+                                    .extensions()
+                                    .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+                                    .is_none()
+                                {
+                                    // PeerAddress is Copy; take it out of the
+                                    // immutable borrow before the mutable insert.
+                                    let peer = request
+                                        .extensions()
+                                        .get::<synctv_quic::PeerAddress>()
+                                        .copied();
+                                    if let Some(peer) = peer {
+                                        request
+                                            .extensions_mut()
+                                            .insert(axum::extract::ConnectInfo(peer.0));
+                                    }
+                                }
+                                next.run(request).await
+                            },
+                        ));
+                        match synctv_quic::serve_quic::<_, axum::body::Body, axum::body::Body, _>(
+                            bind_addr,
+                            synctv_quic::QuicServerConfig {
+                                rustls: rustls_config,
+                                max_webtransport_sessions: quic_config.max_webtransport_sessions,
+                            },
+                            h3_router,
+                            // Stream the HTTP/3 request body straight into
+                            // axum (bidirectional gRPC and early responses
+                            // work without buffering the upload first).
+                            axum::body::Body::new,
+                            Some(wt_handler),
+                            graceful_cancel.clone(),
+                        )
+                        .await
+                        {
+                            Ok(bound) => {
+                                info!("HTTP/3 (QUIC) server listening on {bound}");
+                                // Advertise only after a successful bind: browsers
+                                // cache Alt-Svc, and a phantom endpoint would
+                                // break the TCP API for clients that honor it.
+                                let alt_svc = format!(
+                                    "h3=\":{}\"; ma={}",
+                                    bound.port(),
+                                    quic_config.alt_svc_max_age_seconds
+                                )
+                                .parse::<axum::http::HeaderValue>()
+                                .expect("Alt-Svc header value is ASCII");
+                                router = router.layer(axum::middleware::from_fn(
+                                    move |request: axum::http::Request<axum::body::Body>,
+                                          next: axum::middleware::Next| {
+                                        let alt_svc = alt_svc.clone();
+                                        async move {
+                                            let mut response = next.run(request).await;
+                                            response
+                                                .headers_mut()
+                                                .insert(axum::http::header::ALT_SVC, alt_svc);
+                                            response
+                                        }
+                                    },
+                                ));
+
+                                // Pin the served certificate in the advertisement so
+                                // self-signed deployments work without manual client
+                                // configuration; unreadable hashes pin nothing.
+                                let certificate_hash =
+                                    synctv_quic::certificate_hash_base64(&quic_config.cert_path)
+                                        .await
+                                        .unwrap_or_default();
+
+                                shared_http_app_state
+                                    .realtime_transport_advertisement
+                                    .write()
+                                    .push(synctv_proto::client::RealtimeTransportCapability {
+                                        kind:
+                                            synctv_proto::client::RealtimeTransportKind::WebTransport
+                                                as i32,
+                                        path: synctv_api::WEBTRANSPORT_ROOMS_PATH.to_string(),
+                                        certificate_hash,
+                                    });
+                            }
+                            Err(error) => {
+                                error!(
+                                    error = %error,
+                                    "HTTP/3 (QUIC) listener failed to start; serving TCP only"
+                                );
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        error!(
+                            error = %error,
+                            "HTTP/3 (QUIC) TLS configuration failed to load; serving TCP only"
+                        );
+                    }
+                }
+            }
 
             let server = axum::serve(
                 listener,

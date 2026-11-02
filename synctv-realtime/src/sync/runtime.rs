@@ -73,16 +73,17 @@ pub fn build_room_message_runtime(
                     "distributed runtime requires shared realtime message state".to_string(),
                 )
             })?;
-            Ok(Arc::new(RoomMessageHub::from_redis_runtime(
-                Some(shared_runtime),
-                profile.key_prefix(),
-            )))
+            Ok(
+                RoomMessageHub::from_redis_runtime(Some(shared_runtime), profile.key_prefix())
+                    .into_shared(),
+            )
         }
-        SharedStateMode::SharedBestEffort => Ok(Arc::new(RoomMessageHub::from_redis_runtime(
+        SharedStateMode::SharedBestEffort => Ok(RoomMessageHub::from_redis_runtime(
             profile.shared_runtime(),
             profile.key_prefix(),
-        ))),
-        SharedStateMode::LocalOnly => Ok(Arc::new(RoomMessageHub::new())),
+        )
+        .into_shared()),
+        SharedStateMode::LocalOnly => Ok(RoomMessageHub::new().into_shared()),
     }
 }
 
@@ -100,6 +101,15 @@ pub trait RoomMessageRuntime: Send + Sync {
     fn unsubscribe(&self, connection_id: &str);
 
     fn broadcast(&self, room_id: &RoomId, event: &RealtimeEvent) -> usize;
+
+    /// Critical-event delivery for synchronous call sites. Implementations
+    /// should honor the `is_critical` must-not-be-silently-dropped contract
+    /// with a bounded wait (as `broadcast_reliably` does) without blocking
+    /// the caller; the default falls back to the lossy broadcast for
+    /// runtimes without reliable-delivery support.
+    fn broadcast_critical_background(&self, room_id: &RoomId, event: &RealtimeEvent) -> usize {
+        self.broadcast(room_id, event)
+    }
 
     async fn broadcast_reliably(&self, room_id: &RoomId, event: RealtimeEvent) -> usize;
 

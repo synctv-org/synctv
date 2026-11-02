@@ -1743,6 +1743,13 @@ impl RedisPubSub {
                         notified = sent_count,
                         "Handled terminal room lifecycle event from admin channel"
                     );
+                } else if event.is_critical() {
+                    let sent_count = self.message_hub.broadcast_reliably(&room_id, event).await;
+                    debug!(
+                        room_id = %room_id,
+                        local_subscribers = sent_count,
+                        "Forwarded critical admin room event with reliable delivery"
+                    );
                 } else {
                     let sent_count = self.message_hub.broadcast(&room_id, &event);
                     debug!(
@@ -1828,8 +1835,15 @@ impl RedisPubSub {
                 return;
             }
 
-            // Broadcast to local subscribers
-            let sent_count = self.message_hub.broadcast(&room_id, &event);
+            // Broadcast to local subscribers; critical events get the
+            // bounded-wait reliable delivery instead of the lossy try_send
+            // (the is_critical contract), generalizing the terminal-event
+            // special case above.
+            let sent_count = if event.is_critical() {
+                self.message_hub.broadcast_reliably(&room_id, event).await
+            } else {
+                self.message_hub.broadcast(&room_id, &event)
+            };
 
             debug!(
                 room_id = %room_id,

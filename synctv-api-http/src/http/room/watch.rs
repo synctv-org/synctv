@@ -102,7 +102,7 @@ where
     }
 }
 
-pub(in crate::http::room) fn sse_event_from_server_message(
+pub(in crate::http) fn sse_event_from_server_message(
     format: RealtimeTransportFormat,
     message: synctv_proto::client::ServerMessage,
 ) -> Option<Result<Event, Infallible>> {
@@ -145,7 +145,7 @@ pub(in crate::http::room) fn sse_event_from_server_message(
     Some(Ok(event))
 }
 
-pub(in crate::http::room) fn sse_event_id_from_resource_event(
+pub(in crate::http) fn sse_event_id_from_resource_event(
     changed: &synctv_proto::client::ResourceEvent,
 ) -> Option<String> {
     changed
@@ -160,6 +160,51 @@ pub(in crate::http::room) fn sse_event_id_from_resource_event(
             };
             Some(event.sequence.to_string())
         })
+}
+
+/// Resolves the realtime principal (user or guest) for an HTTP transport
+/// request, applying the given rate-limit category. Shared by the per-resource
+/// watch endpoints and the realtime-session endpoints.
+pub(in crate::http) async fn resolve_realtime_principal(
+    state: &AppState,
+    request_meta: RequestMetadata,
+    public_room_id: String,
+    category: EndpointRateLimitCategory,
+) -> AppResult<synctv_api_common::impls::messaging::RealtimePrincipal> {
+    let request_meta = request_metadata(request_meta).with_timeout(None);
+    let client_api = state.shared_api_runtime.client_api.clone();
+    let user_service = state.user_service.clone();
+    synctv_api_common::impls::ClientApiImpl::execute_room_actor_endpoint(
+        client_api,
+        &request_meta,
+        public_room_id,
+        category,
+        move |_client_api, actor| async move {
+            Ok::<_, synctv_api_common::impls::ApiError>(match actor {
+                synctv_api_common::impls::client::RoomActor::User { user_id, .. } => {
+                    let username = user_service
+                        .get_user(&user_id)
+                        .await
+                        .map_err(synctv_api_common::impls::ApiError::from)?
+                        .username;
+                    synctv_api_common::impls::messaging::RealtimePrincipal::user(user_id, username)
+                }
+                synctv_api_common::impls::client::RoomActor::Guest(access) => {
+                    let identity = synctv_api_common::impls::messaging::GuestRealtimeIdentity {
+                        guest_id: access.guest_id,
+                        display_name: access.display_name,
+                        session_id: access.session_id,
+                        token_jti: access.token_jti,
+                        room_guest_version: access.room_guest_version,
+                        permissions: access.permissions,
+                    };
+                    synctv_api_common::impls::messaging::RealtimePrincipal::guest(identity)
+                }
+            })
+        },
+    )
+    .await
+    .map_err(super::super::error::map_api_error)
 }
 
 pub(in crate::http::room) async fn open_resource_watch_sse(
@@ -177,44 +222,13 @@ pub(in crate::http::room) async fn open_resource_watch_sse(
         .map_err(|error| {
             super::super::AppError::bad_request(format!("Invalid room_id: {error}"))
         })?;
-    let request_meta = request_metadata(request_meta).with_timeout(None);
-    let principal = {
-        let client_api = state.shared_api_runtime.client_api.clone();
-        let user_service = state.user_service.clone();
-        synctv_api_common::impls::ClientApiImpl::execute_room_actor_endpoint(
-            client_api,
-            &request_meta,
-            public_room_id,
-            EndpointRateLimitCategory::WebSocket,
-            move |_client_api, actor| async move {
-                Ok::<_, synctv_api_common::impls::ApiError>(match actor {
-                    synctv_api_common::impls::client::RoomActor::User { user_id, .. } => {
-                        let username = user_service
-                            .get_user(&user_id)
-                            .await
-                            .map_err(synctv_api_common::impls::ApiError::from)?
-                            .username;
-                        synctv_api_common::impls::messaging::RealtimePrincipal::user(
-                            user_id, username,
-                        )
-                    }
-                    synctv_api_common::impls::client::RoomActor::Guest(access) => {
-                        let identity = synctv_api_common::impls::messaging::GuestRealtimeIdentity {
-                            guest_id: access.guest_id,
-                            display_name: access.display_name,
-                            session_id: access.session_id,
-                            token_jti: access.token_jti,
-                            room_guest_version: access.room_guest_version,
-                            permissions: access.permissions,
-                        };
-                        synctv_api_common::impls::messaging::RealtimePrincipal::guest(identity)
-                    }
-                })
-            },
-        )
-        .await
-        .map_err(super::super::error::map_api_error)?
-    };
+    let principal = resolve_realtime_principal(
+        &state,
+        request_meta,
+        public_room_id,
+        EndpointRateLimitCategory::WebSocket,
+    )
+    .await?;
 
     let (outgoing_tx, outgoing_rx) =
         tokio::sync::mpsc::channel::<synctv_proto::client::ServerMessage>(64);

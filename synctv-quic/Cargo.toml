@@ -1,0 +1,49 @@
+[package]
+name = "synctv-quic"
+description = "HTTP/3 (QUIC) listener for the SyncTV API, with WebTransport sessions"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[features]
+default = ["tls-aws-lc"]
+# TLS provider selection, mirroring the rest of the workspace.
+tls-aws-lc = ["quinn/rustls-aws-lc-rs", "rustls/aws-lc-rs"]
+tls-ring = ["quinn/rustls-ring", "rustls/ring"]
+# Self-signed certificate generation for tests and local development.
+test-support = ["dep:rcgen", "dep:time"]
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+base64.workspace = true
+bytes.workspace = true
+h3.workspace = true
+h3-datagram.workspace = true
+h3-quinn.workspace = true
+h3-webtransport.workspace = true
+http.workspace = true
+http-body.workspace = true
+http-body-util.workspace = true
+quinn.workspace = true
+rcgen = { workspace = true, optional = true }
+rustls.workspace = true
+sha2.workspace = true
+rustls-pemfile.workspace = true
+time = { workspace = true, optional = true }
+tokio.workspace = true
+tokio-util.workspace = true
+tower.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+synctv-quic = { path = ".", features = ["test-support"] }
+rcgen.workspace = true
+time.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+wtransport.workspace = true
+futures.workspace = true
+
+[lints]
+workspace = true

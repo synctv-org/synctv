@@ -86,6 +86,40 @@ fn build_url_from_split_parts(
     url.to_string()
 }
 
+/// HTTP/3 (QUIC) listener configuration. Serving HTTP/3 next to the TCP
+/// listener gives clients 0-RTT, stream multiplexing, and connection
+/// migration for every HTTP endpoint (including SSE), and enables
+/// WebTransport sessions for the realtime transport.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct QuicConfig {
+    /// Serve HTTP/3 + WebTransport on a UDP socket.
+    pub enabled: bool,
+    /// UDP port; defaults to the TCP API port when unset.
+    pub port: Option<u16>,
+    /// PEM certificate chain (TLS is mandatory for QUIC).
+    pub cert_path: String,
+    /// PEM private key.
+    pub key_path: String,
+    /// Maximum concurrent WebTransport sessions.
+    pub max_webtransport_sessions: u64,
+    /// `Alt-Svc` `ma=` (max-age) advertised on TCP responses, in seconds.
+    pub alt_svc_max_age_seconds: u64,
+}
+
+impl Default for QuicConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            port: None,
+            cert_path: String::new(),
+            key_path: String::new(),
+            max_webtransport_sessions: 256,
+            alt_svc_max_age_seconds: 86_400,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ServerConfig {
@@ -102,6 +136,7 @@ pub struct ServerConfig {
     pub grpc_compression_enabled: bool,
     pub logging: LoggingConfig,
     pub access_log: AccessLogConfig,
+    pub quic: QuicConfig,
 }
 
 impl Default for ServerConfig {
@@ -118,6 +153,7 @@ impl Default for ServerConfig {
             shutdown_drain_timeout_seconds: 30,
             grpc_max_message_size_bytes: 16 * 1024 * 1024,
             grpc_compression_enabled: true,
+            quic: QuicConfig::default(),
             logging: LoggingConfig::default(),
             access_log: AccessLogConfig::default(),
         }

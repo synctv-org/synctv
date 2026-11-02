@@ -17,6 +17,7 @@ openapi = [
 ]
 k8s = ["synctv-api-common/k8s", "dep:kube", "dep:k8s-openapi", "synctv-cluster/k8s"]
 tls-aws-lc = [
+    "synctv-quic/tls-aws-lc",
     "synctv-api-common/tls-aws-lc",
     "synctv-core/tls-aws-lc",
     "synctv-proxy/tls-aws-lc",
@@ -32,6 +33,7 @@ tls-aws-lc = [
     "kube?/aws-lc-rs",
 ]
 tls-ring = [
+    "synctv-quic/tls-ring",
     "synctv-api-common/tls-ring",
     "synctv-core/tls-ring",
     "synctv-proxy/tls-ring",
@@ -80,6 +82,7 @@ tls-native-roots = [
 ]
 
 [dependencies]
+synctv-quic = { workspace = true, default-features = false }
 # Internal
 synctv-api-common = { workspace = true, default-features = false }
 synctv-adapter = { workspace = true, default-features = false }

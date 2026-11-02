@@ -3383,6 +3383,35 @@ message UnobserveResource {
   }];
 }
 
+// ==================== HTTP Realtime Sessions (SSE downlink + REST uplink) ====================
+
+// Creates a server-side realtime session whose lifetime is owned by a lease
+// (refreshed by the attached SSE stream and incoming message posts) instead of
+// a socket. The session carries the same semantics as a WebSocket connection:
+// admission, presence, observations with cursors, and WebRTC signaling.
+message CreateRealtimeSessionRequest {
+  // Observations to establish immediately after the session joins the room.
+  repeated ObserveResource initial_observations = 1;
+}
+
+message CreateRealtimeSessionResponse {
+  // Opaque session identifier used by the events/messages endpoints.
+  string session_id = 1 [(buf.validate.field).string = {
+    min_len: 8
+    max_len: 128
+  }];
+  // Lease TTL in milliseconds. The session is torn down when neither the SSE
+  // stream nor a message post refreshes it within this window.
+  int64 lease_ttl_ms = 2;
+}
+
+// A single client message posted to an HTTP realtime session. The payload is
+// exactly the WebSocket/gRPC `ClientMessage`; the server processes it through
+// the same handler, so behavior is transport-independent.
+message SendRealtimeSessionMessageRequest {
+  ClientMessage message = 1;
+}
+
 message ObservePlaybackState {
   // Current room playback control state: playing media, playlist, target, position and speed.
   // Client's latest known playback-state event sequence.
@@ -3462,7 +3491,10 @@ message ObserveChatEvents {
   // Empty uses the default user-visible set: USER.
   // System message types, such as SYSTEM_MEMBER_JOINED and SYSTEM_PLAYBACK_CHANGED,
   // are included explicitly.
-  repeated ChatMessageType include_message_types = 2 [(buf.validate.field).repeated.items.enum.defined_only = true];
+  repeated ChatMessageType include_message_types = 2 [(buf.validate.field).repeated = {
+    max_items: 16
+    items: { enum: { defined_only: true } }
+  }];
 }
 
 message ObserveChatPinEvents {
@@ -4856,7 +4888,10 @@ message GetChatHistoryRequest {
   string cursor = 2; // Opaque keyset cursor returned by the server as "<rfc3339_created_at>|<message_id>".
   // Empty uses the default user-visible set: USER.
   // Include system message types explicitly when they should appear in history and cursors.
-  repeated ChatMessageType include_message_types = 3 [(buf.validate.field).repeated.items.enum.defined_only = true];
+  repeated ChatMessageType include_message_types = 3 [(buf.validate.field).repeated = {
+    max_items: 16
+    items: { enum: { defined_only: true } }
+  }];
 }
 
 message GetChatHistoryResponse {
@@ -4924,7 +4959,10 @@ message GetChatPlaybackMessagesRequest {
   double after_seconds = 6;
   int32 limit = 7;
   bool include_deleted = 8;
-  repeated ChatMessageType include_message_types = 9 [(buf.validate.field).repeated.items.enum.defined_only = true];
+  repeated ChatMessageType include_message_types = 9 [(buf.validate.field).repeated = {
+    max_items: 16
+    items: { enum: { defined_only: true } }
+  }];
 }
 
 message GetChatPlaybackMessagesResponse {
@@ -5215,11 +5253,50 @@ message GetPublicSettingsResponse {
 
 message GetServerInfoRequest {}
 
+// Realtime transports the server advertises. Clients intersect this list with
+// their own platform capabilities and local preferences to pick a transport,
+// demoting on failure (see each client's negotiation policy).
+enum RealtimeTransportKind {
+  REALTIME_TRANSPORT_KIND_UNSPECIFIED = 0;
+  // Bidirectional WebSocket stream (`/ws/rooms/{roomId}`).
+  REALTIME_TRANSPORT_KIND_WEB_SOCKET = 1;
+  // HTTP realtime session: SSE downlink + REST uplink.
+  REALTIME_TRANSPORT_KIND_SSE = 2;
+  // WebTransport session over the server's HTTP/3 (QUIC) listener.
+  REALTIME_TRANSPORT_KIND_WEB_TRANSPORT = 3;
+  // Bidirectional gRPC `MessageStream` on the same API port.
+  REALTIME_TRANSPORT_KIND_GRPC = 4;
+}
+
+message RealtimeTransportCapability {
+  RealtimeTransportKind kind = 1 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  // Base path or endpoint pattern for the transport, e.g. `/ws/rooms/{roomId}`
+  // or `/api/rooms/{roomId}/realtime/sessions`. Informational: clients
+  // generally derive concrete URLs from their own server endpoint config.
+  string path = 2;
+  // Base64 SHA-256 of the WebTransport listener certificate's DER encoding.
+  // Present on WEB_TRANSPORT capabilities whenever the certificate hash is
+  // readable; clients pass it as a WebTransport `serverCertificateHashes`
+  // entry so self-signed deployments work without manual pinning, refreshing
+  // it from each server-info response. The advertised pin inherits exactly
+  // the delivery channel's trust: clients must apply it only when the
+  // server-info response arrived over a PKI-validated channel (validated
+  // https), and must honor an operator-configured profile pin first; over
+  // an unvalidated channel the pin is attacker-substitutable and must be
+  // ignored.
+  string certificate_hash = 3;
+}
+
 message GetServerInfoResponse {
   // Stable logical server identity. The server automatically initializes it
   // in runtime settings storage; clients only read it.
   string server_id = 1;
   string server_name = 2;
+  // Realtime transports this deployment advertises.
+  repeated RealtimeTransportCapability transports = 3;
 }
 
 // ==================== Public Server Time ====================

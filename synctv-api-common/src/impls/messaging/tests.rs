@@ -10485,3 +10485,569 @@ fn watch_guest_access_revocation_is_terminal_only_for_guest_sessions() {
         None
     );
 }
+
+// ---------------------------------------------------------------------------
+// Security-audit regression tests (transport-evolution audit): each test pins
+// the fixed behavior for one confirmed finding in the realtime session layer.
+// ---------------------------------------------------------------------------
+
+async fn audit_wait_for_room_subscription(event_service: &RealtimeManager, room_id: &RoomId) {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if realtime_manager_subscriber_count(event_service, room_id) == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .checked("room subscription should be established");
+}
+
+fn audit_filler_chat_event(room_id: RoomId, user_id: UserId) -> RealtimeEvent {
+    RealtimeEvent::ChatMessage {
+        event_id: synctv_common::snanoid!(16),
+        room_id,
+        user_id,
+        username: "filler".to_string(),
+        message: "fill".to_string(),
+        timestamp: now(),
+        display_position: None,
+        display_color: None,
+    }
+}
+
+async fn audit_wait_for_session_cancellation(
+    cancel_token: &tokio_util::sync::CancellationToken,
+    context: &str,
+) {
+    tokio::time::timeout(Duration::from_secs(2), cancel_token.cancelled())
+        .await
+        .checked(context);
+}
+
+/// F08 (zombie session): when the room hub drops this connection's
+/// subscription (slow-subscriber eviction or reliable-delivery timeout), the
+/// started session must cancel and unregister instead of living on.
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
+async fn test_start_cancels_when_room_hub_drops_its_subscription() {
+    let sender = RecordingMessageSender::new();
+    let fixture = create_start_handler_fixture("audit_hub_unsub_cancel", sender).await;
+    let StartTestFixture {
+        handler,
+        connection_service,
+        event_service,
+        ..
+    } = &fixture;
+
+    let (tx, cancel_token) = handler.start().await.checked("start should return");
+    audit_wait_for_room_subscription(event_service, &handler.room_id).await;
+
+    // Same hub code path that slow-subscriber eviction and reliable-delivery
+    // timeouts take: remove the Subscriber entry, dropping its only Sender.
+    event_service.unsubscribe(handler.connection_id.as_str());
+
+    audit_wait_for_session_cancellation(
+        &cancel_token,
+        "start() must cancel when its room hub subscription closes",
+    )
+    .await;
+    assert!(
+        connection_service
+            .get_connection(handler.connection_id.as_str())
+            .is_none(),
+        "cancelled session must unregister its connection"
+    );
+
+    cancel_token.cancel();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    drop(tx);
+    fixture.shutdown().await;
+}
+
+/// F08 (zombie session, eviction flavor): 50 consecutive full-queue drops
+/// evict the subscriber; the dispatch channel closing must cancel the
+/// session (and not strand the connection registration).
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
+async fn test_start_cancels_after_hub_slow_subscriber_eviction() {
+    let sender = RecordingMessageSender::new();
+    let fixture = create_start_handler_fixture("audit_hub_evict_cancel", sender).await;
+    let StartTestFixture {
+        handler,
+        connection_service,
+        event_service,
+        ..
+    } = &fixture;
+
+    let (tx, cancel_token) = handler.start().await.checked("start should return");
+    audit_wait_for_room_subscription(event_service, &handler.room_id).await;
+
+    // Current-thread runtime and no await in this loop: the dispatch task
+    // cannot drain while the 512-slot queue fills and consecutive drops trip
+    // the hub's slow-subscriber eviction.
+    for _ in 0..600 {
+        event_service.broadcast(audit_filler_chat_event(
+            handler.room_id,
+            handler.test_user_id(),
+        ));
+    }
+    assert_eq!(
+        realtime_manager_subscriber_count(event_service, &handler.room_id),
+        0,
+        "hub should evict the stalled subscriber during the flood"
+    );
+
+    audit_wait_for_session_cancellation(
+        &cancel_token,
+        "start() must cancel after the hub evicted its subscription",
+    )
+    .await;
+    assert!(
+        connection_service
+            .get_connection(handler.connection_id.as_str())
+            .is_none(),
+        "evicted session must unregister its connection"
+    );
+
+    cancel_token.cancel();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    drop(tx);
+    fixture.shutdown().await;
+}
+
+/// F02 (auth-state revalidation): a platform ban after admission must
+/// disconnect the established realtime session on the next heartbeat probe.
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
+async fn test_heartbeat_periodic_check_disconnects_banned_user() {
+    let sender = RecordingMessageSender::new();
+    let fixture = create_start_handler_fixture_with_runtime(
+        "audit_ban_heartbeat",
+        sender.clone(),
+        StreamMessageHandlerRuntime {
+            heartbeat_schedule: HeartbeatSchedule::fixed(
+                Duration::from_millis(10),
+                Duration::from_millis(400),
+            ),
+            ..test_stream_handler_runtime()
+        },
+    )
+    .await;
+    let StartTestFixture {
+        handler,
+        connection_service,
+        event_service,
+        ..
+    } = &fixture;
+
+    let (tx, cancel_token) = handler.start().await.checked("start should return");
+    audit_wait_for_room_subscription(event_service, &handler.room_id).await;
+
+    // Control: the probe reports no denial while the account is in good
+    // standing.
+    assert!(
+        handler
+            .realtime_access_denial_reason()
+            .await
+            .checked("access probe should run")
+            .is_none(),
+        "session access should be valid before the ban"
+    );
+
+    handler
+        .room_service
+        .user_service()
+        .ban_user(
+            &handler.test_user_id(),
+            None,
+            Some("audit regression ban".to_string()),
+        )
+        .await
+        .checked("platform ban should persist");
+
+    assert_eq!(
+        handler
+            .realtime_access_denial_reason()
+            .await
+            .checked("access probe should run after the ban"),
+        Some("Account is banned".to_string()),
+        "membership probe must re-check account ban state"
+    );
+
+    tokio::time::timeout(Duration::from_secs(5), cancel_token.cancelled())
+        .await
+        .checked("heartbeat must disconnect the banned user's session");
+
+    let termination = sender
+        .sent_messages()
+        .into_iter()
+        .find_map(|message| match message.message {
+            Some(Message::Termination(termination)) => Some(termination),
+            _ => None,
+        })
+        .checked("banned user should receive a realtime termination");
+    assert_eq!(
+        termination.code,
+        synctv_proto::client::RealtimeTerminationCode::RoomMembershipRevoked as i32
+    );
+
+    wait_for_start_cleanup(
+        handler,
+        connection_service,
+        event_service,
+        &cancel_token,
+        true,
+    )
+    .await;
+    drop(tx);
+    fixture.shutdown().await;
+}
+
+/// F03 (observe-permission recheck): revoking a member's permission must
+/// revoke the already-established permission-gated observation with a
+/// ResourceObserveError, not just gate future observes.
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
+async fn test_permission_change_revokes_established_permission_gated_observation() {
+    let sender = RecordingMessageSender::new();
+    let fixture = create_start_handler_fixture("audit_observe_revoke", sender.clone()).await;
+    let StartTestFixture {
+        handler,
+        connection_service,
+        event_service,
+        ..
+    } = &fixture;
+
+    let (tx, cancel_token) = handler.start().await.checked("start should return");
+    audit_wait_for_room_subscription(event_service, &handler.room_id).await;
+
+    handler
+        .handle_client_message(&ClientMessage {
+            message: Some(observe_chat_events_message("chat-events-audit")),
+        })
+        .await
+        .checked("chat observe should register");
+    assert!(
+        handler
+            .resource_observer
+            .has_chat_events_observation()
+            .await,
+        "observation should be established before the revocation"
+    );
+
+    // Revoke the gate permission in durable room state, then publish the same
+    // PermissionChanged trigger the admin permission API emits.
+    let member_repo = RoomMemberRepository::new(fixture.pool.clone());
+    let member = member_repo
+        .get(&handler.room_id, &handler.test_user_id())
+        .await
+        .checked("fixture member should load")
+        .checked("fixture member should exist");
+    let mut revoked_bits = RoomPermissionSet::empty();
+    revoked_bits.grant(RoomPermission::VIEW_CHAT_HISTORY);
+    member_repo
+        .update_permissions(
+            &handler.room_id,
+            &handler.test_user_id(),
+            0,
+            revoked_bits.bits(),
+            member.version,
+        )
+        .await
+        .checked("permission revoke should persist");
+    // Production permission writers invalidate the member permission cache
+    // alongside the durable write; mirror that contract so the revalidation
+    // gate reads live state.
+    handler
+        .room_service
+        .permission_service()
+        .invalidate_cache(&handler.room_id, &handler.test_user_id())
+        .await;
+
+    event_service.broadcast(RealtimeEvent::PermissionChanged {
+        event_id: synctv_common::snanoid!(16),
+        room_id: handler.room_id,
+        target_user_id: handler.test_user_id(),
+        target_username: handler.username.clone(),
+        target_remark_name: String::new(),
+        target_display_tag: String::new(),
+        changed_by: handler.test_user_id(),
+        changed_by_username: handler.username.clone(),
+        role_changed: false,
+        new_permissions: RoomPermissionSet::empty(),
+        role: RoomRole::Member,
+        added_permissions: RoomPermissionSet::empty(),
+        removed_permissions: revoked_bits,
+        admin_added_permissions: RoomPermissionSet::empty(),
+        admin_removed_permissions: RoomPermissionSet::empty(),
+        target_is_online: true,
+        target_connection_count: 1,
+        timestamp: now(),
+    });
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if sender.sent_messages().iter().any(|message| {
+                matches!(
+                    &message.message,
+                    Some(Message::ResourceObserveError(error))
+                        if error.observe_id == "chat-events-audit"
+                )
+            }) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .checked("revoked observation must produce a ResourceObserveError");
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if !handler
+                .resource_observer
+                .has_chat_events_observation()
+                .await
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .checked("revoked observation must be removed locally");
+
+    // The stream actually stopped: a later room chat event must not reach the
+    // revoked observer.
+    let post_revocation_event_id = synctv_common::snanoid!(16);
+    event_service.broadcast(RealtimeEvent::ChatMessageEvent {
+        event_id: post_revocation_event_id.clone(),
+        room_id: handler.room_id,
+        actor_user_id: handler.test_user_id(),
+        event: chat_event_with_content(
+            handler.room_id,
+            handler.test_user_id(),
+            post_revocation_event_id,
+            "post-revocation-chat".to_string(),
+        ),
+        timestamp: now(),
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !sender
+            .sent_messages()
+            .iter()
+            .any(|message| server_message_contains_chat_event_content(
+                message,
+                "post-revocation-chat"
+            )),
+        "chat events must stop flowing after the observation is revoked"
+    );
+
+    cancel_token.cancel();
+    wait_for_start_cleanup(
+        handler,
+        connection_service,
+        event_service,
+        &cancel_token,
+        true,
+    )
+    .await;
+    drop(tx);
+    fixture.shutdown().await;
+}
+
+/// F10 (RTC access re-evaluation): runtime default-permission revocations
+/// publish only CacheInvalidate (no room event); the session must re-check
+/// voice/P2P access on that signal and tear down established RTC sessions.
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
+async fn test_runtime_default_permission_revocation_tears_down_rtc_after_cache_invalidate() {
+    let sender = RecordingMessageSender::new();
+    let fixture = create_start_handler_fixture("audit_runtime_default_rtc_revoke", sender).await;
+    let StartTestFixture {
+        handler,
+        connection_service,
+        event_service,
+        ..
+    } = &fixture;
+
+    let (tx, cancel_token) = handler.start().await.checked("start should return");
+    audit_wait_for_room_subscription(event_service, &handler.room_id).await;
+
+    // Second hub subscriber observes what other room participants receive.
+    let probe_conn_id = "audit-rtc-probe-peer";
+    let (mut probe_rx, _) = event_service
+        .subscribe_with_id(
+            handler.room_id,
+            handler
+                .realtime_actor()
+                .checked("realtime actor should build"),
+            ConnectionId::new(probe_conn_id),
+        )
+        .await
+        .checked("probe subscriber should subscribe");
+
+    handler
+        .handle_webrtc_voice_join(&synctv_proto::client::WebRtcVoiceJoinCommand::default())
+        .await
+        .checked("voice join should succeed with default member permissions");
+    let swarm_id = "sm1_audit_runtime_default_revoke";
+    let ticket = handler.swarm_signing_key.sign_media_swarm_ticket(
+        &handler
+            .public_room_id()
+            .checked("room public id should encode"),
+        &handler
+            .public_actor_id()
+            .checked("actor public id should encode"),
+        swarm_id,
+        0,
+        None,
+    );
+    handler
+        .handle_media_swarm_join(&synctv_proto::client::WebRtcMediaSwarmJoin {
+            swarm_id: swarm_id.to_string(),
+            swarm_ticket: ticket,
+        })
+        .await
+        .checked("media swarm join should succeed with default member permissions");
+    assert!(connection_service
+        .get_connection(handler.connection_id.as_str())
+        .is_some_and(|connection| connection.voice_rtc_joined));
+    assert!(!handler.active_media_swarms.lock().is_empty());
+
+    // Revocation exactly as the admin settings API performs it: persist the
+    // runtime default permissions, then publish CacheInvalidate{All} and
+    // nothing else.
+    let store = Arc::clone(
+        handler
+            .room_service
+            .runtime_settings_store()
+            .checked("fixture room service should carry a runtime settings store"),
+    );
+    let current = store
+        .runtime_settings()
+        .checked("runtime settings should load");
+    let mut member_defaults = current.permissions.member_default_permissions.bits();
+    assert!(member_defaults.has(RoomPermission::USE_VOICE_CHAT));
+    assert!(member_defaults.has(RoomPermission::USE_P2P_MEDIA));
+    member_defaults.revoke(RoomPermission::USE_VOICE_CHAT);
+    member_defaults.revoke(RoomPermission::USE_P2P_MEDIA);
+    let mut replacement = current.clone();
+    replacement.permissions.member_default_permissions =
+        synctv_core::service::PermissionSet::from_bits(member_defaults);
+    let mask = synctv_core::service::RuntimeSettingsUpdateMask::between(&current, &replacement);
+    store
+        .persist_runtime_settings_patch(&replacement, &mask)
+        .await
+        .checked("runtime member default permissions should persist");
+
+    event_service.broadcast_local(RealtimeEvent::CacheInvalidate {
+        event_id: "audit-runtime-defaults-invalidate".to_string(),
+        targets: vec![synctv_realtime::sync::CacheTarget::All],
+        timestamp: now(),
+    });
+
+    // Decisive: teardown must happen on the invalidation signal alone — no
+    // room event follows.
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let voice_joined = connection_service
+                .get_connection(handler.connection_id.as_str())
+                .is_some_and(|connection| connection.voice_rtc_joined);
+            let swarms_active = !handler.active_media_swarms.lock().is_empty();
+            if !voice_joined && !swarms_active {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .checked(
+        "CacheInvalidate must tear down voice and swarm membership under revoked runtime defaults",
+    );
+
+    let mut probe_events = Vec::new();
+    while let Ok(Some(event)) =
+        tokio::time::timeout(Duration::from_millis(300), probe_rx.recv()).await
+    {
+        probe_events.push(event);
+    }
+    let voice_left_seen = probe_events
+        .iter()
+        .any(|event| matches!(event.as_ref(), RealtimeEvent::WebRTCVoicePeerLeft { .. }));
+    let swarm_left_seen = probe_events
+        .iter()
+        .any(|event| matches!(event.as_ref(), RealtimeEvent::MediaSwarmPeerLeft { .. }));
+    assert!(
+        voice_left_seen && swarm_left_seen,
+        "peers must see voice and swarm leave signals after the teardown"
+    );
+    assert!(
+        !cancel_token.is_cancelled(),
+        "RTC teardown must revoke capabilities without killing the session"
+    );
+
+    event_service.unsubscribe(probe_conn_id);
+    cancel_token.cancel();
+    wait_for_start_cleanup(
+        handler,
+        connection_service,
+        event_service,
+        &cancel_token,
+        true,
+    )
+    .await;
+    drop(tx);
+    fixture.shutdown().await;
+}
+
+/// Regression (uplink retention): the protovalidate gate on
+/// `handle_client_message_with_control` must bound every retained list on
+/// every live transport. `include_message_types` is capped by
+/// `max_items: 16` (client.proto) - a 17-entry list must fail validation
+/// before any observation state clones it - and a sibling field rule
+/// (`observe_id` max 128 chars) must fail through the same gate.
+#[test]
+fn client_message_proto_rules_bound_retained_lists() {
+    use synctv_proto::client::client_message::Message;
+    use synctv_proto::client::observe_resource::Resource;
+    use synctv_proto::client::{
+        ChatMessageType, ObserveChatEvents, ObserveResource, ResourceDeliveryMode,
+    };
+
+    let observe_with_types =
+        |observe_id: String, types: Vec<i32>| synctv_proto::client::ClientMessage {
+            message: Some(Message::ObserveResource(ObserveResource {
+                observe_id,
+                delivery_mode: ResourceDeliveryMode::PushSnapshot as i32,
+                resource: Some(Resource::ChatEvents(ObserveChatEvents {
+                    after_event_sequence: None,
+                    include_message_types: types,
+                })),
+            })),
+        };
+
+    // Over the cap: rejected by the shared gate before dispatch.
+    let oversized = observe_with_types("chat".to_string(), vec![ChatMessageType::User as i32; 17]);
+    assert!(
+        crate::impls::validate_proto_request(&oversized).is_err(),
+        "17 include_message_types entries must fail the max_items rule"
+    );
+
+    // Sibling field rule through the same gate: observe_id over 128 chars.
+    let long_id = observe_with_types("x".repeat(129), vec![ChatMessageType::User as i32; 1]);
+    assert!(
+        crate::impls::validate_proto_request(&long_id).is_err(),
+        "a 129-char observe_id must fail its own length rule"
+    );
+
+    // At the cap and within every other rule: passes.
+    let at_cap = observe_with_types("chat".to_string(), vec![ChatMessageType::User as i32; 16]);
+    assert!(
+        crate::impls::validate_proto_request(&at_cap).is_ok(),
+        "16 entries at the cap must validate"
+    );
+}

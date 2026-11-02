@@ -139,6 +139,12 @@ pub struct AppState {
     /// Shared transport-agnostic runtime reused across HTTP, gRPC, and management.
     pub shared_api_runtime: Arc<SharedApiRuntime>,
     pub metrics_access_controller: Arc<crate::metrics_auth::MetricsAccessController>,
+    /// Lease-owned realtime sessions (HTTP SSE+REST transport).
+    pub realtime_sessions: Arc<crate::impls::realtime_sessions::RealtimeSessionRegistry>,
+    /// Realtime transports this deployment advertises via server-info. The
+    /// bootstrap extends this when the HTTP/3 (QUIC) listener is enabled.
+    pub realtime_transport_advertisement:
+        Arc<parking_lot::RwLock<Vec<synctv_proto::client::RealtimeTransportCapability>>>,
     #[cfg(any(test, feature = "test-support"))]
     test_database_leases: Arc<std::sync::Mutex<Vec<synctv_core_testing::TestDatabase>>>,
 }
@@ -212,6 +218,32 @@ impl AppState {
     }
 }
 
+/// Transports every deployment serves by default: the WebSocket endpoint,
+/// the HTTP realtime session (SSE+REST), and gRPC on the shared API port.
+/// The HTTP/3 bootstrap appends WebTransport when the QUIC listener binds.
+#[must_use]
+pub fn default_realtime_transport_advertisement(
+) -> Vec<synctv_proto::client::RealtimeTransportCapability> {
+    use synctv_proto::client::RealtimeTransportKind;
+    [
+        (RealtimeTransportKind::WebSocket, "/ws/rooms/{roomId}"),
+        (
+            RealtimeTransportKind::Sse,
+            "/api/rooms/{roomId}/realtime/sessions",
+        ),
+        (RealtimeTransportKind::Grpc, "/RoomService/MessageStream"),
+    ]
+    .into_iter()
+    .map(
+        |(kind, path)| synctv_proto::client::RealtimeTransportCapability {
+            kind: kind as i32,
+            path: path.to_string(),
+            certificate_hash: String::new(),
+        },
+    )
+    .collect()
+}
+
 /// Build `AppState` from `RouterOptions`, creating the shared API implementation layers.
 pub fn build_app_state(options: RouterOptions) -> anyhow::Result<AppState> {
     let shared_api_runtime = Arc::new(build_shared_api_runtime(&options)?);
@@ -220,6 +252,12 @@ pub fn build_app_state(options: RouterOptions) -> anyhow::Result<AppState> {
         router_options: Arc::new(options),
         shared_api_runtime: shared_api_runtime.clone(),
         metrics_access_controller: shared_api_runtime.metrics_access_controller.clone(),
+        realtime_sessions: Arc::new(
+            crate::impls::realtime_sessions::RealtimeSessionRegistry::new(),
+        ),
+        realtime_transport_advertisement: Arc::new(parking_lot::RwLock::new(
+            default_realtime_transport_advertisement(),
+        )),
         #[cfg(any(test, feature = "test-support"))]
         test_database_leases: Arc::new(std::sync::Mutex::new(Vec::new())),
     })

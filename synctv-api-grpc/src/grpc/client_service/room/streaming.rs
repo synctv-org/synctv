@@ -1,3 +1,4 @@
+use prost::Message as _;
 use std::sync::Arc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
@@ -11,7 +12,8 @@ use super::RoomService;
 use crate::grpc::client_service::streaming::{
     watch_chat_events_event, watch_chat_pin_events_event, watch_playback_event,
     watch_playback_state_event, watch_playlist_items_event, watch_room_member_events_event,
-    watch_room_settings_event, GrpcMessageSender, GrpcStreamMessage, MESSAGE_STREAM_BUFFER_SIZE,
+    watch_room_settings_event, GrpcStreamMessage, GRPC_STREAM_UPLINK_MAX_BYTES,
+    MESSAGE_STREAM_BUFFER_SIZE, PUMP_DRAIN_GRACE, PUMP_WRITE_TIMEOUT,
 };
 use synctv_api_common::impls::messaging::{
     GuestRealtimeIdentity, MessageConcurrencyConfig, MessageSender, RealtimePrincipal,
@@ -129,8 +131,14 @@ pub(super) async fn message_stream(
     // Create channel for outgoing messages with bounded capacity to prevent memory exhaustion
     let (outgoing_tx, outgoing_rx) = mpsc::channel::<ServerMessage>(MESSAGE_STREAM_BUFFER_SIZE);
 
-    // Create a single shared gRPC message sender (avoids dual-sender from same channel)
-    let grpc_sender = Arc::new(GrpcMessageSender::new(outgoing_tx));
+    // Outbound traffic goes through the per-observation fair queue: control
+    // traffic first, interactive lanes (playback state, WebRTC signaling)
+    // weighted over bulk lanes, FIFO within each observation. The pump below
+    // forwards scheduled messages onto the gRPC response stream; a slow
+    // client fills the fair queue and trips its eviction escalation instead
+    // of silently dropping messages.
+    let (fair_sender, fair_rx) =
+        synctv_api_common::impls::messaging::FairSessionSender::new(Default::default());
 
     // Create StreamMessageHandler with all configuration
     let stream_handler = StreamMessageHandler::new_with_runtime(
@@ -146,7 +154,7 @@ pub(super) async fn message_stream(
             rate_limit_config: service.rate_limit_config.clone(),
             content_filter: service.content_filter.clone(),
             public_id_codec: service.client_api.public_id_codec.clone(),
-            sender: Arc::clone(&grpc_sender) as Arc<dyn MessageSender>,
+            sender: Arc::new(fair_sender.clone()) as Arc<dyn MessageSender>,
             concurrency_config: Arc::new(MessageConcurrencyConfig::default()),
         },
         StreamMessageHandlerRuntime {
@@ -186,20 +194,98 @@ pub(super) async fn message_stream(
         .await
         .map_err(|error| map_message_stream_join_error(error.into()))?;
 
+    // Fair-queue pump: forwards scheduled messages onto the gRPC response
+    // stream. Every write is bounded (PUMP_WRITE_TIMEOUT) and cancellation
+    // arms a drain deadline (PUMP_DRAIN_GRACE), so a client that stops
+    // calling Recv cannot park the pump - and therefore cannot keep every
+    // outgoing sender alive - indefinitely.
+    let fair_pump_outgoing = outgoing_tx.clone();
+    let pump_token = cancel_token.clone();
+    let (pump_alive_tx, pump_alive_rx) = tokio::sync::watch::channel(());
+    tokio::spawn(async move {
+        let mut fair_rx = fair_rx;
+        let mut drain_deadline: Option<tokio::time::Instant> = None;
+        loop {
+            let message = tokio::select! {
+                () = pump_token.cancelled(), if drain_deadline.is_none() => {
+                    drain_deadline = Some(tokio::time::Instant::now() + PUMP_DRAIN_GRACE);
+                    continue;
+                }
+                () = async {
+                    match drain_deadline {
+                        Some(deadline) => tokio::time::sleep_until(deadline).await,
+                        None => std::future::pending::<()>().await,
+                    }
+                } => break, // grace expired: drop the sender so the stream can end
+                message = fair_rx.recv() => match message {
+                    Some(message) => message,
+                    None => break,
+                },
+            };
+            match tokio::time::timeout(PUMP_WRITE_TIMEOUT, fair_pump_outgoing.send(message)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(_)) | Err(_) => break, // receiver gone or write timed out: end the chain
+            }
+        }
+        // Signal the response-close watcher; dropping fair_pump_outgoing here
+        // is what lets ReceiverStream yield None so hyper can send trailers.
+        let _ = pump_alive_tx.send(());
+    });
+
+    // Session end must not strand the fair queue's spawned forwarder: closing
+    // the sender lets it hand over any already-queued frames (terminations
+    // above all) and then close the response stream's channel chain.
+    {
+        let fair_closer_sender = fair_sender.clone();
+        let fair_closer_token = cancel_token.clone();
+        tokio::spawn(async move {
+            fair_closer_token.cancelled().await;
+            fair_closer_sender.close();
+        });
+    }
+
     // Pump transport input into the shared handler. The handler owns all
     // business logic and cleanup; this task only decodes transport frames.
-    let transport_sender = Arc::clone(&grpc_sender);
     let transport_cancel_token = cancel_token.clone();
+    let transport_response_watch = outgoing_tx.clone();
     tokio::spawn(async move {
         let mut grpc_stream = GrpcStreamMessage {
             client_stream,
-            sender: transport_sender,
+            sender: fair_sender,
+            response_watch: transport_response_watch,
             alive: std::sync::atomic::AtomicBool::new(true),
         };
+        let mut drain_deadline: Option<tokio::time::Instant> = None;
 
         loop {
-            match grpc_stream.recv().await {
+            let received = tokio::select! {
+                () = transport_cancel_token.cancelled(), if drain_deadline.is_none() => {
+                    drain_deadline = Some(tokio::time::Instant::now() + PUMP_DRAIN_GRACE);
+                    continue;
+                }
+                () = async {
+                    match drain_deadline {
+                        Some(deadline) => tokio::time::sleep_until(deadline).await,
+                        None => std::future::pending::<()>().await,
+                    }
+                } => None, // grace expired: stop holding the response sender
+                received = grpc_stream.recv() => Some(received),
+            };
+            let Some(received) = received else { break };
+            match received {
                 Some(Ok(message)) => {
+                    // Signaling budget guard: the service-wide decode limit
+                    // must stay large for other RoomService methods, so bound
+                    // the streaming uplink here, post-decode.
+                    if message.encoded_len() > GRPC_STREAM_UPLINK_MAX_BYTES {
+                        tracing::warn!(
+                            bytes = message.encoded_len(),
+                            limit = GRPC_STREAM_UPLINK_MAX_BYTES,
+                            "gRPC MessageStream uplink exceeded signaling budget; closing stream"
+                        );
+                        transport_cancel_token.cancel();
+                        break;
+                    }
                     if incoming_tx.send(message).await.is_err() {
                         break;
                     }
@@ -221,10 +307,17 @@ pub(super) async fn message_stream(
         }
     });
 
-    let response_close_sender = grpc_sender.sender.clone();
+    // Response-close watcher: no task here may hold an outgoing sender -
+    // a held clone keeps ReceiverStream (and hyper's response body) open
+    // forever, making server-initiated completion impossible. The pump owns
+    // the last functional sender and reports its exit via the watch channel.
     let response_close_token = cancel_token.clone();
     tokio::spawn(async move {
-        response_close_sender.closed().await;
+        let mut pump_alive_rx = pump_alive_rx;
+        tokio::select! {
+            _ = pump_alive_rx.changed() => {}, // pump exited: response chain closed
+            () = response_close_token.cancelled() => {},
+        }
         response_close_token.cancel();
     });
 

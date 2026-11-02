@@ -17,7 +17,7 @@ pub const CHAT_ATTACHMENT_FILENAME_MAX_CHARS: usize = 255;
 pub const CHAT_REACTION_KEY_MAX_CHARS: usize = 64;
 pub const CHAT_PIN_NOTE_MAX_CHARS: usize = 500;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[repr(i16)]
 pub enum ChatMessageType {

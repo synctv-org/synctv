@@ -143,6 +143,11 @@ use crate::impls::client::convert::chat_metadata_from_proto;
 mod transport;
 pub use transport::{MessageSender, StreamMessage};
 
+mod fair_session_sender;
+pub use fair_session_sender::{
+    classify_message_lane, FairQueueConfig, FairSessionSender, MessageLane,
+};
+
 mod media_swarm_tracker;
 pub use media_swarm_tracker::{MediaSwarmPeer, MediaSwarmTracker};
 
@@ -1282,6 +1287,7 @@ impl StreamMessageHandler {
                         }
                         self.apply_connection_state_from_room_event(&event);
                         self.apply_rtc_access_change(&event).await;
+                        self.revalidate_observe_permissions(&event).await;
                         match self.webrtc_event_server_message_for_current_connection(&event) {
                             Ok(Some(message)) => {
                                 if let Err(error) = stream.send(message) {
@@ -2260,8 +2266,7 @@ impl StreamMessageHandler {
                 tokio::select! {
                     () = event_token.cancelled() => break,
                     event = rx_events.recv() => {
-                        match event {
-                            Some(event) => {
+                        if let Some(event) = event {
                                 if let Some(reason) = guest_access_revocation_reason(
                                     &event_handler.principal,
                                     &event,
@@ -2289,6 +2294,7 @@ impl StreamMessageHandler {
                                 }
                                 event_handler.apply_connection_state_from_room_event(&event);
                                 event_handler.apply_rtc_access_change(&event).await;
+                                event_handler.revalidate_observe_permissions(&event).await;
                                 let is_room_shutdown = matches!(
                                     event.as_ref(),
                                     RealtimeEvent::RoomDeleted { .. }
@@ -2375,8 +2381,22 @@ impl StreamMessageHandler {
                                     event_token.cancel();
                                     break;
                                 }
-                            }
-                            None => break,
+                        } else {
+                                // The room hub closed this subscription (slow-
+                                // subscriber eviction or reliable-delivery
+                                // timeout). Terminal for the session, matching
+                                // run(): cancel so messaging_cleanup
+                                // unregisters the connection, unsubscribes,
+                                // emits UserLeft/GuestLeft, and the transport
+                                // closes for the client to reconnect — instead
+                                // of leaving a heartbeat-responsive,
+                                // event-dead zombie session.
+                                tracing::warn!(
+                                    connection_id = %event_handler.connection_id,
+                                    "Realtime event channel closed in start(); cancelling session"
+                                );
+                            event_token.cancel();
+                            break;
                         }
                     }
                     () = event_handler
@@ -2635,6 +2655,12 @@ impl StreamMessageHandler {
                                     .resource_observer
                                     .handle_cache_invalidate_admin_event(event_id, targets)
                                     .await;
+                                // Runtime default-permission changes publish
+                                // only CacheInvalidate (no room event): re-check
+                                // voice/P2P access from live state so revoked
+                                // members' established RTC sessions are torn
+                                // down.
+                                admin_handler.revalidate_rtc_access().await;
                                 continue;
                             }
                             let termination = match &admin_event {
@@ -2791,6 +2817,12 @@ impl StreamMessageHandler {
                                     );
                                 }
                             }
+
+                            // Fail-safe RTC re-evaluation: catches revocations
+                            // that emit no room event (runtime default
+                            // permissions) and bounds any event-loss window
+                            // by one heartbeat period.
+                            heartbeat_handler.revalidate_rtc_access().await;
                         }
                     }
                 }
@@ -2823,6 +2855,13 @@ impl StreamMessageHandler {
         control: Option<&ExecutionControl>,
     ) -> Result<(), String> {
         use synctv_proto::client::client_message::Message;
+
+        // Enforce the protovalidate rules (repeated max_items, string
+        // max_len, ...) on every live-transport dispatch path (WS, WT, HTTP
+        // realtime-session send, gRPC MessageStream) before any field is
+        // cloned into retained state. The HTTP create path validates each
+        // initial observation separately.
+        crate::impls::validate_proto_request(msg).map_err(|error| error.to_string())?;
 
         match &msg.message {
             Some(Message::Chat(chat_msg)) => {

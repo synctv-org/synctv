@@ -129,7 +129,7 @@ impl Default for RealtimeConfig {
     fn default() -> Self {
         Self {
             distributed_transport_factory: None,
-            message_runtime: Arc::new(RoomMessageHub::new()),
+            message_runtime: RoomMessageHub::new_shared(),
             distributed_enabled: false,
             node_id: format!("node_{}", synctv_common::snanoid!(8)),
             dedup_window: Duration::from_mins(15),
@@ -668,7 +668,12 @@ impl RealtimeManager {
         let mut local_sent = 0;
         if event.delivers_to_room_channel() {
             if let Some(room_id) = event.room_id().copied() {
-                local_sent = self.message_hub.broadcast(&room_id, &event);
+                local_sent = if event.is_critical() {
+                    self.message_hub
+                        .broadcast_critical_background(&room_id, &event)
+                } else {
+                    self.message_hub.broadcast(&room_id, &event)
+                };
             }
         }
         if event.delivers_to_admin_channel() {
@@ -1108,8 +1113,15 @@ impl RealtimeManager {
         // Get room_id for broadcasting
         if event.delivers_to_room_channel() {
             if let Some(room_id) = event.room_id() {
-                // Broadcast to local subscribers
-                local_sent = self.message_hub.broadcast(room_id, &event);
+                // Critical events must not be silently dropped on a full
+                // subscriber queue: deliver with a bounded wait in the
+                // background instead of the lossy try_send.
+                local_sent = if is_critical {
+                    self.message_hub
+                        .broadcast_critical_background(room_id, &event)
+                } else {
+                    self.message_hub.broadcast(room_id, &event)
+                };
             }
         }
 

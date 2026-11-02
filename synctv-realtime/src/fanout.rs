@@ -225,7 +225,15 @@ impl RealtimeEventService for RealtimeManager {
     }
 
     fn broadcast_local(&self, room_id: &RoomId, event: &RealtimeEvent) -> usize {
-        RealtimeManager::message_hub(self).broadcast(room_id, event)
+        let hub = RealtimeManager::message_hub(self);
+        if event.is_critical() {
+            // Post-commit leg for outbox-committed PermissionChanged/UserLeft:
+            // honor the is_critical contract with a bounded wait instead of
+            // the lossy try_send.
+            hub.broadcast_critical_background(room_id, event)
+        } else {
+            hub.broadcast(room_id, event)
+        }
     }
 
     fn broadcast_admin_local(&self, event: &RealtimeEvent) -> usize {

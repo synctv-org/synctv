@@ -27,18 +27,15 @@ use futures::{SinkExt, StreamExt};
 use prost_reflect::{DeserializeOptions, DynamicMessage, ReflectMessage};
 use std::convert::Infallible;
 use std::future::Future;
-use std::sync::{
-    atomic::{AtomicU32, Ordering},
-    Arc,
-};
+use std::sync::Arc;
 use std::time::Duration;
 use tracing::{error, info, warn};
 
 use crate::http::{optional_header_str, AppError, AppState};
 use synctv_api_common::impls::messaging::{
-    GuestRealtimeIdentity, MessageConcurrencyConfig, MessageSender, ProtoCodec, RealtimeJoinError,
-    RealtimePrincipal, StreamMessage, StreamMessageHandler, StreamMessageHandlerConfig,
-    StreamMessageHandlerRuntime,
+    FairQueueConfig, FairSessionSender, GuestRealtimeIdentity, MessageConcurrencyConfig,
+    MessageSender, ProtoCodec, RealtimeJoinError, RealtimePrincipal, StreamMessage,
+    StreamMessageHandler, StreamMessageHandlerConfig, StreamMessageHandlerRuntime,
 };
 use synctv_api_common::impls::{
     ApiError, EndpointRateLimitCategory, EndpointRateLimitScope,
@@ -51,8 +48,11 @@ use synctv_core::service::{ContentFilter, PendingValidatedTicket, ValidatedGuest
 use synctv_proto::client::{ClientMessage, ServerMessage};
 use synctv_realtime::sync::ConnectionRuntime;
 
-/// Threshold for consecutive slow-client drops before disconnecting them
-const SLOW_CLIENT_DROP_THRESHOLD: u32 = 10;
+/// Capacity of the dedicated channel for transport control frames (WS
+/// Ping/Pong/Close). Kept separate from the fair queue so transport-level
+/// keepalives never wait behind application traffic.
+const WEBSOCKET_CONTROL_CHANNEL_CAPACITY: usize = 8;
+
 const WEBSOCKET_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,9 +76,9 @@ impl RealtimeTransportFormat {
 #[derive(Debug, Default, serde::Deserialize)]
 pub struct WsQuery {
     #[serde(default)]
-    ticket: String,
+    pub(crate) ticket: String,
     #[serde(default)]
-    format: Option<String>,
+    pub(crate) format: Option<String>,
 }
 
 fn websocket_connect_request(query: &WsQuery) -> synctv_proto::client::WebSocketConnectRequest {
@@ -116,8 +116,8 @@ struct TicketAuthCommit {
 }
 
 #[derive(Debug, Clone)]
-struct HandshakeAuthContext {
-    principal: RealtimePrincipal,
+pub(crate) struct HandshakeAuthContext {
+    pub(crate) principal: RealtimePrincipal,
     ticket_commit: Option<TicketAuthCommit>,
 }
 
@@ -169,7 +169,7 @@ where
     }
 }
 
-fn websocket_request_metadata(
+pub(crate) fn websocket_request_metadata(
     runtime_settings: &synctv_api_common::ApiRuntimeSettings,
     headers: &HeaderMap,
     direct_peer_ip: Option<std::net::IpAddr>,
@@ -230,7 +230,7 @@ fn extract_authorization_bearer_token(headers: &HeaderMap) -> Result<Option<Stri
 }
 
 /// Extract user identity for the WebSocket handshake using explicit request execution.
-async fn extract_handshake_auth(
+pub(crate) async fn extract_handshake_auth(
     state: &AppState,
     request_meta: &ApiRequestMetadata,
     query: &WsQuery,
@@ -385,7 +385,7 @@ fn map_websocket_membership_probe_error(error: synctv_core::Error) -> AppError {
     AppError::from(error)
 }
 
-async fn validate_websocket_room_membership(
+pub(crate) async fn validate_websocket_room_membership(
     room_service: &synctv_core::service::RoomService,
     room: &synctv_core::models::Room,
     user_id: &UserId,
@@ -396,7 +396,7 @@ async fn validate_websocket_room_membership(
         .map_err(map_websocket_membership_probe_error)
 }
 
-fn validate_websocket_origin(
+pub(crate) fn validate_websocket_origin(
     headers: &HeaderMap,
     allowed_origins: &[String],
     direct_peer_ip: Option<std::net::IpAddr>,
@@ -540,7 +540,10 @@ fn validate_websocket_runtime_dependency_flags(
     Ok(())
 }
 
-async fn load_websocket_username(state: &AppState, user_id: &UserId) -> Result<String, AppError> {
+pub(crate) async fn load_websocket_username(
+    state: &AppState,
+    user_id: &UserId,
+) -> Result<String, AppError> {
     state
         .user_service
         .get_username(user_id)
@@ -567,10 +570,10 @@ async fn load_websocket_username(state: &AppState, user_id: &UserId) -> Result<S
 /// This adapts WebSocket's `axum::extract::ws::WebSocket` to our unified `StreamMessage` interface.
 struct WebSocketStream {
     receiver: futures::stream::SplitStream<axum::extract::ws::WebSocket>,
-    sender: WebSocketMessageSender,
+    sender: FairSessionSender,
     format: RealtimeTransportFormat,
     is_alive: Arc<std::sync::atomic::AtomicBool>,
-    /// Raw channel for sending WebSocket control frames (Ping)
+    /// Dedicated channel for transport control frames (Ping)
     raw_sender: tokio::sync::mpsc::Sender<axum::extract::ws::Message>,
 }
 
@@ -638,58 +641,6 @@ async fn reply_to_websocket_ping(
         .map_err(|_| "Failed to reply to WebSocket ping: channel closed".to_string())
 }
 
-/// WebSocket message sender implementation
-struct WebSocketMessageSender {
-    normal_sender: tokio::sync::mpsc::Sender<axum::extract::ws::Message>,
-    critical_sender: tokio::sync::mpsc::Sender<axum::extract::ws::Message>,
-    format: RealtimeTransportFormat,
-    /// Count of consecutive message drops (channel full). When this exceeds
-    /// `SLOW_CLIENT_DROP_THRESHOLD` the `send()` method returns an error to trigger
-    /// a graceful disconnect for the slow client.
-    consecutive_drops: Arc<AtomicU32>,
-}
-
-impl WebSocketMessageSender {
-    fn new(
-        normal_sender: tokio::sync::mpsc::Sender<axum::extract::ws::Message>,
-        critical_sender: tokio::sync::mpsc::Sender<axum::extract::ws::Message>,
-        format: RealtimeTransportFormat,
-    ) -> Self {
-        Self {
-            normal_sender,
-            critical_sender,
-            format,
-            consecutive_drops: Arc::new(AtomicU32::new(0)),
-        }
-    }
-
-    /// Clone the sender sharing the same drop counter (used to give handler and ping
-    /// channel different senders that still track slowness jointly).
-    fn clone_sender(&self) -> Self {
-        Self {
-            normal_sender: self.normal_sender.clone(),
-            critical_sender: self.critical_sender.clone(),
-            format: self.format,
-            consecutive_drops: Arc::clone(&self.consecutive_drops),
-        }
-    }
-
-    fn encode_message(
-        &self,
-        message: &ServerMessage,
-    ) -> Result<axum::extract::ws::Message, String> {
-        match self.format {
-            RealtimeTransportFormat::Json => encode_server_message_json(message)
-                .map(Into::into)
-                .map(axum::extract::ws::Message::Text)
-                .map_err(|e| format!("Failed to encode JSON message: {e}")),
-            RealtimeTransportFormat::Protobuf => ProtoCodec::encode_server_message(message)
-                .map(Into::into)
-                .map(axum::extract::ws::Message::Binary),
-        }
-    }
-}
-
 fn decode_client_message_json(text: &str) -> Result<ClientMessage, String> {
     let descriptor = ClientMessage::default().descriptor();
     let mut deserializer = serde_json::Deserializer::from_str(text);
@@ -708,246 +659,201 @@ fn encode_server_message_json(message: &ServerMessage) -> Result<String, serde_j
     serde_json::to_string(message)
 }
 
+/// Encodes a server message into a WebSocket frame for the wire format.
+fn encode_server_frame(
+    format: RealtimeTransportFormat,
+    message: &ServerMessage,
+) -> Result<axum::extract::ws::Message, String> {
+    match format {
+        RealtimeTransportFormat::Json => encode_server_message_json(message)
+            .map(|text| axum::extract::ws::Message::Text(text.into()))
+            .map_err(|e| format!("Failed to encode JSON message: {e}")),
+        RealtimeTransportFormat::Protobuf => ProtoCodec::encode_server_message(message)
+            .map(|bytes| axum::extract::ws::Message::Binary(bytes.into())),
+    }
+}
+
+/// Drains the fair session queue (already scheduled per-observation with
+/// control traffic first) and the dedicated transport control-frame channel
+/// onto the WebSocket sink. Control frames (Ping/Pong/Close) always win so
+/// keepalives never wait behind application traffic.
+///
+/// Bound on a single WebSocket sink write. A client that stops reading parks
+/// the write once socket buffers fill; without a bound the forwarder (and the
+/// fair queue it drains) is retained until the TCP connection dies.
+const SINK_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Grace after the session ends for the frames it already queued —
+/// terminations above all — to reach the peer before the socket goes away.
+/// Long enough to flush a full lane backlog to a healthy reader, short
+/// enough that a wedged peer cannot pin the forwarder.
+const FORWARDER_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The fair queue closing means either the session failed its slow-client
+/// escalation or the handler tore the connection down; either way the
+/// connection is marked dead and the disconnect signal is raised (the
+/// handler's own cleanup also disconnects, and duplicates are idempotent).
+#[allow(clippy::too_many_arguments)]
 async fn forward_websocket_messages<S>(
-    mut critical_messages: tokio::sync::mpsc::Receiver<axum::extract::ws::Message>,
-    mut outbound_messages: tokio::sync::mpsc::Receiver<axum::extract::ws::Message>,
+    mut fair_messages: tokio::sync::mpsc::Receiver<ServerMessage>,
+    mut control_messages: tokio::sync::mpsc::Receiver<axum::extract::ws::Message>,
     mut ws_sender_sink: S,
+    format: RealtimeTransportFormat,
     is_alive: Arc<std::sync::atomic::AtomicBool>,
     connection_service: Arc<dyn ConnectionRuntime>,
     connection_id: String,
+    session_cancel: tokio_util::sync::CancellationToken,
 ) where
     S: futures::Sink<axum::extract::ws::Message, Error = axum::Error> + Unpin,
 {
-    let mut critical_closed = false;
-    let mut outbound_closed = false;
-    let mut prioritize_critical = true;
+    let mut control_closed = false;
+    let mut fair_closed = false;
+    // Once the logical session ends, keep delivering what it already queued
+    // (terminations above all) for a bounded grace instead of dropping the
+    // socket mid-flight: a client must see its termination frames before the
+    // close, and a wedged peer that stops reading cannot pin the fair
+    // queue's lanes past the deadline.
+    let mut drain_deadline: Option<tokio::time::Instant> = None;
 
     loop {
-        let msg = if prioritize_critical {
-            if critical_closed {
-                tokio::select! {
-                    outbound = outbound_messages.recv(), if !outbound_closed => {
-                        if let Some(msg) = outbound {
-                            prioritize_critical = true;
-                            Some(msg)
-                        } else {
-                            outbound_closed = true;
-                            None
-                        }
-                    }
-                    else => break,
-                }
-            } else {
-                match critical_messages.try_recv() {
-                    Ok(msg) => {
-                        prioritize_critical = false;
-                        Some(msg)
-                    }
-                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
-                        critical_closed = true;
-                        prioritize_critical = false;
-                        None
-                    }
-                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
-                        tokio::select! {
-                            critical = critical_messages.recv(), if !critical_closed => {
-                                if let Some(msg) = critical {
-                                    prioritize_critical = false;
-                                    Some(msg)
-                                } else {
-                                    critical_closed = true;
-                                    prioritize_critical = false;
-                                    None
-                                }
-                            }
-                            outbound = outbound_messages.recv(), if !outbound_closed => {
-                                if let Some(msg) = outbound {
-                                    prioritize_critical = true;
-                                    Some(msg)
-                                } else {
-                                    outbound_closed = true;
-                                    None
-                                }
-                            }
-                            else => break,
-                        }
-                    }
-                }
-            }
-        } else {
-            if outbound_closed {
-                tokio::select! {
-                    critical = critical_messages.recv(), if !critical_closed => {
-                        if let Some(msg) = critical {
-                            prioritize_critical = false;
-                            Some(msg)
-                        } else {
-                            critical_closed = true;
-                            None
-                        }
-                    }
-                    else => break,
-                }
-            } else {
-                match outbound_messages.try_recv() {
-                    Ok(msg) => {
-                        prioritize_critical = true;
-                        Some(msg)
-                    }
-                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
-                        outbound_closed = true;
-                        prioritize_critical = true;
-                        None
-                    }
-                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
-                        tokio::select! {
-                            outbound = outbound_messages.recv(), if !outbound_closed => {
-                                if let Some(msg) = outbound {
-                                    prioritize_critical = true;
-                                    Some(msg)
-                                } else {
-                                    outbound_closed = true;
-                                    prioritize_critical = true;
-                                    None
-                                }
-                            }
-                            critical = critical_messages.recv(), if !critical_closed => {
-                                if let Some(msg) = critical {
-                                    prioritize_critical = false;
-                                    Some(msg)
-                                } else {
-                                    critical_closed = true;
-                                    None
-                                }
-                            }
-                            else => break,
-                        }
-                    }
-                }
-            }
-        };
-
-        let Some(msg) = msg else {
-            if critical_closed && outbound_closed {
-                break;
-            }
-            continue;
-        };
-
-        if let Err(e) = ws_sender_sink.send(msg).await {
-            error!(
-                connection_id = %connection_id,
-                error = %e,
-                "Failed to send WebSocket message"
-            );
-            is_alive.store(false, std::sync::atomic::Ordering::Relaxed);
-            connection_service.disconnect_connection(&connection_id);
+        if control_closed && fair_closed {
             break;
         }
-    }
-}
 
-/// Returns `true` if the given `ServerMessage` carries a critical payload that
-/// MUST be delivered (playback state changes, room kick or platform ban notifications, room
-/// deletion). Critical messages use a blocking send with timeout so they are
-/// not silently dropped.
-const fn is_critical_message(message: &ServerMessage) -> bool {
-    use synctv_proto::client::server_message::Message;
-    matches!(
-        &message.message,
-        Some(
-            Message::Error(_)
-                | Message::Termination(_)
-                | Message::ResourceObserved(_)
-                | Message::ResourceEvent(_)
-                | Message::ResourceObserveError(_)
-        )
-    )
-}
+        // While draining, control frames (the close frame the input pump
+        // enqueues on cancellation above all) must not preempt what the
+        // session already queued — the client would see the socket close
+        // before its termination. Cancellation counts even before the grace
+        // deadline is armed: the close frame is typically enqueued the moment
+        // the session cancels, so a `drain_deadline`-only check would let
+        // this loop-top grab win the race and drop queued terminations.
+        let control_deferred =
+            (drain_deadline.is_some() || session_cancel.is_cancelled()) && !fair_closed;
 
-const fn requires_state_resync(message: &ServerMessage) -> bool {
-    use synctv_proto::client::server_message::Message;
-    matches!(&message.message, Some(Message::Notification(_)))
-}
-
-/// Returns a human-readable message type name for logging purposes.
-const fn message_type_name(message: &ServerMessage) -> &'static str {
-    use synctv_proto::client::server_message::Message;
-    match &message.message {
-        Some(Message::HeartbeatAck(_)) => "HeartbeatAck",
-        Some(Message::Error(_)) => "Error",
-        Some(Message::Termination(_)) => "Termination",
-        Some(Message::ResourceObserved(_)) => "ResourceObserved",
-        Some(Message::ResourceEvent(_)) => "ResourceEvent",
-        Some(Message::ResourceObserveError(_)) => "ResourceObserveError",
-        Some(Message::Notification(_)) => "Notification",
-        None => "None",
-    }
-}
-
-impl synctv_api_common::impls::messaging::MessageSender for WebSocketMessageSender {
-    fn send(&self, message: ServerMessage) -> Result<(), String> {
-        let ws_msg = self.encode_message(&message)?;
-
-        let critical = is_critical_message(&message);
-
-        if critical {
-            match self.critical_sender.try_send(ws_msg) {
-                Ok(()) => {
-                    self.consecutive_drops.store(0, Ordering::Relaxed);
-                    return Ok(());
+        let msg = if !control_closed && !control_deferred {
+            match control_messages.try_recv() {
+                Ok(msg) => msg,
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    control_closed = true;
+                    continue;
                 }
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                    return Err("Channel closed: WebSocket client disconnected".to_string());
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                    tokio::select! {
+                        biased;
+
+                        () = session_cancel.cancelled(), if drain_deadline.is_none() => {
+                            drain_deadline = Some(
+                                tokio::time::Instant::now() + FORWARDER_DRAIN_GRACE,
+                            );
+                            continue;
+                        }
+                        control = control_messages.recv() => {
+                            let Some(msg) = control else {
+                                control_closed = true;
+                                continue;
+                            };
+                            msg
+                        }
+                        message = fair_messages.recv(), if !fair_closed => {
+                            let Some(message) = message else {
+                                fair_closed = true;
+                                continue;
+                            };
+                            let Ok(frame) = encode_server_frame(format, &message) else {
+                                error!(
+                                    connection_id = %connection_id,
+                                    "Failed to encode WebSocket message"
+                                );
+                                continue;
+                            };
+                            frame
+                        }
+                        () = async {
+                            match drain_deadline {
+                                Some(deadline) => tokio::time::sleep_until(deadline).await,
+                                None => std::future::pending::<()>().await,
+                            }
+                        } => {
+                            is_alive.store(false, std::sync::atomic::Ordering::Relaxed);
+                            connection_service.disconnect_connection(&connection_id);
+                            return;
+                        }
+                    }
                 }
-                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                    let drops = self.consecutive_drops.fetch_add(1, Ordering::Relaxed) + 1;
-                    let msg_type = message_type_name(&message);
-                    warn!(
-                        consecutive_drops = drops,
-                        message_type = msg_type,
-                        "Critical WebSocket message rejected: critical queue full (slow client)"
+            }
+        } else if !fair_closed {
+            let message = tokio::select! {
+                biased;
+                () = session_cancel.cancelled(), if drain_deadline.is_none() => {
+                    drain_deadline = Some(
+                        tokio::time::Instant::now() + FORWARDER_DRAIN_GRACE,
                     );
-                    synctv_core::metrics::http::record_websocket_error("message_dropped_critical");
-                    return Err(format!(
-                        "Critical message (type={msg_type}) rejected: critical queue full after {drops} consecutive drops (slow client)"
-                    ));
+                    continue;
                 }
-            }
-        }
-
-        // Non-critical messages: use try_send; track drops but do not error unless
-        // the client has been consistently slow for SLOW_CLIENT_DROP_THRESHOLD sends.
-        match self.normal_sender.try_send(ws_msg) {
-            Ok(()) => {
-                self.consecutive_drops.store(0, Ordering::Relaxed);
-                Ok(())
-            }
-            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                let drops = self.consecutive_drops.fetch_add(1, Ordering::Relaxed) + 1;
-                let msg_type = message_type_name(&message);
-                let requires_resync = requires_state_resync(&message);
-                warn!(
-                    consecutive_drops = drops,
-                    message_type = msg_type,
-                    "WebSocket message dropped: channel full (slow client)"
+                message = fair_messages.recv() => {
+                    let Some(message) = message else {
+                        if drain_deadline.is_some() {
+                            // Orderly session end: the fair queue handed over
+                            // its final frames — deliver the deferred close
+                            // frame next instead of dropping the socket.
+                            fair_closed = true;
+                            continue;
+                        }
+                        // The fair queue only closes when the session failed its
+                        // slow-client escalation or the handler tore the connection
+                        // down. Mark dead and raise the disconnect signal (the
+                        // handler's own cleanup also disconnects; duplicates are
+                        // idempotent).
+                        is_alive.store(false, std::sync::atomic::Ordering::Relaxed);
+                        connection_service.disconnect_connection(&connection_id);
+                        break;
+                    };
+                    message
+                }
+                () = async {
+                    match drain_deadline {
+                        Some(deadline) => tokio::time::sleep_until(deadline).await,
+                        None => std::future::pending::<()>().await,
+                    }
+                } => {
+                    is_alive.store(false, std::sync::atomic::Ordering::Relaxed);
+                    connection_service.disconnect_connection(&connection_id);
+                    return;
+                }
+            };
+            let Ok(frame) = encode_server_frame(format, &message) else {
+                error!(
+                    connection_id = %connection_id,
+                    "Failed to encode WebSocket message"
                 );
-                synctv_core::metrics::http::record_websocket_error("message_dropped");
-                if requires_resync || drops >= SLOW_CLIENT_DROP_THRESHOLD {
-                    // Too many consecutive drops: disconnect the slow client gracefully
-                    Err(format!(
-                        "Slow client disconnected: dropped stateful message (type={msg_type}) after {drops} consecutive drops"
-                    ))
-                } else {
-                    // Still within threshold: log and drop the non-critical message
-                    // Note: Non-critical messages (chat, user join/leave, etc.) can be dropped
-                    // but this log helps diagnose sync issues. If playback state seems out of
-                    // sync, check for frequent "message dropped" warnings.
-                    Ok(())
-                }
+                continue;
+            };
+            frame
+        } else {
+            break;
+        };
+
+        match tokio::time::timeout(SINK_WRITE_TIMEOUT, ws_sender_sink.send(msg)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                error!(
+                    connection_id = %connection_id,
+                    error = %e,
+                    "Failed to send WebSocket message"
+                );
+                is_alive.store(false, std::sync::atomic::Ordering::Relaxed);
+                connection_service.disconnect_connection(&connection_id);
+                break;
             }
-            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                Err("Channel closed: WebSocket client disconnected".to_string())
+            Err(_) => {
+                warn!(
+                    connection_id = %connection_id,
+                    timeout_secs = SINK_WRITE_TIMEOUT.as_secs(),
+                    "WebSocket write stalled; disconnecting slow client"
+                );
+                is_alive.store(false, std::sync::atomic::Ordering::Relaxed);
+                connection_service.disconnect_connection(&connection_id);
+                break;
             }
         }
     }
@@ -1028,14 +934,20 @@ pub async fn websocket_handler(
 
     // Authentication and membership verified, upgrade to WebSocket.
     // Reservations are released inside handle_socket after join_room completes.
-    // Limit max message size to 64KB (default is 64MB which is excessive for signaling)
+    // Limit both the assembled message and each single frame to 64KB
+    // (defaults are 64MB message / 16MB frame, excessive for signaling).
+    // max_frame_size matters most: tungstenite checks it at header parse,
+    // before reserving the declared payload length into the read buffer;
+    // max_message_size alone is enforced only after a frame is fully
+    // buffered.
     Ok(ws
         .max_message_size(64 * 1024)
+        .max_frame_size(64 * 1024)
         .on_failed_upgrade(failed_upgrade_cleanup)
         .on_upgrade(move |socket| handle_socket(socket, state, prepared, transport_format)))
 }
 
-async fn commit_prevalidated_ticket(
+pub(crate) async fn commit_prevalidated_ticket(
     state: &AppState,
     room_id: &RoomId,
     auth: &HandshakeAuthContext,
@@ -1082,14 +994,14 @@ async fn run_websocket_handshake_with_timeout<T>(
         .map_err(|_| AppError::new(StatusCode::REQUEST_TIMEOUT, "WebSocket handshake timed out"))?
 }
 
-struct ReservationCleanupGuard {
+pub(crate) struct ReservationCleanupGuard {
     connection_service: Arc<dyn ConnectionRuntime>,
     reservation: HandshakeReservation,
     armed: bool,
 }
 
 impl ReservationCleanupGuard {
-    const fn new(
+    pub(crate) const fn new(
         connection_service: Arc<dyn ConnectionRuntime>,
         reservation: HandshakeReservation,
     ) -> Self {
@@ -1100,7 +1012,7 @@ impl ReservationCleanupGuard {
         }
     }
 
-    const fn disarm(&mut self) {
+    pub(crate) const fn disarm(&mut self) {
         self.armed = false;
     }
 }
@@ -1116,19 +1028,19 @@ impl Drop for ReservationCleanupGuard {
 }
 
 #[derive(Debug, Clone)]
-struct HandshakeReservation {
+pub(crate) struct HandshakeReservation {
     room_id: RoomId,
     actor: synctv_core::models::RealtimeActor,
 }
 
 impl HandshakeReservation {
-    fn release(&self, connection_service: &dyn ConnectionRuntime) {
+    pub(crate) fn release(&self, connection_service: &dyn ConnectionRuntime) {
         connection_service.release_room_reservation(&self.room_id);
         connection_service.release_actor_reservation(&self.actor);
     }
 }
 
-fn reserve_websocket_upgrade_slots(
+pub(crate) fn reserve_websocket_upgrade_slots(
     connection_service: &dyn ConnectionRuntime,
     room_id: &RoomId,
     actor: &synctv_core::models::RealtimeActor,
@@ -1247,6 +1159,84 @@ fn map_websocket_pre_join_error(error: RealtimeJoinError) -> AppError {
     AppError::from(ApiError::from(error))
 }
 
+/// Builds the transport-agnostic room session handler shared by the WebSocket
+/// and HTTP-realtime-session transports. The caller supplies the outbound
+/// `MessageSender` (typically a `FairSessionSender`) and owns the resulting
+/// handler's lifecycle via `start()`.
+pub(crate) fn build_room_stream_handler(
+    state: &AppState,
+    room_id: RoomId,
+    principal: RealtimePrincipal,
+    connection_id: Option<String>,
+    sender: Arc<dyn MessageSender>,
+) -> Result<StreamMessageHandler, AppError> {
+    let event_service = state.event_service.clone();
+    // Resolve chat_service (required for proper business logic enforcement)
+    let chat_service = if let Some(ref svc) = state.chat_service {
+        svc.clone()
+    } else {
+        return Err(AppError::new(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "chat_service not available; realtime connections are not supported",
+        ));
+    };
+
+    Ok(StreamMessageHandler::new_with_runtime(
+        StreamMessageHandlerConfig {
+            room_id,
+            principal,
+            connection_id,
+            room_service: state.room_service.clone(),
+            chat_service,
+            event_service,
+            connection_service: state.connection_manager.clone(),
+            rate_limiter: state.rate_limiter.clone(),
+            rate_limit_config: state.shared_api_runtime.messaging_rate_limit_config.clone(),
+            content_filter: websocket_content_filter(&state.shared_api_runtime.content_filter),
+            public_id_codec: state.shared_api_runtime.public_id_codec.clone(),
+            sender,
+            concurrency_config: Arc::new(MessageConcurrencyConfig::default()),
+        },
+        build_stream_message_handler_runtime(state),
+    ))
+}
+
+/// Runtime services block shared by every room realtime transport handler.
+pub(crate) fn build_stream_message_handler_runtime(
+    state: &AppState,
+) -> StreamMessageHandlerRuntime {
+    StreamMessageHandlerRuntime {
+        clock: state.shared_api_runtime.client_api.clock.clone(),
+        playback_service: state.shared_api_runtime.client_api.clone(),
+        playlist_items_snapshot_service: state.shared_api_runtime.client_api.clone(),
+        room_members_snapshot_service: state.shared_api_runtime.client_api.clone(),
+        room_settings_snapshot_service:
+            synctv_api_common::impls::room_settings_snapshot::default_room_settings_snapshot_service(
+                state.room_service.clone(),
+            ),
+        playback_fanout: state.shared_api_runtime.client_api.playback_fanout.clone(),
+        chat_event_dispatcher:
+            synctv_api_common::chat_event_dispatcher::default_chat_event_dispatcher(
+                state.event_service.clone(),
+            ),
+        presence_service: state.presence_service.clone(),
+        notification_service: state.notification_service.clone(),
+        ws_message_rate_limit: state
+            .runtime_settings
+            .connection_limits
+            .ws_message_rate_limit_per_second,
+        heartbeat_schedule: state.shared_api_runtime.heartbeat_schedule,
+        filter_private_ice_candidates: state.runtime_settings.webrtc.filter_private_ice_candidates,
+        swarm_signing_key: state.shared_api_runtime.media_swarm_signing_key.clone(),
+        media_swarm_tracker: state
+            .shared_api_runtime
+            .client_api
+            .media_swarm_tracker
+            .clone(),
+        runtime_settings_store: state.runtime_settings_store.clone(),
+    }
+}
+
 async fn handle_socket(
     socket: axum::extract::ws::WebSocket,
     state: AppState,
@@ -1270,87 +1260,39 @@ async fn handle_socket(
         "WebSocket connection established"
     );
 
-    let event_service = state.event_service.clone();
-
     let _metrics_guard = synctv_core::metrics::http::track_websocket_connection();
 
-    // Use the shared rate limiter from app state
-    let rate_limiter = state.rate_limiter.clone();
-    let rate_limit_config = state.shared_api_runtime.messaging_rate_limit_config.clone();
-    let content_filter = websocket_content_filter(&state.shared_api_runtime.content_filter);
-
-    // Separate outbound channels keep critical state/control messages from being
-    // starved behind a backlog of best-effort traffic.
-    let (critical_tx, critical_rx) = tokio::sync::mpsc::channel::<axum::extract::ws::Message>(64);
-    let (tx, rx) = tokio::sync::mpsc::channel::<axum::extract::ws::Message>(1000);
+    // Outbound path: the fair session queue schedules per-observation lanes
+    // (interactive vs bulk, control first) and the forwarder encodes frames
+    // onto the socket. A dedicated tiny channel carries transport control
+    // frames (Ping/Close) that must never queue behind application traffic.
+    let (fair_sender, fair_rx) = FairSessionSender::new(FairQueueConfig::default());
+    let (control_tx, control_rx) = tokio::sync::mpsc::channel::<axum::extract::ws::Message>(
+        WEBSOCKET_CONTROL_CHANNEL_CAPACITY,
+    );
     let is_alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
 
-    // Create WebSocket sender - wrapped in Arc for sharing with handler.
-    // All senders share the same consecutive-drop counter via clone_sender().
-    let ws_sender_primary =
-        WebSocketMessageSender::new(tx.clone(), critical_tx.clone(), transport_format);
-    let ws_sender_for_handler = Arc::new(ws_sender_primary.clone_sender());
-    let raw_sender_for_ping = tx.clone();
-    let ws_sender = ws_sender_primary;
-
-    // Resolve chat_service (required for proper business logic enforcement)
-    let chat_service = if let Some(ref svc) = state.chat_service {
-        svc.clone()
-    } else {
-        error!("chat_service not available, WebSocket connection not supported");
-        return;
-    };
+    let ws_sender_for_handler: Arc<dyn MessageSender> = Arc::new(fair_sender.clone());
+    let raw_sender_for_ping = control_tx.clone();
+    let ws_sender = fair_sender;
 
     // Create StreamMessageHandler with all configuration
-    let stream_handler = StreamMessageHandler::new_with_runtime(
-        StreamMessageHandlerConfig {
-            room_id,
-            principal,
-            connection_id: Some(connection_id.clone()),
-            room_service: state.room_service.clone(),
-            chat_service,
-            event_service: event_service.clone(),
-            connection_service: state.connection_manager.clone(),
-            rate_limiter,
-            rate_limit_config,
-            content_filter,
-            public_id_codec: state.shared_api_runtime.public_id_codec.clone(),
-            sender: ws_sender_for_handler,
-            concurrency_config: Arc::new(MessageConcurrencyConfig::default()),
-        },
-        StreamMessageHandlerRuntime {
-            clock: state.shared_api_runtime.client_api.clock.clone(),
-            playback_service: state.shared_api_runtime.client_api.clone(),
-            playlist_items_snapshot_service: state.shared_api_runtime.client_api.clone(),
-            room_members_snapshot_service: state.shared_api_runtime.client_api.clone(),
-            room_settings_snapshot_service:
-                synctv_api_common::impls::room_settings_snapshot::default_room_settings_snapshot_service(
-                    state.room_service.clone(),
-                ),
-            playback_fanout: state.shared_api_runtime.client_api.playback_fanout.clone(),
-            chat_event_dispatcher: synctv_api_common::chat_event_dispatcher::default_chat_event_dispatcher(
-                event_service.clone(),
-            ),
-            presence_service: state.presence_service.clone(),
-            notification_service: state.notification_service.clone(),
-            ws_message_rate_limit: state
-                .runtime_settings
-                .connection_limits
-                .ws_message_rate_limit_per_second,
-            heartbeat_schedule: state.shared_api_runtime.heartbeat_schedule,
-            filter_private_ice_candidates: state
-                .runtime_settings
-                .webrtc
-                .filter_private_ice_candidates,
-            swarm_signing_key: state.shared_api_runtime.media_swarm_signing_key.clone(),
-            media_swarm_tracker: state
-                .shared_api_runtime
-                .client_api
-                .media_swarm_tracker
-                .clone(),
-            runtime_settings_store: state.runtime_settings_store.clone(),
-        },
-    );
+    let stream_handler = match build_room_stream_handler(
+        &state,
+        room_id,
+        principal,
+        Some(connection_id.clone()),
+        ws_sender_for_handler,
+    ) {
+        Ok(handler) => handler,
+        Err(error) => {
+            error!(
+                error = %error,
+                "Failed to build WebSocket stream handler"
+            );
+            return;
+        }
+    };
     let connection_id = stream_handler.connection_id().to_string();
 
     let (incoming_tx, cancel_token) = match stream_handler.start().await {
@@ -1370,17 +1312,34 @@ async fn handle_socket(
     // Split WebSocket into sender and receiver
     let (mut ws_sender_sink, ws_receiver) = socket.split();
 
+    // Session end must not strand the fair queue's spawned forwarder: closing
+    // the sender lets it hand over any already-queued frames (terminations
+    // above all) and then close the channel the transport forwarder drains,
+    // so the deferred close frame follows the final traffic cleanly.
+    {
+        let fair_closer_sender = ws_sender.clone();
+        let fair_closer_token = cancel_token.clone();
+        tokio::spawn(async move {
+            fair_closer_token.cancelled().await;
+            fair_closer_sender.close();
+        });
+    }
+
     // Spawn task to handle server messages -> WebSocket
     let is_alive_clone = is_alive.clone();
     let connection_service = state.connection_manager.clone();
+    let forward_format = transport_format;
+    let forward_cancel_token = cancel_token.clone();
     tokio::spawn(async move {
         forward_websocket_messages(
-            critical_rx,
-            rx,
+            fair_rx,
+            control_rx,
             &mut ws_sender_sink,
+            forward_format,
             is_alive_clone,
             connection_service,
             connection_id,
+            forward_cancel_token,
         )
         .await;
     });
@@ -1388,7 +1347,7 @@ async fn handle_socket(
     // Pump transport input into the shared handler. The handler owns all
     // business logic and cleanup; this task only decodes WebSocket frames.
     let input_cancel_token = cancel_token.clone();
-    let close_sender_on_cancel = critical_tx.clone();
+    let close_sender_on_cancel = control_tx.clone();
     tokio::spawn(async move {
         let mut stream = WebSocketStream {
             receiver: ws_receiver,

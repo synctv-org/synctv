@@ -18,6 +18,7 @@ members = [
     "synctv-livestream",
     "synctv-cluster",
     "synctv-realtime",
+    "synctv-quic",
     "synctv-media-providers",
     "synctv-management",
     "synctv",
@@ -344,6 +345,15 @@ rayon = "=1.12.0"
 
 # HTTP Body
 http-body-util = "=0.1.5"
+http-body = "=1.0.1"
+h3 = "=0.0.8"
+h3-datagram = "=0.0.2"
+h3-quinn = { version = "=0.0.10", default-features = false, features = ["datagram"] }
+h3-webtransport = "=0.1.2"
+quinn = { version = "=0.11.12", default-features = false, features = ["runtime-tokio", "rustls"] }
+rcgen = "=0.14.10"
+time = "=0.3.55"
+wtransport = { version = "=0.7.2", default-features = false, features = ["dangerous-configuration", "quinn"] }
 utoipa = { version = "=6.0.0", default-features = false, features = [
     "macros",
     "axum_extras",
@@ -391,6 +401,7 @@ synctv-web-ui = { path = "synctv-web-ui" }
 synctv-api-grpc = { path = "synctv-api-grpc", default-features = false }
 synctv-cluster = { path = "synctv-cluster", default-features = false }
 synctv-realtime = { path = "synctv-realtime", default-features = false }
+synctv-quic = { path = "synctv-quic", default-features = false }
 synctv-media-providers = { path = "synctv-media-providers", default-features = false }
 synctv-management = { path = "synctv-management", default-features = false }
 synctv-proxy = { path = "synctv-proxy", default-features = false }

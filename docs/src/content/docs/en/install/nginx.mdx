@@ -94,6 +94,8 @@ server:
 
 For a container network, replace these entries with the actual Nginx container subnet. Do not configure `0.0.0.0/0` or `::/0`.
 
+SyncTV uses the **rightmost** `X-Forwarded-For` entry — the address the trusted proxy itself appended — and ignores entries supplied by clients to its left. Both append mode (`$proxy_add_x_forwarded_for`, shown above) and overwrite mode (`proxy_set_header X-Forwarded-For $remote_addr`) are therefore safe with the configuration in this guide.
+
 ## Validate and Reload
 
 ```bash

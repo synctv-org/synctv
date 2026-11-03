@@ -93,3 +93,25 @@ pub fn watch_admin_event_matches(
         _ => false,
     }
 }
+
+/// Guest revocation is terminal for guest-principal watch sessions, mirroring
+/// the WebSocket transport's `guest_access_revocation_reason` control. The
+/// revocation fence keeps reconnection denied; this ends the live stream.
+#[inline]
+pub fn watch_guest_access_revocation_reason<'a>(
+    is_guest: bool,
+    event: &'a RealtimeEvent,
+    room_id: &RoomId,
+) -> Option<&'a str> {
+    if !is_guest {
+        return None;
+    }
+    match event {
+        RealtimeEvent::GuestAccessRevoked {
+            room_id: rid,
+            reason,
+            ..
+        } if rid == room_id => Some(reason),
+        _ => None,
+    }
+}

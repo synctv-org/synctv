@@ -1254,6 +1254,26 @@ mod websocket_e2e {
 
         let app = axum::Router::new()
             .route("/ws/rooms/{roomId}", axum::routing::get(websocket_handler))
+            .route(
+                "/api/public/server-info",
+                axum::routing::get(synctv_api::get_server_info),
+            )
+            .route(
+                "/api/rooms/{roomId}/realtime/sessions",
+                axum::routing::post(synctv_api::create_realtime_session),
+            )
+            .route(
+                "/api/rooms/{roomId}/realtime/sessions/{sessionId}/events",
+                axum::routing::get(synctv_api::realtime_session_events),
+            )
+            .route(
+                "/api/rooms/{roomId}/realtime/sessions/{sessionId}/messages",
+                axum::routing::post(synctv_api::send_realtime_session_message),
+            )
+            .route(
+                "/api/rooms/{roomId}/realtime/sessions/{sessionId}",
+                axum::routing::delete(synctv_api::delete_realtime_session),
+            )
             .with_state(state);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
@@ -1464,7 +1484,9 @@ mod websocket_e2e {
     ) -> ServerMessage {
         tokio::time::timeout(timeout, async {
             loop {
-                let msg = recv_server_message(ws).await.expect("stream ended");
+                let msg = recv_server_message(ws)
+                    .await
+                    .unwrap_or_else(|| panic!("stream ended while waiting for {label}"));
                 if predicate(&msg) {
                     return msg;
                 }
@@ -1745,6 +1767,95 @@ mod websocket_e2e {
         }
 
         ws.close(None).await.expect("close");
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_ws_frame_header_over_budget_rejected_at_header_parse() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let infra = TestInfra::new().await;
+        let server = setup_e2e_server(&infra).await;
+
+        let (user_id, token) =
+            register_test_user(&server.user_service, &server.jwt_service, "carol_frame").await;
+        let room_id = create_test_room(&server.room_service, &user_id, "Frame Budget Room").await;
+
+        let mut ws = ws_connect(&server.addr, &room_id, &token).await;
+        drain_until_quiet(&mut ws, 2000).await;
+
+        // Raw 14-byte masked binary frame header declaring a 16,777,216-byte
+        // payload and no payload: FIN=1, opcode=0x02, MASK=1, 64-bit length.
+        // With max_frame_size(64 KiB) the server must reject it at header
+        // parse - before reserving the declared length - and close the
+        // connection; before the fix the server parked holding a 16 MiB
+        // reservation until the idle-timeout sweep.
+        let header: [u8; 14] = [
+            0x82, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0xAA, 0xBB, 0xCC, 0xDD,
+        ];
+        {
+            let io = ws.get_mut();
+            let tcp = match io {
+                tokio_tungstenite::MaybeTlsStream::Plain(tcp) => tcp,
+                other => panic!("test expects a plain TCP stream, got {other:?}"),
+            };
+            tcp.write_all(&header).await.expect("send raw frame header");
+        }
+
+        // The server must react by closing the connection - EOF or a
+        // close-family control frame - well inside the idle-timeout window.
+        {
+            let io = ws.get_mut();
+            let tcp = match io {
+                tokio_tungstenite::MaybeTlsStream::Plain(tcp) => tcp,
+                other => panic!("test expects a plain TCP stream, got {other:?}"),
+            };
+            let mut buf = [0u8; 512];
+            // Resolves as soon as the server closes; the outer timeout
+            // turns silence into failure.
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                loop {
+                    let read = tcp.read(&mut buf).await.expect("tcp read");
+                    if read == 0 || buf[..read].iter().any(|byte| *byte & 0xF0 == 0x80) {
+                        break;
+                    }
+                }
+            })
+            .await
+            .expect("server must reject the oversized frame declaration by closing the connection");
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_ws_oversized_message_rejected_after_upgrade() {
+        // A frame declaring 65,537 bytes (over the 64 KiB message budget but
+        // under the fixed frame cap) is buffered and then rejected by the
+        // message-size check: the connection must close instead of
+        // accepting the payload as a message.
+        let infra = TestInfra::new().await;
+        let server = setup_e2e_server(&infra).await;
+
+        let (user_id, token) =
+            register_test_user(&server.user_service, &server.jwt_service, "dave_frame").await;
+        let room_id = create_test_room(&server.room_service, &user_id, "Message Budget Room").await;
+
+        let mut ws = ws_connect(&server.addr, &room_id, &token).await;
+        drain_until_quiet(&mut ws, 2000).await;
+
+        let oversized = vec![0u8; 65_537];
+        ws.send(tungstenite::Message::Binary(oversized.into()))
+            .await
+            .expect("send oversized frame");
+
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            use futures::StreamExt;
+            // Any error or stream end means the server closed the session;
+            // valid frames keep arriving until then.
+            while let Some(Ok(_)) = ws.next().await {}
+        })
+        .await
+        .expect("server must close the oversized-message session in time");
     }
 
     #[tokio::test]
@@ -4631,6 +4742,234 @@ mod websocket_e2e {
             }
             Ok(other) => panic!("Unexpected result: {other}"),
         }
+    }
+    // ------------------------------------------------------------------
+    // HTTP realtime sessions (SSE downlink + REST uplink)
+    // ------------------------------------------------------------------
+
+    /// Minimal SSE reader over a streaming reqwest response: yields
+    /// `(event_name, data)` pairs, skipping keepalive comments.
+    struct SseReader {
+        response: reqwest::Response,
+        buffer: Vec<u8>,
+    }
+
+    impl SseReader {
+        fn new(response: reqwest::Response) -> Self {
+            Self {
+                response,
+                buffer: Vec::new(),
+            }
+        }
+
+        async fn next_event(&mut self, timeout: std::time::Duration) -> Option<(String, String)> {
+            let deadline = tokio::time::Instant::now() + timeout;
+            loop {
+                if let Some(event) = self.take_event() {
+                    return Some(event);
+                }
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if remaining.is_zero() {
+                    return None;
+                }
+                match tokio::time::timeout(remaining, self.response.chunk()).await {
+                    Ok(Ok(Some(chunk))) => self.buffer.extend_from_slice(&chunk),
+                    Ok(Ok(None) | Err(_)) | Err(_) => return self.take_event(),
+                }
+            }
+        }
+
+        /// Parses one complete event (terminated by a blank line) off the
+        /// buffer, returning `None` when no complete event is available.
+        fn take_event(&mut self) -> Option<(String, String)> {
+            loop {
+                let text = String::from_utf8_lossy(&self.buffer).into_owned();
+                let end = text.find("\n\n")?;
+                let block = text[..end].to_string();
+                self.buffer.drain(..end + 2);
+                let mut name = String::new();
+                let mut data = Vec::new();
+                for line in block.lines() {
+                    if let Some(value) = line.strip_prefix("event:") {
+                        name = value.trim().to_string();
+                    } else if let Some(value) = line.strip_prefix("data:") {
+                        data.push(value.trim_start().to_string());
+                    }
+                }
+                if name.is_empty() && data.is_empty() {
+                    continue; // keepalive comment
+                }
+                return Some((name, data.join("\n")));
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_http_realtime_session_sse_downlink_and_rest_uplink() {
+        let infra = TestInfra::new().await;
+        let mut server = setup_e2e_server(&infra).await;
+
+        let (user1_id, user1_token) =
+            register_test_user(&server.user_service, &server.jwt_service, "sse_user1").await;
+        let room_id = create_test_room(&server.room_service, &user1_id, "SSE Room").await;
+        let (user2_id, user2_token) =
+            register_test_user(&server.user_service, &server.jwt_service, "sse_user2").await;
+        server
+            .room_service
+            .join_room(decode_test_room_id(&room_id), user2_id, None)
+            .await
+            .expect("user2 join room");
+
+        let http = reqwest::Client::new();
+        let base = format!("http://{}", server.addr);
+
+        // (The transports advertisement is exercised by the full-stack e2e
+        // suite with a runtime settings store; this minimal harness boots
+        // without one.)
+
+        // Create the session with an initial members observation.
+        let created: serde_json::Value = http
+            .post(format!("{base}/api/rooms/{room_id}/realtime/sessions"))
+            .bearer_auth(&user1_token)
+            .json(&serde_json::json!({
+                "initialObservations": [
+                    {"observeId": "sse-members", "roomMemberEvents": {}}
+                ]
+            }))
+            .send()
+            .await
+            .expect("create session")
+            .error_for_status()
+            .expect("create session status")
+            .json()
+            .await
+            .expect("create session json");
+        let session_id = created["sessionId"]
+            .as_str()
+            .expect("sessionId")
+            .to_string();
+        // proto3 JSON emits int64 fields as strings.
+        let lease_ttl: i64 = match &created["leaseTtlMs"] {
+            serde_json::Value::Number(n) => n.as_i64().expect("lease ttl number"),
+            serde_json::Value::String(s) => s.parse().expect("lease ttl string"),
+            other => panic!("leaseTtlMs must be numeric, got {other}"),
+        };
+        assert!(lease_ttl > 0);
+
+        // Attach the SSE downlink.
+        let response = http
+            .get(format!(
+                "{base}/api/rooms/{room_id}/realtime/sessions/{session_id}/events?format=json"
+            ))
+            .bearer_auth(&user1_token)
+            .send()
+            .await
+            .expect("attach events");
+        if response.status() != reqwest::StatusCode::OK {
+            let status = response.status();
+            let body = response.text().await.expect("events error body");
+            panic!("attach events failed: {status} {body}");
+        }
+        let mut sse = SseReader::new(response);
+
+        // The initial observation snapshot arrives as a uniform `message`
+        // envelope carrying the full ServerMessage.
+        let (first_name, first_data) = sse
+            .next_event(std::time::Duration::from_secs(5))
+            .await
+            .expect("initial observed event");
+        assert_eq!(first_name, "message");
+        assert!(
+            first_data.contains("resourceObserved"),
+            "expected resourceObserved envelope, got {first_data}"
+        );
+
+        // Uplink: a heartbeat posted over REST is acknowledged over SSE.
+        let status = http
+            .post(format!(
+                "{base}/api/rooms/{room_id}/realtime/sessions/{session_id}/messages"
+            ))
+            .bearer_auth(&user1_token)
+            .json(&serde_json::json!({"message": {"heartbeat": {"timestamp": 1}}}))
+            .send()
+            .await
+            .expect("post heartbeat")
+            .status();
+        assert_eq!(status, reqwest::StatusCode::NO_CONTENT);
+        let ack = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let (name, data) = sse
+                    .next_event(std::time::Duration::from_secs(5))
+                    .await
+                    .expect("event while waiting for heartbeat_ack");
+                if name == "message" && data.contains("heartbeatAck") {
+                    return data;
+                }
+            }
+        })
+        .await
+        .expect("heartbeat_ack over SSE");
+        assert!(ack.contains("heartbeatAck"));
+
+        // Room events reach the session: user2 joins over WebSocket.
+        let mut ws2 = ws_connect(&server.addr, &room_id, &user2_token).await;
+        drain_until_quiet(&mut ws2, 1000).await;
+        let joined = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let (name, data) = sse
+                    .next_event(std::time::Duration::from_secs(5))
+                    .await
+                    .expect("event while waiting for member join");
+                if name == "message" && data.contains("roomMemberEvent") {
+                    return data;
+                }
+            }
+        })
+        .await
+        .expect("member join over SSE");
+        assert!(joined.contains(&encode_test_user_id(&user2_id)));
+
+        // Other users cannot touch the session.
+        let forbidden = http
+            .post(format!(
+                "{base}/api/rooms/{room_id}/realtime/sessions/{session_id}/messages"
+            ))
+            .bearer_auth(&user2_token)
+            .json(&serde_json::json!({"message": {"heartbeat": {"timestamp": 2}}}))
+            .send()
+            .await
+            .expect("post as other user")
+            .status();
+        assert_eq!(forbidden, reqwest::StatusCode::NOT_FOUND);
+
+        // Delete ends the session and frees the id.
+        let deleted = http
+            .delete(format!(
+                "{base}/api/rooms/{room_id}/realtime/sessions/{session_id}"
+            ))
+            .bearer_auth(&user1_token)
+            .send()
+            .await
+            .expect("delete session")
+            .status();
+        assert_eq!(deleted, reqwest::StatusCode::NO_CONTENT);
+        let gone = http
+            .post(format!(
+                "{base}/api/rooms/{room_id}/realtime/sessions/{session_id}/messages"
+            ))
+            .bearer_auth(&user1_token)
+            .json(&serde_json::json!({"message": {"heartbeat": {"timestamp": 3}}}))
+            .send()
+            .await
+            .expect("post after delete")
+            .status();
+        assert_eq!(gone, reqwest::StatusCode::NOT_FOUND);
+
+        drop(sse);
+        ws2.close(None).await.expect("close ws2");
+        server.shutdown().await;
+        infra.cleanup().await;
     }
 }
 

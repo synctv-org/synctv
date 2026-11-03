@@ -1489,7 +1489,7 @@ async fn s3_file_storage_creates_resumable_upload_session() {
         "S3 upload session should expose a backend-mediated upload access",
     );
     assert_eq!(encoded_object_key, session.encoded_object_key);
-    assert!(read_token.starts_with("v1."));
+    assert!(read_token.starts_with("v2."));
     assert_eq!(
         session
             .upload_headers

@@ -21,6 +21,7 @@ pub(crate) mod native_app_association;
 pub(crate) mod notifications;
 pub(crate) mod oauth2;
 pub(crate) mod public;
+pub(crate) mod realtime_session;
 pub(crate) mod room;
 pub(crate) mod room_extra;
 pub(crate) mod ticket;
@@ -30,6 +31,7 @@ pub(crate) mod validation;
 pub(crate) mod web_ui;
 pub(crate) mod webrtc;
 pub(crate) mod websocket;
+pub(crate) mod webtransport;
 
 use crate::providers;
 use axum::{
@@ -323,6 +325,12 @@ pub(crate) mod body_limits {
 
     /// Cover database uploads: match the service-level cover cap.
     pub const COVER: usize = 10 * 1024 * 1024;
+
+    /// Realtime sessions (create with initial observations, send message):
+    /// same 64 KiB signaling budget as the WebSocket / WebTransport frame
+    /// caps. Session uplink is signaling only - chat attachments upload via
+    /// their own object routes.
+    pub const REALTIME_SESSION: usize = 64 * 1024;
 }
 
 /// Authentication routes that are mounted inside the strict rate-limit group.
@@ -708,6 +716,31 @@ fn register_read_routes() -> Router<AppState> {
         )
 }
 
+/// HTTP realtime sessions (SSE downlink + REST uplink): the socket-less
+/// counterpart of the room WebSocket, owned by a lease.
+fn register_realtime_session_routes() -> Router<AppState> {
+    Router::new()
+        .route(
+            "/api/rooms/{roomId}/realtime/sessions",
+            post(realtime_session::create_realtime_session),
+        )
+        .route(
+            "/api/rooms/{roomId}/realtime/sessions/{sessionId}/events",
+            get(realtime_session::realtime_session_events),
+        )
+        .route(
+            "/api/rooms/{roomId}/realtime/sessions/{sessionId}/messages",
+            post(realtime_session::send_realtime_session_message),
+        )
+        .route(
+            "/api/rooms/{roomId}/realtime/sessions/{sessionId}",
+            axum::routing::delete(realtime_session::delete_realtime_session),
+        )
+        .layer(axum::extract::DefaultBodyLimit::max(
+            body_limits::REALTIME_SESSION,
+        ))
+}
+
 fn register_chat_attachment_object_routes() -> Router<AppState> {
     Router::new()
         .route(
@@ -949,6 +982,7 @@ fn register_all_routes() -> Router<AppState> {
         .merge(register_auth_routes())
         .merge(register_extracted_user_routes())
         .merge(register_user_avatar_object_routes())
+        .merge(register_realtime_session_routes())
         .merge(
             Router::new()
                 .route("/api/rooms/{roomId}/members", post(room_extra::add_member))

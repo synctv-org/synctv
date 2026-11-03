@@ -537,22 +537,6 @@ impl IntoIterator for DynamicListResult {
     }
 }
 
-#[cfg(test)]
-mod dynamic_pagination_tests {
-    use super::dynamic_page_has_more;
-
-    #[test]
-    fn uses_the_upstream_page_size_before_filtering() {
-        assert!(dynamic_page_has_more(100, 1, 50, 50));
-        assert!(!dynamic_page_has_more(100, 2, 50, 50));
-    }
-
-    #[test]
-    fn stops_on_the_last_short_upstream_page() {
-        assert!(!dynamic_page_has_more(75, 2, 50, 25));
-    }
-}
-
 /// Media provider trait.
 ///
 /// Core interface that all providers must implement. The maintenance contract
@@ -886,4 +870,20 @@ pub struct NextPlayItem {
 
     /// Provider-facing target payload for this playable item
     pub target: crate::models::ProviderTarget,
+}
+
+#[cfg(test)]
+mod dynamic_pagination_tests {
+    use super::dynamic_page_has_more;
+
+    #[test]
+    fn uses_the_upstream_page_size_before_filtering() {
+        assert!(dynamic_page_has_more(100, 1, 50, 50));
+        assert!(!dynamic_page_has_more(100, 2, 50, 50));
+    }
+
+    #[test]
+    fn stops_on_the_last_short_upstream_page() {
+        assert!(!dynamic_page_has_more(75, 2, 50, 25));
+    }
 }

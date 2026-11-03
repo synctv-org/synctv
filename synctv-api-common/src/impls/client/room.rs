@@ -2126,6 +2126,9 @@ impl ClientApiImpl {
         Ok(synctv_proto::client::GetServerInfoResponse {
             server_id,
             server_name: reg.server.name.get().map_err(ApiError::from)?,
+            // The HTTP layer overrides this with the deployment's actual
+            // listener capabilities (WebSocket/SSE/WebTransport/gRPC).
+            transports: Vec::new(),
         })
     }
 

@@ -3638,6 +3638,8 @@ mod tests {
         let mut config = synctv_api_common::ApiRuntimeSettings::default();
         config.server.trusted_proxies = vec!["127.0.0.1".to_string()];
 
+        // Append-mode forwarding: the leftmost entry is client-supplied and
+        // must not be trusted; the trusted proxy appended 70.41.3.18.
         let request = request_with_peer_and_headers(
             "127.0.0.1:50051".parse()?,
             &[("x-forwarded-for", "203.0.113.50, 70.41.3.18")],
@@ -3645,7 +3647,7 @@ mod tests {
 
         assert_eq!(
             extract_client_ip(&request, &config).expect("extract client ip"),
-            Some("203.0.113.50".parse()?)
+            Some("70.41.3.18".parse()?)
         );
         Ok(())
     }

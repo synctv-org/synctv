@@ -37,6 +37,7 @@ openapi = ["synctv-api/openapi"]
 #   requires a verifier/root feature whenever rustls is compiled.
 # Root features propagate this contract to workspace crates that perform TLS.
 tls-aws-lc = [
+    "synctv-quic/tls-aws-lc",
     "synctv-core/tls-aws-lc",
     "synctv-api/tls-aws-lc",
     "synctv-livestream/tls-aws-lc",
@@ -55,6 +56,7 @@ tls-aws-lc = [
     "tokio-rustls/aws_lc_rs",
 ]
 tls-ring = [
+    "synctv-quic/tls-ring",
     "synctv-core/tls-ring",
     "synctv-api/tls-ring",
     "synctv-livestream/tls-ring",
@@ -114,6 +116,7 @@ workspace = true
 synctv-core = { workspace = true, default-features = false }
 synctv-adapter = { workspace = true, default-features = false }
 synctv-api = { workspace = true, default-features = false }
+synctv-quic = { workspace = true, default-features = false }
 synctv-livestream = { workspace = true, default-features = false }
 synctv-cluster = { workspace = true, default-features = false }
 synctv-realtime = { workspace = true, default-features = false }
@@ -188,6 +191,10 @@ futures-util.workspace = true
 async-trait.workspace = true
 reqwest.workspace = true
 tokio-tungstenite.workspace = true
+rcgen.workspace = true
+time.workspace = true
+wtransport.workspace = true
+synctv-quic = { workspace = true, features = ["test-support"] }
 prost.workspace = true
 jsonwebtoken.workspace = true
 clap = { workspace = true, features = ["derive"] }

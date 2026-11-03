@@ -624,6 +624,12 @@ impl Drop for TestServer {
 }
 
 async fn start_test_server() -> TestServer {
+    start_test_server_with(|_| {}).await
+}
+
+/// Starts a per-test server after letting `customize` adjust the config
+/// (e.g. enabling the HTTP/3 listener).
+async fn start_test_server_with(customize: impl FnOnce(&mut Config)) -> TestServer {
     ensure_test_logging();
     let suffix = unique_test_suffix();
     let database_name = format!("synctv_e2e_{suffix}");
@@ -640,7 +646,7 @@ async fn start_test_server() -> TestServer {
 
     let listeners = TestListeners::bind().await;
     let (api_port, management_port, rtmp_port, health_port) = listeners.ports();
-    let config = test_config(
+    let mut config = test_config(
         database_url,
         redis_url,
         api_port,
@@ -648,6 +654,7 @@ async fn start_test_server() -> TestServer {
         rtmp_port,
         health_port,
     );
+    customize(&mut config);
 
     let provider_probe_host = PROVIDER_PROBE_HOST.to_string();
     let app = Box::pin(Application::build_with_options(
@@ -9650,4 +9657,330 @@ async fn full_stack_grpc_message_stream_requires_membership() {
     );
 
     // per-test isolated server
+}
+
+/// Finds a free UDP port on loopback for the HTTP/3 listener.
+fn free_udp_port() -> u16 {
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind udp probe");
+    socket.local_addr().expect("udp probe addr").port()
+}
+
+/// Writes an ephemeral self-signed ECDSA certificate + key as PEM files.
+fn write_self_signed_pem(dir: &std::path::Path) -> (String, String) {
+    let mut params =
+        rcgen::CertificateParams::new(vec!["localhost".to_string()]).expect("certificate params");
+    params.not_before = time::OffsetDateTime::now_utc() - time::Duration::days(1);
+    params.not_after = time::OffsetDateTime::now_utc() + time::Duration::days(13);
+    let key_pair = rcgen::KeyPair::generate().expect("key pair");
+    let cert = params.self_signed(&key_pair).expect("self-signed cert");
+    let cert_path = dir.join("quic-cert.pem");
+    let key_path = dir.join("quic-key.pem");
+    std::fs::write(&cert_path, cert.pem()).expect("write cert");
+    std::fs::write(&key_path, key_pair.serialize_pem()).expect("write key");
+    (
+        cert_path.to_string_lossy().into_owned(),
+        key_path.to_string_lossy().into_owned(),
+    )
+}
+
+/// Base64 SHA-256 of the first certificate's DER encoding in a PEM file,
+/// computed independently of the production helper so the assertion also
+/// catches a PEM-vs-DER regression.
+async fn local_cert_hash_base64(cert_path: &str) -> String {
+    use base64::Engine as _;
+    use sha2_010::Digest as _;
+
+    let pem = tokio::fs::read(cert_path).await.expect("read cert pem");
+    let b64_body = std::str::from_utf8(&pem)
+        .expect("pem is ascii")
+        .lines()
+        .skip_while(|line| !line.contains("BEGIN CERTIFICATE"))
+        .skip(1)
+        .take_while(|line| !line.contains("END CERTIFICATE"))
+        .collect::<String>();
+    let der = base64::engine::general_purpose::STANDARD
+        .decode(b64_body)
+        .expect("certificate der");
+    base64::engine::general_purpose::STANDARD.encode(sha2_010::Sha256::digest(der))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "Requires Docker"]
+async fn full_stack_quic_serves_http3_and_webtransport_realtime() {
+    use prost::Message as _;
+    use synctv_proto::client::{client_message, server_message, HeartbeatMessage};
+    use tokio::io::AsyncWriteExt as _;
+
+    let temp_dir = std::env::temp_dir().join(format!("synctv-quic-{}", unique_test_suffix()));
+    std::fs::create_dir_all(&temp_dir).expect("temp dir");
+    let (cert_path, key_path) = write_self_signed_pem(&temp_dir);
+    let udp_port = free_udp_port();
+
+    let server = start_test_server_with(|config| {
+        config.server.quic.enabled = true;
+        config.server.quic.port = Some(udp_port);
+        config.server.quic.cert_path = cert_path.clone();
+        config.server.quic.key_path = key_path.clone();
+    })
+    .await;
+    let client = test_http_client();
+    let quic_addr: std::net::SocketAddr = format!("127.0.0.1:{udp_port}").parse().expect("addr");
+
+    // TCP responses advertise the HTTP/3 endpoint.
+    let tcp_response = client
+        .get(format!("{}/api/public/time", server.api_base_url))
+        .send()
+        .await
+        .expect("tcp request");
+    assert_eq!(tcp_response.status(), StatusCode::OK);
+    let alt_svc = tcp_response
+        .headers()
+        .get("alt-svc")
+        .and_then(|value| value.to_str().ok())
+        .expect("alt-svc header on TCP responses")
+        .to_string();
+    assert!(
+        alt_svc.contains(&format!("h3=\":{udp_port}\"")),
+        "unexpected Alt-Svc: {alt_svc}"
+    );
+
+    // The same API is served natively over HTTP/3, and advertises WebTransport.
+    let (status, _headers, body) =
+        synctv_quic::testing::h3_get(quic_addr, "/api/public/server-info").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "server-info over h3: {}",
+        String::from_utf8_lossy(&body)
+    );
+    let info: serde_json::Value = serde_json::from_slice(&body).expect("server-info json");
+    let kinds: Vec<i64> = info["transports"]
+        .as_array()
+        .expect("transports")
+        .iter()
+        .map(|t| t["kind"].as_i64().expect("kind"))
+        .collect();
+    for expected in [
+        synctv_proto::client::RealtimeTransportKind::WebSocket,
+        synctv_proto::client::RealtimeTransportKind::Sse,
+        synctv_proto::client::RealtimeTransportKind::Grpc,
+        synctv_proto::client::RealtimeTransportKind::WebTransport,
+    ] {
+        assert!(
+            kinds.contains(&(expected as i64)),
+            "missing {expected:?} in {kinds:?}"
+        );
+    }
+
+    // The WebTransport capability pins the served certificate so clients can
+    // dial self-signed endpoints without manual configuration.
+    let wt_hash: Vec<&str> = info["transports"]
+        .as_array()
+        .expect("transports")
+        .iter()
+        .filter(|t| {
+            t["kind"].as_i64()
+                == Some(synctv_proto::client::RealtimeTransportKind::WebTransport as i64)
+        })
+        .filter_map(|t| t["certificateHash"].as_str())
+        .collect();
+    assert_eq!(wt_hash.len(), 1, "one WebTransport certificate hash");
+    assert_eq!(
+        wt_hash[0],
+        local_cert_hash_base64(&cert_path).await,
+        "advertised hash matches the served certificate"
+    );
+
+    // WebTransport room session: ticket auth, then heartbeat round trip over
+    // the length-prefixed protobuf frame channel.
+    let register = opaque_http_register(
+        &server,
+        "quic_wt_user",
+        "quic-wt@example.com",
+        "QuicWtPass12345!",
+    )
+    .await;
+    assert_eq!(register.status(), StatusCode::OK);
+    let token = login_http_ok_token(&server, "quic_wt_user", "QuicWtPass12345!").await;
+    let create_room = post_json(
+        &client,
+        &format!("{}/api/rooms", server.api_base_url),
+        create_room_request("QUIC WT Room", "webtransport e2e", ""),
+        Some(&token),
+    )
+    .await;
+    assert_eq!(create_room.status(), StatusCode::OK);
+    let room_id = response_json(create_room).await["id"]
+        .as_str()
+        .expect("room id")
+        .to_string();
+    let create_ticket = post_json(
+        &client,
+        &format!("{}/api/tickets", server.api_base_url),
+        create_ticket_request(&room_id),
+        Some(&token),
+    )
+    .await;
+    assert_eq!(create_ticket.status(), StatusCode::OK);
+    let ticket = response_json(create_ticket).await["ticket"]
+        .as_str()
+        .expect("ticket")
+        .to_string();
+
+    let wt_config = wtransport::ClientConfig::builder()
+        .with_bind_default()
+        .with_no_cert_validation()
+        .build();
+    let endpoint = wtransport::Endpoint::client(wt_config).expect("wt client");
+    let connection = endpoint
+        .connect(format!(
+            "https://127.0.0.1:{udp_port}/wt/rooms/{room_id}?ticket={ticket}&format=protobuf"
+        ))
+        .await
+        .expect("WebTransport room session");
+    let (mut send, mut recv) = connection
+        .open_bi()
+        .await
+        .expect("open bi")
+        .await
+        .expect("bi ready");
+
+    let heartbeat = synctv_proto::client::ClientMessage {
+        message: Some(client_message::Message::Heartbeat(HeartbeatMessage {
+            timestamp: 1,
+        })),
+    };
+    synctv_quic::write_frame(&mut send, &heartbeat.encode_to_vec())
+        .await
+        .expect("write heartbeat frame");
+
+    let ack = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let frame = synctv_quic::read_frame(&mut recv)
+                .await
+                .expect("read frame")
+                .expect("session stays open");
+            let message = synctv_proto::client::ServerMessage::decode(&frame[..])
+                .expect("server message decodes");
+            if matches!(
+                message.message,
+                Some(server_message::Message::HeartbeatAck(_))
+            ) {
+                return message;
+            }
+        }
+    })
+    .await
+    .expect("heartbeat ack over WebTransport");
+    assert!(matches!(
+        ack.message,
+        Some(server_message::Message::HeartbeatAck(_))
+    ));
+
+    let _ = send.shutdown().await;
+    drop(connection);
+
+    // Multi-stream session (`streams=1`): the control stream carries control
+    // traffic (heartbeat acks), and each observation lane is pushed on its
+    // own server-initiated unidirectional stream.
+    let create_ticket = post_json(
+        &client,
+        &format!("{}/api/tickets", server.api_base_url),
+        create_ticket_request(&room_id),
+        Some(&token),
+    )
+    .await;
+    assert_eq!(create_ticket.status(), StatusCode::OK);
+    let ticket = response_json(create_ticket).await["ticket"]
+        .as_str()
+        .expect("ticket")
+        .to_string();
+    let connection = endpoint
+        .connect(format!(
+            "https://127.0.0.1:{udp_port}/wt/rooms/{room_id}?ticket={ticket}&format=protobuf&streams=1"
+        ))
+        .await
+        .expect("multi-stream WebTransport room session");
+    let (mut send, mut recv) = connection
+        .open_bi()
+        .await
+        .expect("open control stream")
+        .await
+        .expect("control stream ready");
+
+    let observe = synctv_proto::client::ClientMessage {
+        message: Some(client_message::Message::ObserveResource(
+            synctv_proto::client::ObserveResource {
+                observe_id: "e2e-chat".to_string(),
+                resource: Some(
+                    synctv_proto::client::observe_resource::Resource::ChatEvents(
+                        synctv_proto::client::ObserveChatEvents::default(),
+                    ),
+                ),
+                ..Default::default()
+            },
+        )),
+    };
+    synctv_quic::write_frame(&mut send, &observe.encode_to_vec())
+        .await
+        .expect("write observe frame");
+    synctv_quic::write_frame(&mut send, &heartbeat.encode_to_vec())
+        .await
+        .expect("write heartbeat frame");
+
+    // Observation lane frames arrive on a server-initiated unidirectional
+    // stream; heartbeat acks stay on the control stream.
+    let lane = tokio::time::timeout(Duration::from_secs(10), async {
+        let mut uni = connection
+            .accept_uni()
+            .await
+            .expect("accept observation stream");
+        loop {
+            let frame = synctv_quic::read_frame(&mut uni)
+                .await
+                .expect("read observation frame")
+                .expect("observation stream stays open");
+            let message = synctv_proto::client::ServerMessage::decode(&frame[..])
+                .expect("server message decodes");
+            match &message.message {
+                Some(server_message::Message::ResourceObserved(observed)) => {
+                    return observed.observe_id.clone()
+                }
+                Some(server_message::Message::ResourceEvent(event)) => {
+                    return event.observe_id.clone()
+                }
+                Some(server_message::Message::ResourceObserveError(error)) => {
+                    panic!("observe rejected: {:?}", error.error)
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("observation frames on a unidirectional stream");
+    assert_eq!(lane, "e2e-chat");
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let frame = synctv_quic::read_frame(&mut recv)
+                .await
+                .expect("read control frame")
+                .expect("control stream stays open");
+            let message = synctv_proto::client::ServerMessage::decode(&frame[..])
+                .expect("server message decodes");
+            if matches!(
+                message.message,
+                Some(server_message::Message::HeartbeatAck(_))
+            ) {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("heartbeat ack on the control stream");
+
+    let _ = send.shutdown().await;
+    drop(connection);
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    drop(server);
 }

@@ -389,42 +389,6 @@ pub const STREAM_HUB_EVENT_CHANNEL_CAPACITY: usize = 4096;
 pub type BroadcastEventSender = broadcast::Sender<BroadcastEvent>;
 pub type BroadcastEventReceiver = broadcast::Receiver<BroadcastEvent>;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn budgeted_frame_channel_releases_bytes_after_receive() {
-        let (sender, mut receiver) = FrameDataSender::budgeted(4096, 8);
-        let first = FrameData::Video {
-            timestamp: 0,
-            data: Bytes::from_static(b"123456"),
-        };
-        sender
-            .try_send(first)
-            .expect("first frame should fit budget");
-
-        let second = FrameData::Audio {
-            timestamp: 1,
-            data: Bytes::from_static(b"123"),
-        };
-        assert!(matches!(
-            sender.try_send(second),
-            Err(FrameTrySendError::Full(_))
-        ));
-
-        let received = receiver.recv().await.expect("first frame should arrive");
-        assert_eq!(frame_data_bytes(&received), 6);
-
-        sender
-            .try_send(FrameData::Audio {
-                timestamp: 2,
-                data: Bytes::from_static(b"123"),
-            })
-            .expect("released permits should be reusable");
-    }
-}
-
 /// Called when media enters a locally owned publisher transceiver.
 ///
 /// The callback runs before subscriber fan-out, so publisher liveness remains
@@ -655,4 +619,40 @@ pub enum StatisticData {
         sub_type: SubscribeType,
         start_time: DateTime<Local>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn budgeted_frame_channel_releases_bytes_after_receive() {
+        let (sender, mut receiver) = FrameDataSender::budgeted(4096, 8);
+        let first = FrameData::Video {
+            timestamp: 0,
+            data: Bytes::from_static(b"123456"),
+        };
+        sender
+            .try_send(first)
+            .expect("first frame should fit budget");
+
+        let second = FrameData::Audio {
+            timestamp: 1,
+            data: Bytes::from_static(b"123"),
+        };
+        assert!(matches!(
+            sender.try_send(second),
+            Err(FrameTrySendError::Full(_))
+        ));
+
+        let received = receiver.recv().await.expect("first frame should arrive");
+        assert_eq!(frame_data_bytes(&received), 6);
+
+        sender
+            .try_send(FrameData::Audio {
+                timestamp: 2,
+                data: Bytes::from_static(b"123"),
+            })
+            .expect("released permits should be reusable");
+    }
 }

@@ -89,10 +89,14 @@ impl fmt::Display for SsrfTargetError {
 impl Error for SsrfTargetError {}
 
 /// Default extra denied IP ranges (beyond what `http-acl` blocks via `is_global`).
+///
+/// 6to4 (`2002::/16`) is deliberately absent: since http-acl 0.14 the
+/// IPv4-embedded IPv6 ranges are built-in non-global ranges, and adding one
+/// through `add_denied_ip_range` is refused at build time, which would trip
+/// the deny-all fallback.
 const DEFAULT_EXTRA_DENIED_RANGES: &[&str] = &[
     "224.0.0.0/4", // IPv4 multicast
     "ff00::/8",    // IPv6 multicast
-    "2002::/16",   // 6to4 (deprecated, SSRF vector)
 ];
 
 /// Non-global ranges that remain denied when selected private CIDRs are allowlisted.
@@ -116,15 +120,19 @@ const DEFAULT_NON_GLOBAL_DENIED_RANGES: &[&str] = &[
     "203.0.113.0/24",  // documentation
     "240.0.0.0/4",     // reserved
     "255.255.255.255/32",
-    "::/128",        // unspecified
-    "::1/128",       // loopback
-    "::ffff:0:0/96", // IPv4-mapped
-    "64:ff9b::/96",  // IPv4/IPv6 translation
-    "100::/64",      // discard-only
-    "2001::/32",     // Teredo
-    "2001:db8::/32", // documentation
-    "fc00::/7",      // unique local
-    "fe80::/10",     // link-local
+    "::/128",          // unspecified
+    "::1/128",         // loopback
+    "::/96",           // IPv4-compatible (embeds an IPv4 address)
+    "::ffff:0:0/96",   // IPv4-mapped
+    "::ffff:0:0:0/96", // IPv4-translated
+    "64:ff9b::/96",    // IPv4/IPv6 translation (NAT64)
+    "64:ff9b:1::/48",  // local-use translation
+    "2002::/16",       // 6to4 (deprecated, SSRF vector)
+    "100::/64",        // discard-only
+    "2001::/32",       // Teredo
+    "2001:db8::/32",   // documentation
+    "fc00::/7",        // unique local
+    "fe80::/10",       // link-local
 ];
 
 /// Non-global ranges that a hostname allowlist entry still must not unlock.
@@ -811,6 +819,29 @@ mod tests {
         assert!(guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))));
         assert!(!guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
         assert!(!guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))));
+    }
+
+    #[test]
+    fn test_ipv4_embedded_ipv6_blocked() {
+        let guard = SsrfGuard::strict_policy();
+        for ip in [
+            "::7f00:1",           // IPv4-compatible ::/96, 127.0.0.1
+            "::a00:1",            // IPv4-compatible ::/96, 10.0.0.1
+            "::ffff:7f00:1",      // IPv4-mapped, 127.0.0.1
+            "::ffff:0:7f00:1",    // IPv4-translated, 127.0.0.1
+            "64:ff9b::7f00:1",    // NAT64, 127.0.0.1
+            "64:ff9b::a9fe:a9fe", // NAT64, 169.254.169.254
+            "64:ff9b:1::7f00:1",  // local-use translation, 127.0.0.1
+            "2002:7f00:1::",      // 6to4, 127.0.0.1
+            "2002:c0a8:101::1",   // 6to4, 192.168.1.1
+        ] {
+            let addr: IpAddr = ip.parse().expect("valid probe address");
+            assert!(guard.is_ip_blocked(&addr), "{ip} must be blocked");
+        }
+        let global: IpAddr = "2606:4700:4700::1111"
+            .parse()
+            .expect("valid global IPv6 address");
+        assert!(!guard.is_ip_blocked(&global));
     }
 
     #[test]

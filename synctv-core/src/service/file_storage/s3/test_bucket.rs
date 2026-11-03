@@ -16,6 +16,10 @@ impl S3CompatibleFileStorageService {
     pub async fn ensure_test_bucket(config: &S3FileStorageConfig) -> Result<()> {
         validate_s3_bucket_setup_config(config)?;
         let service = Self {
+            read_backend_slot: super::super::file_read_backend_slot(
+                &config.storage_backend,
+                &config.upload_token_secret,
+            ),
             config: config.clone(),
             operator: s3_operator_from_config(config)?,
             repository: None,

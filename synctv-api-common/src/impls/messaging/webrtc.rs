@@ -715,6 +715,71 @@ impl StreamMessageHandler {
         ))
     }
 
+    /// Fail-safe RTC access re-evaluation from live state (member row or
+    /// guest defaults plus current room toggles), run periodically from the
+    /// heartbeat and whenever runtime settings are invalidated
+    /// (`CacheInvalidate`): unlike the event-driven
+    /// [`Self::apply_rtc_access_change`], this also catches revocations that
+    /// emit no room event at all (e.g. runtime default-permission changes)
+    /// and bounds every event-loss window by one heartbeat period.
+    pub(super) async fn revalidate_rtc_access(&self) {
+        let _transition_guard = self.room_capability_transition_lock.lock().await;
+        let voice_chat_active = self.current_connection_voice_joined();
+        let p2p_media_active = !self.active_media_swarms.lock().is_empty();
+        if !voice_chat_active && !p2p_media_active {
+            return;
+        }
+        let settings = match self.room_service.get_room_settings(&self.room_id).await {
+            Ok(settings) => settings,
+            Err(error) => {
+                tracing::warn!(
+                    room_id = %self.room_id,
+                    connection_id = %self.connection_id,
+                    error = %error,
+                    "Failed to load room settings during RTC access revalidation"
+                );
+                return;
+            }
+        };
+        let permissions = if let Some(user_id) = self.principal.user_id() {
+            match self.room_service.get_member(&self.room_id, &user_id).await {
+                Ok(Some(member)) => self
+                    .room_service
+                    .permission_service()
+                    .effective_member_permissions(&member, &settings),
+                Ok(None) => synctv_core::models::RoomPermissionSet::empty(),
+                Err(error) => {
+                    tracing::warn!(
+                        room_id = %self.room_id,
+                        connection_id = %self.connection_id,
+                        error = %error,
+                        "Failed to load room member during RTC access revalidation"
+                    );
+                    synctv_core::models::RoomPermissionSet::empty()
+                }
+            }
+        } else {
+            self.room_service.guest_permissions_for_settings(&settings)
+        };
+        if voice_chat_active
+            && !(settings.voice_chat_enabled.0 && permissions.has(RoomPermission::USE_VOICE_CHAT))
+        {
+            if let Err(error) = self.leave_webrtc_voice_session().await {
+                tracing::warn!(
+                    room_id = %self.room_id,
+                    connection_id = %self.connection_id,
+                    error = %error,
+                    "Failed to leave voice chat during RTC revalidation"
+                );
+            }
+        }
+        if p2p_media_active
+            && !(settings.p2p_media_enabled.0 && permissions.has(RoomPermission::USE_P2P_MEDIA))
+        {
+            self.leave_all_media_swarms().await;
+        }
+    }
+
     pub(super) async fn apply_rtc_access_change(&self, event: &RealtimeEvent) {
         let _transition_guard = self.room_capability_transition_lock.lock().await;
         if let RealtimeEvent::PlaybackStateChanged { state, .. } = event {

@@ -111,6 +111,17 @@ impl Mpeg4AacProcessor {
         let byte_0 = self.bytes_reader.read_u8()?;
         self.mpeg4_aac.object_type = (byte_0 >> 3) & 0x1F;
 
+        // 0 is not a legal MPEG-4 Audio Object Type; reject it before any
+        // derived arithmetic (adts_save computes profile - 1).
+        if self.mpeg4_aac.object_type == 0 {
+            return Err(MpegAacError {
+                value: MpegErrorValue::IntegerRange {
+                    value: u128::from(self.mpeg4_aac.object_type),
+                    target: "audio_object_type (must be >= 1)",
+                },
+            });
+        }
+
         let byte_1 = self.bytes_reader.read_u8()?;
         self.mpeg4_aac.sampling_frequency_index = ((byte_0 & 0x07) << 1) | ((byte_1 >> 7) & 0x01);
         self.mpeg4_aac.channel_configuration = (byte_1 >> 3) & 0x0F;
@@ -142,8 +153,16 @@ impl Mpeg4AacProcessor {
         let profile = self.mpeg4_aac.object_type;
         let sampling_frequency_index = self.mpeg4_aac.sampling_frequency_index;
         let channel_configuration = self.mpeg4_aac.channel_configuration;
+        // Underflow-proof profile mapping: fail closed when no valid sequence
+        // header established a legal Audio Object Type.
+        let adts_profile = profile.checked_sub(1).ok_or_else(|| MpegAacError {
+            value: MpegErrorValue::IntegerRange {
+                value: u128::from(profile),
+                target: "audio_object_type (must be >= 1)",
+            },
+        })?;
         let profile_frequency_channels = {
-            ((profile - 1) << 6)
+            (adts_profile << 6)
                 | ((sampling_frequency_index & 0x0F) << 2)
                 | ((channel_configuration >> 2) & 0x01)
         };
@@ -162,5 +181,60 @@ impl Mpeg4AacProcessor {
             .write(&self.bytes_reader.extract_remaining_bytes()[..])?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Mpeg4AacProcessor;
+    use bytes::BytesMut;
+
+    #[test]
+    fn rejects_zero_audio_object_type_in_sequence_header() {
+        // object_type = (byte_0 >> 3) & 0x1F; 0x02 puts AOT=0, freq index low
+        // bits come from byte_1. This crafted ASC must fail closed.
+        let mut processor = Mpeg4AacProcessor::new();
+        processor
+            .extend_data(&BytesMut::from(&[0x02, 0x10][..]))
+            .unwrap();
+        let error = processor.audio_specific_config_load().err().unwrap();
+        assert!(
+            error.value.to_string().contains("audio_object_type"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn adts_save_fails_closed_without_sequence_header() {
+        // Default state (object_type = 0) previously underflowed profile - 1:
+        // panicking in debug builds and emitting an invalid profile byte in
+        // release builds. It must now return an error.
+        let mut processor = Mpeg4AacProcessor::new();
+        processor
+            .extend_data(&BytesMut::from(&[0x12, 0x34][..]))
+            .unwrap();
+        let error = processor.adts_save().err().unwrap();
+        assert!(
+            error.value.to_string().contains("audio_object_type"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn valid_sequence_header_then_adts_save_writes_profile() {
+        // 0x12 0x10: AOT=2 (AAC LC), freq index 4 (44100), channels 2.
+        let mut processor = Mpeg4AacProcessor::new();
+        processor
+            .extend_data(&BytesMut::from(&[0x12, 0x10][..]))
+            .unwrap();
+        processor.audio_specific_config_load().unwrap();
+        processor
+            .extend_data(&BytesMut::from(&[0x00, 0x01][..]))
+            .unwrap();
+        processor.adts_save().unwrap();
+        let out = processor.bytes_writer.extract_current_bytes();
+        assert_eq!(out[0], 0xFF);
+        // profile bits: (2 - 1) << 6 | (4 << 2) | (2 >> 2 & 1) = 0x50
+        assert_eq!(out[2], 0x50);
     }
 }

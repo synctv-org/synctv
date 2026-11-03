@@ -387,6 +387,7 @@ impl AdminRuntime for ManagementAdminRuntime {
     async fn unban_user(
         &self,
         command: UnbanUserCommand,
+        caller_role: UserRole,
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<admin_proto::AdminUser, RuntimeError> {
@@ -396,6 +397,7 @@ impl AdminRuntime for ManagementAdminRuntime {
                     user_id: command.user_id,
                 },
                 admin_user_id,
+                caller_role,
                 &api_request_context(ctx),
             )
             .await
@@ -635,6 +637,7 @@ impl AdminRuntime for ManagementAdminRuntime {
     async fn update_user_username(
         &self,
         command: UpdateUserUsernameCommand,
+        caller_role: UserRole,
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<admin_proto::AdminUser, RuntimeError> {
@@ -645,6 +648,7 @@ impl AdminRuntime for ManagementAdminRuntime {
                     new_username: command.new_username,
                 },
                 admin_user_id,
+                caller_role,
                 &api_request_context(ctx),
             )
             .await

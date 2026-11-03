@@ -1803,6 +1803,36 @@ async fn test_native_passkey_association_documents_are_served_from_config() -> T
 
 #[tokio::test]
 #[ignore = "Requires Docker-backed PostgreSQL"]
+async fn test_realtime_session_routes_enforce_signaling_body_limit() -> TestResult {
+    // Regression (uplink retention): the realtime-session routes must carry
+    // the 64 KiB signaling body limit (the REST counterpart of the WS/WT
+    // frame caps). The limit rejects oversized bodies before auth or the
+    // handler runs, so any valid AppState asserts it.
+    let oversized = vec![b'x'; 65 * 1024];
+    for uri in [
+        "/api/rooms/room_123/realtime/sessions",
+        "/api/rooms/room_123/realtime/sessions/sess_1/messages",
+    ] {
+        let app = register_all_routes().with_state(test_app_state());
+        let request = test_request(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(oversized.clone())),
+        )?;
+        let response = test_response(app.oneshot(request).await)?;
+        assert_eq!(
+            response.status(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "realtime-session uplink over 64 KiB must be rejected before handling: {uri}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_playback_navigation_routes_are_reachable_via_project_router() -> TestResult {
     synctv_core::install_process_crypto_provider();
     for (method, uri, body) in [
@@ -3838,5 +3868,116 @@ async fn test_websocket_routes_fail_closed_when_dependencies_missing() -> TestRe
         StatusCode::SERVICE_UNAVAILABLE,
         "websocket route must fail closed before auth/query validation when runtime dependencies are unavailable"
     );
+    Ok(())
+}
+
+/// Security-audit regression (WT room oracle): the WebTransport CONNECT
+/// admission check must not disclose room state to unauthenticated peers.
+/// Room existence and banned/closed state are validated only after the
+/// credential inside the session, so garbage credentials get an
+/// indistinguishable admission answer for open, closed, unknown, and
+/// malformed rooms alike.
+#[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
+async fn test_wt_accept_does_not_disclose_room_state_before_authentication() -> TestResult {
+    use synctv_quic::WebTransportHandler as _;
+
+    let (_container, pool) = synctv_core_testing::create_test_pool().await;
+    let state = test_app_state_with_real_chat_runtime(pool.clone()).await;
+    let now = synctv_core::SystemClock.now();
+    let owner = core_ok(
+        synctv_core::repository::UserRepository::new(pool)
+            .create(&synctv_core::models::User {
+                id: synctv_core::models::UserId::new(),
+                username: "wt_accept_regress_owner".to_string(),
+                role: synctv_core::models::UserRole::User,
+                avatar_file_reference_id: None,
+                status: synctv_core::models::UserStatus::Active,
+                signup_method: synctv_core::models::SignupMethod::Email,
+                created_at: now,
+                updated_at: now,
+                version: 0,
+                deleted_at: None,
+                is_banned: false,
+                banned_at: None,
+                banned_by: None,
+                banned_reason: None,
+            })
+            .await,
+    )?;
+    let open_room = core_ok(
+        state
+            .room_service
+            .create_room(
+                "WT Accept Regress Open".to_string(),
+                String::new(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?;
+    let closed_room = core_ok(
+        state
+            .room_service
+            .create_room(
+                "WT Accept Regress Closed".to_string(),
+                String::new(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+    )?;
+    core_ok(
+        state
+            .room_service
+            .update_room_status(&closed_room.id, synctv_core::models::RoomStatus::Closed)
+            .await,
+    )?;
+    let encode = |id: synctv_core::models::RoomId| {
+        state
+            .shared_api_runtime
+            .public_id_codec
+            .encode_room_id(id)
+            .map_err(test_error)
+    };
+    let open_id = encode(open_room.id)?;
+    let closed_id = encode(closed_room.id)?;
+    let handler = super::webtransport::RoomWebTransportHandler { state };
+
+    let connect = |path: String, auth: Option<&str>| {
+        let mut builder = Request::builder()
+            .method("CONNECT")
+            .uri(format!("https://regress.test/wt/rooms/{path}"));
+        if let Some(value) = auth {
+            builder = builder.header(header::AUTHORIZATION, value);
+        }
+        builder.body(()).map_err(|e| test_error(e.to_string()))
+    };
+    let garbage = Some("Bearer garbage-value");
+
+    // Missing auth material is the only pre-auth rejection besides path
+    // shape.
+    let noauth = handler.accept(&connect(open_id.clone(), None)?).await;
+    assert_eq!(noauth.err(), Some(StatusCode::UNAUTHORIZED));
+    let bad_path = handler.accept(&connect("a/b".to_string(), garbage)?).await;
+    assert_eq!(bad_path.err(), Some(StatusCode::NOT_FOUND));
+
+    // Garbage credentials: admission must not distinguish open, closed,
+    // unknown, or malformed rooms — each proceeds to the session, which
+    // validates the credential first and rejects it there.
+    for target in [
+        open_id.clone(),
+        closed_id,
+        "room_999999999".to_string(),
+        "not-a-room-id!!".to_string(),
+    ] {
+        let accepted = handler.accept(&connect(target, garbage)?).await;
+        assert!(
+            accepted.is_ok(),
+            "accept() must not disclose room state before authentication: {accepted:?}"
+        );
+    }
     Ok(())
 }

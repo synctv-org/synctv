@@ -25,7 +25,9 @@ mod public;
 mod room;
 mod streaming;
 mod user;
-use streaming::{GrpcMessageSender, WATCH_STREAM_BUFFER_SIZE};
+use streaming::{
+    GrpcMessageSender, PUMP_DRAIN_GRACE, PUMP_WRITE_TIMEOUT, WATCH_STREAM_BUFFER_SIZE,
+};
 
 pub(super) type GrpcStatusStream<T> =
     std::pin::Pin<Box<dyn tokio_stream::Stream<Item = Result<T, Status>> + Send + 'static>>;
@@ -364,7 +366,14 @@ impl ClientServiceImpl {
 
         let (outgoing_tx, outgoing_rx) =
             tokio::sync::mpsc::channel::<ServerMessage>(WATCH_STREAM_BUFFER_SIZE);
-        let sender = Arc::new(GrpcMessageSender::new(outgoing_tx));
+        // The session faces an intermediate channel; only the pump below
+        // holds an outgoing sender. A sender clone held by any other task
+        // (the old response-close watcher) keeps ReceiverStream - and
+        // therefore hyper's response body - open forever, making
+        // server-side completion of this server-streaming RPC impossible.
+        let (session_tx, session_rx) =
+            tokio::sync::mpsc::channel::<ServerMessage>(WATCH_STREAM_BUFFER_SIZE);
+        let sender = Arc::new(GrpcMessageSender::new(session_tx));
         let session = ResourceWatchSession::new(ResourceWatchSessionConfig {
             room_id,
             principal,
@@ -396,10 +405,51 @@ impl ClientServiceImpl {
             }
         });
 
-        let response_close_sender = sender.sender.clone();
+        // Bounded response pump: forwards session output onto the response
+        // stream with a per-write timeout, arms a drain deadline at
+        // cancellation, and reports its exit via a watch channel so no task
+        // holds an outgoing sender.
+        let pump_outgoing = outgoing_tx.clone();
+        let pump_token = cancel_token.clone();
+        let (pump_alive_tx, pump_alive_rx) = tokio::sync::watch::channel(());
+        tokio::spawn(async move {
+            let mut session_rx = session_rx;
+            let mut drain_deadline: Option<tokio::time::Instant> = None;
+            loop {
+                let message = tokio::select! {
+                    () = pump_token.cancelled(), if drain_deadline.is_none() => {
+                        drain_deadline = Some(tokio::time::Instant::now() + PUMP_DRAIN_GRACE);
+                        continue;
+                    }
+                    () = async {
+                        match drain_deadline {
+                            Some(deadline) => tokio::time::sleep_until(deadline).await,
+                            None => std::future::pending::<()>().await,
+                        }
+                    } => break, // grace expired: drop the sender so the stream can end
+                    message = session_rx.recv() => match message {
+                        Some(message) => message,
+                        None => break, // session ended
+                    },
+                };
+                match tokio::time::timeout(PUMP_WRITE_TIMEOUT, pump_outgoing.send(message)).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(_)) | Err(_) => break, // receiver gone or write timed out
+                }
+            }
+            let _ = pump_alive_tx.send(());
+        });
+
+        // Response-close watcher: pump exit covers both client disconnect
+        // (write fails) and session end (intermediate channel closes);
+        // cancel the session so its lanes are released promptly.
         let response_close_token = cancel_token.clone();
         tokio::spawn(async move {
-            response_close_sender.closed().await;
+            let mut pump_alive_rx = pump_alive_rx;
+            tokio::select! {
+                _ = pump_alive_rx.changed() => {},
+                () = response_close_token.cancelled() => {},
+            }
             response_close_token.cancel();
         });
 

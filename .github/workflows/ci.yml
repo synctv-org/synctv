@@ -34,12 +34,12 @@ jobs:
     name: Format Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-09-27
+          toolchain: nightly-2026-10-28
           components: rustfmt
 
       - name: Check formatting
@@ -50,12 +50,12 @@ jobs:
     name: Clippy Lints
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-09-27
+          toolchain: nightly-2026-10-28
           components: clippy
 
       - name: Install build dependencies
@@ -77,12 +77,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-09-27
+          toolchain: nightly-2026-10-28
 
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler nasm libclang-dev lld
@@ -101,12 +101,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-09-27
+          toolchain: nightly-2026-10-28
 
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler nasm libclang-dev lld
@@ -123,12 +123,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-09-27
+          toolchain: nightly-2026-10-28
 
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler nasm libclang-dev lld
@@ -154,12 +154,12 @@ jobs:
     env:
       SYNCTV_TEST_DOCKER_STARTUP_TIMEOUT_SECS: 600
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-09-27
+          toolchain: nightly-2026-10-28
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
@@ -206,12 +206,12 @@ jobs:
     env:
       SYNCTV_TEST_DOCKER_STARTUP_TIMEOUT_SECS: 600
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-09-27
+          toolchain: nightly-2026-10-28
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
@@ -235,12 +235,12 @@ jobs:
     name: Security Audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-09-27
+          toolchain: nightly-2026-10-28
 
       - name: Install cargo-audit
         run: make install-cargo-audit
@@ -258,12 +258,12 @@ jobs:
     name: Dependency Policy Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-09-27
+          toolchain: nightly-2026-10-28
 
       - name: Install cargo-deny
         run: make install-cargo-deny
@@ -287,17 +287,18 @@ jobs:
         run: make deny-sources
         continue-on-error: false # Fail on untrusted sources
 
-  # Check for unused dependencies
-  udeps:
+  # Fail on unused dependencies via the denied cargo::unused_dependencies
+  # lint ([workspace.lints.cargo]) - enforced on every cargo invocation.
+  unused-dependencies:
     name: Unused Dependencies
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Install Rust nightly
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-09-27
+          toolchain: nightly-2026-10-28
 
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler nasm libclang-dev lld
@@ -308,9 +309,5 @@ jobs:
           cache-on-failure: true
           cache-workspace-crates: true
 
-      - name: Install cargo-udeps
-        run: make install-cargo-udeps
-
       - name: Check for unused dependencies
-        run: make udeps
-        continue-on-error: true # Don't fail the build, just report
+        run: make check-all-targets

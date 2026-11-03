@@ -209,7 +209,9 @@ fn test_websocket_content_filter_reuses_shared_filter() -> TestResult {
 }
 
 #[test]
-fn test_resource_event_is_critical() {
+fn test_resource_event_routes_to_its_observation_lane() {
+    use synctv_api_common::impls::messaging::{classify_message_lane, MessageLane};
+
     let message = ServerMessage {
         message: Some(
             synctv_proto::client::server_message::Message::ResourceEvent(
@@ -224,12 +226,20 @@ fn test_resource_event_is_critical() {
         ),
     };
 
-    assert!(is_critical_message(&message));
-    assert_eq!(message_type_name(&message), "ResourceEvent");
+    assert_eq!(
+        classify_message_lane(&message),
+        MessageLane::Observation {
+            observe_id: "playlist_items",
+            interactive: false,
+        },
+        "resource events are isolated per observation instead of sharing a critical queue"
+    );
 }
 
 #[test]
-fn test_realtime_termination_is_critical() {
+fn test_realtime_termination_is_control_traffic() {
+    use synctv_api_common::impls::messaging::{classify_message_lane, MessageLane};
+
     let message = ServerMessage {
         message: Some(synctv_proto::client::server_message::Message::Termination(
             synctv_proto::client::RealtimeTermination {
@@ -239,8 +249,7 @@ fn test_realtime_termination_is_critical() {
         )),
     };
 
-    assert!(is_critical_message(&message));
-    assert_eq!(message_type_name(&message), "Termination");
+    assert_eq!(classify_message_lane(&message), MessageLane::Control);
 }
 
 #[test]
@@ -311,7 +320,9 @@ fn test_websocket_json_ignores_fields_from_newer_clients() -> TestResult {
 }
 
 #[test]
-fn test_notification_requires_state_resync() {
+fn test_notification_is_never_evicted_control_traffic() {
+    use synctv_api_common::impls::messaging::{classify_message_lane, MessageLane};
+
     let message = ServerMessage {
         message: Some(synctv_proto::client::server_message::Message::Notification(
             synctv_proto::client::UserNotification {
@@ -326,8 +337,9 @@ fn test_notification_requires_state_resync() {
         )),
     };
 
-    assert!(requires_state_resync(&message));
-    assert_eq!(message_type_name(&message), "Notification");
+    // Stateful notifications ride the control lane, whose overflow
+    // disconnects the client instead of silently dropping (state resync).
+    assert_eq!(classify_message_lane(&message), MessageLane::Control);
 }
 
 #[test]
@@ -1349,11 +1361,11 @@ async fn test_reservation_stays_full_until_connection_pre_join_succeeds() -> Tes
     manager
         .register_actor(connection_id.clone(), actor.clone())
         .await
-        .map_err(|error| test_error(error.clone()))?;
+        .map_err(test_error)?;
     manager
         .join_room(&connection_id, room_id)
         .await
-        .map_err(|error| test_error(error.clone()))?;
+        .map_err(test_error)?;
 
     assert!(
         manager.reserve_actor_slot(&actor).is_err(),
@@ -1389,67 +1401,100 @@ async fn test_reservation_stays_full_until_connection_pre_join_succeeds() -> Tes
 }
 
 #[test]
-fn test_state_resync_messages_disconnect_slow_client_immediately() -> TestResult {
-    use synctv_api_common::impls::messaging::MessageSender;
-    use synctv_proto::client::{server_message::Message, ServerMessage, UserNotification};
+fn test_slow_client_escalation_uses_default_threshold() -> TestResult {
+    use synctv_api_common::impls::messaging::{FairQueueConfig, FairSessionSender, MessageSender};
+    use synctv_proto::client::{
+        server_message::Message, ChatMessageEvent, ResourceEvent, ServerMessage,
+    };
 
-    let (critical_tx, _critical_rx) = tokio::sync::mpsc::channel(1);
-    let (tx, _rx) = tokio::sync::mpsc::channel(1);
-    let sender =
-        WebSocketMessageSender::new(tx.clone(), critical_tx, RealtimeTransportFormat::Protobuf);
+    let mut config = FairQueueConfig::default();
+    config.bulk_lane_messages = 1;
+    let sender = FairSessionSender::unspawned(config);
 
-    tx.try_send(axum::extract::ws::Message::Text("occupied".into()))
-        .map_err(|error| test_error(error.to_string()))?;
-
+    // Ten consecutive evictions stay tolerated while the counter climbs;
+    // the eleventh send trips the historical WebSocket threshold (10) and
+    // fails the session.
+    for round in 0..10 {
+        sender
+            .send(ServerMessage {
+                message: Some(Message::ResourceEvent(ResourceEvent {
+                    observe_id: "chat_events".to_string(),
+                    payload: Some(synctv_proto::client::resource_event::Payload::ChatEvent(
+                        ChatMessageEvent::default(),
+                    )),
+                    event_cursor: None,
+                })),
+            })
+            .map_err(|error| test_error(format!("round {round}: {error}")))?;
+    }
     let result = sender.send(ServerMessage {
-        message: Some(Message::Notification(UserNotification {
-            notification_id: "ntf_test".to_string(),
-            notification_type: synctv_proto::client::NotificationType::SystemAnnouncement as i32,
-            title: "Title".to_string(),
-            content: "Content".to_string(),
-            data: Some(synctv_proto::client::NotificationData::default()),
-            timestamp: 1,
+        message: Some(Message::ResourceEvent(ResourceEvent {
+            observe_id: "chat_events".to_string(),
+            payload: Some(synctv_proto::client::resource_event::Payload::ChatEvent(
+                ChatMessageEvent::default(),
+            )),
+            event_cursor: None,
         })),
     });
-
-    let err = match result {
-        Ok(()) => return Err(test_error("expected slow client disconnect error")),
-        Err(error) => error,
-    };
-    assert!(err.contains("stateful message"));
-    assert!(err.contains("Notification"));
+    assert!(
+        result.is_err(),
+        "the tenth consecutive eviction must disconnect the slow client"
+    );
+    assert!(!sender.is_alive());
     Ok(())
 }
 
 #[test]
-fn test_critical_messages_bypass_full_normal_queue() -> TestResult {
-    use synctv_api_common::impls::messaging::MessageSender;
-    use synctv_proto::client::{server_message::Message, ErrorMessage, ServerMessage};
+fn test_control_messages_bypass_saturated_bulk_lane() -> TestResult {
+    use synctv_api_common::impls::messaging::{FairQueueConfig, FairSessionSender, MessageSender};
+    use synctv_proto::client::{
+        server_message::Message, ChatMessageEvent, ErrorMessage, ResourceEvent, ServerMessage,
+    };
 
-    let (critical_tx, mut critical_rx) = tokio::sync::mpsc::channel(1);
-    let (tx, _rx) = tokio::sync::mpsc::channel(1);
-    let sender =
-        WebSocketMessageSender::new(tx.clone(), critical_tx, RealtimeTransportFormat::Protobuf);
+    let mut config = FairQueueConfig::default();
+    config.bulk_lane_messages = 1;
+    let sender = FairSessionSender::unspawned(config);
 
-    tx.try_send(axum::extract::ws::Message::Text("occupied".into()))
-        .map_err(|error| test_error(error.to_string()))?;
+    // Saturate the chat lane until it evicts; the control message must still
+    // enqueue and be delivered first.
+    sender
+        .send(ServerMessage {
+            message: Some(Message::ResourceEvent(ResourceEvent {
+                observe_id: "chat_events".to_string(),
+                payload: Some(synctv_proto::client::resource_event::Payload::ChatEvent(
+                    ChatMessageEvent::default(),
+                )),
+                event_cursor: None,
+            })),
+        })
+        .map_err(test_error)?;
+    sender
+        .send(ServerMessage {
+            message: Some(Message::ResourceEvent(ResourceEvent {
+                observe_id: "chat_events".to_string(),
+                payload: Some(synctv_proto::client::resource_event::Payload::ChatEvent(
+                    ChatMessageEvent::default(),
+                )),
+                event_cursor: None,
+            })),
+        })
+        .map_err(test_error)?;
 
-    let result = sender.send(ServerMessage {
-        message: Some(Message::Error(ErrorMessage {
-            message: "critical".to_string(),
-            code: synctv_api_common::impls::error_codes::FORBIDDEN,
-            detail: String::new(),
-            client_operation_id: String::new(),
-        })),
-    });
+    sender
+        .send(ServerMessage {
+            message: Some(Message::Error(ErrorMessage {
+                message: "critical".to_string(),
+                code: synctv_api_common::impls::error_codes::FORBIDDEN,
+                detail: String::new(),
+                client_operation_id: String::new(),
+            })),
+        })
+        .map_err(test_error)?;
 
+    let first = sender.try_pop().expect("queued messages");
     assert!(
-        result.is_ok(),
-        "critical websocket messages must still enqueue when the normal queue is full"
-    );
-    assert!(
-        critical_rx.try_recv().is_ok(),
-        "critical message should be queued on the dedicated critical channel"
+        matches!(&first.message, Some(Message::Error(_))),
+        "control traffic must be delivered ahead of a saturated bulk lane"
     );
     Ok(())
 }
@@ -1504,25 +1549,27 @@ async fn test_forward_websocket_messages_disconnects_connection_on_sink_failure(
     manager
         .register_actor(connection_id.clone(), actor)
         .await
-        .map_err(|error| test_error(error.clone()))?;
+        .map_err(test_error)?;
 
     let mut disconnect_rx = manager.subscribe_disconnect();
     let is_alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
-    let (critical_tx, critical_rx) = tokio::sync::mpsc::channel(1);
-    let (tx, rx) = tokio::sync::mpsc::channel(1);
-    tx.send(axum::extract::ws::Message::Text("payload".into()))
+    let (fair_tx, fair_rx) = tokio::sync::mpsc::channel::<ServerMessage>(1);
+    let (_control_tx, control_rx) = tokio::sync::mpsc::channel::<axum::extract::ws::Message>(1);
+    fair_tx
+        .send(ServerMessage::default())
         .await
         .map_err(|error| test_error(error.to_string()))?;
-    drop(tx);
-    drop(critical_tx);
+    drop(fair_tx);
 
     forward_websocket_messages(
-        critical_rx,
-        rx,
+        fair_rx,
+        control_rx,
         FailingSink,
+        RealtimeTransportFormat::Protobuf,
         is_alive.clone(),
         manager,
         connection_id.clone(),
+        tokio_util::sync::CancellationToken::new(),
     )
     .await;
 
@@ -1598,134 +1645,41 @@ async fn test_forward_websocket_messages_prioritizes_critical_queue() -> TestRes
 
     let manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
     let is_alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
-    let (critical_tx, critical_rx) = tokio::sync::mpsc::channel(2);
-    let (tx, rx) = tokio::sync::mpsc::channel(2);
+    let (fair_tx, fair_rx) = tokio::sync::mpsc::channel::<ServerMessage>(2);
+    let (control_tx, control_rx) = tokio::sync::mpsc::channel::<axum::extract::ws::Message>(2);
 
-    tx.send(axum::extract::ws::Message::Text("normal".into()))
+    fair_tx
+        .send(ServerMessage::default())
         .await
         .map_err(|error| test_error(error.to_string()))?;
-    critical_tx
-        .send(axum::extract::ws::Message::Text("critical".into()))
+    control_tx
+        .send(axum::extract::ws::Message::Text("control".into()))
         .await
         .map_err(|error| test_error(error.to_string()))?;
-    drop(tx);
-    drop(critical_tx);
+    drop(fair_tx);
+    drop(control_tx);
 
     let mut sink = RecordingSink::default();
     forward_websocket_messages(
-        critical_rx,
-        rx,
+        fair_rx,
+        control_rx,
         &mut sink,
+        RealtimeTransportFormat::Protobuf,
         is_alive,
         manager,
         "conn-priority".to_string(),
+        tokio_util::sync::CancellationToken::new(),
     )
     .await;
 
     assert_eq!(
         sink.sent,
-        vec!["critical".to_string(), "normal".to_string()],
-        "critical websocket queue must be drained before best-effort backlog"
+        vec!["control".to_string(), "Binary(b\"\")".to_string()],
+        "transport control frames must be drained before fair-queue traffic"
     );
     Ok(())
 }
-
-#[tokio::test]
-async fn test_forward_websocket_messages_prevents_normal_queue_starvation() -> TestResult {
-    use axum::Error;
-    use futures::task::{Context, Poll};
-    use std::pin::Pin;
-
-    #[derive(Default)]
-    struct RecordingSink {
-        sent: Vec<String>,
-    }
-
-    impl futures::Sink<axum::extract::ws::Message> for RecordingSink {
-        type Error = Error;
-
-        fn poll_ready(
-            self: Pin<&mut Self>,
-            _cx: &mut Context<'_>,
-        ) -> Poll<Result<(), Self::Error>> {
-            Poll::Ready(Ok(()))
-        }
-
-        fn start_send(
-            mut self: Pin<&mut Self>,
-            item: axum::extract::ws::Message,
-        ) -> Result<(), Self::Error> {
-            let label = match item {
-                axum::extract::ws::Message::Text(text) => text.to_string(),
-                other => format!("{other:?}"),
-            };
-            self.sent.push(label);
-            Ok(())
-        }
-
-        fn poll_flush(
-            self: Pin<&mut Self>,
-            _cx: &mut Context<'_>,
-        ) -> Poll<Result<(), Self::Error>> {
-            Poll::Ready(Ok(()))
-        }
-
-        fn poll_close(
-            self: Pin<&mut Self>,
-            _cx: &mut Context<'_>,
-        ) -> Poll<Result<(), Self::Error>> {
-            Poll::Ready(Ok(()))
-        }
-    }
-
-    let manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
-    let is_alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
-    let (critical_tx, critical_rx) = tokio::sync::mpsc::channel(8);
-    let (tx, rx) = tokio::sync::mpsc::channel(8);
-
-    for idx in 0..3 {
-        critical_tx
-            .send(axum::extract::ws::Message::Text(
-                format!("critical-{idx}").into(),
-            ))
-            .await
-            .map_err(|error| test_error(error.to_string()))?;
-    }
-    tx.send(axum::extract::ws::Message::Text("normal".into()))
-        .await
-        .map_err(|error| test_error(error.to_string()))?;
-    for idx in 3..6 {
-        critical_tx
-            .send(axum::extract::ws::Message::Text(
-                format!("critical-{idx}").into(),
-            ))
-            .await
-            .map_err(|error| test_error(error.to_string()))?;
-    }
-    drop(tx);
-    drop(critical_tx);
-
-    let mut sink = RecordingSink::default();
-    forward_websocket_messages(
-        critical_rx,
-        rx,
-        &mut sink,
-        is_alive,
-        manager,
-        "conn-fairness".to_string(),
-    )
-    .await;
-
-    let normal_index = sink
-        .sent
-        .iter()
-        .position(|message| message == "normal")
-        .ok_or_else(|| test_error("normal queue message must be forwarded"))?;
-
-    assert!(
-        normal_index < 4,
-        "normal queue should not starve behind sustained critical traffic: {:?}",
-        sink.sent
-    );
-    Ok(())
-}
+// Cross-observation fairness (bulk lanes not starving behind each other) is
+// covered by fair_session_sender::tests::bulk_lanes_round_robin_and_fifo_within_lane
+// and the interactive-weight tests; the transport forwarder no longer owns
+// scheduling.

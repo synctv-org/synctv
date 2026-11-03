@@ -38,6 +38,12 @@ use synctv_proto::client::{OnlineEventKind, ResourceDeliveryMode, ServerMessage}
 const RESOURCE_EVALUATION_REUSE_WINDOW: Duration = Duration::from_secs(5);
 const MEDIA_RESOURCE_REFRESH_DEDUP_WINDOW: Duration = Duration::from_secs(5);
 pub(super) const MAX_RESOURCE_OBSERVATIONS_PER_CONNECTION: usize = 64;
+/// Shared outbound message budget: no evaluation may hand a transport a
+/// single server message larger than this. Aligned with the WebTransport
+/// producer-side frame cap (`synctv-quic` MAX_OUTBOUND_FRAME_BYTES = 1 MiB)
+/// so WS, WT, SSE and gRPC degrade identically instead of the WT transport
+/// failing the session on an oversized frame.
+pub const MAX_SERVER_MESSAGE_BYTES: usize = 1024 * 1024;
 const CHAT_EVENT_REPLAY_BATCH_LIMIT: i32 = 500;
 const CHAT_EVENT_REPLAY_BATCH_LIMIT_USIZE: usize = 500;
 const ROOM_RESOURCE_EVENT_REPLAY_BATCH_LIMIT: i32 = 500;
@@ -115,6 +121,11 @@ struct ResourceObservation {
     resource: ObservedResource,
     expires_at: Option<i64>,
     last_sent_event_sequence: i64,
+    /// The original observe request, retained so permission revalidation
+    /// (permission/role/settings changes) can re-run the exact admission
+    /// gate the observation passed at ObserveResource time. Shared with the
+    /// room-hub subscription so each observation retains exactly one copy.
+    request: std::sync::Arc<synctv_proto::client::ObserveResource>,
 }
 
 #[derive(Debug, Clone)]
@@ -2490,6 +2501,7 @@ impl ResourceObserver {
             resource,
             expires_at: None,
             last_sent_event_sequence: 0,
+            request: std::sync::Arc::new(request.clone()),
         })
     }
 
@@ -2925,6 +2937,41 @@ impl ResourceObserver {
             .unregister_observation(&self.connection_id, observe_id)
             .await;
         Ok(())
+    }
+
+    /// Snapshot of the original observe requests backing this connection's
+    /// established observations, for permission revalidation.
+    pub(super) async fn observation_requests(
+        self: &Arc<Self>,
+    ) -> Vec<synctv_proto::client::ObserveResource> {
+        let state = self.state.lock().await;
+        state
+            .observations
+            .values()
+            .map(|observation| (*observation.request).clone())
+            .collect()
+    }
+
+    /// Revokes an established observation after a permission revalidation
+    /// failure: stops the subscription locally and in the room hub, and tells
+    /// the client why (the same `ResourceObserveError` shape an observe
+    /// request would have received).
+    pub(super) async fn revoke_observation(self: &Arc<Self>, observe_id: &str, error: String) {
+        self.remove_local_observation(observe_id).await;
+        self.room_hub
+            .unregister_observation(&self.connection_id, observe_id)
+            .await;
+        let send_result = self.send_server_message(Self::resource_observe_error_message(
+            observe_id.to_string(),
+            crate::impls::ApiError::Authorization(error),
+        ));
+        if let Err(send_error) = send_result {
+            tracing::warn!(
+                observe_id = %observe_id,
+                error = %send_error,
+                "Failed to deliver observation revocation notice"
+            );
+        }
     }
 
     pub(super) async fn next_expired_resource_refresh_deadline(
@@ -3410,10 +3457,35 @@ impl ResourceObserver {
             ObservedResource::PlaylistItems { request } => {
                 let service = Arc::clone(&self.playlist_items_snapshot_service);
                 let actor = self.resource_actor().await?;
-                let snapshot = service
+                let mut snapshot = service
                     .get_playlist_items_snapshot(&actor, request)
                     .await
                     .map_err(|error| error.to_string())?;
+                // Shrink the page until its encoded form fits the shared
+                // outbound budget: drop trailing items, keeping the counts
+                // consistent, so no transport is handed a snapshot it
+                // cannot deliver in one message.
+                while snapshot.encode_to_vec().len() > MAX_SERVER_MESSAGE_BYTES {
+                    let dropped = if snapshot.media.pop().is_some() {
+                        snapshot.file_count = snapshot.file_count.saturating_sub(1);
+                        true
+                    } else if snapshot.playlists.pop().is_some() {
+                        snapshot.playlist_count = snapshot.playlist_count.saturating_sub(1);
+                        true
+                    } else {
+                        snapshot.dynamic_items.pop().is_some()
+                    };
+                    snapshot.total = snapshot.total.map(|total| total.saturating_sub(1));
+                    if !dropped {
+                        // Even the fixed fields alone exceed the budget
+                        // (pathological): refuse the snapshot rather than
+                        // hand any transport an undeliverable message.
+                        return Err(format!(
+                            "playlist items snapshot exceeds the server message budget ({} bytes); fetch this page via paged REST",
+                            snapshot.encode_to_vec().len()
+                        ));
+                    }
+                }
                 let payload = match delivery_mode {
                     ResourceDeliveryMode::NotifyOnly => {
                         Payload::ChangedOnly(synctv_proto::client::ResourceEventOnly {})
@@ -3768,6 +3840,7 @@ mod tests {
             },
             expires_at: None,
             last_sent_event_sequence: 0,
+            request: std::sync::Arc::new(synctv_proto::client::ObserveResource::default()),
         }
     }
 
@@ -3779,6 +3852,7 @@ mod tests {
             resource: ObservedResource::PlaybackState,
             expires_at: None,
             last_sent_event_sequence: 0,
+            request: std::sync::Arc::new(synctv_proto::client::ObserveResource::default()),
         }
     }
 
@@ -3792,6 +3866,7 @@ mod tests {
             },
             expires_at: None,
             last_sent_event_sequence: 0,
+            request: std::sync::Arc::new(synctv_proto::client::ObserveResource::default()),
         }
     }
 

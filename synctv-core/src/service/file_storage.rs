@@ -51,7 +51,12 @@ const FILE_UPLOAD_TOKEN_VERSION: &str = "v1";
 const FILE_REUSE_TOKEN_VERSION: &str = "v1";
 const FILE_REUSE_TOKEN_KIND: &str = "synctv-file-reuse-grant";
 pub const FILE_UPLOAD_TOKEN_HEADER: &str = "x-synctv-file-upload-token";
-const FILE_OBJECT_READ_TOKEN_VERSION: &str = "v1";
+// v2 adds expires_at; v1 tokens carried no expiry and are rejected.
+const FILE_OBJECT_READ_TOKEN_VERSION: &str = "v2";
+/// Read tokens are re-minted on every authorized view, so current members
+/// always hold fresh URLs; this TTL bounds how long a captured URL keeps
+/// working after the holder loses access (kick, ban, leave, room lockdown).
+pub(super) const FILE_OBJECT_READ_TOKEN_TTL_SECONDS: i64 = 3600;
 pub(super) const MAX_DATABASE_FILE_UPLOAD_PART_SIZE_BYTES: usize = 64 * 1024 * 1024;
 pub(super) const DEFAULT_RESUMABLE_UPLOAD_PART_SIZE_BYTES: i64 = 8 * 1024 * 1024;
 pub(super) const FILE_UPLOAD_CHECKSUM_ALGORITHM_SHA256: &str = "sha256";
@@ -95,8 +100,9 @@ pub(super) struct FileReuseTokenPayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct FileObjectReadTokenPayload {
-    pub(super) storage_backend: String,
+    pub(super) backend_slot: String,
     pub(super) object_key: String,
+    pub(super) expires_at: i64,
 }
 
 // File storage contract:
@@ -546,6 +552,14 @@ const FILE_REUSE_GRANTS_UNSUPPORTED: &str = "file reuse grants are not supported
 pub trait FileStorageService: Send + Sync {
     fn backend_name(&self) -> &str;
 
+    /// Opaque handle carried by this backend's read tokens; `None` for
+    /// storages that never mint read tokens. The router matches it to
+    /// dispatch downloads without exposing backend names in the payload.
+    /// Implementations cache the value at construction.
+    fn read_token_backend_slot(&self) -> Option<&str> {
+        None
+    }
+
     fn repository(&self) -> Option<Arc<FileStorageRepository>> {
         None
     }
@@ -779,6 +793,9 @@ pub struct DatabaseFileStorageService {
     pub(crate) repository: Arc<FileStorageRepository>,
     pub(crate) upload_token_secret: String,
     pub(crate) compression: DatabaseFileStorageCompressionConfig,
+    /// Cached once at construction; the secret and backend name are
+    /// immutable for the process lifetime.
+    pub(crate) read_backend_slot: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1615,9 +1632,24 @@ pub(super) fn file_object_read_token(
     object_key: &str,
     secret: &str,
 ) -> Result<String> {
+    file_object_read_token_at(
+        storage_backend,
+        object_key,
+        crate::SystemClock.now(),
+        secret,
+    )
+}
+
+pub(super) fn file_object_read_token_at(
+    storage_backend: &str,
+    object_key: &str,
+    now: DateTime<Utc>,
+    secret: &str,
+) -> Result<String> {
     let payload = FileObjectReadTokenPayload {
-        storage_backend: storage_backend.to_string(),
+        backend_slot: file_read_backend_slot(storage_backend, secret),
         object_key: object_key.to_string(),
+        expires_at: now.timestamp() + FILE_OBJECT_READ_TOKEN_TTL_SECONDS,
     };
     let payload_bytes = serde_json::to_vec(&payload)?;
     let signature = hex::encode(hmac_sha256(
@@ -1633,19 +1665,67 @@ pub(super) fn file_object_read_token(
     ))
 }
 
-pub(super) fn file_object_read_token_storage_backend(token: &str) -> Result<String> {
-    let payload: FileObjectReadTokenPayload =
-        decode_versioned_hmac_token_payload(token, FILE_OBJECT_READ_TOKEN_VERSION)?;
-    if payload.storage_backend.trim().is_empty() {
-        return Err(Error::InvalidInput("invalid file read token".to_string()));
-    }
-    Ok(payload.storage_backend)
+/// Opaque per-backend handle embedded in read tokens. Token payloads are
+/// base64, not encrypted, so the handle is derived with the same secret as
+/// the signature: it routes downloads without revealing the configured
+/// backend name, and is unguessable without the secret.
+pub(super) fn file_read_backend_slot(backend_name: &str, secret: &str) -> String {
+    let digest = hmac_sha256(
+        format!("synctv:file-read-slot:{secret}").as_bytes(),
+        backend_name.as_bytes(),
+    )
+    .unwrap_or_default();
+    hex::encode(&digest[..8])
 }
 
-pub(super) fn validate_file_object_read_token(
+pub(super) fn file_object_read_token_backend_slot(token: &str) -> Result<String> {
+    let payload: FileObjectReadTokenPayload =
+        decode_versioned_hmac_token_payload(token, FILE_OBJECT_READ_TOKEN_VERSION)?;
+    if payload.backend_slot.trim().is_empty() {
+        return Err(Error::InvalidInput("invalid file read token".to_string()));
+    }
+    Ok(payload.backend_slot)
+}
+
+#[cfg(test)]
+pub(super) fn validate_file_object_read_token_at(
     storage_backend: &str,
     object_key: &str,
     token: &str,
+    now: DateTime<Utc>,
+    secret: &str,
+) -> Result<()> {
+    validate_file_object_read_token_with_slot_at(
+        &file_read_backend_slot(storage_backend, secret),
+        object_key,
+        token,
+        now,
+        secret,
+    )
+}
+
+/// Slot-precomputed variant for serving backends: routing/hold backends
+/// cache their slot at construction, so validation is a pure comparison.
+pub(super) fn validate_file_object_read_token_with_slot(
+    expected_backend_slot: &str,
+    object_key: &str,
+    token: &str,
+    secret: &str,
+) -> Result<()> {
+    validate_file_object_read_token_with_slot_at(
+        expected_backend_slot,
+        object_key,
+        token,
+        crate::SystemClock.now(),
+        secret,
+    )
+}
+
+pub(super) fn validate_file_object_read_token_with_slot_at(
+    expected_backend_slot: &str,
+    object_key: &str,
+    token: &str,
+    now: DateTime<Utc>,
     secret: &str,
 ) -> Result<()> {
     let payload: FileObjectReadTokenPayload = validate_versioned_hmac_token(
@@ -1654,11 +1734,16 @@ pub(super) fn validate_file_object_read_token(
         format!("synctv:file-read:{secret}").as_bytes(),
         "invalid file read token",
     )?;
-    if payload.storage_backend != storage_backend {
+    if payload.backend_slot != expected_backend_slot {
         return Err(Error::InvalidInput("invalid file read token".to_string()));
     }
     if payload.object_key != object_key {
         return Err(Error::InvalidInput("invalid file read token".to_string()));
+    }
+    if payload.expires_at <= now.timestamp() {
+        return Err(Error::InvalidInput(
+            "file read token has expired".to_string(),
+        ));
     }
     Ok(())
 }

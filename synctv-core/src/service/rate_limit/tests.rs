@@ -676,3 +676,30 @@ async fn test_redis_failure_falls_back_to_in_memory() {
         "in-memory fallback should enforce the quota after Redis is unavailable"
     );
 }
+
+#[test]
+fn in_memory_limiter_sweep_reclaims_idle_keys() {
+    use super::memory::InMemoryGovernorLimiter;
+
+    // 1000 requests per 1s window: a checked key becomes
+    // indistinguishable from a fresh bucket ~1s after its last check.
+    let limiter = InMemoryGovernorLimiter::new();
+    for i in 0..50 {
+        limiter
+            .check(&format!("sweep-test-key-{i}"), 1000, 1)
+            .expect("distinct keys must not be rate limited");
+    }
+    let live_after_checks = limiter.live_key_count();
+    assert!(
+        live_after_checks >= 50,
+        "expected retained keys, got {live_after_checks}"
+    );
+
+    std::thread::sleep(Duration::from_millis(1200));
+    limiter.sweep_stale_keys_for_test();
+    let live_after_sweep = limiter.live_key_count();
+    assert_eq!(
+        live_after_sweep, 0,
+        "idle keys must be reclaimed by the sweep, got {live_after_sweep}"
+    );
+}

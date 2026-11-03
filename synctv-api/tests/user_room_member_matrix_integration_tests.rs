@@ -1184,6 +1184,7 @@ async fn test_admin_user_lifecycle_and_role_hierarchy_matrix() {
                 user_id: public_id_codec().encode_user_id(regular_user.id).unwrap(),
             },
             &platform_admin.id,
+            UserRole::Admin,
             &RequestContext::default(),
         )
         .await

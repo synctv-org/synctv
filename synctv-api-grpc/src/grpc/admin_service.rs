@@ -280,7 +280,12 @@ impl AdminService for AdminServiceImpl {
         &self,
         request: Request<CreateUserRequest>,
     ) -> Result<Response<AdminUser>, Status> {
-        let require_root = request.get_ref().role == synctv_proto::common::UserRole::Root as i32;
+        // Elevated roles are root-conferred (mirrors the shared gate in
+        // AdminApiImpl::create_user): Admin or Root requires a root caller.
+        let require_root = matches!(
+            synctv_proto::common::UserRole::try_from(request.get_ref().role),
+            Ok(synctv_proto::common::UserRole::Admin | synctv_proto::common::UserRole::Root)
+        );
         self.execute_scoped_admin_rpc(
             request,
             require_root,
@@ -378,7 +383,7 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<AdminUser>, Status> {
         self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
             synctv_api_common::impls::validate_proto_request(&req)?;
-            api.update_user_username(req, &validated.user_id, &ctx)
+            api.update_user_username(req, &validated.user_id, validated.role, &ctx)
                 .await
         })
         .await
@@ -419,7 +424,8 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<AdminUser>, Status> {
         self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
             synctv_api_common::impls::validate_proto_request(&req)?;
-            api.unban_user(req, &validated.user_id, &ctx).await
+            api.unban_user(req, &validated.user_id, validated.role, &ctx)
+                .await
         })
         .await
     }

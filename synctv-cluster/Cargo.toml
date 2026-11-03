@@ -54,7 +54,6 @@ futures.workspace = true
 tonic.workspace = true
 tonic-prost.workspace = true
 prost.workspace = true
-prost-types.workspace = true
 
 # Redis
 redis.workspace = true

@@ -1409,7 +1409,7 @@ pub(crate) async fn set_user_username(
         request_meta,
         require_admin_api,
         move |api, validated, rctx| async move {
-            api.update_user_username(req, &validated.user_id, &rctx)
+            api.update_user_username(req, &validated.user_id, validated.role, &rctx)
                 .await
         },
     )
@@ -1595,16 +1595,16 @@ pub(crate) async fn unban_user(
     Path(req): Path<admin::UnbanUserRequest>,
 ) -> AppResult<Json<admin::AdminUser>> {
     synctv_api_common::impls::validate_proto_request(&req).map_err(super::error::map_api_error)?;
-    let resp =
-        execute_admin_endpoint(
-            &state,
-            request_meta,
-            require_admin_api,
-            move |api, validated, rctx| async move {
-                api.unban_user(req, &validated.user_id, &rctx).await
-            },
-        )
-        .await?;
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, validated, rctx| async move {
+            api.unban_user(req, &validated.user_id, validated.role, &rctx)
+                .await
+        },
+    )
+    .await?;
     Ok(Json(resp))
 }
 

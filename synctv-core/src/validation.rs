@@ -168,8 +168,11 @@ pub fn validate_media_name_input(name: &str) -> ValidationResult<String> {
 }
 
 pub fn validate_media_name(name: &str) -> ValidationResult<()> {
-    let char_count = name.chars().count();
-    if char_count > MEDIA_NAME_MAX {
+    // char_count <= byte length, so a byte length within bounds needs no count.
+    if name.len() <= MEDIA_NAME_MAX {
+        return Ok(());
+    }
+    if name.chars().count() > MEDIA_NAME_MAX {
         return Err(ValidationError::Field {
             field: "media_name".to_string(),
             message: format!("must be at most {MEDIA_NAME_MAX} characters"),
@@ -180,8 +183,10 @@ pub fn validate_media_name(name: &str) -> ValidationResult<()> {
 }
 
 pub fn validate_room_description(description: &str) -> ValidationResult<()> {
-    let char_count = description.chars().count();
-    if char_count > ROOM_DESCRIPTION_MAX {
+    if description.len() <= ROOM_DESCRIPTION_MAX {
+        return Ok(());
+    }
+    if description.chars().count() > ROOM_DESCRIPTION_MAX {
         return Err(ValidationError::Field {
             field: "room_description".to_string(),
             message: format!("must be at most {ROOM_DESCRIPTION_MAX} characters"),
@@ -192,18 +197,21 @@ pub fn validate_room_description(description: &str) -> ValidationResult<()> {
 }
 
 pub fn validate_room_password_for_set(password: &str) -> ValidationResult<()> {
-    let char_count = password.trim().chars().count();
-    if char_count < ROOM_PASSWORD_MIN {
-        return Err(ValidationError::Field {
-            field: "room_password".to_string(),
-            message: format!("must be at least {ROOM_PASSWORD_MIN} characters"),
-        });
-    }
-    if char_count > ROOM_PASSWORD_MAX {
-        return Err(ValidationError::Field {
-            field: "room_password".to_string(),
-            message: format!("must not exceed {ROOM_PASSWORD_MAX} characters"),
-        });
+    let trimmed = password.trim();
+    if trimmed.len() < ROOM_PASSWORD_MIN || trimmed.len() > ROOM_PASSWORD_MAX {
+        let char_count = trimmed.chars().count();
+        if char_count < ROOM_PASSWORD_MIN {
+            return Err(ValidationError::Field {
+                field: "room_password".to_string(),
+                message: format!("must be at least {ROOM_PASSWORD_MIN} characters"),
+            });
+        }
+        if char_count > ROOM_PASSWORD_MAX {
+            return Err(ValidationError::Field {
+                field: "room_password".to_string(),
+                message: format!("must not exceed {ROOM_PASSWORD_MAX} characters"),
+            });
+        }
     }
 
     Ok(())
@@ -238,16 +246,17 @@ impl UsernameValidator {
     }
 
     pub fn validate(&self, username: &str) -> ValidationResult<()> {
-        // Check length (use char count for Unicode safety)
-        let char_count = username.chars().count();
-        if char_count < self.min_length {
+        // Check length (use char count for Unicode safety). A byte length
+        // below the minimum forces a char count below it too; only inputs
+        // longer than the maximum need an exact count.
+        if username.len() < self.min_length {
             return Err(ValidationError::Field {
                 field: "username".to_string(),
                 message: format!("must be at least {} characters", self.min_length),
             });
         }
 
-        if char_count > self.max_length {
+        if username.len() > self.max_length && username.chars().count() > self.max_length {
             return Err(ValidationError::Field {
                 field: "username".to_string(),
                 message: format!("must be at most {} characters", self.max_length),
@@ -276,13 +285,26 @@ impl UsernameValidator {
         }
 
         // Check reserved usernames (case-insensitive)
-        let lower_username = username.to_lowercase();
-        for reserved in RESERVED_USERNAMES {
-            if lower_username == *reserved {
-                return Err(ValidationError::Field {
-                    field: "username".to_string(),
-                    message: format!("'{username}' is reserved and cannot be used"),
-                });
+        if username.is_ascii() {
+            // Reserved names are pure ASCII: ASCII-case-insensitive
+            // comparison is exactly `username.to_lowercase() == reserved`.
+            for reserved in RESERVED_USERNAMES {
+                if username.eq_ignore_ascii_case(reserved) {
+                    return Err(ValidationError::Field {
+                        field: "username".to_string(),
+                        message: format!("'{username}' is reserved and cannot be used"),
+                    });
+                }
+            }
+        } else {
+            let lower_username = username.to_lowercase();
+            for reserved in RESERVED_USERNAMES {
+                if lower_username == *reserved {
+                    return Err(ValidationError::Field {
+                        field: "username".to_string(),
+                        message: format!("'{username}' is reserved and cannot be used"),
+                    });
+                }
             }
         }
 
@@ -395,16 +417,17 @@ impl PasswordValidator {
     const MAX_LENGTH: usize = PASSWORD_MAX;
 
     pub fn validate(&self, password: &str) -> ValidationResult<()> {
-        // Check length (use char count for Unicode safety)
-        let char_count = password.chars().count();
-        if char_count < self.min_length {
+        // Check length (use char count for Unicode safety). A byte length
+        // below the minimum forces a char count below it too; only inputs
+        // longer than the maximum can need an exact count.
+        if password.len() < self.min_length {
             return Err(ValidationError::Field {
                 field: "password".to_string(),
                 message: format!("must be at least {} characters", self.min_length),
             });
         }
 
-        if char_count > Self::MAX_LENGTH {
+        if password.len() > Self::MAX_LENGTH && password.chars().count() > Self::MAX_LENGTH {
             return Err(ValidationError::Field {
                 field: "password".to_string(),
                 message: format!("must not exceed {} characters", Self::MAX_LENGTH),
@@ -545,16 +568,17 @@ impl RoomNameValidator {
     }
 
     pub fn validate(&self, name: &str) -> ValidationResult<()> {
-        // Check length (use char count for Unicode safety)
-        let char_count = name.chars().count();
-        if char_count < self.min_length {
+        // Check length (use char count for Unicode safety). A byte length
+        // below the minimum forces a char count below it too; only inputs
+        // longer than the maximum need an exact count.
+        if name.len() < self.min_length {
             return Err(ValidationError::Field {
                 field: "room_name".to_string(),
                 message: format!("must be at least {} characters", self.min_length),
             });
         }
 
-        if char_count > self.max_length {
+        if name.len() > self.max_length && name.chars().count() > self.max_length {
             return Err(ValidationError::Field {
                 field: "room_name".to_string(),
                 message: format!("must be at most {} characters", self.max_length),

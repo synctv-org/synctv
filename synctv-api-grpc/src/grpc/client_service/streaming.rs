@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use synctv_api_common::impls::messaging::{MessageSender, StreamMessage};
 use synctv_proto::client::{
     ClientMessage, ServerMessage, WatchChatEventsEvent, WatchChatPinEventsEvent,
@@ -8,6 +6,24 @@ use synctv_proto::client::{
 };
 
 pub(super) const MESSAGE_STREAM_BUFFER_SIZE: usize = 100;
+
+/// Signaling budget for a single gRPC MessageStream ClientMessage, matching
+/// the WebSocket / WebTransport inbound frame caps. The transport-level
+/// decode limit stays at the service-wide `grpc_max_message_size_bytes`
+/// (other RoomService methods legitimately carry large blobs), so this
+/// post-decode check is what bounds the streaming uplink.
+pub(super) const GRPC_STREAM_UPLINK_MAX_BYTES: usize = 64 * 1024;
+
+/// Per-write bound for response-stream pumps: a client that stops calling
+/// `Recv` parks hyper's response body on h2 flow control; without a bound
+/// the pump waits forever and every outbound sender clone stays alive, so
+/// the response stream can never complete and the session's queued lanes
+/// linger until process restart.
+pub(super) const PUMP_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Grace between session cancellation and force-ending the outbound chain:
+/// lets already-scheduled terminations reach the wire, then guarantees the
+/// response stream ends (trailers included).
+pub(super) const PUMP_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 pub(super) const WATCH_STREAM_BUFFER_SIZE: usize = 64;
 
 #[derive(Debug)]
@@ -138,11 +154,14 @@ impl_watch_event_converter!(
 
 /// gRPC stream implementation of `StreamMessage` trait
 ///
-/// Adapts `tonic::Streaming<ClientMessage>` + `mpsc::Sender<ServerMessage>` to the
-/// unified `StreamMessage` interface, enabling full code reuse with the WebSocket path.
+/// Adapts `tonic::Streaming<ClientMessage>` + the session's fair queue to the
+/// unified `StreamMessage` interface, enabling full code reuse with the WebSocket
+/// path. `response_watch` mirrors the outgoing response channel so `recv` can
+/// stop as soon as the client stops reading the response stream.
 pub(super) struct GrpcStreamMessage {
     pub(super) client_stream: tonic::Streaming<ClientMessage>,
-    pub(super) sender: Arc<GrpcMessageSender>,
+    pub(super) sender: synctv_api_common::impls::messaging::FairSessionSender,
+    pub(super) response_watch: tokio::sync::mpsc::Sender<ServerMessage>,
     pub(super) alive: std::sync::atomic::AtomicBool,
 }
 
@@ -151,7 +170,7 @@ impl StreamMessage for GrpcStreamMessage {
     async fn recv(&mut self) -> Option<Result<ClientMessage, String>> {
         match await_grpc_receive_or_response_close(
             self.client_stream.message(),
-            self.sender.sender.clone(),
+            self.response_watch.clone(),
         )
         .await
         {
@@ -171,7 +190,7 @@ impl StreamMessage for GrpcStreamMessage {
     }
 
     fn send(&self, message: ServerMessage) -> Result<(), String> {
-        MessageSender::send(&*self.sender, message)
+        MessageSender::send(&self.sender, message)
     }
 
     fn is_alive(&self) -> bool {

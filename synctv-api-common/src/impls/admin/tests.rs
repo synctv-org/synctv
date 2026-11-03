@@ -3666,6 +3666,7 @@ async fn test_update_user_username_preserves_missing_email() -> TestResult {
                     new_username: "target_update_renamed".to_string(),
                 },
                 &admin_user.id,
+                UserRole::Root,
                 &RequestContext::default(),
             )
             .await,
@@ -4193,6 +4194,7 @@ async fn test_ban_user_resets_playback_for_media_created_by_target() -> TestResu
                     user_id: public_user_id(&admin_api, target_user.id),
                 },
                 &admin_user.id,
+                UserRole::Root,
                 &RequestContext::default(),
             )
             .await,
@@ -6821,5 +6823,167 @@ async fn test_ban_room_publishes_room_banned_realtime_event() -> TestResult {
             )))
         }
     }
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_create_user_rejects_elevated_role_from_non_root() -> TestResult {
+    let (_postgres, pool) = create_test_pool().await;
+    let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
+    let user_repo = UserRepository::new(pool.clone());
+    let admin_user = create_db_user(&user_repo, "admin_create_gate", UserRole::Admin).await;
+
+    for role in [
+        synctv_proto::common::UserRole::Admin,
+        synctv_proto::common::UserRole::Root,
+    ] {
+        let error = api_err(
+            admin_api
+                .create_user(
+                    synctv_proto::admin::CreateUserRequest {
+                        username: format!("gate_user_{}", role.as_str_name()),
+                        email: String::new(),
+                        role: role as i32,
+                        status: synctv_proto::common::UserStatus::Active as i32,
+                        password: String::new(),
+                    },
+                    UserRole::Admin,
+                    &admin_user.id,
+                    &RequestContext::default(),
+                )
+                .await,
+        )?;
+        assert!(
+            matches!(error, ApiError::Authorization(_)),
+            "admin creating {role:?} must be rejected"
+        );
+    }
+
+    // Ordinary users remain creatable by a non-root admin.
+    api_ok(
+        admin_api
+            .create_user(
+                synctv_proto::admin::CreateUserRequest {
+                    username: "gate_user_plain".to_string(),
+                    email: String::new(),
+                    role: synctv_proto::common::UserRole::User as i32,
+                    status: synctv_proto::common::UserStatus::Active as i32,
+                    password: String::new(),
+                },
+                UserRole::Admin,
+                &admin_user.id,
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_unban_user_enforces_role_hierarchy() -> TestResult {
+    let (_postgres, pool) = create_test_pool().await;
+    let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
+    let user_repo = UserRepository::new(pool);
+
+    let admin_caller = create_db_user(&user_repo, "hierarchy_unban_caller", UserRole::Admin).await;
+    let banned_admin =
+        create_db_user(&user_repo, "hierarchy_unban_admin_target", UserRole::Admin).await;
+
+    // Ban the target as root first so unban has a banned target to act on.
+    let root_caller = create_db_user(&user_repo, "hierarchy_unban_root", UserRole::Root).await;
+    api_ok(
+        admin_api
+            .ban_user(
+                synctv_proto::admin::BanUserRequest {
+                    user_id: public_user_id(&admin_api, banned_admin.id),
+                    reason: "hierarchy test ban".to_string(),
+                },
+                &root_caller.id,
+                UserRole::Root,
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
+
+    let error = api_err(
+        admin_api
+            .unban_user(
+                synctv_proto::admin::UnbanUserRequest {
+                    user_id: public_user_id(&admin_api, banned_admin.id),
+                },
+                &admin_caller.id,
+                UserRole::Admin,
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
+    assert!(
+        matches!(error, ApiError::Authorization(_)),
+        "admin unban of an admin target must be rejected"
+    );
+
+    // Root can unban the same target.
+    api_ok(
+        admin_api
+            .unban_user(
+                synctv_proto::admin::UnbanUserRequest {
+                    user_id: public_user_id(&admin_api, banned_admin.id),
+                },
+                &admin_caller.id,
+                UserRole::Root,
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_update_user_username_enforces_role_hierarchy() -> TestResult {
+    let (_postgres, pool) = create_test_pool().await;
+    let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
+    let user_repo = UserRepository::new(pool);
+
+    let admin_caller = create_db_user(&user_repo, "hierarchy_rename_caller", UserRole::Admin).await;
+    let admin_target =
+        create_db_user(&user_repo, "hierarchy_rename_admin_target", UserRole::Admin).await;
+    let user_target =
+        create_db_user(&user_repo, "hierarchy_rename_user_target", UserRole::User).await;
+
+    let error = api_err(
+        admin_api
+            .update_user_username(
+                synctv_proto::admin::UpdateUserUsernameRequest {
+                    user_id: public_user_id(&admin_api, admin_target.id),
+                    new_username: "hierarchy_rename_admin_new".to_string(),
+                },
+                &admin_caller.id,
+                UserRole::Admin,
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
+    assert!(
+        matches!(error, ApiError::Authorization(_)),
+        "admin renaming an admin target must be rejected"
+    );
+
+    // Ordinary-user targets remain renameable by an admin.
+    api_ok(
+        admin_api
+            .update_user_username(
+                synctv_proto::admin::UpdateUserUsernameRequest {
+                    user_id: public_user_id(&admin_api, user_target.id),
+                    new_username: "hierarchy_rename_user_new".to_string(),
+                },
+                &admin_caller.id,
+                UserRole::Admin,
+                &RequestContext::default(),
+            )
+            .await,
+    )?;
     Ok(())
 }

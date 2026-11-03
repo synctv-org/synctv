@@ -6,10 +6,32 @@
 use std::time::Duration;
 
 use synctv_media_providers::*;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
+
+/// Consume the client request before the mock answers.
+///
+/// Since tokio 1.54 accepted sockets start out readable and writable, so a
+/// mock that answers immediately can flush the response before the client
+/// has written its request; hyper then rejects the connection with
+/// `UnexpectedMessage`. Draining the request head first keeps the exchange
+/// in the normal HTTP order.
+async fn drain_request_head(stream: &mut tokio::net::TcpStream) {
+    let mut buf = Vec::with_capacity(1024);
+    let mut chunk = [0u8; 256];
+    loop {
+        let n = stream.read(&mut chunk).await.expect("read request head");
+        if n == 0 {
+            return;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+            return;
+        }
+    }
+}
 
 #[tokio::test]
 async fn test_json_with_limit_valid_json() {
@@ -177,6 +199,7 @@ async fn test_check_response_does_not_wait_for_unbounded_error_body() {
 
     let server = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
+        drain_request_head(&mut stream).await;
 
         stream
             .write_all(
@@ -246,6 +269,7 @@ async fn test_check_response_returns_without_waiting_when_preview_limit_exactly_
 
     let server = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
+        drain_request_head(&mut stream).await;
 
         stream
             .write_all(

@@ -363,36 +363,43 @@ config:
       ## output: {type: file, path: /data/logs/server.log, rotation: {strategy: daily, maxFiles: 30}}
       output: stdout
       color: auto
-    ## HTTP/3 (QUIC) + WebTransport listener. Serves the full router (REST,
-    ## gRPC, SSE) over UDP plus WebTransport sessions on the same socket, and
-    ## TCP responses advertise the endpoint via Alt-Svc. TLS is mandatory.
-    quic:
+    ## Shared API TLS: one certificate covers the HTTPS listener (TCP) and
+    ## the HTTP/3 listener (UDP), following the nginx/Caddy site-certificate
+    ## model. Plain HTTP keeps serving on server.port.
+    tls:
       enabled: false
-      ## UDP port; defaults to server.port when unset or 0.
-      port: 0
-      ## Maximum concurrent WebTransport sessions on the QUIC listener.
-      maxWebtransportSessions: 256
-      ## Alt-Svc max-age (seconds) advertised on TCP responses.
-      altSvcMaxAgeSeconds: 86400
+      ## HTTPS TCP port (must differ from server.port); the HTTP/3 UDP port
+      ## defaults to this value.
+      port: 8443
       ## Certificate source (pick one):
       ##   existingSecret — Secret with tls.crt/tls.key keys (kubernetes.io/tls)
       ##   certManager    — chart renders a cert-manager Certificate; dnsNames
       ##                    must cover the public hostname clients dial
       ##   certPath/keyPath — raw in-container file paths for certificates
       ##                    mounted through extraVolumes/extraVolumeMounts
-      tls:
-        existingSecret: ""
-        certManager:
-          enabled: false
-          # dnsNames: ["synctv.example.com"]
-          duration: "2160h"
-          renewBefore: "720h"
-          issuerRef:
-            name: ""
-            kind: "Issuer"
-            group: "cert-manager.io"
-        certPath: ""
-        keyPath: ""
+      existingSecret: ""
+      certManager:
+        enabled: false
+        # dnsNames: ["synctv.example.com"]
+        duration: "2160h"
+        renewBefore: "720h"
+        issuerRef:
+          name: ""
+          kind: "Issuer"
+          group: "cert-manager.io"
+      certPath: ""
+      keyPath: ""
+    ## HTTP/3 (QUIC) + WebTransport on top of server.tls. One UDP socket
+    ## serves the full router (REST, gRPC, SSE) plus WebTransport sessions;
+    ## TCP responses advertise the endpoint via Alt-Svc.
+    quic:
+      enabled: false
+      ## UDP port; defaults to server.tls.port when unset or 0.
+      port: 0
+      ## Maximum concurrent WebTransport sessions on the QUIC listener.
+      maxWebtransportSessions: 256
+      ## Alt-Svc max-age (seconds) advertised on TCP responses.
+      altSvcMaxAgeSeconds: 86400
 
   health:
     enabled: true

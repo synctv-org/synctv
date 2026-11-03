@@ -86,21 +86,54 @@ fn build_url_from_split_parts(
     url.to_string()
 }
 
+/// Public API TLS configuration: one certificate shared by every transport
+/// that terminates TLS on the API, following the nginx/Caddy model where the
+/// site-level certificate covers both the HTTPS listener and HTTP/3.
+///
+/// - `server.port` serves plain HTTP over TCP (as before).
+/// - `server.tls.port` serves HTTPS over TCP when enabled.
+/// - `server.quic` serves HTTP/3 over UDP on `tls.port` (or its own port),
+///   and requires this TLS configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ServerTlsConfig {
+    /// Serve HTTPS on `port` (TCP) and make the certificate available to
+    /// the HTTP/3 listener.
+    pub enabled: bool,
+    /// HTTPS TCP port. The HTTP/3 UDP port defaults to this value.
+    pub port: u16,
+    /// PEM certificate chain.
+    pub cert_path: String,
+    /// PEM private key.
+    pub key_path: String,
+}
+
+impl Default for ServerTlsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            port: 8443,
+            cert_path: String::new(),
+            key_path: String::new(),
+        }
+    }
+}
+
 /// HTTP/3 (QUIC) listener configuration. Serving HTTP/3 next to the TCP
 /// listener gives clients 0-RTT, stream multiplexing, and connection
 /// migration for every HTTP endpoint (including SSE), and enables
 /// WebTransport sessions for the realtime transport.
+///
+/// TLS comes from `server.tls` (shared with the HTTPS listener); the UDP
+/// port defaults to `server.tls.port`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct QuicConfig {
-    /// Serve HTTP/3 + WebTransport on a UDP socket.
+    /// Serve HTTP/3 + WebTransport on a UDP socket. Requires
+    /// `server.tls.enabled` (QUIC mandates TLS).
     pub enabled: bool,
-    /// UDP port; defaults to the TCP API port when unset.
+    /// UDP port; defaults to `server.tls.port` when unset.
     pub port: Option<u16>,
-    /// PEM certificate chain (TLS is mandatory for QUIC).
-    pub cert_path: String,
-    /// PEM private key.
-    pub key_path: String,
     /// Maximum concurrent WebTransport sessions.
     pub max_webtransport_sessions: u64,
     /// `Alt-Svc` `ma=` (max-age) advertised on TCP responses, in seconds.
@@ -112,8 +145,6 @@ impl Default for QuicConfig {
         Self {
             enabled: false,
             port: None,
-            cert_path: String::new(),
-            key_path: String::new(),
             max_webtransport_sessions: 256,
             alt_svc_max_age_seconds: 86_400,
         }
@@ -136,6 +167,7 @@ pub struct ServerConfig {
     pub grpc_compression_enabled: bool,
     pub logging: LoggingConfig,
     pub access_log: AccessLogConfig,
+    pub tls: ServerTlsConfig,
     pub quic: QuicConfig,
 }
 
@@ -153,6 +185,7 @@ impl Default for ServerConfig {
             shutdown_drain_timeout_seconds: 30,
             grpc_max_message_size_bytes: 16 * 1024 * 1024,
             grpc_compression_enabled: true,
+            tls: ServerTlsConfig::default(),
             quic: QuicConfig::default(),
             logging: LoggingConfig::default(),
             access_log: AccessLogConfig::default(),

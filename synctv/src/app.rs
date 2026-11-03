@@ -2069,6 +2069,7 @@ mod tests {
                 shutdown_drain_timeout_seconds: 30,
                 logging: crate::app_config::LoggingConfig::default(),
                 access_log: crate::app_config::AccessLogConfig::default(),
+                tls: crate::app_config::ServerTlsConfig::default(),
                 quic: crate::app_config::QuicConfig::default(),
             },
             health: crate::app_config::HealthConfig::default(),

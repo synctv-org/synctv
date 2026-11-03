@@ -359,6 +359,110 @@ validate_rendered_synctv_config() {
   run_rendered_synctv_config_validation "$rendered_config"
 }
 
+assert_quic_h3_port_rendering() {
+  local file="$1"
+  local expected_port="$2"
+  ruby -ryaml -e '
+    file, expected_port = ARGV
+    expected_port = Integer(expected_port)
+    docs = YAML.load_stream(File.read(file)).compact
+    deployment = docs.find { |doc| doc["kind"] == "Deployment" && doc.dig("metadata", "name") == "synctv" }
+    abort("synctv Deployment was not rendered in #{file}") unless deployment
+    container = deployment.dig("spec", "template", "spec", "containers").find { |item| item["name"] == "synctv" }
+    h3 = (container["ports"] || []).find { |port| port["name"] == "h3" }
+    abort("deployment h3 containerPort was not rendered in #{file}") unless h3
+    abort("deployment h3 containerPort expected #{expected_port}, got #{h3["containerPort"].inspect}") unless h3["containerPort"] == expected_port
+    abort("deployment h3 containerPort must be UDP in #{file}") unless h3["protocol"] == "UDP"
+    service = docs.find { |doc| doc["kind"] == "Service" && doc.dig("metadata", "name") == "synctv" }
+    abort("api Service was not rendered in #{file}") unless service
+    svc_h3 = (service.dig("spec", "ports") || []).find { |port| port["name"] == "h3" }
+    abort("api Service h3 port was not rendered in #{file}") unless svc_h3
+    abort("api Service h3 port expected #{expected_port}, got #{svc_h3["port"].inspect}") unless svc_h3["port"] == expected_port
+    abort("api Service h3 port must be UDP in #{file}") unless svc_h3["protocol"] == "UDP"
+    abort("api Service h3 targetPort must be h3 in #{file}") unless svc_h3["targetPort"] == "h3"
+  ' "$file" "$expected_port"
+}
+
+assert_quic_h3_port_absent() {
+  local file="$1"
+  ruby -ryaml -e '
+    file = ARGV.fetch(0)
+    docs = YAML.load_stream(File.read(file)).compact
+    deployment = docs.find { |doc| doc["kind"] == "Deployment" && doc.dig("metadata", "name") == "synctv" }
+    abort("synctv Deployment was not rendered in #{file}") unless deployment
+    container = deployment.dig("spec", "template", "spec", "containers").find { |item| item["name"] == "synctv" }
+    if (container["ports"] || []).any? { |port| port["name"] == "h3" }
+      abort("deployment h3 containerPort was rendered in #{file} but quic is disabled")
+    end
+    service = docs.find { |doc| doc["kind"] == "Service" && doc.dig("metadata", "name") == "synctv" }
+    if service && (service.dig("spec", "ports") || []).any? { |port| port["name"] == "h3" }
+      abort("api Service h3 port was rendered in #{file} but quic is disabled")
+    end
+  ' "$file"
+}
+
+assert_quic_tls_secret_mount() {
+  local file="$1"
+  local expected_secret="$2"
+  ruby -ryaml -e '
+    file, expected_secret = ARGV
+    docs = YAML.load_stream(File.read(file)).compact
+    deployment = docs.find { |doc| doc["kind"] == "Deployment" && doc.dig("metadata", "name") == "synctv" }
+    abort("synctv Deployment was not rendered in #{file}") unless deployment
+    pod_spec = deployment.dig("spec", "template", "spec")
+    container = pod_spec["containers"].find { |item| item["name"] == "synctv" }
+    mount = (container["volumeMounts"] || []).find { |item| item["name"] == "quic-tls" }
+    abort("quic-tls volumeMount was not rendered in #{file}") unless mount
+    abort("quic-tls mount path expected /etc/synctv/quic-tls, got #{mount["mountPath"].inspect} in #{file}") unless mount["mountPath"] == "/etc/synctv/quic-tls"
+    volume = (pod_spec["volumes"] || []).find { |item| item["name"] == "quic-tls" }
+    abort("quic-tls volume was not rendered in #{file}") unless volume
+    abort("quic-tls secret expected #{expected_secret.inspect}, got #{volume.dig("secret", "secretName").inspect} in #{file}") unless volume.dig("secret", "secretName") == expected_secret
+  ' "$file" "$expected_secret"
+}
+
+assert_quic_tls_secret_mount_absent() {
+  local file="$1"
+  ruby -ryaml -e '
+    file = ARGV.fetch(0)
+    docs = YAML.load_stream(File.read(file)).compact
+    deployment = docs.find { |doc| doc["kind"] == "Deployment" && doc.dig("metadata", "name") == "synctv" }
+    abort("synctv Deployment was not rendered in #{file}") unless deployment
+    pod_spec = deployment.dig("spec", "template", "spec")
+    container = pod_spec["containers"].find { |item| item["name"] == "synctv" }
+    if (container["volumeMounts"] || []).any? { |item| item["name"] == "quic-tls" }
+      abort("quic-tls volumeMount was rendered in #{file} but no secret-backed TLS source is configured")
+    end
+    if (pod_spec["volumes"] || []).any? { |item| item["name"] == "quic-tls" }
+      abort("quic-tls volume was rendered in #{file} but no secret-backed TLS source is configured")
+    end
+  ' "$file"
+}
+
+assert_quic_networkpolicy_udp_rule() {
+  local file="$1"
+  local expected_port="$2"
+  local expect_rule="$3"
+  ruby -ryaml -e '
+    file, expected_port, expect_rule = ARGV
+    expected_port = Integer(expected_port)
+    docs = YAML.load_stream(File.read(file)).compact
+    policy = docs.find { |doc| doc["kind"] == "NetworkPolicy" }
+    abort("NetworkPolicy was not rendered in #{file}") unless policy
+    rules = policy.dig("spec", "ingress") || []
+    rule = rules.find do |candidate|
+      (candidate["ports"] || []).any? do |port|
+        port["protocol"] == "UDP" && port["port"] == expected_port
+      end
+    end
+    if expect_rule == "present"
+      abort("NetworkPolicy h3 UDP #{expected_port} rule was not rendered in #{file}") unless rule
+    elsif rule
+      abort("NetworkPolicy h3 UDP #{expected_port} rule was rendered in #{file} but no h3 source is allowed")
+    end
+  ' "$file" "$expected_port" "$expect_rule"
+}
+
+
 validate_rendered_synctv_config_with_file_storage_s3_secret_files() {
   local rendered_manifest="$1"
   local secret_dir="$tmp_dir/file-storage-s3"
@@ -609,6 +713,73 @@ assert_no_resource_named "$tmp_dir/existing-secret.yaml" synctv-secret-bootstrap
 assert_deployment_annotation "$tmp_dir/existing-secret.yaml" synctv.io/secret-rollout-checksum rotation-2
 assert_bootstrap_env_value "$tmp_dir/explicit-email-outbox-key.yaml" EMAIL_OUTBOX_KEY 5959595959595959595959595959595959595959595959595959595959595959
 assert_file_storage_s3_file_credentials_rendering "$tmp_dir/file-storage-s3-files.yaml"
+# --- HTTP/3 (QUIC) listener wiring -----------------------------------------
+assert_quic_h3_port_absent "$tmp_dir/default.yaml"
+assert_quic_tls_secret_mount_absent "$tmp_dir/default.yaml"
+
+if helm template synctv "$chart_dir" \
+  --namespace "$namespace" \
+  --set config.server.quic.enabled=true \
+  >"$tmp_dir/quic-without-tls.yaml" 2>"$tmp_dir/quic-without-tls.err"; then
+  fail "config.server.quic.enabled=true without a TLS source must fail validation"
+fi
+
+if helm template synctv "$chart_dir" \
+  --namespace "$namespace" \
+  --set config.server.quic.enabled=true \
+  --set config.server.quic.tls.certManager.enabled=true \
+  >"$tmp_dir/quic-cert-manager-no-dns.yaml" 2>"$tmp_dir/quic-cert-manager-no-dns.err"; then
+  fail "config.server.quic.tls.certManager without dnsNames must fail validation"
+fi
+
+helm template synctv "$chart_dir" \
+  --namespace "$namespace" \
+  --set config.server.quic.enabled=true \
+  --set config.server.quic.tls.existingSecret=synctv-quic-cert \
+  >"$tmp_dir/quic-secret.yaml"
+assert_quic_h3_port_rendering "$tmp_dir/quic-secret.yaml" 8080
+assert_quic_tls_secret_mount "$tmp_dir/quic-secret.yaml" synctv-quic-cert
+validate_rendered_synctv_config "$tmp_dir/quic-secret.yaml"
+
+helm template synctv "$chart_dir" \
+  --namespace "$namespace" \
+  --set config.server.quic.enabled=true \
+  --set config.server.quic.port=8443 \
+  --set config.server.quic.tls.certManager.enabled=true \
+  --set config.server.quic.tls.certManager.dnsNames={synctv.example.com} \
+  --set config.server.quic.tls.certManager.issuerRef.name=letsencrypt \
+  >"$tmp_dir/quic-cert-manager.yaml"
+assert_quic_h3_port_rendering "$tmp_dir/quic-cert-manager.yaml" 8443
+assert_quic_tls_secret_mount "$tmp_dir/quic-cert-manager.yaml" synctv-quic-tls
+validate_rendered_synctv_config "$tmp_dir/quic-cert-manager.yaml"
+
+helm template synctv "$chart_dir" \
+  --namespace "$namespace" \
+  --set config.server.quic.enabled=true \
+  --set config.server.quic.tls.certPath=/certs/api.crt \
+  --set config.server.quic.tls.keyPath=/certs/api.key \
+  >"$tmp_dir/quic-raw-paths.yaml"
+assert_quic_h3_port_rendering "$tmp_dir/quic-raw-paths.yaml" 8080
+assert_quic_tls_secret_mount_absent "$tmp_dir/quic-raw-paths.yaml"
+validate_rendered_synctv_config "$tmp_dir/quic-raw-paths.yaml"
+
+helm template synctv "$chart_dir" \
+  --namespace "$namespace" \
+  --set networkPolicy.enabled=true \
+  --set config.server.quic.enabled=true \
+  --set config.server.quic.tls.existingSecret=synctv-quic-cert \
+  --set networkPolicy.allowAnyH3Source=true \
+  >"$tmp_dir/quic-networkpolicy-allowed.yaml"
+assert_quic_networkpolicy_udp_rule "$tmp_dir/quic-networkpolicy-allowed.yaml" 8080 present
+
+helm template synctv "$chart_dir" \
+  --namespace "$namespace" \
+  --set networkPolicy.enabled=true \
+  --set config.server.quic.enabled=true \
+  --set config.server.quic.tls.existingSecret=synctv-quic-cert \
+  >"$tmp_dir/quic-networkpolicy-default.yaml"
+assert_quic_networkpolicy_udp_rule "$tmp_dir/quic-networkpolicy-default.yaml" 8080 absent
+
 validate_rendered_synctv_config "$tmp_dir/default.yaml"
 assert_app_env_contract "$tmp_dir/default.yaml"
 validate_rendered_synctv_config "$tmp_dir/security.yaml"

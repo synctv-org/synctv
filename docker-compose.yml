@@ -46,6 +46,8 @@ services:
       SYNCTV_DATA_DIR: /data
     ports:
       - "8080:8080"
+      # HTTP/3 (QUIC) + WebTransport; requires [server.quic] enabled with TLS.
+      - "8080:8080/udp"
       - "1935:1935"
     depends_on:
       postgres:

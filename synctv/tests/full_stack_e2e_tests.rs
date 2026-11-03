@@ -3929,6 +3929,125 @@ async fn full_stack_cli_user_lifecycle_commands_cover_identity_state_role_and_ba
 
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
+async fn full_stack_account_closure_requires_sensitive_verification() {
+    use synctv_proto::client::{
+        CloseAccountRequest, FinishSensitiveOperationVerificationRequest,
+        StartSensitiveOperationVerificationRequest,
+    };
+
+    let server = start_test_server().await;
+    let suffix = unique_test_suffix();
+    let username = format!("closure_user_{suffix}");
+    let email = format!("closure-{suffix}@example.com");
+    let password = "StrongPass1".to_string();
+
+    let register = opaque_http_register(&server, &username, &email, &password).await;
+    assert_eq!(register.status(), StatusCode::OK);
+    let token = login_http_ok_token(&server, &username, &password).await;
+    let client = test_http_client();
+
+    let me_url = format!("{}/api/user", server.api_base_url);
+    let me = client
+        .get(&me_url)
+        .bearer_auth(&token)
+        .send()
+        .await
+        .expect("get_me should complete before closure");
+    assert_eq!(me.status(), StatusCode::OK);
+
+    // Closure without a valid verification must be rejected and leave the
+    // account intact.
+    let rejected = post_json(
+        &client,
+        &format!("{}/api/user/account-closure", server.api_base_url),
+        CloseAccountRequest {
+            verification_id: "bogus-verification-id".to_string(),
+        },
+        Some(&token),
+    )
+    .await;
+    assert_eq!(rejected.status(), StatusCode::UNAUTHORIZED);
+    let me_after_rejection = client
+        .get(&me_url)
+        .bearer_auth(&token)
+        .send()
+        .await
+        .expect("get_me should complete after rejected closure");
+    assert_eq!(me_after_rejection.status(), StatusCode::OK);
+
+    // Complete password verification, then close the account.
+    let start = post_json(
+        &client,
+        &format!(
+            "{}/api/user/sensitive-verification/start",
+            server.api_base_url
+        ),
+        StartSensitiveOperationVerificationRequest {},
+        Some(&token),
+    )
+    .await;
+    assert_eq!(start.status(), StatusCode::OK);
+    let outcome = response_json(start).await;
+    let challenge = outcome["challenge"]
+        .as_object()
+        .expect("single-factor verification start should return a challenge");
+    let session_id = challenge["sessionId"]
+        .as_str()
+        .expect("challenge should carry sessionId")
+        .to_string();
+
+    let finish = post_json(
+        &client,
+        &format!(
+            "{}/api/user/sensitive-verification/finish",
+            server.api_base_url
+        ),
+        FinishSensitiveOperationVerificationRequest {
+            session_id,
+            method: synctv_proto::client::SensitiveOperationVerificationMethod::Password as i32,
+            password: password.clone(),
+            email_token: String::new(),
+            passkey_session_id: String::new(),
+            passkey_credential: None,
+            totp_code: String::new(),
+            recovery_code: String::new(),
+        },
+        Some(&token),
+    )
+    .await;
+    assert_eq!(finish.status(), StatusCode::OK);
+    let finished = response_json(finish).await;
+    let verification_id = finished["verificationId"]
+        .as_str()
+        .expect("password verification should complete with a verification id")
+        .to_string();
+
+    let closed = post_json(
+        &client,
+        &format!("{}/api/user/account-closure", server.api_base_url),
+        CloseAccountRequest { verification_id },
+        Some(&token),
+    )
+    .await;
+    assert_eq!(closed.status(), StatusCode::OK);
+    let closed_body = response_json(closed).await;
+    assert_eq!(closed_body["success"], true);
+
+    let me_after_closure = client
+        .get(&me_url)
+        .bearer_auth(&token)
+        .send()
+        .await
+        .expect("get_me should complete after closure");
+    assert_eq!(
+        me_after_closure.status(),
+        StatusCode::UNAUTHORIZED,
+        "deleted user's token must stop working"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
 async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissions_playback_and_batches(
 ) {
     let server = start_test_server().await;

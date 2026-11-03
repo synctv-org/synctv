@@ -1450,7 +1450,8 @@ pub async fn list_favorite_rooms(
 ///
 /// Sets `deleted_at = NOW()` on the user row and cleans up `OAuth2` mappings.
 /// The current token will return 401 on the next request because the security
-/// pipeline checks for deleted users.
+/// pipeline checks for deleted users. Requires a completed sensitive operation
+/// verification (`verification_id`), matching the other destructive operations.
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
@@ -1460,7 +1461,7 @@ pub async fn list_favorite_rooms(
         request_body = CloseAccountRequest,
         responses(
             (status = 200, description = "Account closure completed", body = CloseAccountResponse),
-            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
+            (status = 401, description = "Authentication or sensitive operation verification required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -1470,8 +1471,9 @@ pub async fn list_favorite_rooms(
 pub async fn close_account(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Json(_req): Json<CloseAccountRequest>,
+    Json(req): Json<CloseAccountRequest>,
 ) -> AppResult<Json<CloseAccountResponse>> {
+    let verification_id = req.verification_id;
     let request_meta = request_meta
         .0
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
@@ -1481,7 +1483,11 @@ pub async fn close_account(
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Write,
-            |auth| async move { client_api.close_account(&auth.user_id()).await },
+            |auth| async move {
+                client_api
+                    .close_account(&auth.user_id(), &verification_id)
+                    .await
+            },
         )
         .await
         .map_err(super::AppError::from)?;

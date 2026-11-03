@@ -1339,7 +1339,16 @@ message RefreshTokenResponse {
 
 message GetProfileRequest {}
 
-message CloseAccountRequest {}
+message CloseAccountRequest {
+  // One-time token from a completed sensitive operation verification
+  // (password, passkey, authenticator app, or verified email). Account
+  // closure deletes the user and every room they own, so it requires the
+  // same step-up verification as the other destructive operations.
+  string verification_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+}
 
 message CloseAccountResponse {
   bool success = 1;

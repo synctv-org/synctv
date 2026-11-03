@@ -24,6 +24,10 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.config.server.port }}
+        {{- if (.Values.config.server.tls).enabled }}
+        - protocol: TCP
+          port: {{ int ((.Values.config.server.tls).port | default 8443) }}
+        {{- end }}
     {{- end }}
     {{- if .Values.config.cluster.enabled }}
     # Allow internal cluster traffic between SyncTV replicas.
@@ -64,6 +68,21 @@ spec:
       ports:
         - protocol: UDP
           port: {{ .Values.config.webrtc.stunPort }}
+    {{- end }}
+    # Allow HTTP/3 (QUIC) + WebTransport clients (UDP)
+    {{- if and ((.Values.config.server.quic).enabled) (or .Values.networkPolicy.allowAnyH3Source .Values.networkPolicy.h3SourceCIDRs) }}
+    - from:
+        {{- if .Values.networkPolicy.allowAnyH3Source }}
+        - ipBlock:
+            cidr: 0.0.0.0/0
+        {{- end }}
+        {{- range .Values.networkPolicy.h3SourceCIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: UDP
+          port: {{ include "synctv.quicPort" . }}
     {{- end }}
     # Allow Prometheus scraping
     {{- if and .Values.metrics.enabled .Values.networkPolicy.metricsSourceNamespaces }}

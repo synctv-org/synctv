@@ -1290,6 +1290,18 @@ fn synctv_binary_path() -> std::path::PathBuf {
     );
 }
 
+/// Creates a test HTTPS client that trusts the given PEM certificate
+/// (self-signed test roots).
+fn test_https_client_with_root(cert_path: &str) -> reqwest::Client {
+    let pem = std::fs::read(cert_path).expect("certificate pem");
+    let certificate = reqwest::Certificate::from_pem(&pem).expect("parse certificate");
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .add_root_certificate(certificate)
+        .build()
+        .expect("HTTPS client should build")
+}
+
 /// Creates a test HTTP client with reasonable timeouts for E2E tests.
 fn test_http_client() -> reqwest::Client {
     reqwest::Client::builder()
@@ -9668,9 +9680,12 @@ fn free_udp_port() -> u16 {
 /// Writes an ephemeral self-signed ECDSA certificate + key as PEM files.
 fn write_self_signed_pem(dir: &std::path::Path) -> (String, String) {
     let mut params =
-        rcgen::CertificateParams::new(vec!["localhost".to_string()]).expect("certificate params");
+        rcgen::CertificateParams::new(vec!["localhost".to_string(), "127.0.0.1".to_string()])
+            .expect("certificate params");
     params.not_before = time::OffsetDateTime::now_utc() - time::Duration::days(1);
     params.not_after = time::OffsetDateTime::now_utc() + time::Duration::days(13);
+    // HTTPS clients verify server-auth EKU; WebTransport pinning is by hash.
+    params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
     let key_pair = rcgen::KeyPair::generate().expect("key pair");
     let cert = params.self_signed(&key_pair).expect("self-signed cert");
     let cert_path = dir.join("quic-cert.pem");
@@ -9716,11 +9731,15 @@ async fn full_stack_quic_serves_http3_and_webtransport_realtime() {
     let (cert_path, key_path) = write_self_signed_pem(&temp_dir);
     let udp_port = free_udp_port();
 
+    // nginx-style shared port: HTTPS on TCP and h3 on UDP use one number.
+    let tls_port = udp_port;
     let server = start_test_server_with(|config| {
+        config.server.tls.enabled = true;
+        config.server.tls.port = tls_port;
+        config.server.tls.cert_path = cert_path.clone();
+        config.server.tls.key_path = key_path.clone();
         config.server.quic.enabled = true;
         config.server.quic.port = Some(udp_port);
-        config.server.quic.cert_path = cert_path.clone();
-        config.server.quic.key_path = key_path.clone();
     })
     .await;
     let client = test_http_client();
@@ -9743,6 +9762,15 @@ async fn full_stack_quic_serves_http3_and_webtransport_realtime() {
         alt_svc.contains(&format!("h3=\":{udp_port}\"")),
         "unexpected Alt-Svc: {alt_svc}"
     );
+
+    // The HTTPS listener serves the same API on TCP with the shared
+    // certificate on the same port number as the h3 UDP listener.
+    {
+        let tls_client = test_https_client_with_root(&cert_path);
+        let https_url = format!("https://127.0.0.1:{tls_port}/api/public/time");
+        let https_response = tls_client.get(&https_url).send().await.expect("https");
+        assert_eq!(https_response.status(), StatusCode::OK);
+    }
 
     // The same API is served natively over HTTP/3, and advertises WebTransport.
     let (status, _headers, body) =

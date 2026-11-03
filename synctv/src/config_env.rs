@@ -447,6 +447,40 @@ pub(crate) fn apply_env_overrides_with(
         &mut config.server.grpc_compression_enabled,
     )?;
 
+    // Shared API TLS (HTTPS listener + HTTP/3) and the QUIC listener. Env
+    // overrides keep the Docker Compose deployment (env-only, no mounted
+    // config file) able to enable HTTPS and h3.
+    env_override_bool("SYNCTV_SERVER_TLS_ENABLED", &mut config.server.tls.enabled)?;
+    env_override_parse("SYNCTV_SERVER_TLS_PORT", &mut config.server.tls.port)?;
+    env_override_str(
+        "SYNCTV_SERVER_TLS_CERT_PATH",
+        &mut config.server.tls.cert_path,
+    );
+    env_override_str(
+        "SYNCTV_SERVER_TLS_KEY_PATH",
+        &mut config.server.tls.key_path,
+    );
+    if let Some(val) = get_env("SYNCTV_SERVER_QUIC_PORT") {
+        let port = val.parse::<u16>().map_err(|error| {
+            ConfigError::Message(format!(
+                "Invalid value for environment variable SYNCTV_SERVER_QUIC_PORT: '{val}' ({error})"
+            ))
+        })?;
+        config.server.quic.port = if port == 0 { None } else { Some(port) };
+    }
+    env_override_bool(
+        "SYNCTV_SERVER_QUIC_ENABLED",
+        &mut config.server.quic.enabled,
+    )?;
+    env_override_parse(
+        "SYNCTV_SERVER_QUIC_MAX_WEBTRANSPORT_SESSIONS",
+        &mut config.server.quic.max_webtransport_sessions,
+    )?;
+    env_override_parse(
+        "SYNCTV_SERVER_QUIC_ALT_SVC_MAX_AGE_SECONDS",
+        &mut config.server.quic.alt_svc_max_age_seconds,
+    )?;
+
     env_override_bool("SYNCTV_HEALTH_ENABLED", &mut config.health.enabled)?;
     env_override_str("SYNCTV_HEALTH_HOST", &mut config.health.host);
     env_override_parse("SYNCTV_HEALTH_PORT", &mut config.health.port)?;
@@ -1461,6 +1495,79 @@ mod tests {
             config.security.email_outbox_encryption_key,
             EMAIL_OUTBOX_KEY
         );
+    }
+
+    #[test]
+    fn server_tls_and_quic_accept_environment_overrides() {
+        let mut config = Config::default();
+        let env = HashMap::from([
+            ("SYNCTV_SERVER_TLS_ENABLED", "true".to_string()),
+            ("SYNCTV_SERVER_TLS_PORT", "8443".to_string()),
+            ("SYNCTV_SERVER_TLS_CERT_PATH", "/certs/api.crt".to_string()),
+            ("SYNCTV_SERVER_TLS_KEY_PATH", "/certs/api.key".to_string()),
+            ("SYNCTV_SERVER_QUIC_ENABLED", "true".to_string()),
+            (
+                "SYNCTV_SERVER_QUIC_MAX_WEBTRANSPORT_SESSIONS",
+                "128".to_string(),
+            ),
+            (
+                "SYNCTV_SERVER_QUIC_ALT_SVC_MAX_AGE_SECONDS",
+                "3600".to_string(),
+            ),
+        ]);
+
+        apply_env_overrides_with(&mut config, &|name| env.get(name).cloned())
+            .expect("TLS and QUIC environment overrides should apply");
+
+        assert!(config.server.tls.enabled);
+        assert_eq!(config.server.tls.port, 8443);
+        assert_eq!(config.server.tls.cert_path, "/certs/api.crt");
+        assert_eq!(config.server.tls.key_path, "/certs/api.key");
+        assert!(config.server.quic.enabled);
+        assert_eq!(config.server.quic.port, None);
+        assert_eq!(config.server.quic.max_webtransport_sessions, 128);
+        assert_eq!(config.server.quic.alt_svc_max_age_seconds, 3600);
+    }
+
+    #[test]
+    fn quic_port_environment_override_sets_explicit_udp_port() {
+        let mut config = Config::default();
+        let env = HashMap::from([
+            ("SYNCTV_SERVER_TLS_ENABLED", "true".to_string()),
+            ("SYNCTV_SERVER_QUIC_PORT", "9443".to_string()),
+        ]);
+
+        apply_env_overrides_with(&mut config, &|name| env.get(name).cloned())
+            .expect("QUIC port override should apply");
+
+        assert_eq!(config.server.quic.port, Some(9443));
+    }
+
+    #[test]
+    fn quic_listener_port_zero_falls_back_to_server_port() {
+        let mut config = Config::default();
+        let env = HashMap::from([
+            ("SYNCTV_SERVER_QUIC_ENABLED", "true".to_string()),
+            ("SYNCTV_SERVER_QUIC_PORT", "0".to_string()),
+        ]);
+
+        apply_env_overrides_with(&mut config, &|name| env.get(name).cloned())
+            .expect("QUIC port 0 should apply as unset");
+
+        assert_eq!(config.server.quic.port, None);
+    }
+
+    #[test]
+    fn quic_listener_rejects_invalid_port_override() {
+        let mut config = Config::default();
+        let env = HashMap::from([("SYNCTV_SERVER_QUIC_PORT", "not-a-port".to_string())]);
+
+        let error = apply_env_overrides_with(&mut config, &|name| env.get(name).cloned())
+            .expect_err("invalid QUIC port should be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("SYNCTV_SERVER_QUIC_PORT: 'not-a-port'"));
     }
 
     #[test]

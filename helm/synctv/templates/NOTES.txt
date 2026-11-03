@@ -48,6 +48,17 @@ Ingress is enabled. Access the application at:
 
   - API:         service {{ include "synctv.fullname" . }} port {{ .Values.config.server.port }}
   - gRPC:        service {{ include "synctv.grpcServiceName" . }} port {{ .Values.grpcService.port | default .Values.config.server.port }}
+{{- if (.Values.config.server.tls).enabled }}
+  - HTTPS:       service {{ include "synctv.fullname" . }} port {{ int ((.Values.config.server.tls).port | default 8443) }} (TCP; shares the server.tls certificate with HTTP/3)
+{{- end }}
+{{- if (.Values.config.server.quic).enabled }}
+  - HTTP/3 (UDP): service {{ include "synctv.fullname" . }} port {{ include "synctv.quicPort" . }} (h3 + WebTransport; requires a UDP-reachable LoadBalancer/NodePort — ingress controllers proxy TCP/HTTP only)
+{{- if and .Values.networkPolicy.enabled (not (or .Values.networkPolicy.allowAnyH3Source .Values.networkPolicy.h3SourceCIDRs)) }}
+    WARNING: networkPolicy is enabled but no h3 source is allowed; QUIC
+    datagrams will be dropped. Set networkPolicy.allowAnyH3Source=true or
+    list client CIDRs in networkPolicy.h3SourceCIDRs.
+{{- end }}
+{{- end }}
 {{- if .Values.metrics.enabled }}
   - Metrics:     service {{ include "synctv.metricsServiceName" . }} port {{ .Values.metrics.port | default 9090 }}
 {{- end }}

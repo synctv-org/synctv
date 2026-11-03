@@ -190,6 +190,42 @@ Return the metrics TLS secret name
 {{- end }}
 
 {{/*
+Return the HTTP/3 (QUIC) UDP port: config.server.quic.port when set (> 0),
+otherwise the shared TLS port the QUIC listener defaults to.
+*/}}
+{{- define "synctv.quicPort" -}}
+{{- $port := int ((.Values.config.server.quic).port | default 0) -}}
+{{- if gt $port 0 -}}
+{{- $port -}}
+{{- else -}}
+{{- int ((.Values.config.server.tls).port | default 8443) -}}
+{{- end }}
+{{- end }}
+
+{{/*
+Return the secret name holding the shared server TLS certificate.
+*/}}
+{{- define "synctv.serverTlsSecretName" -}}
+{{- with ((.Values.config.server.tls).existingSecret) }}
+{{- . }}
+{{- else }}
+{{- printf "%s-server-tls" (include "synctv.fullname" .) }}
+{{- end }}
+{{- end }}
+
+{{/*
+Return the configured server TLS source: "secret", "cert-manager", "raw",
+or an empty string when TLS is enabled without any certificate source.
+*/}}
+{{- define "synctv.serverTlsSource" -}}
+{{- $tls := (.Values.config.server.tls) | default dict }}
+{{- if $tls.existingSecret }}secret
+{{- else if ($tls.certManager).enabled }}cert-manager
+{{- else if and $tls.certPath $tls.keyPath }}raw
+{{- end }}
+{{- end }}
+
+{{/*
 Return the metrics TLS self-signed issuer name
 */}}
 {{- define "synctv.metricsTlsIssuerName" -}}

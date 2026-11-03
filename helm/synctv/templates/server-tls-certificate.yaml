@@ -1,0 +1,26 @@
+{{- if and ((.Values.config.server.tls).enabled) ((((.Values.config.server.tls).certManager).enabled)) }}
+{{- $certManager := .Values.config.server.tls.certManager }}
+{{- if not $certManager.dnsNames }}
+{{- fail "config.server.tls.certManager requires dnsNames covering the public hostname clients dial" }}
+{{- end }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "synctv.serverTlsSecretName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "synctv.labels" . | nindent 4 }}
+spec:
+  secretName: {{ include "synctv.serverTlsSecretName" . }}
+  duration: {{ $certManager.duration | default "2160h" }}
+  renewBefore: {{ $certManager.renewBefore | default "720h" }}
+  subject:
+    organizations:
+      - synctv
+  dnsNames:
+    {{- toYaml $certManager.dnsNames | nindent 4 }}
+  issuerRef:
+    name: {{ required "config.server.tls.certManager.issuerRef.name is required" $certManager.issuerRef.name }}
+    kind: {{ $certManager.issuerRef.kind | default "Issuer" }}
+    group: {{ $certManager.issuerRef.group | default "cert-manager.io" }}
+{{- end }}

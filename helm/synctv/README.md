@@ -227,7 +227,7 @@ The application uses split database/Redis configuration so credentials can stay 
 | Section | Description |
 |---------|-------------|
 | `config.logging` | Process-wide output for shared infrastructure, background workers, and unmatched tracing targets |
-| `config.server` | API bind address, CORS, proxy settings, gRPC transport settings, and API logging |
+| `config.server` | API bind address, CORS, proxy settings, gRPC transport settings, shared TLS (HTTPS + HTTP/3), and API logging |
 | `config.publicIds` | Optional sqids settings for public API IDs |
 | `config.management` | Management endpoint settings |
 | `config.database` | Pool settings; actual host/port/user/password and optional read URL come from env vars |
@@ -254,6 +254,35 @@ The chart creates separate Services for application traffic:
 - `{{ release-name }}-stun` exposes the built-in UDP STUN listener when `stunService.enabled=true` and `config.webrtc.enableBuiltinStun=true`; it is disabled by default because a ClusterIP STUN Service is not reachable by public WebRTC clients.
 - `{{ release-name }}-metrics` exposes metrics when `metrics.enabled=true`.
 - `{{ release-name }}-grpc` exposes gRPC only and targets the same container port as HTTP.
+- The main `{{ release-name }}` Service gains an `https` TCP port when `config.server.tls.enabled=true` and an `h3` UDP port when additionally `config.server.quic.enabled=true`.
+
+### Shared server TLS (HTTPS) + HTTP/3 (QUIC)
+
+One certificate covers both TLS transports, following the nginx/Caddy site-certificate model: `config.server.tls` serves HTTPS on a TCP port, and `config.server.quic` serves HTTP/3 (plus WebTransport sessions) over UDP, defaulting to the same port number. Plain HTTP keeps serving on `server.port`, so plain HTTP, HTTPS, and h3 can coexist.
+
+```yaml
+config:
+  server:
+    tls:
+      enabled: true
+      port: 8443                      # HTTPS TCP; h3 UDP defaults to this
+      existingSecret: my-server-cert  # Secret with tls.crt/tls.key
+      # certManager:                  # or render a cert-manager Certificate
+      #   enabled: true
+      #   dnsNames: [synctv.example.com]
+      #   issuerRef: {name: letsencrypt}
+      # certPath / keyPath: for certs mounted via extraVolumes
+    quic:
+      enabled: true                   # HTTP/3 + WebTransport on UDP
+      # port: 8443                    # UDP port; defaults to tls.port
+```
+
+Networking notes:
+
+- `tls.port` must differ from `server.port`; `quic.enabled` requires `tls.enabled` (the chart fails to render otherwise).
+- HTTP/3 is UDP. Expose the Service as `LoadBalancer` or `NodePort`; ingress controllers proxy TCP/HTTP only, so QUIC cannot ride the Ingress object. If TCP traffic reaches the pod through an ingress while h3 goes direct to the LoadBalancer, the advertised Alt-Svc port must match the LoadBalancer's UDP port.
+- With `networkPolicy.enabled=true`, QUIC datagrams are dropped until you allow a source: set `networkPolicy.allowAnyH3Source=true` or list client CIDRs in `networkPolicy.h3SourceCIDRs`. HTTPS TCP is allowed from the configured ingress-controller namespaces together with the plain API port.
+- The certificate must be trusted by browsers connecting over HTTPS or plain h3 (REST via Alt-Svc); the WebTransport path additionally supports pinned self-signed certificates through the server's certificate-hash advertisement.
 
 WebRTC media uses dynamic ICE UDP ports. The chart does not create a fixed media UDP Service. Configure `config.livestream.webrtc.iceServers` with a TURN service reachable from pods and clients for Kubernetes or NAT deployments. `stunService` exposes address discovery only and cannot relay media. Mount TURN credentials with `extraVolumes` and `extraVolumeMounts`, then reference the mounted file through `credentialFile`.
 

@@ -187,6 +187,16 @@ spec:
             - name: rtmp
               containerPort: {{ .Values.config.livestream.rtmpPort }}
               protocol: TCP
+            {{- if (.Values.config.server.tls).enabled }}
+            - name: https
+              containerPort: {{ int ((.Values.config.server.tls).port | default 8443) }}
+              protocol: TCP
+            {{- end }}
+            {{- if (.Values.config.server.quic).enabled }}
+            - name: h3
+              containerPort: {{ include "synctv.quicPort" . }}
+              protocol: UDP
+            {{- end }}
             {{- if .Values.config.webrtc.enableBuiltinStun }}
             - name: stun
               containerPort: {{ .Values.config.webrtc.stunPort }}
@@ -428,6 +438,11 @@ spec:
               mountPath: /etc/synctv/metrics/tls
               readOnly: true
             {{- end }}
+            {{- if and (.Values.config.server.tls).enabled (ne (include "synctv.serverTlsSource" .) "raw") }}
+            - name: server-tls
+              mountPath: /etc/synctv/server-tls
+              readOnly: true
+            {{- end }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -459,6 +474,11 @@ spec:
         - name: metrics-tls
           secret:
             secretName: {{ include "synctv.metricsTlsSecretName" . }}
+        {{- end }}
+        {{- if and (.Values.config.server.tls).enabled (ne (include "synctv.serverTlsSource" .) "raw") }}
+        - name: server-tls
+          secret:
+            secretName: {{ include "synctv.serverTlsSecretName" . }}
         {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}

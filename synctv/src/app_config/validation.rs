@@ -331,6 +331,40 @@ impl AppConfig {
             errors.push("password_complexity.zxcvbn_min_score must be between 0 and 4".to_string());
         }
 
+        // Shared API TLS / HTTP/3 cross-field rules: one certificate covers
+        // the HTTPS listener and the QUIC listener.
+        if self.server.tls.enabled {
+            if self.server.tls.port == self.server.port {
+                errors.push(format!(
+                    "server.tls.port ({}) must differ from server.port ({}) so plain HTTP and HTTPS can both serve",
+                    self.server.tls.port, self.server.port
+                ));
+            }
+            if self.server.tls.cert_path.trim().is_empty()
+                || self.server.tls.key_path.trim().is_empty()
+            {
+                errors.push(
+                    "server.tls is enabled but cert_path/key_path is empty; set both PEM paths"
+                        .to_string(),
+                );
+            }
+            if self.server.tls.port == 0 {
+                errors.push("server.tls.port must be greater than 0".to_string());
+            }
+        }
+        if self.server.quic.enabled && !self.server.tls.enabled {
+            errors.push(
+                "server.quic is enabled but server.tls is disabled; HTTP/3 requires the shared server TLS configuration"
+                    .to_string(),
+            );
+        }
+        if self.server.quic.port == Some(0) {
+            errors.push(
+                "server.quic.port must be greater than 0 when set (leave unset to follow server.tls.port)"
+                    .to_string(),
+            );
+        }
+
         validate_hex_encryption_key(
             "security.credential_encryption_key",
             &self.security.credential_encryption_key,
@@ -1474,6 +1508,65 @@ mod tests {
                     if message.contains("JWT secret appears to be a placeholder")
             )
         }));
+    }
+
+    #[test]
+    fn quic_without_shared_tls_is_a_validation_error() {
+        let mut config = AppConfig::default();
+        config.server.quic.enabled = true;
+
+        let errors = config.validate().expect_err("QUIC without TLS must fail");
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("server.quic is enabled but server.tls is disabled")));
+    }
+
+    #[test]
+    fn https_port_conflicting_with_plain_http_port_is_a_validation_error() {
+        let mut config = AppConfig::default();
+        config.server.tls.enabled = true;
+        config.server.tls.port = config.server.port;
+        config.server.tls.cert_path = "/certs/api.crt".to_string();
+        config.server.tls.key_path = "/certs/api.key".to_string();
+
+        let errors = config
+            .validate()
+            .expect_err("TLS port equal to the plain HTTP port must fail");
+        assert!(errors
+            .iter()
+            .any(|error| error
+                .contains("server.tls.port (8080) must differ from server.port (8080)")));
+    }
+
+    #[test]
+    fn enabled_tls_without_certificate_paths_is_a_validation_error() {
+        let mut config = AppConfig::default();
+        config.server.tls.enabled = true;
+
+        let errors = config
+            .validate()
+            .expect_err("enabled TLS without cert paths must fail");
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("cert_path/key_path is empty")));
+    }
+
+    #[test]
+    fn shared_tls_with_quic_has_no_transport_validation_errors() {
+        let mut config = AppConfig::default();
+        config.server.tls.enabled = true;
+        config.server.tls.cert_path = "/certs/api.crt".to_string();
+        config.server.tls.key_path = "/certs/api.key".to_string();
+        config.server.quic.enabled = true;
+
+        // Defaults carry unrelated required-secret errors; the TLS/QUIC
+        // transport rules themselves must contribute nothing.
+        let errors = config
+            .validate()
+            .expect_err("defaults carry unrelated secret errors");
+        assert!(errors
+            .iter()
+            .all(|error| !error.contains("server.tls") && !error.contains("server.quic")));
     }
 
     #[test]

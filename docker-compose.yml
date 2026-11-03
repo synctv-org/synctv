@@ -46,6 +46,10 @@ services:
       SYNCTV_DATA_DIR: /data
     ports:
       - "8080:8080"
+      # HTTPS + HTTP/3 (QUIC) when enabled via SYNCTV_SERVER_TLS_*/QUIC_*
+      # env vars; the h3 UDP port defaults to the TLS port.
+      # - "8443:8443"
+      # - "8443:8443/udp"
       - "1935:1935"
     depends_on:
       postgres:

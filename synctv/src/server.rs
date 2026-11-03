@@ -2881,6 +2881,7 @@ impl SyncTvServer {
     ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
         let api_address = self.config.api_address();
         let quic_config = self.config.server.quic.clone();
+        let server_tls_config = self.config.server.tls.clone();
         let grpc_router = self
             .build_grpc_router(
                 &shared_http_app_state.runtime_settings,
@@ -2905,17 +2906,30 @@ impl SyncTvServer {
 
         info!("API server listening on {}", http_addr);
 
-        // Fail fast on unusable HTTP/3 configuration before the server boots.
-        if quic_config.enabled {
+        // Fail fast on unusable TLS / HTTP/3 configuration before the server
+        // boots. One shared certificate covers the HTTPS listener and the
+        // HTTP/3 listener (nginx/Caddy model).
+        if server_tls_config.enabled {
+            anyhow::ensure!(
+                server_tls_config.port != http_addr.port(),
+                "server.tls.port ({}) must differ from the plain HTTP port ({})",
+                server_tls_config.port,
+                http_addr.port()
+            );
             let (cert_pem, key_pem) = tokio::join!(
-                tokio::fs::read(&quic_config.cert_path),
-                tokio::fs::read(&quic_config.key_path)
+                tokio::fs::read(&server_tls_config.cert_path),
+                tokio::fs::read(&server_tls_config.key_path)
             );
             anyhow::ensure!(
                 cert_pem.is_ok() && key_pem.is_ok(),
-                "server.quic is enabled but the certificate or key file cannot be read"
+                "server.tls is enabled but the certificate or key file cannot be read"
             );
         }
+        anyhow::ensure!(
+            !quic_config.enabled || server_tls_config.enabled,
+            "server.quic is enabled but server.tls is disabled; HTTP/3 requires \
+the shared server TLS configuration"
+        );
 
         let handle = tokio::spawn(async move {
             let mut rx = shutdown_rx;
@@ -2938,17 +2952,94 @@ impl SyncTvServer {
 
             let mut router = http_router.merge(grpc_router);
 
-            // HTTP/3 (QUIC) listener: same router over UDP, plus WebTransport
-            // room sessions; TCP responses advertise the endpoint via Alt-Svc.
-            if quic_config.enabled {
+            // Shared TLS material: the HTTPS listener (TCP) and the HTTP/3
+            // listener (UDP) terminate the same certificate.
+            let shared_rustls_config = if server_tls_config.enabled {
                 match synctv_quic::load_tls_server_config(
-                    &quic_config.cert_path,
-                    &quic_config.key_path,
+                    &server_tls_config.cert_path,
+                    &server_tls_config.key_path,
                 )
                 .await
                 {
-                    Ok(rustls_config) => {
-                        let udp_port = quic_config.port.unwrap_or(http_addr.port());
+                    Ok(config) => Some(config),
+                    Err(error) => {
+                        error!(
+                            error = %error,
+                            "server TLS configuration failed to load; serving plain HTTP only"
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            // HTTPS listener: same router over TLS on server.tls.port.
+            if let Some(rustls_config) = shared_rustls_config.clone() {
+                let tls_addr = std::net::SocketAddr::new(http_addr.ip(), server_tls_config.port);
+                match tokio::net::TcpListener::bind(tls_addr).await {
+                    Ok(tcp_listener) => {
+                        info!("HTTPS API server listening on {tls_addr}");
+                        // Shared certificate, transport-specific ALPN: the
+                        // QUIC loader pins the h3 protocols, so the TCP
+                        // listener negotiates the standard web protocols.
+                        let mut https_rustls_config = rustls_config;
+                        https_rustls_config.alpn_protocols =
+                            vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+                        let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(
+                            https_rustls_config,
+                        ));
+                        let tls_make_service = router
+                            .clone()
+                            .layer(axum::middleware::from_fn(
+                                |mut request: axum::http::Request<axum::body::Body>,
+                                 next: axum::middleware::Next| async move {
+                                    if request
+                                        .extensions()
+                                        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+                                        .is_none()
+                                    {
+                                        let peer = request
+                                            .extensions()
+                                            .get::<axum::extract::ConnectInfo<TlsApiConnectInfo>>()
+                                            .map(|info| info.0 .0);
+                                        if let Some(peer) = peer {
+                                            request
+                                                .extensions_mut()
+                                                .insert(axum::extract::ConnectInfo(peer));
+                                        }
+                                    }
+                                    next.run(request).await
+                                },
+                            ))
+                            .into_make_service_with_connect_info::<TlsApiConnectInfo>();
+                        let tls_cancel = graceful_cancel.clone();
+                        tokio::spawn(async move {
+                            let tls_server = axum::serve(
+                                TlsApiListener::new(tcp_listener, acceptor),
+                                tls_make_service,
+                            )
+                            .with_graceful_shutdown(async move { tls_cancel.cancelled().await });
+                            if let Err(error) = tls_server.await {
+                                tracing::error!(error = %error, "HTTPS API server error");
+                            }
+                        });
+                    }
+                    Err(error) => {
+                        error!(
+                            error = %error,
+                            "HTTPS listener failed to bind on {tls_addr}; serving plain HTTP only"
+                        );
+                    }
+                }
+            }
+
+            // HTTP/3 (QUIC) listener: same router over UDP, plus WebTransport
+            // room sessions; TCP responses advertise the endpoint via Alt-Svc.
+            if quic_config.enabled {
+                if let Some(rustls_config) = shared_rustls_config.clone() {
+                    {
+                        let udp_port = quic_config.port.unwrap_or(server_tls_config.port);
                         // IPv6 listen addresses only parse via SocketAddr — a
                         // `ip:port` format string mangles `::` into `::8080`.
                         let bind_addr = std::net::SocketAddr::new(http_addr.ip(), udp_port);
@@ -3029,10 +3120,11 @@ impl SyncTvServer {
                                 // Pin the served certificate in the advertisement so
                                 // self-signed deployments work without manual client
                                 // configuration; unreadable hashes pin nothing.
-                                let certificate_hash =
-                                    synctv_quic::certificate_hash_base64(&quic_config.cert_path)
-                                        .await
-                                        .unwrap_or_default();
+                                let certificate_hash = synctv_quic::certificate_hash_base64(
+                                    &server_tls_config.cert_path,
+                                )
+                                .await
+                                .unwrap_or_default();
 
                                 shared_http_app_state
                                     .realtime_transport_advertisement
@@ -3052,12 +3144,6 @@ impl SyncTvServer {
                                 );
                             }
                         }
-                    }
-                    Err(error) => {
-                        error!(
-                            error = %error,
-                            "HTTP/3 (QUIC) TLS configuration failed to load; serving TCP only"
-                        );
                     }
                 }
             }
@@ -3399,6 +3485,69 @@ async fn shutdown_signal() {
         () = ctrl_c => { info!("Received Ctrl+C"); }
         () = terminate => { info!("Received SIGTERM"); }
         () = sighup => { /* SIGHUP never completes - it loops forever */ }
+    }
+}
+
+/// TCP listener that terminates TLS before handing connections to
+/// `axum::serve`, so the HTTPS API listener works without an axum-server
+/// dependency. Failed handshakes are logged and dropped; the listener keeps
+/// accepting (mirroring axum's TcpListener accept-loop semantics).
+struct TlsApiListener {
+    listener: tokio::net::TcpListener,
+    acceptor: tokio_rustls::TlsAcceptor,
+}
+
+impl TlsApiListener {
+    fn new(listener: tokio::net::TcpListener, acceptor: tokio_rustls::TlsAcceptor) -> Self {
+        Self { listener, acceptor }
+    }
+}
+
+impl axum::serve::Listener for TlsApiListener {
+    type Io = tokio_rustls::server::TlsStream<tokio::net::TcpStream>;
+    type Addr = std::net::SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        loop {
+            match self.listener.accept().await {
+                Ok((stream, remote_addr)) => match self.acceptor.accept(stream).await {
+                    Ok(tls_stream) => return (tls_stream, remote_addr),
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %error,
+                            "TLS handshake failed; dropping the connection and continuing"
+                        );
+                    }
+                },
+                Err(error) => {
+                    tracing::error!(
+                        error = %error,
+                        "HTTPS listener accept failed; retrying after a short delay"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+            }
+        }
+    }
+
+    fn local_addr(&self) -> std::io::Result<Self::Addr> {
+        self.listener.local_addr()
+    }
+}
+
+/// Peer address produced by [`TlsApiListener`] for axum's
+/// `into_make_service_with_connect_info`. A newtype sidesteps the orphan
+/// rule; the HTTPS router re-inserts the conventional
+/// `ConnectInfo<SocketAddr>` extension from it, exactly like the HTTP/3
+/// path synthesizes one from `PeerAddress`.
+#[derive(Clone, Copy, Debug)]
+struct TlsApiConnectInfo(std::net::SocketAddr);
+
+impl axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, TlsApiListener>>
+    for TlsApiConnectInfo
+{
+    fn connect_info(stream: axum::serve::IncomingStream<'_, TlsApiListener>) -> Self {
+        Self(*stream.remote_addr())
     }
 }
 

@@ -95,6 +95,37 @@ data:
         - {{ . | quote }}
         {{- end }}
       {{- end }}
+      {{- $serverTlsEnabled := (.Values.config.server.tls).enabled }}
+      {{- $quicEnabled := (.Values.config.server.quic).enabled }}
+      {{- if $serverTlsEnabled }}
+      {{- $serverTlsSource := include "synctv.serverTlsSource" . }}
+      {{- if not $serverTlsSource }}
+      {{- fail "config.server.tls is enabled without a certificate source: set config.server.tls.existingSecret, enable config.server.tls.certManager (with dnsNames + issuerRef.name), or provide certPath/keyPath mounted via extraVolumeMounts" }}
+      {{- end }}
+      tls:
+        enabled: true
+        port: {{ int ((.Values.config.server.tls).port | default 8443) }}
+        {{- if eq $serverTlsSource "raw" }}
+        cert_path: {{ ((.Values.config.server.tls).certPath) | quote }}
+        key_path: {{ ((.Values.config.server.tls).keyPath) | quote }}
+        {{- else }}
+        cert_path: "/etc/synctv/server-tls/tls.crt"
+        key_path: "/etc/synctv/server-tls/tls.key"
+        {{- end }}
+      {{- end }}
+      {{- if $quicEnabled }}
+      {{- if not $serverTlsEnabled }}
+      {{- fail "config.server.quic is enabled but config.server.tls is disabled; HTTP/3 requires the shared server TLS configuration" }}
+      {{- end }}
+      quic:
+        enabled: true
+        {{- $quicPort := int ((.Values.config.server.quic).port | default 0) }}
+        {{- if gt $quicPort 0 }}
+        port: {{ $quicPort }}
+        {{- end }}
+        max_webtransport_sessions: {{ int ((.Values.config.server.quic).maxWebtransportSessions | default 256) }}
+        alt_svc_max_age_seconds: {{ int ((.Values.config.server.quic).altSvcMaxAgeSeconds | default 86400) }}
+      {{- end }}
 
     health:
       enabled: {{ if hasKey .Values.config.health "enabled" }}{{ .Values.config.health.enabled }}{{ else }}true{{ end }}

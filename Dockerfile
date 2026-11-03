@@ -144,7 +144,10 @@ RUN command -v synctv && synctv --version
 # 50051: dedicated cluster gRPC
 # 9090: internal Prometheus metrics listener
 # 1935: RTMP (livestream)
-EXPOSE 8080 8081 50051 9090 1935
+# 8443: HTTPS when [server.tls] is enabled (default port)
+# 8443/udp: HTTP/3 (QUIC) + WebTransport when [server.quic] is enabled;
+#           the UDP port defaults to server.tls.port
+EXPOSE 8080 8081 8443 8443/udp 50051 9090 1935
 
 # Health check against the HTTP health endpoint
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \

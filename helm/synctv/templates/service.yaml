@@ -27,6 +27,18 @@ spec:
       targetPort: api
       protocol: TCP
       name: api
+    {{- if (.Values.config.server.tls).enabled }}
+    - port: {{ int ((.Values.config.server.tls).port | default 8443) }}
+      targetPort: https
+      protocol: TCP
+      name: https
+    {{- end }}
+    {{- if (.Values.config.server.quic).enabled }}
+    - port: {{ include "synctv.quicPort" . }}
+      targetPort: h3
+      protocol: UDP
+      name: h3
+    {{- end }}
   selector:
     {{- include "synctv.appSelectorLabels" . | nindent 4 }}
   {{- if .Values.service.sessionAffinity }}

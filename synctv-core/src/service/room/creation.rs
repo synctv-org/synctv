@@ -148,16 +148,14 @@ impl RoomService {
                 .map_err(|error| Error::InvalidInput(error.to_string()))?;
         }
 
-        let need_review = if enforce_creation_policy {
-            self.runtime_settings_store
+        let need_review = enforce_creation_policy
+            && self
+                .runtime_settings_store
                 .as_ref()
                 .ok_or_else(runtime_settings_store_unavailable_for_room_creation)?
                 .room_creation
                 .approval_required
-                .get()?
-        } else {
-            false
-        };
+                .get()?;
 
         if need_review {
             tracing::info!(

@@ -1327,8 +1327,8 @@ impl PublisherManager {
                 if info.node_id == self.local_node_id
                     && tracked_generation_id.as_deref() == Some(info.generation_id.as_str()) =>
             {
-                let became_ready = if info.ready_at.is_none() {
-                    match self
+                let became_ready = info.ready_at.is_none()
+                    && match self
                         .registry
                         .mark_generation_ready(
                             room_id,
@@ -1374,10 +1374,7 @@ impl PublisherManager {
                             .await;
                             return;
                         }
-                    }
-                } else {
-                    false
-                };
+                    };
                 let user_id = info.user_id.clone();
                 let lease_epoch = info.lease_epoch;
                 let generation_id = info.generation_id.clone();

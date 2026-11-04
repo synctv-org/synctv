@@ -70,6 +70,18 @@ pub(crate) fn generate_odin_ttid() -> String {
     random_ascii(b"abcdef0123456789", 160)
 }
 
+/// Anonymous uifid for the Argus risk-control gate. Real uifids are 19-digit
+/// numeric device identifiers; the gateway currently checks presence only.
+pub(crate) fn generate_uifid() -> String {
+    let mut rng = rand::rng();
+    let mut digits = String::with_capacity(19);
+    digits.push(b"123456789"[rng.random_range(0..9)] as char);
+    for _ in 0..18 {
+        digits.push(b"0123456789"[rng.random_range(0..10)] as char);
+    }
+    digits
+}
+
 pub(crate) fn sign_a_bogus(params: &str, user_agent: &str) -> String {
     let timestamp = now_ms();
     let params_hash = sm3_twice(format!("{params}cus").as_bytes());
@@ -349,6 +361,9 @@ mod tests {
         assert_eq!(generate_ms_token().len(), 184);
         assert_eq!(generate_nonce().len(), 21);
         assert_eq!(generate_odin_ttid().len(), 160);
+        let uifid = generate_uifid();
+        assert_eq!(uifid.len(), 19);
+        assert!(uifid.chars().all(|value| value.is_ascii_digit()));
         let bogus = sign_a_bogus("aid=6383&aweme_id=1", "test-agent");
         assert!(!bogus.is_empty());
         assert_eq!(generate_x_bogus(&md5_hex("aid=6383"), 1).len(), 16);

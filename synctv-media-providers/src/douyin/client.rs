@@ -7,7 +7,8 @@ use serde_json::json;
 use tokio::sync::OnceCell;
 
 use super::sign::{
-    generate_ms_token, generate_nonce, generate_odin_ttid, generate_verify_fp, sign_a_bogus,
+    generate_ms_token, generate_nonce, generate_odin_ttid, generate_uifid, generate_verify_fp,
+    sign_a_bogus,
 };
 use super::types::{
     Aweme, AwemeDetailEnvelope, AwemeListEnvelope, LiveEnvelope, LiveRoom, RawAuthor, RawImage,
@@ -48,6 +49,7 @@ pub struct DouyinClient {
     http: reqwest::Client,
     endpoints: DouyinEndpoints,
     anonymous_ttwid: Arc<OnceCell<String>>,
+    anonymous_uifid: Arc<OnceCell<String>>,
 }
 
 impl DouyinClient {
@@ -66,6 +68,7 @@ impl DouyinClient {
             http,
             endpoints: DouyinEndpoints::default(),
             anonymous_ttwid: Arc::new(OnceCell::new()),
+            anonymous_uifid: Arc::new(OnceCell::new()),
         }
     }
 
@@ -127,7 +130,8 @@ impl DouyinClient {
             return Self::parse_resource(input);
         }
         let cookie = self.session_cookie(session).await?;
-        let response = Self::request(self.http.get(url), &cookie, DOUYIN_ORIGIN)
+        let uifid = self.uifid(&cookie).await;
+        let response = Self::request(self.http.get(url), &cookie, &uifid, DOUYIN_ORIGIN)
             .send()
             .await?;
         Self::parse_resource(response.url().as_str())
@@ -151,12 +155,14 @@ impl DouyinClient {
     ) -> Result<DouyinMedia, ProviderClientError> {
         validate_numeric_id(aweme_id, "aweme ID")?;
         let cookie = self.session_cookie(session).await?;
-        let params = web_params([("aweme_id", aweme_id.to_string())]);
+        let uifid = self.uifid(&cookie).await;
+        let params = web_params([("aweme_id", aweme_id.to_string())], &uifid);
         let envelope: AwemeDetailEnvelope = fetch_json(Self::request(
             self.http
                 .get(&self.endpoints.detail)
                 .query(&signed_params(&params)),
             &cookie,
+            &uifid,
             DOUYIN_ORIGIN,
         ))
         .await?;
@@ -191,21 +197,26 @@ impl DouyinClient {
             ));
         }
         let cookie = self.session_cookie(session).await?;
-        let params = web_params([
-            ("sec_user_id", sec_uid.to_string()),
-            ("max_cursor", cursor.to_string()),
-            ("count", count.to_string()),
-            ("locate_query", "false".to_string()),
-            ("show_live_replay_strategy", "1".to_string()),
-            ("need_time_list", "1".to_string()),
-            ("publish_video_strategy_type", "2".to_string()),
-            ("from_user_page", "1".to_string()),
-        ]);
+        let uifid = self.uifid(&cookie).await;
+        let params = web_params(
+            [
+                ("sec_user_id", sec_uid.to_string()),
+                ("max_cursor", cursor.to_string()),
+                ("count", count.to_string()),
+                ("locate_query", "false".to_string()),
+                ("show_live_replay_strategy", "1".to_string()),
+                ("need_time_list", "1".to_string()),
+                ("publish_video_strategy_type", "2".to_string()),
+                ("from_user_page", "1".to_string()),
+            ],
+            &uifid,
+        );
         let envelope: AwemeListEnvelope = fetch_json(Self::request(
             self.http
                 .get(&self.endpoints.user_posts)
                 .query(&signed_params(&params)),
             &cookie,
+            &uifid,
             DOUYIN_ORIGIN,
         ))
         .await?;
@@ -236,12 +247,14 @@ impl DouyinClient {
     ) -> Result<DouyinMedia, ProviderClientError> {
         validate_room_key(web_rid)?;
         let cookie = self.session_cookie(session).await?;
-        let params = live_params(web_rid);
+        let uifid = self.uifid(&cookie).await;
+        let params = live_params(web_rid, &uifid);
         let envelope: LiveEnvelope = fetch_json(Self::request(
             self.http
                 .get(&self.endpoints.live_enter)
                 .query(&signed_params(&params)),
             &cookie,
+            &uifid,
             DOUYIN_LIVE_ORIGIN,
         ))
         .await?;
@@ -268,6 +281,21 @@ impl DouyinClient {
         Ok(DouyinSession {
             cookie: Some(self.session_cookie(session).await?),
         })
+    }
+
+    /// Identifier required by the Argus risk-control gate: Douyin's web API
+    /// rejects requests without a uifid (403 "Blocked by
+    /// ArgusSecurityPlugin Uifid Not Found"). A browser session carries it in
+    /// a UIFID/UIFID_TEMP cookie; anonymous requests use a generated id,
+    /// which the gateway accepts because it only validates presence.
+    async fn uifid(&self, cookie: &str) -> String {
+        if let Some(value) = cookie_uifid(cookie) {
+            return value;
+        }
+        self.anonymous_uifid
+            .get_or_init(|| async { generate_uifid() })
+            .await
+            .clone()
     }
 
     async fn session_cookie(
@@ -330,6 +358,7 @@ impl DouyinClient {
     fn request(
         request: reqwest::RequestBuilder,
         cookie: &str,
+        uifid: &str,
         origin: &'static str,
     ) -> reqwest::RequestBuilder {
         request
@@ -337,6 +366,8 @@ impl DouyinClient {
             .header(ORIGIN, origin)
             .header(REFERER, format!("{origin}/"))
             .header(COOKIE, cookie)
+            .header("x-tt-argus", "1")
+            .header("uifid", uifid)
     }
 }
 
@@ -388,7 +419,7 @@ fn validate_room_key(value: &str) -> Result<(), ProviderClientError> {
     Ok(())
 }
 
-fn web_params<const N: usize>(extra: [(&str, String); N]) -> Vec<(String, String)> {
+fn web_params<const N: usize>(extra: [(&str, String); N], uifid: &str) -> Vec<(String, String)> {
     let mut params = vec![
         ("device_platform".to_string(), "webapp".to_string()),
         ("aid".to_string(), "6383".to_string()),
@@ -413,11 +444,12 @@ fn web_params<const N: usize>(extra: [(&str, String); N]) -> Vec<(String, String
     let verify_fp = generate_verify_fp();
     params.push(("verifyFp".to_string(), verify_fp.clone()));
     params.push(("fp".to_string(), verify_fp));
+    params.push(("uifid".to_string(), uifid.to_string()));
     params.push(("msToken".to_string(), generate_ms_token()));
     params
 }
 
-fn live_params(web_rid: &str) -> Vec<(String, String)> {
+fn live_params(web_rid: &str, uifid: &str) -> Vec<(String, String)> {
     vec![
         ("app_name".to_string(), "douyin_web".to_string()),
         ("enter_from".to_string(), "web_live".to_string()),
@@ -430,6 +462,7 @@ fn live_params(web_rid: &str) -> Vec<(String, String)> {
         ("browser_version".to_string(), "120.0.0.0".to_string()),
         ("web_rid".to_string(), web_rid.to_string()),
         ("is_need_double_stream".to_string(), "true".to_string()),
+        ("uifid".to_string(), uifid.to_string()),
         ("msToken".to_string(), generate_ms_token()),
     ]
 }
@@ -783,6 +816,19 @@ fn has_cookie(cookie: &str, name: &str) -> bool {
         .any(|part| part.trim().starts_with(&format!("{name}=")))
 }
 
+fn cookie_value(cookie: &str, name: &str) -> Option<String> {
+    cookie.split(';').find_map(|part| {
+        let (key, value) = part.trim().split_once('=')?;
+        (key == name).then(|| value.to_string())
+    })
+}
+
+fn cookie_uifid(cookie: &str) -> Option<String> {
+    ["UIFID", "UIFID_TEMP", "uifid"]
+        .into_iter()
+        .find_map(|name| cookie_value(cookie, name))
+}
+
 fn push_cookie(cookie: &mut String, name: &str, value: &str) {
     if !cookie.is_empty() {
         cookie.push_str("; ");
@@ -795,7 +841,9 @@ fn push_cookie(cookie: &mut String, name: &str, value: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wiremock::matchers::{method, path, query_param};
+    use wiremock::matchers::{
+        header, header_exists, header_regex, method, path, query_param, query_param_contains,
+    };
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn endpoints(server: &MockServer) -> DouyinEndpoints {
@@ -845,6 +893,8 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/detail"))
             .and(query_param("aweme_id", "7123456789012345678"))
+            .and(query_param_contains("uifid", ""))
+            .and(header_exists("x-tt-argus"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "status_code": 0,
                 "aweme_detail": {
@@ -887,6 +937,66 @@ mod tests {
         assert_eq!(media.variants[0].codec.as_deref(), Some("hevc"));
         assert_eq!(media.variants[0].fps, Some(60));
         assert_eq!(media.variants[0].url, "https://media/video.mp4");
+    }
+
+    #[tokio::test]
+    async fn sends_argus_gate_identifiers_on_anonymous_video_requests() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/detail"))
+            .and(query_param("aweme_id", "7123456789012345678"))
+            .and(query_param_contains("uifid", ""))
+            .and(header("x-tt-argus", "1"))
+            .and(header_regex("uifid", r"^\d{19}$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "status_code": 0,
+                "aweme_detail": {
+                    "aweme_id": "7123456789012345678",
+                    "desc": "gated video",
+                    "video": {"play_addr": {"url_list": ["https://media/gated.mp4"]}}
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let media = client(&server)
+            .await
+            .video("7123456789012345678", None)
+            .await
+            .expect("anonymous requests should pass the Argus gate");
+        assert_eq!(media.variants[0].url, "https://media/gated.mp4");
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn reuses_uifid_from_session_cookie() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/detail"))
+            .and(query_param("aweme_id", "7123456789012345678"))
+            .and(query_param("uifid", "7300000000000000123"))
+            .and(header("uifid", "7300000000000000123"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "status_code": 0,
+                "aweme_detail": {
+                    "aweme_id": "7123456789012345678",
+                    "desc": "session video",
+                    "video": {"play_addr": {"url_list": ["https://media/session.mp4"]}}
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let session = DouyinSession {
+            cookie: Some("ttwid=session-ttwid; UIFID_TEMP=7300000000000000123".to_string()),
+        };
+        let media = client(&server)
+            .await
+            .video("7123456789012345678", Some(&session))
+            .await
+            .expect("session uifid should be forwarded");
+        assert_eq!(media.variants[0].url, "https://media/session.mp4");
+        server.verify().await;
     }
 
     #[tokio::test]
@@ -957,6 +1067,7 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/live"))
             .and(query_param("web_rid", "12345"))
+            .and(query_param_contains("uifid", ""))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "data": {
                     "user": {

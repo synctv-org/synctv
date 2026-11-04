@@ -3956,7 +3956,18 @@ async fn full_stack_account_closure_requires_sensitive_verification() {
     assert_eq!(me.status(), StatusCode::OK);
 
     // Closure without a valid verification must be rejected and leave the
-    // account intact.
+    // account intact. A missing verification_id fails proto validation
+    // (400); a well-formed but unknown one fails the consume (401).
+    let missing = post_json(
+        &client,
+        &format!("{}/api/user/account-closure", server.api_base_url),
+        CloseAccountRequest {
+            verification_id: String::new(),
+        },
+        Some(&token),
+    )
+    .await;
+    assert_eq!(missing.status(), StatusCode::BAD_REQUEST);
     let rejected = post_json(
         &client,
         &format!("{}/api/user/account-closure", server.api_base_url),

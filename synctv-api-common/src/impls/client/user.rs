@@ -348,10 +348,11 @@ impl ClientApiImpl {
     pub async fn close_account(
         &self,
         user_id: &UserId,
-        verification_id: &str,
+        req: synctv_proto::client::CloseAccountRequest,
     ) -> Result<synctv_proto::client::CloseAccountResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
         self.user_service
-            .consume_sensitive_operation_verification(user_id, verification_id)
+            .consume_sensitive_operation_verification(user_id, &req.verification_id)
             .await
             .map_err(ApiError::from)?;
         let uid = *user_id;

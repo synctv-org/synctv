@@ -1473,7 +1473,6 @@ pub async fn close_account(
     State(state): State<AppState>,
     Json(req): Json<CloseAccountRequest>,
 ) -> AppResult<Json<CloseAccountResponse>> {
-    let verification_id = req.verification_id;
     let request_meta = request_meta
         .0
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
@@ -1483,11 +1482,7 @@ pub async fn close_account(
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Write,
-            |auth| async move {
-                client_api
-                    .close_account(&auth.user_id(), &verification_id)
-                    .await
-            },
+            |auth| async move { client_api.close_account(&auth.user_id(), req).await },
         )
         .await
         .map_err(super::AppError::from)?;

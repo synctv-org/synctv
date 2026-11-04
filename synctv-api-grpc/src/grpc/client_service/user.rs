@@ -693,8 +693,8 @@ impl UserService for ClientServiceImpl {
         &self,
         request: Request<CloseAccountRequest>,
     ) -> Result<Response<CloseAccountResponse>, Status> {
-        let verification_id = request.get_ref().verification_id.clone();
         let metadata = self.request_metadata(&request)?;
+        let req = request.into_inner();
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
         let response = executor
@@ -703,7 +703,7 @@ impl UserService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     client_api
-                        .close_account(&authenticated.user_id(), &verification_id)
+                        .close_account(&authenticated.user_id(), req)
                         .await
                 },
             )

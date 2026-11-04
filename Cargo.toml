@@ -236,8 +236,6 @@ retina = "=0.4.21"
 rust_h265 = "=0.4.1"
 rusty_aac = { version = "=2.0.1", default-features = false }
 rusty_h264 = "=0.17.0"
-ffmpeg-next = { version = "=9.0.0", default-features = false, features = ["build", "format"] }
-ffmpeg-sys-next = { version = "=9.0.1", features = ["build-portable"] }
 
 # Object Storage
 opendal = { version = "=0.59.5", default-features = false, features = [

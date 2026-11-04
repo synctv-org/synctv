@@ -1,0 +1,178 @@
+//! Scheduler and metadata unit tests.
+
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
+use indexmap::IndexMap;
+use synctv_xiu::flv::amf0::{amf0_reader::Amf0Reader, amf0_writer::Amf0Writer, Amf0ValueType};
+use synctv_xiu::streamhub::utils::Uuid;
+
+use super::{
+    parse_metadata_resolution, pick_most_demanded, rung_stream_name, split_rung_stream_name,
+    RungState, SourceState, TranscodePreset,
+};
+
+fn preset(name: &str, height: u32) -> TranscodePreset {
+    TranscodePreset {
+        name: name.to_string(),
+        height,
+        video_kbps: 1000,
+        audio_kbps: 64,
+        max_fps: 30,
+    }
+}
+
+fn waiting(mut rung: RungState, viewers: u32) -> RungState {
+    rung.waiting_viewers = viewers;
+    rung
+}
+
+fn sources(
+    entries: Vec<((String, String), Vec<(String, RungState)>)>,
+) -> HashMap<(String, String), SourceState> {
+    entries
+        .into_iter()
+        .map(|(key, rungs)| {
+            (
+                key,
+                SourceState {
+                    rungs: rungs.into_iter().collect(),
+                    source_resolution: None,
+                },
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn rung_stream_names_round_trip() {
+    assert_eq!(rung_stream_name("media", "480p"), "media::480p");
+    assert_eq!(
+        split_rung_stream_name("media::480p"),
+        Some(("media", "480p"))
+    );
+    assert_eq!(split_rung_stream_name("media"), None);
+    assert_eq!(split_rung_stream_name("::480p"), None);
+    assert_eq!(split_rung_stream_name("media::"), None);
+}
+
+#[test]
+fn pick_prefers_the_most_waiting_viewers() {
+    let presets = vec![
+        preset("720p", 720),
+        preset("480p", 480),
+        preset("360p", 360),
+    ];
+    let sources = sources(vec![(
+        ("room".to_string(), "media".to_string()),
+        vec![
+            ("720p".to_string(), waiting(RungState::default(), 1)),
+            ("480p".to_string(), waiting(RungState::default(), 5)),
+            ("360p".to_string(), waiting(RungState::default(), 3)),
+        ],
+    )]);
+    let (_, rung, demand) =
+        pick_most_demanded(&sources, &presets, Instant::now()).expect("a pick exists");
+    assert_eq!((rung, demand), ("480p", 5));
+}
+
+#[test]
+fn pick_skips_running_unsupported_cooldown_and_low_value_rungs() {
+    let presets = vec![
+        preset("720p", 720),
+        preset("480p", 480),
+        preset("360p", 360),
+    ];
+    let mut running = RungState::default();
+    running.running = Some(super::RunningRung {
+        cancel: tokio_util::sync::CancellationToken::new(),
+        idle_since: None,
+    });
+    let mut unsupported = RungState::default();
+    unsupported.unsupported = Some("no decoder".to_string());
+    let mut cooling_down = waiting(RungState::default(), 9);
+    cooling_down.last_failure = Some(Instant::now());
+    let sources = sources(vec![(
+        ("room".to_string(), "media".to_string()),
+        vec![
+            ("720p".to_string(), running),
+            ("480p".to_string(), unsupported),
+            ("360p".to_string(), cooling_down),
+        ],
+    )]);
+    assert!(pick_most_demanded(&sources, &presets, Instant::now()).is_none());
+
+    // After the cooldown lapses the rung becomes schedulable again.
+    let mut elapsed_sources = sources;
+    let rung = elapsed_sources
+        .get_mut(&("room".to_string(), "media".to_string()))
+        .and_then(|source| source.rungs.get_mut("360p"))
+        .expect("rung exists");
+    rung.last_failure = Some(Instant::now() - Duration::from_secs(31));
+    let (_, rung, _) = pick_most_demanded(&elapsed_sources, &presets, Instant::now())
+        .expect("pick after cooldown");
+    assert_eq!(rung, "360p");
+}
+
+#[test]
+fn pick_skips_rungs_at_or_above_source_resolution() {
+    let presets = vec![
+        preset("1080p", 1080),
+        preset("720p", 720),
+        preset("480p", 480),
+    ];
+    let mut sources = sources(vec![(
+        ("room".to_string(), "media".to_string()),
+        vec![
+            ("1080p".to_string(), waiting(RungState::default(), 9)),
+            ("720p".to_string(), waiting(RungState::default(), 8)),
+            ("480p".to_string(), waiting(RungState::default(), 1)),
+        ],
+    )]);
+    // A 720p source makes both the 1080p and 720p rungs pointless.
+    sources
+        .get_mut(&("room".to_string(), "media".to_string()))
+        .expect("source exists")
+        .source_resolution = Some((1280, 720));
+    let (_, rung, _) =
+        pick_most_demanded(&sources, &presets, Instant::now()).expect("a pick exists");
+    assert_eq!(rung, "480p");
+}
+
+#[test]
+fn metadata_resolution_parses_real_amf_ecma_array() {
+    let mut properties = IndexMap::new();
+    properties.insert("width".to_string(), Amf0ValueType::Number(1920.0));
+    properties.insert("height".to_string(), Amf0ValueType::Number(1080.0));
+    properties.insert("videocodecid".to_string(), Amf0ValueType::Number(7.0));
+    let mut writer = Amf0Writer::new();
+    writer.write_string(&"@setDataFrame".to_string()).unwrap();
+    writer.write_string(&"onMetaData".to_string()).unwrap();
+    writer.write_eacm_array(&properties).unwrap();
+    let body = writer.extract_current_bytes();
+
+    // The script tag body starts at the "onMetaData" value, matching how
+    // FrameData::MetaData arrives (see the RTMP message path).
+    let values = Amf0Reader::new(synctv_xiu::bytesio::bytes_reader::BytesReader::new(
+        body.clone(),
+    ))
+    .read_all()
+    .expect("amf parse");
+    assert_eq!(
+        values.first(),
+        Some(&Amf0ValueType::UTF8String("@setDataFrame".to_string()))
+    );
+
+    // The parser tolerates both a bare onMetaData body and the RTMP
+    // @setDataFrame framing by scanning for the first ECMA array.
+    assert_eq!(parse_metadata_resolution(&body), Some((1920, 1080)));
+
+    assert_eq!(parse_metadata_resolution(b""), None);
+    assert_eq!(parse_metadata_resolution(b"not amf at all"), None);
+}
+
+#[test]
+fn uuid_generation_ids_are_distinct() {
+    // Rung generations must never collide across jobs of the same source.
+    assert_ne!(Uuid::new(), Uuid::new());
+}

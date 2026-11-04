@@ -155,6 +155,7 @@ fn config(
         hls_s3: HlsS3Options::default(),
         ssrf_guard: SsrfGuard::strict_policy(),
         webrtc_session: crate::WebRtcSessionConfig::default(),
+        transcode: Default::default(),
     }
 }
 

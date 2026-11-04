@@ -335,6 +335,8 @@ pub struct LivestreamConfig {
     pub ssrf_guard: SsrfGuard,
     /// WHIP/WHEP peer and session limits.
     pub webrtc_session: WebRtcSessionConfig,
+    /// Live transcode settings (quality rungs), disabled by default.
+    pub transcode: crate::livestream::transcode::TranscodeConfig,
 }
 
 fn build_hls_storage(config: &LivestreamConfig) -> StreamResult<Arc<dyn HlsStorage>> {
@@ -841,6 +843,18 @@ impl LivestreamServer {
         // RTMP/StreamHub/HLS task running without a returned handle to shut it down.
         let hls_storage = build_hls_storage(&self.config)?;
 
+        // Fail fast on an invalid transcode section instead of discovering it
+        // per stream at runtime.
+        if self.config.transcode.enabled {
+            let problems = self.config.transcode.validate();
+            if !problems.is_empty() {
+                return Err(crate::error::StreamError::InvalidState(format!(
+                    "invalid livestream.transcode configuration: {}",
+                    problems.join("; ")
+                )));
+            }
+        }
+
         // 1. Create StreamHub channels and hub (bounded to prevent OOM under load)
         let (event_sender, event_receiver) =
             mpsc::channel(synctv_xiu::streamhub::define::STREAM_HUB_EVENT_CHANNEL_CAPACITY);
@@ -1296,6 +1310,32 @@ impl LivestreamServer {
 
         // 8. Wire HLS proxy client (created in step 5a) into infrastructure
         // 9. Create LiveStreamingInfrastructure with HLS components wired in
+        let transcode_manager = self.config.transcode.enabled.then(|| {
+            let workers: Vec<std::sync::Arc<dyn crate::livestream::transcode::TranscodeWorker>> =
+                self.config
+                    .transcode
+                    .workers
+                    .iter()
+                    .map(|worker| {
+                        let worker: std::sync::Arc<
+                            dyn crate::livestream::transcode::TranscodeWorker,
+                        > = match &worker.engine {
+                            crate::livestream::transcode::WorkerEngine::Ffmpeg(ffmpeg) => {
+                                crate::livestream::transcode::FfmpegWorker::new(ffmpeg)
+                            }
+                        };
+                        worker
+                    })
+                    .collect();
+            crate::livestream::transcode::TranscodeManager::new(
+                self.config.transcode.clone(),
+                workers,
+                self.publisher_registry.clone(),
+                event_sender.clone(),
+                self.config.node_id.clone(),
+                self.config.cluster_address.clone(),
+            )
+        });
         let infrastructure = Arc::new(
             LiveStreamingInfrastructure::from_parts(
                 self.publisher_registry,
@@ -1310,7 +1350,8 @@ impl LivestreamServer {
             .with_hls_storage_backend(self.config.hls_storage_backend)
             .with_hls_proxy(hls_proxy)
             .with_webrtc_session_manager(webrtc_session_manager)
-            .with_webrtc_session_router(webrtc_session_router),
+            .with_webrtc_session_router(webrtc_session_router)
+            .with_transcode(transcode_manager),
         );
 
         info!(
@@ -1421,6 +1462,7 @@ mod tests {
             hls_s3: HlsS3Options::default(),
             ssrf_guard: SsrfGuard::strict_policy(),
             webrtc_session: WebRtcSessionConfig::default(),
+            transcode: crate::livestream::transcode::TranscodeConfig::default(),
         }
     }
 

@@ -192,6 +192,7 @@ pub async fn init_livestream(
                     config.livestream.webrtc.max_session_duration_seconds,
                 ),
             },
+            transcode: config.livestream.transcode.clone(),
         },
         publisher_registry,
         user_stream_tracker.clone(),

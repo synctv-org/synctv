@@ -449,7 +449,7 @@ pub async fn stream_live_flv_chunks(
     let infrastructure = deps.live_streaming_infrastructure.ok_or_else(|| {
         ApiError::ServiceUnavailable("Live streaming service is unavailable".to_string())
     })?;
-    let (rx, subscriber_guard) = synctv_livestream::FlvStreamingApi::create_session_with_pull(
+    let (rx, stream_guards) = synctv_livestream::FlvStreamingApi::create_session_with_pull(
         infrastructure,
         &room_id_key,
         &media_id_key,
@@ -470,7 +470,7 @@ pub async fn stream_live_flv_chunks(
 
     let (tx, rx_wrapped) = mpsc::channel::<Result<StreamChunk, ApiError>>(512);
     tokio::spawn(async move {
-        let _guard = subscriber_guard;
+        let _guards = stream_guards;
         let mut rx = rx;
         let mut consecutive_drops: u32 = 0;
         let start_time = std::time::Instant::now();

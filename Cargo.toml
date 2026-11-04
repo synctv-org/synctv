@@ -107,8 +107,8 @@ tonic = { version = "=0.14.9", default-features = false, features = [
 ] }
 tonic-reflection = "=0.14.8"
 tonic-health = "=0.14.8"
-tonic-types = "=0.14.8"
-tonic-prost = "=0.14.8"
+tonic-types = "=0.14.9"
+tonic-prost = "=0.14.9"
 tonic-prost-build = "=0.14.9"
 prost = "=0.14.4"
 prost-types = "=0.14.4"
@@ -345,7 +345,7 @@ rayon = "=1.12.0"
 
 # HTTP Body
 http-body-util = "=0.1.5"
-http-body = "=1.0.1"
+http-body = "=1.1.0"
 h3 = "=0.0.8"
 h3-datagram = "=0.0.2"
 h3-quinn = { version = "=0.0.10", default-features = false, features = ["datagram"] }

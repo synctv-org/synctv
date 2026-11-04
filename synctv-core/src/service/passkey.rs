@@ -1028,10 +1028,10 @@ impl PasskeyService {
         };
 
         let discoverable_key = DiscoverableKey::from(stored.passkey.clone());
-        let Ok(auth_result) = self.webauthn.finish_discoverable_authentication(
+        let Ok(auth_result) = self.webauthn.finish_discoverable_authentication_v2(
             &credential,
             state,
-            &[discoverable_key],
+            &discoverable_key,
         ) else {
             self.record_discoverable_login_failure(client_ip, control)
                 .await?;

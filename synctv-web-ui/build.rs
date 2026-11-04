@@ -462,41 +462,9 @@ fn bytes_etag(bytes: &[u8]) -> String {
     format!("\"{}-{}\"", hex::encode(Sha256::digest(bytes)), bytes.len())
 }
 
-fn content_type(path: &str) -> &'static str {
-    match Path::new(path)
-        .extension()
-        .and_then(OsStr::to_str)
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "html" => "text/html; charset=utf-8",
-        "css" => "text/css; charset=utf-8",
-        "js" => "text/javascript; charset=utf-8",
-        "json" | "map" => "application/json; charset=utf-8",
-        "svg" => "image/svg+xml",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "webp" => "image/webp",
-        "ico" => "image/x-icon",
-        "wasm" => "application/wasm",
-        "woff" => "font/woff",
-        "woff2" => "font/woff2",
-        _ => "application/octet-stream",
-    }
-}
-
-fn compressible_content_type(content_type: &str) -> bool {
-    content_type.starts_with("text/")
-        || matches!(
-            content_type.split(';').next().unwrap_or_default(),
-            "application/json"
-                | "application/javascript"
-                | "application/wasm"
-                | "application/xml"
-                | "image/svg+xml"
-        )
-}
+// Shared with `src/content_type.rs` so the build-time asset table and the
+// runtime mapping can never drift apart.
+include!("src/content_type.rs");
 
 fn run_visible(command: &mut Command, description: &str) -> Result<(), String> {
     let status = command

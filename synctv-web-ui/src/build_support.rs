@@ -61,6 +61,7 @@ impl Default for FlutterBuild {
             arguments: vec![
                 "--release".to_owned(),
                 "--no-web-resources-cdn".to_owned(),
+                "--wasm".to_owned(),
                 "--no-wasm-dry-run".to_owned(),
             ],
             dart_defines: BTreeMap::new(),
@@ -535,6 +536,34 @@ pub fn build_fingerprint(
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn wasm_assets_map_to_browser_required_mime_types() {
+        assert_eq!(
+            crate::content_type::content_type("main.dart.wasm"),
+            "application/wasm"
+        );
+        assert_eq!(
+            crate::content_type::content_type("main.dart.mjs"),
+            "text/javascript; charset=utf-8"
+        );
+        // Browsers refuse `import()` of modules served as octet-stream, so
+        // the loader must resolve to a JavaScript MIME type.
+        assert_eq!(
+            crate::content_type::content_type("main.dart.js"),
+            "text/javascript; charset=utf-8"
+        );
+    }
+
+    #[test]
+    fn wasm_and_module_assets_are_precompressed() {
+        assert!(crate::content_type::compressible_content_type(
+            "application/wasm"
+        ));
+        assert!(crate::content_type::compressible_content_type(
+            "text/javascript; charset=utf-8"
+        ));
+    }
 
     #[test]
     fn local_config_takes_precedence() -> Result<(), Box<dyn std::error::Error>> {

@@ -227,7 +227,7 @@ fn content_type(path: &str) -> &'static str {
     {
         "html" => "text/html; charset=utf-8",
         "css" => "text/css; charset=utf-8",
-        "js" => "text/javascript; charset=utf-8",
+        "js" | "mjs" => "text/javascript; charset=utf-8",
         "json" | "map" => "application/json; charset=utf-8",
         "svg" => "image/svg+xml",
         "png" => "image/png",
@@ -663,6 +663,38 @@ mod tests {
         assert_eq!(
             resolve_disk_asset(directory.path(), "nested\\secret").await,
             Err(DiskAssetError::Missing)
+        );
+    }
+
+    #[tokio::test]
+    async fn disk_source_serves_wasm_build_artifacts_with_required_mime_types() {
+        let directory = tempfile::tempdir().expect("temporary Web UI directory");
+        std::fs::write(directory.path().join("main.dart.mjs"), "// loader").expect("write loader");
+        std::fs::write(directory.path().join("main.dart.wasm"), b"\0asm").expect("write module");
+
+        let loader = serve_path(
+            Some(directory.path()),
+            "main.dart.mjs",
+            false,
+            &HeaderMap::new(),
+        )
+        .await;
+        assert_eq!(
+            loader.headers().get(header::CONTENT_TYPE),
+            Some(&HeaderValue::from_static("text/javascript; charset=utf-8")),
+            "browsers refuse import() of modules with non-JavaScript MIME types"
+        );
+
+        let module = serve_path(
+            Some(directory.path()),
+            "main.dart.wasm",
+            false,
+            &HeaderMap::new(),
+        )
+        .await;
+        assert_eq!(
+            module.headers().get(header::CONTENT_TYPE),
+            Some(&HeaderValue::from_static("application/wasm"))
         );
     }
 

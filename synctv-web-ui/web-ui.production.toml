@@ -8,4 +8,4 @@ commit = "67bf7ee55248844c2269010761df864d21ce2c4b"
 
 [build]
 flutter = "flutter"
-arguments = ["--release", "--no-web-resources-cdn", "--no-wasm-dry-run"]
+arguments = ["--release", "--no-web-resources-cdn", "--wasm", "--no-wasm-dry-run"]

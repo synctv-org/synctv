@@ -1,3 +1,5 @@
+pub mod content_type;
+
 #[derive(Clone, Copy, Debug)]
 pub struct Asset {
     pub path: &'static str,

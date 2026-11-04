@@ -6931,9 +6931,9 @@ dependencies = [
 
 [[package]]
 name = "rust_h265"
-version = "0.2.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb29b707000aaf70f4214ffbb563e67af5be4187ebff4733f4c5437bf21124b9"
+checksum = "f3cab2c2f4041cf53f271ff40980865efbac3b18684024ab9b53a78cab7efbfe"
 
 [[package]]
 name = "rustc-hash"

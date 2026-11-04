@@ -19,7 +19,9 @@ mod ffmpeg;
 mod publisher;
 mod worker;
 
-pub use config::{FfmpegWorkerConfig, TranscodeConfig, TranscodePreset, WorkerConfig, WorkerEngine};
+pub use config::{
+    FfmpegWorkerConfig, TranscodeConfig, TranscodePreset, WorkerConfig, WorkerEngine,
+};
 pub use ffmpeg::FfmpegWorker;
 pub use worker::{
     TranscodeError, TranscodeInput, TranscodeJob, TranscodeJobHandle, TranscodeOutputReceiver,
@@ -598,13 +600,7 @@ async fn scheduler_tick(inner: &Arc<ManagerInner>) {
         });
     }
 
-    info!(
-        room_id,
-        media_id,
-        rung,
-        demand,
-        "Submitting transcode job"
-    );
+    info!(room_id, media_id, rung, demand, "Submitting transcode job");
     let cancel = tokio_util::sync::CancellationToken::new();
     // Offer the job to the workers in priority order; rejections return the
     // input untouched so the next worker can take it.
@@ -657,8 +653,8 @@ async fn scheduler_tick(inner: &Arc<ManagerInner>) {
     let Some((handle, output, worker_label)) = started else {
         if all_capacity_exhausted {
             debug!(
-                room_id, media_id, rung,
-                "Every transcode worker is at capacity; backing off"
+                room_id,
+                media_id, rung, "Every transcode worker is at capacity; backing off"
             );
             tokio::time::sleep(CAPACITY_BACKOFF).await;
             inner.schedule_wake.notify_one();

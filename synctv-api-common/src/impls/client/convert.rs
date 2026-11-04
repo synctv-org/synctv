@@ -4548,46 +4548,50 @@ fn playback_media_url(
         PlaybackMediaProvider::Rtmp(PlaybackRtmpMedia::FlvStream {
             version,
             expires_at,
+            rung,
             ..
-        }) => (
+        }) => rung_resource(
             "rtmp",
             version.clone(),
             *expires_at,
-            "flv-stream".to_string(),
-            "flv-stream".to_string(),
+            "flv-stream",
+            rung.as_deref(),
         ),
         PlaybackMediaProvider::Rtmp(PlaybackRtmpMedia::HlsMaster {
             version,
             expires_at,
+            rung,
             ..
-        }) => (
+        }) => rung_resource(
             "rtmp",
             version.clone(),
             *expires_at,
-            "hls-master".to_string(),
-            "hls-master".to_string(),
+            "hls-master",
+            rung.as_deref(),
         ),
         PlaybackMediaProvider::LiveProxy(PlaybackLiveProxyMedia::FlvStream {
             version,
             expires_at,
+            rung,
             ..
-        }) => (
+        }) => rung_resource(
             synctv_core::provider::LiveProxyProvider::NAME,
             version.clone(),
             *expires_at,
-            "flv-stream".to_string(),
-            "flv-stream".to_string(),
+            "flv-stream",
+            rung.as_deref(),
         ),
         PlaybackMediaProvider::LiveProxy(PlaybackLiveProxyMedia::HlsMaster {
             version,
             expires_at,
+            rung,
             ..
-        }) => (
+        }) => rung_resource(
             synctv_core::provider::LiveProxyProvider::NAME,
             version.clone(),
             *expires_at,
-            "hls-master".to_string(),
-            "hls-master".to_string(),
+            "hls-master",
+            rung.as_deref(),
         ),
         PlaybackMediaProvider::Twitch(PlaybackTwitchMedia::Proxy {
             version,
@@ -4896,6 +4900,24 @@ fn versioned_indexed_resource(
         format!("{resource_prefix}/{mode}/{url_index}"),
         format!("{resource_prefix}/{mode_name}/{url_index}"),
     )
+}
+
+/// Live stream resource with an optional transcode rung segment. The rung
+/// rides in both the URL path and the HMAC-bound resource string, so a
+/// signed source URL cannot be retargeted to a different rung.
+fn rung_resource(
+    provider: &'static str,
+    version: String,
+    expires_at: i64,
+    resource_prefix: &'static str,
+    rung: Option<&str>,
+) -> (&'static str, String, i64, String, String) {
+    let resource = match rung {
+        Some(rung) => format!("{resource_prefix}/{rung}"),
+        None => resource_prefix.to_string(),
+    };
+    let path = path_segment_encode(&resource);
+    (provider, version, expires_at, path, resource)
 }
 
 fn storage_media_resource_prefix(

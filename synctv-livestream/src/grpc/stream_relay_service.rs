@@ -585,10 +585,9 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
         let child_token = self.cancel_token.child_token();
         // A relayed rung counts as its viewers for the relay session's
         // lifetime so the owner's idle stop leaves it alone.
-        let rung_guard = self
-            .transcode_manager
-            .as_ref()
-            .and_then(|manager| manager.attach_rung_viewer_for_stream_key(&req.room_id, &req.media_id));
+        let rung_guard = self.transcode_manager.as_ref().and_then(|manager| {
+            manager.attach_rung_viewer_for_stream_key(&req.room_id, &req.media_id)
+        });
         tokio::spawn(async move {
             forward_rtmp_packets(frame_receiver, tx, child_token).await;
 

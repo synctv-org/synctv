@@ -143,13 +143,15 @@ fn default_workers() -> Vec<WorkerConfig> {
 fn default_presets() -> Vec<TranscodePreset> {
     DEFAULT_PRESETS
         .iter()
-        .map(|&(name, height, video_kbps, audio_kbps, max_fps)| TranscodePreset {
-            name: name.to_string(),
-            height,
-            video_kbps,
-            audio_kbps,
-            max_fps,
-        })
+        .map(
+            |&(name, height, video_kbps, audio_kbps, max_fps)| TranscodePreset {
+                name: name.to_string(),
+                height,
+                video_kbps,
+                audio_kbps,
+                max_fps,
+            },
+        )
         .collect()
 }
 
@@ -167,9 +169,9 @@ impl WorkerConfig {
     /// Stable label for logs.
     #[must_use]
     pub fn label(&self, index: usize) -> String {
-        self.name.clone().unwrap_or_else(|| {
-            format!("{}#{index}", self.engine.engine_name())
-        })
+        self.name
+            .clone()
+            .unwrap_or_else(|| format!("{}#{index}", self.engine.engine_name()))
     }
 }
 
@@ -251,8 +253,7 @@ impl TranscodeConfig {
         if !problems.is_empty() && self.enabled {
             problems.insert(
                 0,
-                "livestream.transcode.enabled is true but the configuration is invalid"
-                    .to_string(),
+                "livestream.transcode.enabled is true but the configuration is invalid".to_string(),
             );
         }
         problems
@@ -268,10 +269,7 @@ mod tests {
         let config = TranscodeConfig::default();
         assert!(config.validate().is_empty(), "{:?}", config.validate());
         assert_eq!(config.workers.len(), 1);
-        assert!(matches!(
-            config.workers[0].engine,
-            WorkerEngine::Ffmpeg(_)
-        ));
+        assert!(matches!(config.workers[0].engine, WorkerEngine::Ffmpeg(_)));
         assert_eq!(config.workers[0].label(0), "ffmpeg#0");
     }
 
@@ -297,11 +295,15 @@ mod tests {
             engine: WorkerEngine::Ffmpeg(FfmpegWorkerConfig::default()),
         });
         let problems = config.validate();
-        assert!(problems.iter().any(|problem| problem.contains("duplicated")));
+        assert!(problems
+            .iter()
+            .any(|problem| problem.contains("duplicated")));
 
         config.workers[0].name = Some("  ".to_string());
         let problems = config.validate();
-        assert!(problems.iter().any(|problem| problem.contains("empty name")));
+        assert!(problems
+            .iter()
+            .any(|problem| problem.contains("empty name")));
     }
 
     #[test]
@@ -310,7 +312,9 @@ mod tests {
         config.presets[0].name = config.presets[1].name.clone();
         config.presets[2].name = "480:p".to_string();
         let problems = config.validate();
-        assert!(problems.iter().any(|problem| problem.contains("duplicated")));
+        assert!(problems
+            .iter()
+            .any(|problem| problem.contains("duplicated")));
         assert!(problems
             .iter()
             .any(|problem| problem.contains("must not contain ':'")));

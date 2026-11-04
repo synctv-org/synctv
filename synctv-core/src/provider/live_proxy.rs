@@ -294,6 +294,7 @@ fn mark_live_proxy_playback_resources(
                     expires_at,
                     room_id,
                     media_id,
+                    rung: None,
                 })
             } else if mode_name == "flv" || (mode_name == default_mode && media_count == 1) {
                 PlaybackMediaProvider::LiveProxy(PlaybackLiveProxyMedia::FlvStream {
@@ -301,6 +302,7 @@ fn mark_live_proxy_playback_resources(
                     expires_at,
                     room_id,
                     media_id,
+                    rung: None,
                 })
             } else {
                 continue;

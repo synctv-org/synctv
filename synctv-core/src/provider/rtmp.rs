@@ -81,6 +81,7 @@ fn mark_rtmp_playback_resources(
                     expires_at,
                     room_id,
                     media_id,
+                    rung: None,
                 })
             } else if mode_name == "flv" {
                 PlaybackMediaProvider::Rtmp(PlaybackRtmpMedia::FlvStream {
@@ -88,6 +89,7 @@ fn mark_rtmp_playback_resources(
                     expires_at,
                     room_id,
                     media_id,
+                    rung: None,
                 })
             } else if mode_name == "whep" {
                 PlaybackMediaProvider::Rtmp(PlaybackRtmpMedia::WhepEndpoint { room_id, media_id })

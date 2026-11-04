@@ -877,9 +877,11 @@ impl FlvStreamingApi {
                     .await?,
             ),
             None if route.rung.is_some() => None,
-            None => {
-                Some(infrastructure.ensure_pull_stream(room_id, media_id, None).await?)
-            }
+            None => Some(
+                infrastructure
+                    .ensure_pull_stream(room_id, media_id, None)
+                    .await?,
+            ),
         };
 
         // Register rung demand (source-owning node schedules it) and make
@@ -912,7 +914,9 @@ impl FlvStreamingApi {
 }
 
 /// Lifetimes a live session depends on: the source pull (if relayed or
-/// external), the rung demand registration, and the rung relay pull.
+/// external), the rung demand registration, and the rung relay pull. The
+/// guards act through `Drop`; their fields are never read.
+#[allow(dead_code)]
 pub struct LiveStreamGuards {
     source: Option<StreamSubscriberGuard>,
     rung: Option<crate::livestream::transcode::RungViewerGuard>,

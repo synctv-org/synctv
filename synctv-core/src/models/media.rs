@@ -1282,12 +1282,16 @@ pub enum PlaybackRtmpMedia {
         expires_at: i64,
         room_id: RoomId,
         media_id: MediaId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rung: Option<String>,
     },
     HlsMaster {
         version: String,
         expires_at: i64,
         room_id: RoomId,
         media_id: MediaId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rung: Option<String>,
     },
 }
 
@@ -1307,12 +1311,16 @@ pub enum PlaybackLiveProxyMedia {
         expires_at: i64,
         room_id: RoomId,
         media_id: MediaId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rung: Option<String>,
     },
     HlsMaster {
         version: String,
         expires_at: i64,
         room_id: RoomId,
         media_id: MediaId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rung: Option<String>,
     },
 }
 

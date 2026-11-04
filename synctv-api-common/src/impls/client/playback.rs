@@ -225,6 +225,85 @@ fn retain_live_whep_if_enabled(
     Ok(true)
 }
 
+/// Append the configured transcode rungs to a live playback result.
+///
+/// Each hls/flv source entry gains one sibling per rung preset, labeled with
+/// the preset name; WHEP keeps only the source quality. The rung rides in
+/// the media payload and becomes part of the signed URL resource.
+fn append_live_transcode_rungs(
+    infrastructure: Option<&std::sync::Arc<synctv_livestream::LiveStreamingInfrastructure>>,
+    result: &mut synctv_core::models::media::PlaybackResult,
+) {
+    use synctv_core::models::media::{
+        PlaybackLiveProxyMedia, PlaybackMediaProvider, PlaybackRtmpMedia,
+    };
+
+    let Some(infrastructure) = infrastructure else {
+        return;
+    };
+    let Some(manager) = infrastructure.transcode_manager() else {
+        return;
+    };
+    if result.provider != synctv_core::models::SourceProvider::Rtmp {
+        return;
+    }
+    let rungs: Vec<String> = manager
+        .presets()
+        .iter()
+        .map(|preset| preset.name.clone())
+        .collect();
+    if rungs.is_empty() {
+        return;
+    }
+
+    fn with_rung(provider: &PlaybackMediaProvider, rung: &str) -> Option<PlaybackMediaProvider> {
+        let mut provider = provider.clone();
+        match &mut provider {
+            PlaybackMediaProvider::Rtmp(
+                PlaybackRtmpMedia::FlvStream { rung: slot, .. }
+                | PlaybackRtmpMedia::HlsMaster { rung: slot, .. },
+            )
+            | PlaybackMediaProvider::LiveProxy(
+                PlaybackLiveProxyMedia::FlvStream { rung: slot, .. }
+                | PlaybackLiveProxyMedia::HlsMaster { rung: slot, .. },
+            ) => *slot = Some(rung.to_string()),
+            _ => return None,
+        }
+        Some(provider)
+    }
+
+    for mode in ["hls", "flv"] {
+        let Some(info) = result.playback_infos.get_mut(mode) else {
+            continue;
+        };
+        let sources = info.medias.clone();
+        let mut rung_medias = Vec::new();
+        for media in &sources {
+            if !matches!(
+                &media.provider,
+                PlaybackMediaProvider::Rtmp(
+                    PlaybackRtmpMedia::FlvStream { .. } | PlaybackRtmpMedia::HlsMaster { .. }
+                ) | PlaybackMediaProvider::LiveProxy(
+                    PlaybackLiveProxyMedia::FlvStream { .. }
+                        | PlaybackLiveProxyMedia::HlsMaster { .. }
+                )
+            ) {
+                continue;
+            }
+            for rung in &rungs {
+                let Some(provider) = with_rung(&media.provider, rung) else {
+                    continue;
+                };
+                let mut entry = media.clone();
+                entry.name = rung.clone();
+                entry.provider = provider;
+                rung_medias.push(entry);
+            }
+        }
+        info.medias.extend(rung_medias);
+    }
+}
+
 async fn filter_unavailable_live_whep(
     infrastructure: Option<&std::sync::Arc<synctv_livestream::LiveStreamingInfrastructure>>,
     result: &mut synctv_core::models::media::PlaybackResult,
@@ -574,6 +653,10 @@ impl ClientApiImpl {
             &mut full_result,
         )
         .await?;
+        append_live_transcode_rungs(
+            self.live_streaming_infrastructure.as_ref(),
+            &mut full_result,
+        );
         let mut playback =
             self.sign_and_finalize_playback(&full_result, &ctx, actor, proxy_authorizer_id)?;
         attach_live_stream_generation(&mut playback, generation.as_ref());
@@ -728,6 +811,10 @@ impl ClientApiImpl {
             &mut full_result,
         )
         .await?;
+        append_live_transcode_rungs(
+            self.live_streaming_infrastructure.as_ref(),
+            &mut full_result,
+        );
         let mut playback =
             self.sign_and_finalize_playback(&full_result, &ctx, actor, proxy_authorizer_id)?;
         attach_live_stream_generation(&mut playback, generation.as_ref());

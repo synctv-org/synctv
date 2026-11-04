@@ -91,7 +91,8 @@ impl TranscodeWorker for FfmpegWorker {
         &self,
         job: TranscodeJob,
         input: TranscodeInput,
-    ) -> Result<(TranscodeJobHandle, TranscodeOutputReceiver), (TranscodeError, TranscodeInput)> {
+    ) -> Result<(TranscodeJobHandle, TranscodeOutputReceiver), (TranscodeError, TranscodeInput)>
+    {
         // Pre-check the binary so a missing installation is a clear, instant
         // failure instead of a confusing spawn error.
         if !self.binary.is_file() {

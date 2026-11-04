@@ -295,8 +295,10 @@ struct OidcIdTokenClaims {
     azp: Option<String>,
     #[serde(default)]
     nonce: Option<String>,
-    #[serde(default, alias = "username")]
+    #[serde(default)]
     preferred_username: Option<String>,
+    #[serde(default)]
+    username: Option<String>,
     #[serde(default)]
     name: Option<String>,
     #[serde(default)]
@@ -326,8 +328,10 @@ impl OidcAudience {
 #[derive(Deserialize)]
 struct OidcUserInfoResponse {
     sub: String,
-    #[serde(default, alias = "username")]
+    #[serde(default)]
     preferred_username: Option<String>,
+    #[serde(default)]
+    username: Option<String>,
     name: Option<String>,
     picture: Option<String>,
 }
@@ -984,7 +988,7 @@ impl OidcProvider {
 
     fn user_info_from_id_token_claims(claims: OidcIdTokenClaims) -> OAuth2UserInfo {
         let provider_user_id = claims.sub;
-        let username = first_non_empty([claims.preferred_username, claims.name])
+        let username = first_non_empty([claims.preferred_username, claims.username, claims.name])
             .unwrap_or_else(|| provider_user_id.clone());
 
         OAuth2UserInfo {
@@ -1001,8 +1005,10 @@ impl OidcProvider {
         let provider_user_id = user.sub;
         let username = first_non_empty([
             user.preferred_username,
+            user.username,
             user.name,
             id_token_claims.preferred_username,
+            id_token_claims.username,
             id_token_claims.name,
         ])
         .unwrap_or_else(|| provider_user_id.clone());
@@ -1672,6 +1678,52 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
     }
 
     #[test]
+    fn test_oidc_claims_accept_both_username_and_preferred_username() {
+        // Logto 1.45+ sends both claims; #507.
+        let claims: OidcIdTokenClaims = serde_json::from_value(serde_json::json!({
+            "iss": "https://issuer.example.com",
+            "sub": "subject-123",
+            "aud": "client",
+            "iat": 1_700_000_000,
+            "username": "login_name",
+            "preferred_username": "preferred_user",
+        }))
+        .checked("ID token claims with username and preferred_username should parse");
+        assert_eq!(
+            OidcProvider::user_info_from_id_token_claims(claims).username,
+            "preferred_user"
+        );
+
+        let userinfo: OidcUserInfoResponse = serde_json::from_value(serde_json::json!({
+            "sub": "subject-123",
+            "username": "login_name",
+            "preferred_username": "preferred_user",
+        }))
+        .checked("userinfo with username and preferred_username should parse");
+        assert_eq!(
+            userinfo.preferred_username.as_deref(),
+            Some("preferred_user")
+        );
+    }
+
+    #[test]
+    fn test_user_info_falls_back_to_username_claim() {
+        let claims: OidcIdTokenClaims = serde_json::from_value(serde_json::json!({
+            "iss": "https://issuer.example.com",
+            "sub": "subject-123",
+            "aud": "client",
+            "iat": 1_700_000_000,
+            "username": "login_name",
+            "name": "Display Name",
+        }))
+        .checked("ID token claims with username should parse");
+        assert_eq!(
+            OidcProvider::user_info_from_id_token_claims(claims).username,
+            "login_name"
+        );
+    }
+
+    #[test]
     fn test_user_info_from_id_token_claims_supports_missing_userinfo_endpoint() {
         let claims = OidcIdTokenClaims {
             iss: "https://issuer.example.com".to_string(),
@@ -1681,6 +1733,7 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
             azp: None,
             nonce: Some("nonce".to_string()),
             preferred_username: Some("preferred_user".to_string()),
+            username: None,
             name: Some("Display Name".to_string()),
             picture: Some("https://example.com/avatar.png".to_string()),
         };
@@ -1705,6 +1758,7 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
             azp: None,
             nonce: Some("nonce".to_string()),
             preferred_username: None,
+            username: None,
             name: Some("   ".to_string()),
             picture: None,
         };
@@ -1725,12 +1779,14 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
             azp: None,
             nonce: Some("nonce".to_string()),
             preferred_username: Some("token_user".to_string()),
+            username: None,
             name: Some("Token Name".to_string()),
             picture: Some("https://example.com/token.png".to_string()),
         };
         let userinfo = OidcUserInfoResponse {
             sub: "subject-123".to_string(),
             preferred_username: Some("userinfo_user".to_string()),
+            username: None,
             name: None,
             picture: Some("https://example.com/userinfo.png".to_string()),
         };
@@ -1755,12 +1811,14 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
             azp: None,
             nonce: Some("nonce".to_string()),
             preferred_username: None,
+            username: None,
             name: None,
             picture: None,
         };
         let userinfo = OidcUserInfoResponse {
             sub: "subject-123".to_string(),
             preferred_username: Some(" ".to_string()),
+            username: None,
             name: None,
             picture: None,
         };

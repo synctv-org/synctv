@@ -79,6 +79,8 @@ rustls = { workspace = true, optional = true }
 
 [dev-dependencies]
 base64.workspace = true
+ffmpeg-next.workspace = true
+ffmpeg-sys-next.workspace = true
 reqwest.workspace = true
 rust_h265.workspace = true
 rusty_aac.workspace = true

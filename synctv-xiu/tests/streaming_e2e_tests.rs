@@ -1,7 +1,8 @@
 //! End-to-end tests for the live media path.
 //!
-//! The publishers use the production RTMP building blocks and, for the
-//! interop cases, a host `ffmpeg` CLI process fed through stdin.
+//! The publishers use the production RTMP building blocks, a source-built
+//! libavformat, and — for the host interop cases — a host `ffmpeg` CLI
+//! process fed through stdin.
 
 #![allow(clippy::unwrap_used)]
 
@@ -18,6 +19,8 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use bytes::Bytes;
+use ffmpeg_next::{codec, encoder, format, media, Rational};
+use ffmpeg_sys_next as _;
 use rust_h265::{parse_annex_b as parse_hevc_annex_b, Decoder as HevcDecoder, PixelData};
 use rusty_aac::{
     audio_specific_config_bytes, parse_audio_specific_config, AacDecoder, AacEncoder,
@@ -61,6 +64,15 @@ struct VideoFixture {
 struct AudioFixture {
     sequence_header: Vec<u8>,
     access_units: Vec<Vec<u8>>,
+}
+
+fn initialize_ffmpeg() -> Result<()> {
+    ffmpeg_next::init()?;
+    format::network::init();
+    if std::env::var_os("SYNCTV_TEST_FFMPEG_DEBUG").is_some() {
+        ffmpeg_next::util::log::set_level(ffmpeg_next::util::log::Level::Debug);
+    }
+    Ok(())
 }
 
 fn append_flv_tag(output: &mut Vec<u8>, tag_type: u8, timestamp: u32, body: &[u8]) -> Result<()> {
@@ -118,15 +130,101 @@ fn ffmpeg_fixture_file(
     Ok(file)
 }
 
+fn ffmpeg_publish(
+    input_path: &std::path::Path,
+    url: &str,
+    output_format: &str,
+    ready: tokio::sync::oneshot::Sender<()>,
+    release_media: tokio::sync::oneshot::Receiver<()>,
+) -> Result<()> {
+    initialize_ffmpeg()?;
+    let mut input = format::input(input_path)?;
+    let mut output = format::output_as(url, output_format)?;
+    let mut stream_mapping = vec![-1_i32; input.nb_streams() as usize];
+    let mut input_time_bases = vec![Rational(0, 1); input.nb_streams() as usize];
+    let mut output_index = 0_i32;
+    let mut needs_audio = false;
+    for (input_index, input_stream) in input.streams().enumerate() {
+        if !matches!(
+            input_stream.parameters().medium(),
+            media::Type::Audio | media::Type::Video
+        ) {
+            continue;
+        }
+        needs_audio |= input_stream.parameters().medium() == media::Type::Audio;
+        stream_mapping[input_index] = output_index;
+        input_time_bases[input_index] = input_stream.time_base();
+        output_index += 1;
+        let mut output_stream = output.add_stream(encoder::find(codec::Id::None))?;
+        output_stream.set_parameters(input_stream.parameters());
+    }
+    anyhow::ensure!(output_index > 0, "FFmpeg fixture has no media streams");
+
+    {
+        let mut options = ffmpeg_next::Dictionary::new();
+        options.set("flush_packets", "1");
+        let unused = output.write_header_with(options)?;
+        anyhow::ensure!(
+            unused.iter().next().is_none(),
+            "FFmpeg did not consume output options: {unused:?}"
+        );
+    }
+    let mut ready = Some(ready);
+    let mut release_media = Some(release_media);
+    let mut media_released = false;
+    let mut video_packets_written = 0_usize;
+    let mut audio_started = false;
+    for (input_stream, mut packet) in input.packets() {
+        let input_index = input_stream.index();
+        let mapped_index = stream_mapping[input_index];
+        if mapped_index >= 0 {
+            if input_stream.parameters().medium() == media::Type::Video {
+                video_packets_written += 1;
+            } else if input_stream.parameters().medium() == media::Type::Audio {
+                audio_started = true;
+            }
+            let output_stream = output
+                .stream(usize::try_from(mapped_index)?)
+                .context("FFmpeg output stream disappeared")?;
+            packet.rescale_ts(input_time_bases[input_index], output_stream.time_base());
+            packet.set_position(-1);
+            packet.set_stream(usize::try_from(mapped_index)?);
+            packet.write(&mut output)?;
+            if video_packets_written >= 4 && (!needs_audio || audio_started) {
+                if let Some(ready) = ready.take() {
+                    let _ = ready.send(());
+                    release_media
+                        .take()
+                        .context("FFmpeg media release receiver disappeared")?
+                        .blocking_recv()?;
+                    media_released = true;
+                }
+            }
+            if media_released {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }
+    anyhow::ensure!(ready.is_none(), "FFmpeg fixture produced no video packet");
+    output.write_trailer()?;
+    Ok(())
+}
+
 /// Publish an FLV fixture through a host `ffmpeg` CLI process.
 ///
 /// The fixture streams into ffmpeg's stdin and ffmpeg speaks RTMP, keeping
 /// an independent publisher implementation in the loop. The whole fixture
 /// is fed up front and stdin stays open, so the published stream remains
 /// live while the caller subscribes; it ends only when the caller releases.
-async fn ffmpeg_publish(
+///
+/// `realtime` adds `-re` so ffmpeg paces the fixture by its timestamps.
+/// Live-edge servers such as MediaMTX deliver only media that arrives after
+/// a reader joins, so their interop tests must keep frames flowing while
+/// the reader subscribes instead of publishing everything up front.
+async fn ffmpeg_cli_publish(
     input_path: &std::path::Path,
     url: &str,
+    realtime: bool,
     ready: tokio::sync::oneshot::Sender<()>,
     release_media: tokio::sync::oneshot::Receiver<()>,
 ) -> Result<()> {
@@ -138,8 +236,11 @@ async fn ffmpeg_publish(
         "warning"
     };
     let mut command = tokio::process::Command::new("ffmpeg");
+    command.args(["-hide_banner", "-loglevel", log_level, "-f", "flv"]);
+    if realtime {
+        command.arg("-re");
+    }
     command
-        .args(["-hide_banner", "-loglevel", log_level, "-f", "flv"])
         // Live-style probing: never wait for seconds of buffered media.
         .args([
             "-analyzeduration",
@@ -187,6 +288,59 @@ async fn ffmpeg_publish(
         stderr_tail_rx.await.unwrap_or_default()
     );
     Ok(())
+}
+
+/// Whether the host `ffmpeg` CLI can read and republish enhanced-RTMP
+/// (`hvc1`) HEVC in FLV. Ubuntu 24.04's stock ffmpeg 6.1 predates that
+/// support on both the demux and mux sides, so the HEVC CLI interop tests
+/// skip there instead of reporting a false failure; the in-process HEVC
+/// pipeline tests keep covering the server path on every host.
+async fn host_ffmpeg_supports_hevc_flv() -> bool {
+    let probe = async {
+        let video = hevc_fixture()?;
+        let file = ffmpeg_fixture_file(&video, None)?;
+        let fixture = std::fs::read(file.path())?;
+        let mut child = tokio::process::Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "flv",
+                "-analyzeduration",
+                "1",
+                "-probesize",
+                "32768",
+                "-i",
+                "pipe:0",
+                "-c",
+                "copy",
+                "-f",
+                "null",
+                "-",
+            ])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(&fixture).await?;
+            drop(stdin);
+        }
+        anyhow::Ok(child.wait().await?.success())
+    };
+    match tokio::time::timeout(Duration::from_secs(15), probe).await {
+        Ok(Ok(true)) => true,
+        Ok(Ok(false)) => false,
+        Ok(Err(error)) => {
+            eprintln!("host ffmpeg HEVC-in-FLV probe failed to run: {error:#}");
+            false
+        }
+        Err(_) => {
+            eprintln!("host ffmpeg HEVC-in-FLV probe timed out");
+            false
+        }
+    }
 }
 
 fn annex_b_nals(data: &[u8]) -> Result<Vec<&[u8]>> {
@@ -1941,7 +2095,7 @@ async fn real_avc_aac_rtmp_pipeline_is_decodable_through_play_flv_and_hls() -> R
 }
 
 #[tokio::test]
-async fn ffmpeg_cli_rtmp_avc_aac_is_decodable_through_flv_and_hls() -> Result<()> {
+async fn ffmpeg_libavformat_rtmp_avc_aac_is_decodable_through_flv_and_hls() -> Result<()> {
     let video = avc_fixture()?;
     let audio = aac_fixture()?;
     let input = ffmpeg_fixture_file(&video, Some(&audio))?;
@@ -1950,8 +2104,9 @@ async fn ffmpeg_cli_rtmp_avc_aac_is_decodable_through_flv_and_hls() -> Result<()
     let input_path = input.path().to_path_buf();
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-    let publisher =
-        tokio::spawn(async move { ffmpeg_publish(&input_path, &url, ready_tx, release_rx).await });
+    let publisher = tokio::task::spawn_blocking(move || {
+        ffmpeg_publish(&input_path, &url, "flv", ready_tx, release_rx)
+    });
     ready_rx
         .await
         .context("FFmpeg RTMP publisher closed before writing its header")?;
@@ -1987,7 +2142,7 @@ async fn ffmpeg_cli_rtmp_avc_aac_is_decodable_through_flv_and_hls() -> Result<()
 }
 
 #[tokio::test]
-async fn ffmpeg_cli_rtmp_hevc_is_decodable_through_flv_and_hls() -> Result<()> {
+async fn ffmpeg_libavformat_rtmp_hevc_is_decodable_through_flv_and_hls() -> Result<()> {
     let video = hevc_fixture()?;
     let input = ffmpeg_fixture_file(&video, None)?;
     let server = start_server().await?;
@@ -1995,8 +2150,9 @@ async fn ffmpeg_cli_rtmp_hevc_is_decodable_through_flv_and_hls() -> Result<()> {
     let input_path = input.path().to_path_buf();
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-    let publisher =
-        tokio::spawn(async move { ffmpeg_publish(&input_path, &url, ready_tx, release_rx).await });
+    let publisher = tokio::task::spawn_blocking(move || {
+        ffmpeg_publish(&input_path, &url, "flv", ready_tx, release_rx)
+    });
     ready_rx
         .await
         .context("FFmpeg HEVC RTMP publisher closed before writing its header")?;
@@ -3598,8 +3754,8 @@ async fn exercise_ffmpeg_mediamtx_rtsp_pipeline(
     let input_path = input.path().to_path_buf();
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-    let ffmpeg_publisher = tokio::spawn(async move {
-        ffmpeg_publish(&input_path, &publish_url, ready_tx, release_rx).await
+    let ffmpeg_publisher = tokio::task::spawn_blocking(move || {
+        ffmpeg_publish(&input_path, &publish_url, "flv", ready_tx, release_rx)
     });
     ready_rx
         .await
@@ -3829,7 +3985,7 @@ async fn read_http_body(url: &str) -> Result<String> {
 
 #[tokio::test]
 #[ignore = "requires Docker and starts a MediaMTX interoperability container"]
-async fn ffmpeg_cli_mediamtx_rtsp_avc_aac_and_hevc_are_decodable() -> Result<()> {
+async fn ffmpeg_libavformat_mediamtx_rtsp_avc_aac_and_hevc_are_decodable() -> Result<()> {
     const MEDIAMTX_CONFIG: &str = r"api: yes
 
 authInternalUsers:
@@ -3867,6 +4023,299 @@ paths:
 
     let hevc = hevc_fixture()?;
     exercise_ffmpeg_mediamtx_rtsp_pipeline(&mediamtx, "hevc", &hevc, None).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn ffmpeg_cli_rtmp_avc_aac_is_decodable_through_flv_and_hls() -> Result<()> {
+    let video = avc_fixture()?;
+    let audio = aac_fixture()?;
+    let input = ffmpeg_fixture_file(&video, Some(&audio))?;
+    let server = start_server().await?;
+    let url = format!("rtmp://{}/{APP}/{STREAM}", server.address);
+    let input_path = input.path().to_path_buf();
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let publisher = tokio::spawn(async move {
+        ffmpeg_cli_publish(&input_path, &url, false, ready_tx, release_rx).await
+    });
+    ready_rx
+        .await
+        .context("FFmpeg RTMP publisher closed before writing its header")?;
+
+    let state = wait_for_playlist(&server).await;
+    let (flv_rx, flv_task) = start_flv_capture(&server).await?;
+    let _ = release_tx.send(());
+    publisher.await??;
+
+    let segments = wait_for_ended_segments(&server, &state).await?;
+    let mut hls_video = Vec::new();
+    let mut hls_audio = Vec::new();
+    for segment in &segments {
+        let inspection = inspect_ts(segment)?;
+        assert_ts_tracks(&inspection, &[(0x101, 0x1b, 0xe0), (0x102, 0x0f, 0xc0)]);
+        hls_video.extend_from_slice(&extract_ts_elementary_stream(segment, 0x101)?);
+        hls_audio.extend_from_slice(&extract_ts_elementary_stream(segment, 0x102)?);
+    }
+    anyhow::ensure!(
+        AvcDecoder::new().decode_stream(&hls_video)?.len() >= 4,
+        "FFmpeg RTMP HLS AVC decoded too few frames"
+    );
+    let (audio_samples, non_silent) = decode_adts_stream(&hls_audio)?;
+    anyhow::ensure!(
+        audio_samples > 0 && non_silent,
+        "FFmpeg RTMP HLS AAC decoded no audio"
+    );
+
+    let flv_tags = finish_flv_capture(flv_rx, flv_task).await?;
+    assert_decodable_avc_aac_flv(&flv_tags, &video, &audio)?;
+    server.stop().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn ffmpeg_cli_rtmp_hevc_is_decodable_through_flv_and_hls() -> Result<()> {
+    if !host_ffmpeg_supports_hevc_flv().await {
+        eprintln!(
+            "skipping: host ffmpeg cannot republish enhanced-RTMP (hvc1) HEVC in FLV \
+             (stock Ubuntu 24.04 ffmpeg 6.1); the in-process HEVC pipeline tests \
+             still cover the server path"
+        );
+        return Ok(());
+    }
+    let video = hevc_fixture()?;
+    let input = ffmpeg_fixture_file(&video, None)?;
+    let server = start_server().await?;
+    let url = format!("rtmp://{}/{APP}/{STREAM}", server.address);
+    let input_path = input.path().to_path_buf();
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let publisher = tokio::spawn(async move {
+        ffmpeg_cli_publish(&input_path, &url, false, ready_tx, release_rx).await
+    });
+    ready_rx
+        .await
+        .context("FFmpeg HEVC RTMP publisher closed before writing its header")?;
+
+    let state = wait_for_playlist(&server).await;
+    let (flv_rx, flv_task) = start_flv_capture(&server).await?;
+    let _ = release_tx.send(());
+    publisher.await??;
+
+    let segments = wait_for_ended_segments(&server, &state).await?;
+    let mut hls_video = Vec::new();
+    for segment in &segments {
+        let inspection = inspect_ts(segment)?;
+        assert_ts_tracks(&inspection, &[(0x101, 0x24, 0xe0)]);
+        hls_video.extend_from_slice(&extract_ts_elementary_stream(segment, 0x101)?);
+    }
+    assert_decodable_hevc(&hls_video, 4)?;
+
+    let flv_tags = finish_flv_capture(flv_rx, flv_task).await?;
+    let mut flv_video = video.decoder_config_annex_b.clone();
+    let mut frames = 0;
+    for tag in flv_tags {
+        if tag.first() != Some(&9) {
+            continue;
+        }
+        let body = flv_tag_body(&tag, 9)?;
+        if body.get(1) == Some(&1) {
+            flv_video.extend_from_slice(&avcc_payload_to_annex_b(body)?);
+            frames += 1;
+        }
+    }
+    anyhow::ensure!(frames >= 4, "FFmpeg RTMP FLV delivered too few HEVC frames");
+    assert_decodable_hevc(&flv_video, 4)?;
+    server.stop().await;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires Docker and starts a MediaMTX interoperability container"]
+async fn ffmpeg_cli_mediamtx_rtsp_avc_aac_is_decodable() -> Result<()> {
+    use synctv_xiu::rtsp::{RtspPullConfig, RtspPullSession, RtspTransport};
+
+    const MEDIAMTX_CONFIG: &str = r"api: yes
+
+authInternalUsers:
+  - user: any
+    pass:
+    ips: []
+    permissions:
+      - action: publish
+      - action: read
+      - action: playback
+      - action: api
+
+paths:
+  all_others:
+";
+
+    let mediamtx = synctv_core_testing::start_external_service(
+        synctv_core_testing::ExternalServiceRequest::new(
+            "mediamtx",
+            "synctv-mediamtx-",
+            "bluenviron/mediamtx",
+            "1.19.3",
+            8554,
+        )
+        .with_exposed_port(1935)
+        .with_exposed_port(9997)
+        .with_copy_to("/mediamtx.yml", MEDIAMTX_CONFIG.as_bytes())
+        .with_stdout_ready_message("[RTSP] started with listeners"),
+    )
+    .await;
+
+    // The assertions stay at the RTSP layer: a CLI publisher joins a
+    // live-edge server mid-session, and the server-side HLS/FLV output for
+    // that join scenario is covered by the from-scratch pipeline tests.
+    let video = avc_fixture()?;
+    let audio = aac_fixture()?;
+    let input = ffmpeg_fixture_file(&video, Some(&audio))?;
+
+    let rtmp_port = mediamtx
+        .mapped_port(1935)
+        .context("MediaMTX RTMP port was not mapped")?;
+    let mediamtx_path = "live/cli-avc-aac".to_string();
+    let publish_url = format!("rtmp://{}:{rtmp_port}/{mediamtx_path}", mediamtx.host());
+    let input_path = input.path().to_path_buf();
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let ffmpeg_publisher = tokio::spawn(async move {
+        ffmpeg_cli_publish(&input_path, &publish_url, true, ready_tx, release_rx).await
+    });
+    ready_rx
+        .await
+        .context("FFmpeg MediaMTX publisher closed before writing its header")?;
+
+    let api_port = mediamtx
+        .mapped_port(9997)
+        .context("MediaMTX API port was not mapped")?;
+    let api_url = format!("http://{}:{api_port}/v3/paths/list", mediamtx.host());
+    let path_deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let api_response = match read_http_body(&api_url).await {
+            Ok(response) => response,
+            Err(error) => format!("probe error: {error:#}"),
+        };
+        let registered = serde_json::from_str::<serde_json::Value>(&api_response)
+            .ok()
+            .and_then(|body| {
+                body.get("items")
+                    .and_then(serde_json::Value::as_array)
+                    .cloned()
+            })
+            .is_some_and(|items| {
+                items.iter().any(|item| {
+                    item.get("name").and_then(serde_json::Value::as_str)
+                        == Some(mediamtx_path.as_str())
+                })
+            });
+        if registered {
+            break;
+        }
+        if Instant::now() >= path_deadline {
+            let rtmp_connections = read_http_body(&format!(
+                "http://{}:{api_port}/v3/rtmpconns/list",
+                mediamtx.host()
+            ))
+            .await
+            .unwrap_or_else(|error| format!("failed to read RTMP connections: {error:#}"));
+            let logs = mediamtx
+                .logs()
+                .await
+                .unwrap_or_else(|error| format!("failed to read MediaMTX logs: {error:#}"));
+            anyhow::bail!(
+                "MediaMTX path {mediamtx_path} was not registered; API response: {api_response}; RTMP connections: {rtmp_connections}; logs:\n{logs}"
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let rtsp_url = format!(
+        "rtsp://{}:{}/{mediamtx_path}",
+        mediamtx.host(),
+        mediamtx.port()
+    );
+    let mut config = RtspPullConfig::from_url(&rtsp_url)?;
+    config.transport = RtspTransport::Tcp;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut rtsp = loop {
+        match RtspPullSession::connect(config.clone()).await {
+            Ok(session) => break session,
+            Err(error) if Instant::now() < deadline => {
+                tracing::debug!(%error, %rtsp_url, "waiting for MediaMTX RTSP path");
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    };
+    anyhow::ensure!(rtsp.selected_tracks() == (Some(0), Some(1)));
+
+    let _ = release_tx.send(());
+    let mut rtsp_video_frames = 0_usize;
+    let mut rtsp_audio_frames = 0_usize;
+    let mut annex_b = video.decoder_config_annex_b.clone();
+    // The reader joins at the live edge, so decoding starts at the first
+    // flagged keyframe; inter frames received before it have no reference.
+    let mut seen_keyframe = false;
+    let mut audio_decoder = None;
+    let mut audio_non_silent = false;
+    loop {
+        let frame = tokio::time::timeout(Duration::from_secs(5), rtsp.next_frame())
+            .await
+            .context("MediaMTX RTSP source did not finish")??;
+        let Some(frame) = frame else {
+            break;
+        };
+        match frame {
+            synctv_xiu::streamhub::define::FrameData::Video { data, .. } => {
+                if data.get(1) == Some(&1) {
+                    seen_keyframe |= data.first().is_some_and(|flags| flags & 0x10 != 0);
+                    if seen_keyframe {
+                        annex_b.extend_from_slice(&avcc_payload_to_annex_b(&data)?);
+                    }
+                    rtsp_video_frames += 1;
+                }
+            }
+            synctv_xiu::streamhub::define::FrameData::Audio { data, .. } => {
+                if data.get(1) == Some(&0) {
+                    audio_decoder = Some(AacDecoder::with_config(parse_audio_specific_config(
+                        data.get(2..).context("FLV AAC header missing config")?,
+                    )?));
+                } else if data.get(1) == Some(&1) {
+                    if let Some(decoder) = audio_decoder.as_mut() {
+                        let decoded = decoder.decode(
+                            data.get(2..).context("FLV AAC frame missing payload")?,
+                            None,
+                        )?;
+                        audio_non_silent |=
+                            decoded.samples.iter().any(|sample| sample.abs() > 0.000_1);
+                    }
+                    rtsp_audio_frames += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    anyhow::ensure!(
+        rtsp_video_frames >= 5,
+        "MediaMTX RTSP delivered only {rtsp_video_frames} video frames"
+    );
+    anyhow::ensure!(
+        rtsp_audio_frames >= 5,
+        "MediaMTX RTSP delivered only {rtsp_audio_frames} audio frames"
+    );
+    let decoded_video = AvcDecoder::new().decode_stream(&annex_b)?;
+    anyhow::ensure!(
+        decoded_video.len() >= 4,
+        "MediaMTX RTSP AVC decoded too few frames from the first keyframe"
+    );
+    anyhow::ensure!(
+        audio_non_silent,
+        "MediaMTX RTSP AAC decoded no audible samples"
+    );
+    ffmpeg_publisher.await??;
     Ok(())
 }
 

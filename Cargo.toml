@@ -81,6 +81,8 @@ needless_for_each = "allow"
 unnecessary_wraps = "allow"
 
 [workspace.dependencies]
+ffmpeg-next = { version = "=9.0.0", default-features = false, features = ["build", "format"] }
+ffmpeg-sys-next = { version = "=9.0.1", features = ["build-portable"] }
 # Async Runtime
 tokio = { version = "=1.54.1", features = [
     "rt-multi-thread",

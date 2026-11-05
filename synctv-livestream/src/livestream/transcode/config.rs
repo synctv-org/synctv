@@ -19,10 +19,10 @@
 //! binary = "ffmpeg"
 //!
 //! [[livestream.transcode.presets]]
-//! name = "480p"
-//! height = 480
-//! video_kbps = 1000
-//! audio_kbps = 64
+//! name = "720p"
+//! height = 720
+//! video_kbps = 2500
+//! audio_kbps = 96
 //! max_fps = 30
 //! ```
 //!
@@ -126,11 +126,9 @@ pub struct TranscodePreset {
     pub max_fps: u32,
 }
 
-pub const DEFAULT_PRESETS: &[(&str, u32, u32, u32, u32)] = &[
-    ("720p", 720, 2500, 96, 30),
-    ("480p", 480, 1000, 64, 30),
-    ("360p", 360, 500, 48, 25),
-];
+/// Default quality ladder: a single 720p rung. Lower rungs rarely add
+/// reach and cost another encoder pass each.
+pub const DEFAULT_PRESETS: &[(&str, u32, u32, u32, u32)] = &[("720p", 720, 2500, 96, 30)];
 
 fn default_workers() -> Vec<WorkerConfig> {
     vec![WorkerConfig {
@@ -315,8 +313,12 @@ mod tests {
     #[test]
     fn preset_names_must_be_unique_and_stream_key_safe() {
         let mut config = TranscodeConfig::default();
-        config.presets[0].name = config.presets[1].name.clone();
-        config.presets[2].name = "480:p".to_string();
+        let base = config.presets[0].clone();
+        config.presets.push(base.clone());
+        config.presets.push(TranscodePreset {
+            name: "480:p".to_string(),
+            ..base
+        });
         let problems = config.validate();
         assert!(problems
             .iter()

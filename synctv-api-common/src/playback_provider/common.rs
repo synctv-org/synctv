@@ -402,8 +402,6 @@ pub struct LiveHlsMasterChunksRequest {
     pub signature_expires_at: i64,
     pub route_provider: String,
     pub external_source: Option<synctv_core::models::LiveProxyMediaSourceConfig>,
-    /// Transcode rung preset; `None` resolves the source quality.
-    pub rung: Option<String>,
 }
 
 pub struct LiveHlsPlaylistChunksRequest {
@@ -440,7 +438,7 @@ pub(crate) fn optional_rung(rung: &str) -> Option<String> {
 }
 
 /// Stream key of a live request: rung requests address the rung's own stream
-/// (`{mediaId}::{rung}`), which is how the hub, registry, and HLS storage
+/// (`{mediaId}-{rung}`), which is how the hub, registry, and HLS storage
 /// identify transcoded output.
 pub(crate) fn live_stream_key(media_id: &str, rung: Option<&str>) -> String {
     match rung {
@@ -450,8 +448,8 @@ pub(crate) fn live_stream_key(media_id: &str, rung: Option<&str>) -> String {
 }
 
 /// Signed resource for a rung-addressable single-segment live endpoint
-/// (`flv-stream`, `hls-master`): the rung appends a sub-resource so a
-/// signature cannot be replayed across qualities.
+/// (`flv-stream`): the rung appends a sub-resource so a signature cannot
+/// be replayed across qualities.
 pub(crate) fn rung_scoped_resource(prefix: &str, rung: Option<&str>) -> String {
     match rung {
         Some(rung) => format!("{prefix}/{rung}"),
@@ -628,6 +626,20 @@ pub async fn stream_live_flv_chunks(
     Ok(Box::pin(ReceiverStream::new(rx_wrapped)))
 }
 
+/// One quality variant of a live HLS master playlist: the source itself or
+/// a live transcode rung of it.
+struct MasterPlaylistVariant {
+    name: Option<String>,
+    bandwidth: u64,
+    url: String,
+}
+
+/// Cap on how long an HLS master request waits for the best eligible rung
+/// to come live before answering with the variants that are live already.
+/// The warm-up itself always runs to completion in its own task; only this
+/// response waits, so a slow start degrades one session, never the rung.
+const HLS_MASTER_RUNG_READY_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
 pub async fn get_live_hls_master_chunks(
     deps: LivePlaybackDeps<'_>,
     req: LiveHlsMasterChunksRequest,
@@ -637,18 +649,17 @@ pub async fn get_live_hls_master_chunks(
     tracing::info!(
         room_id = %req.room_id,
         media_id = %req.media_id,
-        provider = %req.provider_name,
+        provider = req.provider_name,
         "HLS master playlist request"
     );
 
     let infrastructure = deps.live_streaming_infrastructure.ok_or_else(|| {
         ApiError::ServiceUnavailable("Live streaming service is unavailable".to_string())
     })?;
-    let stream_media_id = live_stream_key(&media_id_key, req.rung.as_deref());
     let generation = synctv_livestream::HlsStreamingApi::resolve_active_generation_with_pull(
         infrastructure,
         &room_id_key,
-        &stream_media_id,
+        &media_id_key,
         req.external_source.as_ref(),
     )
     .await
@@ -659,30 +670,133 @@ pub async fn get_live_hls_master_chunks(
             "Live stream is not currently available".to_string(),
         ));
     };
-    let bandwidth = rung_hls_bandwidth(infrastructure, req.rung.as_deref());
     let claims = ProxyUrlClaims {
-        provider: req.provider_name,
+        provider: req.provider_name.clone(),
         version: req.version.clone(),
-        resource: hls_playlist_resource(&generation.generation_id, req.rung.as_deref()),
-        room_id: req.signature_room_id,
-        user_id: req.signature_user_id,
+        resource: hls_playlist_resource(&generation.generation_id, None),
+        room_id: req.signature_room_id.clone(),
+        user_id: req.signature_user_id.clone(),
         expires_at: req.signature_expires_at,
         target_url: None,
     };
     let signed_query = deps.proxy_signing_key.build_signed_playback_query(&claims);
-    let playlist_url = build_hls_playlist_path(
+    let source_url = build_hls_playlist_path(
         &claims.room_id,
         &req.route_provider,
         &req.version,
         &generation.generation_id,
-        req.rung.as_deref(),
+        None,
         &signed_query,
     );
-    let content = format!(
-        "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-STREAM-INF:BANDWIDTH={bandwidth}\n{playlist_url}\n"
-    );
+    let variants = std::iter::once(MasterPlaylistVariant {
+        name: None,
+        bandwidth: rung_hls_bandwidth(infrastructure, None),
+        url: source_url,
+    })
+    .chain(live_rung_variants(deps, &req).await)
+    .collect::<Vec<_>>();
 
+    let content = build_hls_master_playlist(&variants);
     Ok(hls_manifest_chunk_stream(content, 200, false))
+}
+
+/// The transcode rungs of the requested source that are live right now,
+/// each as a signed master-playlist variant. A master request is the HLS
+/// viewer's only chance to see the quality ladder, so when the best
+/// eligible rung is not live yet this waits (bounded) while the
+/// source-owning node warms it; on relay nodes that warm-up is refused
+/// immediately and only already-live rungs are advertised.
+async fn live_rung_variants(
+    deps: LivePlaybackDeps<'_>,
+    req: &LiveHlsMasterChunksRequest,
+) -> Vec<MasterPlaylistVariant> {
+    let Some(infrastructure) = deps.live_streaming_infrastructure else {
+        return Vec::new();
+    };
+    let room_id_key = req.room_id.to_string();
+    let media_id_key = req.media_id.to_string();
+    let Some(manager) = infrastructure.transcode_manager() else {
+        return Vec::new();
+    };
+
+    // Warm the best eligible rung that is not live yet; rungs already live
+    // keep their place in the ladder without another warm-up.
+    let mut best_cold: Option<String> = None;
+    for preset in manager.eligible_presets(&room_id_key, &media_id_key) {
+        let rung_key = synctv_livestream::rung_stream_name(&media_id_key, &preset.name);
+        match infrastructure.find_publisher(&room_id_key, &rung_key).await {
+            Ok(Some(_)) => continue,
+            Ok(None) => best_cold = Some(preset.name.clone()),
+            Err(_) => break,
+        }
+        break;
+    }
+    if let Some(preset_name) = best_cold {
+        let manager = std::sync::Arc::clone(&manager);
+        let room = room_id_key.clone();
+        let media = media_id_key.clone();
+        let warm_up = tokio::spawn(async move {
+            // The guard lives and drops inside this task: abandoning the
+            // wait must never leak the waiting-viewer count.
+            let _ = manager
+                .ensure_rung_stream(&room, &media, &preset_name)
+                .await;
+        });
+        let _ = tokio::time::timeout(HLS_MASTER_RUNG_READY_WAIT, warm_up).await;
+    }
+
+    let mut variants = Vec::new();
+    for preset in manager.presets() {
+        let rung_key = synctv_livestream::rung_stream_name(&media_id_key, &preset.name);
+        let Ok(Some(rung_generation)) =
+            infrastructure.find_publisher(&room_id_key, &rung_key).await
+        else {
+            continue;
+        };
+        let claims = ProxyUrlClaims {
+            provider: req.provider_name.clone(),
+            version: req.version.clone(),
+            resource: hls_playlist_resource(&rung_generation.generation_id, Some(&preset.name)),
+            room_id: req.signature_room_id.clone(),
+            user_id: req.signature_user_id.clone(),
+            expires_at: req.signature_expires_at,
+            target_url: None,
+        };
+        let signed_query = deps.proxy_signing_key.build_signed_playback_query(&claims);
+        let url = build_hls_playlist_path(
+            &claims.room_id,
+            &req.route_provider,
+            &req.version,
+            &rung_generation.generation_id,
+            Some(&preset.name),
+            &signed_query,
+        );
+        variants.push(MasterPlaylistVariant {
+            name: Some(preset.name.clone()),
+            bandwidth: rung_hls_bandwidth(infrastructure, Some(&preset.name)),
+            url,
+        });
+    }
+    variants
+}
+
+/// Multi-variant live master playlist: the source quality first, then the
+/// transcode rungs in ladder order, so players can adapt between them.
+fn build_hls_master_playlist(variants: &[MasterPlaylistVariant]) -> String {
+    let mut content = String::from("#EXTM3U\n#EXT-X-VERSION:3\n");
+    for variant in variants {
+        content.push_str("#EXT-X-STREAM-INF:BANDWIDTH=");
+        content.push_str(&variant.bandwidth.to_string());
+        if let Some(name) = &variant.name {
+            content.push_str(",NAME=\"");
+            content.push_str(name);
+            content.push('"');
+        }
+        content.push('\n');
+        content.push_str(&variant.url);
+        content.push('\n');
+    }
+    content
 }
 
 pub async fn get_live_hls_playlist_chunks(
@@ -1816,6 +1930,45 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
+    fn master_playlist_lists_source_first_then_named_rungs() {
+        let content = build_hls_master_playlist(&[
+            MasterPlaylistVariant {
+                name: None,
+                bandwidth: 8_000_000,
+                url: "/source/index.m3u8?sig=1".to_string(),
+            },
+            MasterPlaylistVariant {
+                name: Some("720p".to_string()),
+                bandwidth: 2_596_000,
+                url: "/source/720p/index.m3u8?sig=2".to_string(),
+            },
+        ]);
+        let lines = content.lines().collect::<Vec<_>>();
+        assert_eq!(lines[0], "#EXTM3U");
+        assert_eq!(lines[1], "#EXT-X-VERSION:3");
+        // Source variant is unadorned; rung variants carry a NAME players
+        // can surface in their quality menus.
+        assert_eq!(lines[2], "#EXT-X-STREAM-INF:BANDWIDTH=8000000");
+        assert_eq!(lines[3], "/source/index.m3u8?sig=1");
+        assert_eq!(
+            lines[4],
+            "#EXT-X-STREAM-INF:BANDWIDTH=2596000,NAME=\"720p\""
+        );
+        assert_eq!(lines[5], "/source/720p/index.m3u8?sig=2");
+
+        // A source-only ladder is a valid single-variant master.
+        let solo = build_hls_master_playlist(&[MasterPlaylistVariant {
+            name: None,
+            bandwidth: 8_000_000,
+            url: "/source/index.m3u8?sig=1".to_string(),
+        }]);
+        assert_eq!(
+            solo,
+            "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-STREAM-INF:BANDWIDTH=8000000\n/source/index.m3u8?sig=1\n"
+        );
+    }
+
+    #[test]
     fn rung_helpers_scope_resources_and_stream_keys() {
         assert_eq!(optional_rung(""), None);
         assert_eq!(optional_rung("720p").as_deref(), Some("720p"));
@@ -1830,10 +1983,6 @@ mod tests {
         assert_eq!(
             rung_scoped_resource("flv-stream", Some("720p")),
             "flv-stream/720p".to_string()
-        );
-        assert_eq!(
-            rung_scoped_resource("hls-master", Some("480p")),
-            "hls-master/480p".to_string()
         );
 
         assert_eq!(

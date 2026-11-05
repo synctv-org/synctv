@@ -3062,18 +3062,17 @@ async fn test_streaming_proxy_routes_preserve_options_preflight() -> TestResult 
     );
 
     // Transcode rung variants of the live routes must match real routes, or
-    // players would see a 404/405 instead of a signed-access error.
+    // players would see a 404/405 instead of a signed-access error. HLS
+    // masters stay unvarianted: the master playlist itself carries the
+    // quality ladder.
     for uri in [
         "/api/playback-providers/room/live/ver1/flv-stream/720p",
         "/api/playback-providers/room/rtmp/ver1/flv-stream/720p",
-        "/api/playback-providers/room/live/ver1/hls-master/720p",
-        "/api/playback-providers/room/rtmp/ver1/hls-master/720p",
         "/api/playback-providers/room/live/ver1/hls/gen1/720p/index.m3u8",
         "/api/playback-providers/room/rtmp/ver1/hls/gen1/720p/index.m3u8",
         "/api/playback-providers/room/live/ver1/hls/gen1/720p/seg0.ts",
         "/api/playback-providers/room/rtmp/ver1/hls/gen1/720p/seg0.ts",
         "/api/playback-providers/room/live-proxy/ver1/flv-stream/720p",
-        "/api/playback-providers/room/live-proxy/ver1/hls-master/720p",
         "/api/playback-providers/room/live-proxy/ver1/hls/gen1/720p/index.m3u8",
         "/api/playback-providers/room/live-proxy/ver1/hls/gen1/720p/seg0.ts",
     ] {

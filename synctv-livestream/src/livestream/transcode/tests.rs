@@ -187,3 +187,55 @@ fn uuid_generation_ids_are_distinct() {
     // Rung generations must never collide across jobs of the same source.
     assert_ne!(Uuid::new(), Uuid::new());
 }
+
+#[test]
+fn eligible_presets_filter_by_resolution_and_verdicts() {
+    use super::eligible_presets_for;
+
+    let presets = vec![
+        preset("1080p", 1080),
+        preset("720p", 720),
+        preset("480p", 480),
+    ];
+
+    // No local source state yet: the full ladder is offered.
+    let offered = eligible_presets_for(&presets, None);
+    assert_eq!(offered.len(), 3);
+
+    // Source known to be 720p: rungs at or above it never re-encode usefully.
+    let mut state = SourceState {
+        rungs: HashMap::new(),
+        source_resolution: Some((1280, 720)),
+    };
+    state.rungs.insert(
+        "480p".to_string(),
+        RungState {
+            unsupported: Some("source has no decodable video track".to_string()),
+            ..RungState::default()
+        },
+    );
+    let offered = eligible_presets_for(&presets, Some(&state));
+    assert_eq!(
+        offered.len(),
+        0,
+        "1080p and 720p never re-encode a 720p source and 480p is unsupported"
+    );
+
+    // A rung that only failed (retryable cooldown) stays offered.
+    state.rungs.insert(
+        "480p".to_string(),
+        RungState {
+            last_failure: Some(Instant::now()),
+            ..RungState::default()
+        },
+    );
+    let offered = eligible_presets_for(&presets, Some(&state));
+    assert_eq!(offered.len(), 1);
+    assert_eq!(offered[0].name, "480p");
+
+    // A smaller source keeps only the rungs strictly below it.
+    state.source_resolution = Some((854, 480));
+    state.rungs.clear();
+    let offered = eligible_presets_for(&presets, Some(&state));
+    assert_eq!(offered.len(), 0, "no preset sits below a 480p source");
+}

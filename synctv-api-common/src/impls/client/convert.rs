@@ -4560,15 +4560,12 @@ fn playback_media_url(
         PlaybackMediaProvider::Rtmp(PlaybackRtmpMedia::HlsMaster {
             version,
             expires_at,
-            rung,
             ..
-        }) => rung_resource(
-            "rtmp",
-            version.clone(),
-            *expires_at,
-            "hls-master",
-            rung.as_deref(),
-        ),
+        }) => {
+            // The master playlist carries the quality ladder as variants;
+            // there is no per-rung master URL.
+            rung_resource("rtmp", version.clone(), *expires_at, "hls-master", None)
+        }
         PlaybackMediaProvider::LiveProxy(PlaybackLiveProxyMedia::FlvStream {
             version,
             expires_at,
@@ -4584,15 +4581,18 @@ fn playback_media_url(
         PlaybackMediaProvider::LiveProxy(PlaybackLiveProxyMedia::HlsMaster {
             version,
             expires_at,
-            rung,
             ..
-        }) => rung_resource(
-            synctv_core::provider::LiveProxyProvider::NAME,
-            version.clone(),
-            *expires_at,
-            "hls-master",
-            rung.as_deref(),
-        ),
+        }) => {
+            // The master playlist carries the quality ladder as variants;
+            // there is no per-rung master URL.
+            rung_resource(
+                synctv_core::provider::LiveProxyProvider::NAME,
+                version.clone(),
+                *expires_at,
+                "hls-master",
+                None,
+            )
+        }
         PlaybackMediaProvider::Twitch(PlaybackTwitchMedia::Proxy {
             version,
             expires_at,
@@ -6203,32 +6203,34 @@ mod playback_conversion_tests {
 
         let cases = [
             (
-                PlaybackRtmpMedia::FlvStream {
+                PlaybackMediaProvider::Rtmp(PlaybackRtmpMedia::FlvStream {
                     version: "live-v1".to_string(),
                     expires_at,
                     room_id,
                     media_id,
                     rung: Some("720p".to_string()),
-                },
+                }),
+                synctv_core::provider::RtmpProvider::NAME,
                 "flv-stream/720p",
                 "flv-stream",
                 "/api/playback-providers/room-1/live/live-v1/flv-stream/720p?",
             ),
             (
-                PlaybackRtmpMedia::HlsMaster {
+                PlaybackMediaProvider::LiveProxy(PlaybackLiveProxyMedia::FlvStream {
                     version: "live-v1".to_string(),
                     expires_at,
                     room_id,
                     media_id,
                     rung: Some("480p".to_string()),
-                },
-                "hls-master/480p",
-                "hls-master",
-                "/api/playback-providers/room-1/live/live-v1/hls-master/480p?",
+                }),
+                synctv_core::provider::LiveProxyProvider::NAME,
+                "flv-stream/480p",
+                "flv-stream",
+                "/api/playback-providers/room-1/live-proxy/live-v1/flv-stream/480p?",
             ),
         ];
 
-        for (media_provider, resource, source_resource, url_prefix) in cases {
+        for (media_provider, provider_name, resource, source_resource, url_prefix) in cases {
             let info = PlaybackInfo::builder()
                 .add_media(PlaybackMedia {
                     name: "rung".to_string(),
@@ -6236,7 +6238,7 @@ mod playback_conversion_tests {
                     expire_at: None,
                     metadata: None,
                     p2p_swarm_id: None,
-                    provider: PlaybackMediaProvider::Rtmp(media_provider),
+                    provider: media_provider,
                 })
                 .build();
 
@@ -6257,7 +6259,7 @@ mod playback_conversion_tests {
             // one quality must not verify for another.
             key.parse_and_verify_playback_query(
                 signed_query(&media.url),
-                synctv_core::provider::RtmpProvider::NAME,
+                provider_name,
                 "live-v1",
                 resource,
                 "room-1",
@@ -6266,7 +6268,7 @@ mod playback_conversion_tests {
             assert!(
                 key.parse_and_verify_playback_query(
                     signed_query(&media.url),
-                    synctv_core::provider::RtmpProvider::NAME,
+                    provider_name,
                     "live-v1",
                     source_resource,
                     "room-1",

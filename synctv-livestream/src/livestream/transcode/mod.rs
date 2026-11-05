@@ -267,6 +267,19 @@ impl TranscodeManager {
         &self.inner.config.presets
     }
 
+    /// The configured rungs worth offering for one source, best-first:
+    /// strictly below the source resolution once it is known, and without
+    /// rungs this node already knows the source cannot provide (a verdict
+    /// from an earlier scheduling attempt on this node).
+    #[must_use]
+    pub fn eligible_presets(&self, room_id: &str, media_id: &str) -> Vec<&TranscodePreset> {
+        let state = self.inner.state.lock().expect("transcode state poisoned");
+        eligible_presets_for(
+            &self.inner.config.presets,
+            state.get(&(room_id.to_string(), media_id.to_string())),
+        )
+    }
+
     /// Ensure the rung `rung` of `media_id` is servable from this node:
     ///
     /// * a rung registered by any node resolves immediately (this node's
@@ -749,6 +762,32 @@ async fn scheduler_tick(inner: &Arc<ManagerInner>) {
             &outcome,
         );
     });
+}
+
+/// The presets worth offering for one source, best-first: strictly below
+/// the source resolution once it is known, and without rungs a previous
+/// scheduling attempt on this node proved the source cannot provide.
+/// A source with no local state yet offers the full ladder.
+fn eligible_presets_for<'a>(
+    presets: &'a [TranscodePreset],
+    source: Option<&SourceState>,
+) -> Vec<&'a TranscodePreset> {
+    let Some(source) = source else {
+        return presets.iter().collect();
+    };
+    let max_height = source
+        .source_resolution
+        .map_or(u32::MAX, |(_, height)| height);
+    presets
+        .iter()
+        .filter(|preset| preset.height < max_height)
+        .filter(|preset| {
+            source
+                .rungs
+                .get(&preset.name)
+                .is_none_or(|rung| rung.unsupported.is_none())
+        })
+        .collect()
 }
 
 /// Choose the rung with the most waiting viewers among the schedulable

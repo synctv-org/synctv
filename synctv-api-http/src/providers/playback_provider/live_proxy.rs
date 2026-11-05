@@ -199,7 +199,9 @@ pub async fn get_live_proxy_hls_master(
         .map_err(crate::http::error::map_api_error)?;
     let req = GetLiveProxyHlsMasterRequest {
         version: path.version,
-        rung: path.rung.clone().unwrap_or_default(),
+        // Per-rung masters are gone; the master playlist itself carries the
+        // quality ladder as variants.
+        rung: String::new(),
         sig,
         uid,
         rid,

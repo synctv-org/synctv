@@ -227,9 +227,11 @@ fn retain_live_whep_if_enabled(
 
 /// Append the configured transcode rungs to a live playback result.
 ///
-/// Each hls/flv source entry gains one sibling per rung preset, labeled with
-/// the preset name; WHEP keeps only the source quality. The rung rides in
-/// the media payload and becomes part of the signed URL resource.
+/// HTTP-FLV has no manifest of its own, so each flv source entry gains one
+/// sibling per eligible rung preset, labeled with the preset name; the rung
+/// rides in the media payload and becomes part of the signed URL resource.
+/// HLS needs no siblings: its master playlist carries the quality ladder as
+/// variants and the player adapts between them.
 pub(crate) fn append_live_transcode_rungs(
     infrastructure: Option<&std::sync::Arc<synctv_livestream::LiveStreamingInfrastructure>>,
     result: &mut synctv_core::models::media::PlaybackResult,
@@ -241,14 +243,11 @@ pub(crate) fn append_live_transcode_rungs(
     fn with_rung(provider: &PlaybackMediaProvider, rung: &str) -> Option<PlaybackMediaProvider> {
         let mut provider = provider.clone();
         match &mut provider {
-            PlaybackMediaProvider::Rtmp(
-                PlaybackRtmpMedia::FlvStream { rung: slot, .. }
-                | PlaybackRtmpMedia::HlsMaster { rung: slot, .. },
-            )
-            | PlaybackMediaProvider::LiveProxy(
-                PlaybackLiveProxyMedia::FlvStream { rung: slot, .. }
-                | PlaybackLiveProxyMedia::HlsMaster { rung: slot, .. },
-            ) => *slot = Some(rung.to_string()),
+            PlaybackMediaProvider::Rtmp(PlaybackRtmpMedia::FlvStream { rung: slot, .. })
+            | PlaybackMediaProvider::LiveProxy(PlaybackLiveProxyMedia::FlvStream {
+                rung: slot,
+                ..
+            }) => *slot = Some(rung.to_string()),
             _ => return None,
         }
         Some(provider)
@@ -268,45 +267,52 @@ pub(crate) fn append_live_transcode_rungs(
     ) {
         return;
     }
-    let rungs: Vec<String> = manager
-        .presets()
-        .iter()
-        .map(|preset| preset.name.clone())
-        .collect();
+    let media_id = result.id.or(match result.metadata.as_ref() {
+        Some(synctv_core::models::media::PlaybackMetadata::Live(metadata)) => {
+            Some(metadata.media_id)
+        }
+        _ => None,
+    });
+    let rungs: Vec<String> = match media_id {
+        Some(media_id) => manager
+            .eligible_presets(&result.room_id.to_string(), &media_id.to_string())
+            .into_iter()
+            .map(|preset| preset.name.clone())
+            .collect(),
+        None => manager
+            .presets()
+            .iter()
+            .map(|preset| preset.name.clone())
+            .collect(),
+    };
     if rungs.is_empty() {
         return;
     }
 
-    for mode in ["hls", "flv"] {
-        let Some(info) = result.playback_infos.get_mut(mode) else {
+    let Some(info) = result.playback_infos.get_mut("flv") else {
+        return;
+    };
+    let sources = info.medias.clone();
+    let mut rung_medias = Vec::new();
+    for media in &sources {
+        if !matches!(
+            &media.provider,
+            PlaybackMediaProvider::Rtmp(PlaybackRtmpMedia::FlvStream { .. })
+                | PlaybackMediaProvider::LiveProxy(PlaybackLiveProxyMedia::FlvStream { .. })
+        ) {
             continue;
-        };
-        let sources = info.medias.clone();
-        let mut rung_medias = Vec::new();
-        for media in &sources {
-            if !matches!(
-                &media.provider,
-                PlaybackMediaProvider::Rtmp(
-                    PlaybackRtmpMedia::FlvStream { .. } | PlaybackRtmpMedia::HlsMaster { .. }
-                ) | PlaybackMediaProvider::LiveProxy(
-                    PlaybackLiveProxyMedia::FlvStream { .. }
-                        | PlaybackLiveProxyMedia::HlsMaster { .. }
-                )
-            ) {
-                continue;
-            }
-            for rung in &rungs {
-                let Some(provider) = with_rung(&media.provider, rung) else {
-                    continue;
-                };
-                let mut entry = media.clone();
-                entry.name.clone_from(rung);
-                entry.provider = provider;
-                rung_medias.push(entry);
-            }
         }
-        info.medias.extend(rung_medias);
+        for rung in &rungs {
+            let Some(provider) = with_rung(&media.provider, rung) else {
+                continue;
+            };
+            let mut entry = media.clone();
+            entry.name.clone_from(rung);
+            entry.provider = provider;
+            rung_medias.push(entry);
+        }
     }
+    info.medias.extend(rung_medias);
 }
 
 async fn filter_unavailable_live_whep(

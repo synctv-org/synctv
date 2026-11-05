@@ -516,14 +516,9 @@ livestream:
     presets:
       - name: "720p"
         height: 720
-        video_kbps: 1200
-        audio_kbps: 64
+        video_kbps: 2500
+        audio_kbps: 96
         max_fps: 30
-      - name: "360p"
-        height: 360
-        video_kbps: 400
-        audio_kbps: 64
-        max_fps: 24
 
 file_storage:
   # Named backend selected by product features when they do not override it.

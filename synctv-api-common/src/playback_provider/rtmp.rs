@@ -93,7 +93,6 @@ pub async fn get_rtmp_hls_master(
     let signature_user_id = req.uid.clone();
     let signature_room_id = req.rid.clone();
     let signature_expires_at = req.exp;
-    let rung = optional_rung(&req.rung);
     let action = resolve_rtmp_hls_master_action(&deps, req).await?;
     let stream = match action {
         PlaybackTransportAction::LiveHlsMaster {
@@ -119,7 +118,6 @@ pub async fn get_rtmp_hls_master(
                     signature_expires_at,
                     route_provider: synctv_core::provider::RtmpProvider::PUBLIC_NAME.to_string(),
                     external_source: None,
-                    rung,
                 },
             )
             .await?
@@ -252,7 +250,7 @@ async fn resolve_rtmp_hls_master_action(
         deps,
         PlaybackProviderAccessRequest {
             version: &req.version,
-            resource: rung_scoped_resource("hls-master", optional_rung(&req.rung).as_deref()),
+            resource: "hls-master".to_string(),
             signature: &req.sig,
             user_id: &req.uid,
             room_id: &req.rid,

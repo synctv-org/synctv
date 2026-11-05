@@ -33,7 +33,7 @@ const STREAMHUB_EVENT_SEND_TIMEOUT: Duration = Duration::from_secs(5);
 /// One rung publication bound to a source stream's room.
 pub struct RungPublisher {
     pub room_id: String,
-    /// Stream name of the rung (`media::rung`).
+    /// Stream name of the rung (`{mediaId}-{rung}`).
     pub rung_stream_name: String,
     pub generation_id: Uuid,
 }

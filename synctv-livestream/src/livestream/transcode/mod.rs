@@ -2,7 +2,7 @@
 //!
 //! The manager runs on the node that receives the source stream (the node
 //! owning the source generation) and exposes quality rungs as additional
-//! local streams keyed `room / media::rung`. Rungs are ordinary StreamHub
+//! local streams keyed `room / {mediaId}-{rung}`. Rungs are ordinary StreamHub
 //! publications plus registry entries, so HTTP-FLV, HLS, and the
 //! multi-replica relay serve them through the existing machinery with no
 //! special-casing.

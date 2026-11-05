@@ -849,8 +849,8 @@ impl FlvStreamingApi {
     /// [`LiveStreamGuards`] for the lifetime of the FLV streaming task so
     /// subscriber counts drop when the viewer disconnects.
     ///
-    /// `media_id` may address a transcode rung (`base::rung`): the source
-    /// stream is ensured first, the rung demand is registered, and the
+    /// `media_id` may address a transcode rung (`{mediaId}-{rung}`): the
+    /// source stream is ensured first, the rung demand is registered, and the
     /// session subscribes to the rung stream (relaying it when another node
     /// owns the rung).
     ///

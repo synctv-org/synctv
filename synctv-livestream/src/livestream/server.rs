@@ -2375,7 +2375,7 @@ mod tests {
     /// Demand-driven transcode rung end to end: an RTMP source feeds the hub,
     /// a rung viewer's demand schedules the ffmpeg worker, and the rung is
     /// served through both the FLV session and the HLS generation paths under
-    /// its `{media}::{rung}` stream key. Requires a host `ffmpeg` binary.
+    /// its `{mediaId}-{rung}` stream key. Requires a host `ffmpeg` binary.
     #[tokio::test]
     async fn transcode_rung_serves_flv_and_hls_from_live_source() -> TestResult {
         use crate::{

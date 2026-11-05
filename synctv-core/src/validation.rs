@@ -198,20 +198,18 @@ pub fn validate_room_description(description: &str) -> ValidationResult<()> {
 
 pub fn validate_room_password_for_set(password: &str) -> ValidationResult<()> {
     let trimmed = password.trim();
-    if trimmed.len() < ROOM_PASSWORD_MIN || trimmed.len() > ROOM_PASSWORD_MAX {
-        let char_count = trimmed.chars().count();
-        if char_count < ROOM_PASSWORD_MIN {
-            return Err(ValidationError::Field {
-                field: "room_password".to_string(),
-                message: format!("must be at least {ROOM_PASSWORD_MIN} characters"),
-            });
-        }
-        if char_count > ROOM_PASSWORD_MAX {
-            return Err(ValidationError::Field {
-                field: "room_password".to_string(),
-                message: format!("must not exceed {ROOM_PASSWORD_MAX} characters"),
-            });
-        }
+    let char_count = trimmed.chars().count();
+    if char_count < ROOM_PASSWORD_MIN {
+        return Err(ValidationError::Field {
+            field: "room_password".to_string(),
+            message: format!("must be at least {ROOM_PASSWORD_MIN} characters"),
+        });
+    }
+    if char_count > ROOM_PASSWORD_MAX {
+        return Err(ValidationError::Field {
+            field: "room_password".to_string(),
+            message: format!("must not exceed {ROOM_PASSWORD_MAX} characters"),
+        });
     }
 
     Ok(())
@@ -247,9 +245,10 @@ impl UsernameValidator {
 
     pub fn validate(&self, username: &str) -> ValidationResult<()> {
         // Check length (use char count for Unicode safety). A byte length
-        // below the minimum forces a char count below it too; only inputs
-        // longer than the maximum need an exact count.
-        if username.len() < self.min_length {
+        // within the maximum proves the char count is too, but a byte length
+        // above the minimum does not (multi-byte chars), so the minimum
+        // always needs the exact count.
+        if username.chars().count() < self.min_length {
             return Err(ValidationError::Field {
                 field: "username".to_string(),
                 message: format!("must be at least {} characters", self.min_length),
@@ -418,9 +417,10 @@ impl PasswordValidator {
 
     pub fn validate(&self, password: &str) -> ValidationResult<()> {
         // Check length (use char count for Unicode safety). A byte length
-        // below the minimum forces a char count below it too; only inputs
-        // longer than the maximum can need an exact count.
-        if password.len() < self.min_length {
+        // within the maximum proves the char count is too, but a byte length
+        // above the minimum does not (multi-byte chars), so the minimum
+        // always needs the exact count.
+        if password.chars().count() < self.min_length {
             return Err(ValidationError::Field {
                 field: "password".to_string(),
                 message: format!("must be at least {} characters", self.min_length),
@@ -569,9 +569,10 @@ impl RoomNameValidator {
 
     pub fn validate(&self, name: &str) -> ValidationResult<()> {
         // Check length (use char count for Unicode safety). A byte length
-        // below the minimum forces a char count below it too; only inputs
-        // longer than the maximum need an exact count.
-        if name.len() < self.min_length {
+        // within the maximum proves the char count is too, but a byte length
+        // above the minimum does not (multi-byte chars), so the minimum
+        // always needs the exact count.
+        if name.chars().count() < self.min_length {
             return Err(ValidationError::Field {
                 field: "room_name".to_string(),
                 message: format!("must be at least {} characters", self.min_length),
@@ -699,6 +700,26 @@ mod tests {
             Ok(_) => std::panic::panic_any(context.to_string()),
             Err(error) => error,
         }
+    }
+
+    #[test]
+    fn test_minimum_length_uses_character_count() {
+        // Two CJK chars are six bytes but still below every minimum below.
+        let two_chars = "\u{4f60}\u{597d}";
+        assert!(UsernameValidator::new().validate(two_chars).is_err());
+        assert!(validate_room_password_for_set(two_chars).is_err());
+        assert!(RoomNameValidator::new()
+            .with_length(3, ROOM_NAME_MAX)
+            .validate(two_chars)
+            .is_err());
+        assert!(PasswordValidator::new()
+            .validate("Aa1\u{4f60}\u{597d}")
+            .is_err());
+
+        assert!(UsernameValidator::new()
+            .validate("\u{4f60}\u{597d}\u{5417}")
+            .is_ok());
+        assert!(validate_room_password_for_set("\u{4f60}\u{597d}\u{5417}\u{ff1f}").is_ok());
     }
 
     #[test]

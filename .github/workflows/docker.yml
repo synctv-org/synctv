@@ -141,12 +141,14 @@ jobs:
         linux/arm64=ubuntu-24.04-arm
       distribute: true
       platforms: linux/amd64,linux/arm64
-      output: ${{ github.event_name == 'push' && 'image' || 'local' }}
+      # The local export stalls on current runner images; pull requests keep
+      # push disabled so the image only lands in the builder store.
+      output: image
       push: ${{ github.event_name == 'push' }}
       artifact-upload: false
       sign: ${{ github.event_name == 'push' && 'auto' || 'false' }}
-      cache: true
-      cache-mode: max
+      cache: false
+      cache-mode: min
       cache-scope: synctv-image
       build-args: |
         SYNCTV_CARGO_BUILD_PROFILE=${{ github.event_name == 'pull_request' && 'dev' || 'release' }}

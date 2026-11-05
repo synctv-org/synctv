@@ -254,6 +254,9 @@ curl -fsS http://localhost:8081/health/ready
 | `livestream.webrtc.max_sdp_bytes` | 字节数 | `262144` | WHIP/WHEP SDP 请求和上游 WHEP SDP 响应上限 |
 | `livestream.webrtc.max_sessions` | 整数 | `1000` | 当前节点 WHIP/WHEP 会话总数上限 |
 | `livestream.webrtc.max_session_duration_seconds` | 秒数 | `86400` | 单个 WHIP/WHEP 会话最长存活时间 |
+| `livestream.transcode.enabled` | 布尔值 | `false` | 直播转码（画质档位）总开关 |
+| `livestream.transcode.workers` | 表数组 | 一个本地 ffmpeg worker | 转码 worker 列表（引擎与并发容量），按优先级排序 |
+| `livestream.transcode.presets` | 表数组 | 仅 720p | 画质档位列表（best-first），详见[直播配置](../../configuration/livestream/) |
 
 ## `file_storage`
 

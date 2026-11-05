@@ -113,10 +113,13 @@ LABEL org.opencontainers.image.title="SyncTV" \
     org.opencontainers.image.source="https://github.com/synctv-org/synctv" \
     org.opencontainers.image.licenses="MIT"
 
-# Install runtime dependencies (curl needed for healthcheck)
+# Install runtime dependencies (curl needed for healthcheck; ffmpeg is
+# spawned as a subprocess by the live transcode quality rungs — the Debian
+# build ships the libx264 and aac encoders they require)
 RUN apt-get update && apt-get install -y \
     ca-certificates \
-    curl && rm -rf /var/lib/apt/lists/*
+    curl \
+    ffmpeg && rm -rf /var/lib/apt/lists/*
 
 # Create synctv for running the application
 RUN useradd -m -u 1000 synctv

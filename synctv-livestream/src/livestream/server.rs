@@ -335,6 +335,8 @@ pub struct LivestreamConfig {
     pub ssrf_guard: SsrfGuard,
     /// WHIP/WHEP peer and session limits.
     pub webrtc_session: WebRtcSessionConfig,
+    /// Live transcode settings (quality rungs), disabled by default.
+    pub transcode: crate::livestream::transcode::TranscodeConfig,
 }
 
 fn build_hls_storage(config: &LivestreamConfig) -> StreamResult<Arc<dyn HlsStorage>> {
@@ -841,6 +843,18 @@ impl LivestreamServer {
         // RTMP/StreamHub/HLS task running without a returned handle to shut it down.
         let hls_storage = build_hls_storage(&self.config)?;
 
+        // Fail fast on an invalid transcode section instead of discovering it
+        // per stream at runtime.
+        if self.config.transcode.enabled {
+            let problems = self.config.transcode.validate();
+            if !problems.is_empty() {
+                return Err(crate::error::StreamError::InvalidState(format!(
+                    "invalid livestream.transcode configuration: {}",
+                    problems.join("; ")
+                )));
+            }
+        }
+
         // 1. Create StreamHub channels and hub (bounded to prevent OOM under load)
         let (event_sender, event_receiver) =
             mpsc::channel(synctv_xiu::streamhub::define::STREAM_HUB_EVENT_CHANNEL_CAPACITY);
@@ -1296,6 +1310,32 @@ impl LivestreamServer {
 
         // 8. Wire HLS proxy client (created in step 5a) into infrastructure
         // 9. Create LiveStreamingInfrastructure with HLS components wired in
+        let transcode_manager = self.config.transcode.enabled.then(|| {
+            let workers: Vec<std::sync::Arc<dyn crate::livestream::transcode::TranscodeWorker>> =
+                self.config
+                    .transcode
+                    .workers
+                    .iter()
+                    .map(|worker| {
+                        let worker: std::sync::Arc<
+                            dyn crate::livestream::transcode::TranscodeWorker,
+                        > = match &worker.engine {
+                            crate::livestream::transcode::WorkerEngine::Ffmpeg(ffmpeg) => {
+                                crate::livestream::transcode::FfmpegWorker::new(ffmpeg)
+                            }
+                        };
+                        worker
+                    })
+                    .collect();
+            crate::livestream::transcode::TranscodeManager::new(
+                self.config.transcode.clone(),
+                workers,
+                self.publisher_registry.clone(),
+                event_sender.clone(),
+                self.config.node_id.clone(),
+                self.config.cluster_address.clone(),
+            )
+        });
         let infrastructure = Arc::new(
             LiveStreamingInfrastructure::from_parts(
                 self.publisher_registry,
@@ -1310,7 +1350,8 @@ impl LivestreamServer {
             .with_hls_storage_backend(self.config.hls_storage_backend)
             .with_hls_proxy(hls_proxy)
             .with_webrtc_session_manager(webrtc_session_manager)
-            .with_webrtc_session_router(webrtc_session_router),
+            .with_webrtc_session_router(webrtc_session_router)
+            .with_transcode(transcode_manager),
         );
 
         info!(
@@ -1421,6 +1462,7 @@ mod tests {
             hls_s3: HlsS3Options::default(),
             ssrf_guard: SsrfGuard::strict_policy(),
             webrtc_session: WebRtcSessionConfig::default(),
+            transcode: crate::livestream::transcode::TranscodeConfig::default(),
         }
     }
 
@@ -2327,6 +2369,313 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         handle.shutdown();
+        Ok(())
+    }
+
+    /// Demand-driven transcode rung end to end: an RTMP source feeds the hub,
+    /// a rung viewer's demand schedules the ffmpeg worker, and the rung is
+    /// served through both the FLV session and the HLS generation paths under
+    /// its `{mediaId}-{rung}` stream key. Requires a host `ffmpeg` binary.
+    #[tokio::test]
+    async fn transcode_rung_serves_flv_and_hls_from_live_source() -> TestResult {
+        use crate::{
+            livestream::transcode::{
+                FfmpegWorkerConfig, TranscodePreset, WorkerConfig, WorkerEngine,
+            },
+            FlvStreamingApi, HlsStreamingApi,
+        };
+
+        const ROOM: &str = "room-tc";
+        const MEDIA: &str = "1001";
+        const RUNG: &str = "360p";
+
+        let _ = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_test_writer()
+            .try_init();
+
+        anyhow::ensure!(
+            std::process::Command::new("ffmpeg")
+                .arg("-version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success()),
+            "this test requires a host ffmpeg binary"
+        );
+
+        let registry = Arc::new(TestStreamRegistry::new());
+        let (listener, local_addr) = bind_local_listener().await?;
+        let mut config = config_for_rtmp_addr(local_addr);
+        config.transcode = crate::livestream::transcode::TranscodeConfig {
+            enabled: true,
+            workers: vec![WorkerConfig {
+                name: None,
+                priority: 100,
+                engine: WorkerEngine::Ffmpeg(FfmpegWorkerConfig {
+                    max_concurrent: 1,
+                    binary: "ffmpeg".to_string(),
+                }),
+            }],
+            presets: vec![TranscodePreset {
+                name: RUNG.to_string(),
+                height: 360,
+                video_kbps: 400,
+                audio_kbps: 64,
+                max_fps: 24,
+            }],
+        };
+        assert!(
+            config.transcode.validate().is_empty(),
+            "test transcode config must validate"
+        );
+
+        let auth: Arc<dyn AuthCallback> = Arc::new(RegistryAuth {
+            registry: Arc::clone(&registry),
+            user_id: "user-tc".to_string(),
+            cluster_address: "127.0.0.1:0".to_string(),
+        });
+        let server = LivestreamServer::new(config, registry.clone(), test_tracker())
+            .with_auth(auth)
+            .with_rtmp_listener(listener);
+        let mut handle = server.start()?;
+        let infrastructure = Arc::clone(&handle.infrastructure);
+
+        // Publish a real, decodable source through the RTMP ingress with a
+        // host ffmpeg: the tiny synthetic RTMP test frames are not decodable
+        // by a real encoder, and transcode must decode its input.
+        let mut publisher = tokio::process::Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-re",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=1280x720:rate=24",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:sample_rate=44100",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-g",
+                "48",
+                "-profile:v",
+                "baseline",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "64k",
+                "-f",
+                "flv",
+                &format!("rtmp://{local_addr}/{ROOM}/{MEDIA}"),
+            ])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()?;
+
+        // Wait until the RTMP ingress registered the source generation.
+        timeout(Duration::from_secs(10), async {
+            loop {
+                if registry
+                    .get_active_generation(ROOM, MEDIA)
+                    .await
+                    .is_ok_and(|generation| generation.is_some())
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .map_err(|_| test_error("source publisher did not register"))?;
+
+        // Rung FLV: the demand schedules the worker and the session receives
+        // the transcoded stream under the rung stream key.
+        let rung_media_id = format!("{MEDIA}-{RUNG}");
+        let flv_result = timeout(
+            Duration::from_secs(20),
+            FlvStreamingApi::create_session_with_pull(&infrastructure, ROOM, &rung_media_id, None),
+        )
+        .await
+        .map_err(|_| test_error("rung FLV session did not start in time"))??;
+        let (mut rung_flv, flv_guards) = flv_result;
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        let mut header = false;
+        let mut audio = false;
+        let mut video = false;
+        while tokio::time::Instant::now() < deadline && !(header && audio && video) {
+            let chunk = timeout(
+                deadline.saturating_duration_since(tokio::time::Instant::now()),
+                rung_flv.recv(),
+            )
+            .await
+            .map_err(|_| test_error("timed out waiting for rung FLV data"))?
+            .ok_or_else(|| test_error("rung FLV stream ended early"))??;
+            header |= chunk.starts_with(b"FLV");
+            if matches!(chunk.first(), Some(8 | 9)) {
+                anyhow::ensure!(chunk.len() >= 15, "rung FLV tag is truncated");
+                let previous_tag_size = u32::from_be_bytes(
+                    chunk[chunk.len() - 4..]
+                        .try_into()
+                        .expect("FLV previous-tag-size has four bytes"),
+                );
+                assert_eq!(
+                    usize::try_from(previous_tag_size)?,
+                    chunk.len() - 4,
+                    "rung FLV previous-tag-size must cover tag header and payload"
+                );
+                audio |= chunk.first() == Some(&8);
+                video |= chunk.first() == Some(&9);
+            }
+        }
+        anyhow::ensure!(
+            header && audio && video,
+            "rung FLV lacked header or A/V tags"
+        );
+
+        // Rung HLS: master resolution, media playlist, and a TS segment all
+        // address the rung stream key.
+        let generation = timeout(Duration::from_secs(20), async {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(19);
+            loop {
+                let generation = HlsStreamingApi::resolve_active_generation_with_pull(
+                    &infrastructure,
+                    ROOM,
+                    &rung_media_id,
+                    None,
+                )
+                .await
+                .map_err(|error| anyhow::anyhow!("rung HLS resolve: {error}"))?;
+                if let Some(generation) = generation {
+                    return Ok::<_, anyhow::Error>(generation);
+                }
+                anyhow::ensure!(
+                    tokio::time::Instant::now() < deadline,
+                    "rung HLS generation did not activate"
+                );
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .map_err(|_| test_error("rung HLS generation did not activate in time"))??;
+
+        let playlist = timeout(Duration::from_secs(20), async {
+            loop {
+                if let Some(playlist) = HlsStreamingApi::generate_playlist_simple(
+                    &infrastructure,
+                    ROOM,
+                    &rung_media_id,
+                    &generation.generation_id,
+                    &format!("/rung-hls/{}/", generation.generation_id),
+                )
+                .await
+                .map_err(|error| anyhow::anyhow!("rung HLS playlist: {error}"))?
+                {
+                    if playlist.contains("#EXTINF:") {
+                        return Ok::<_, anyhow::Error>(playlist);
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .map_err(|_| test_error("rung HLS playlist did not gain segments"))??;
+        let segment_name = playlist
+            .lines()
+            .find_map(|line| (!line.starts_with('#')).then(|| line.to_string()))
+            .ok_or_else(|| test_error("rung HLS playlist should name a segment"))?;
+        let segment_name = segment_name
+            .rsplit('/')
+            .next()
+            .and_then(|name| name.strip_suffix(".ts"))
+            .ok_or_else(|| test_error("rung HLS playlist segment should be a .ts file"))?;
+        let segment = timeout(
+            Duration::from_secs(10),
+            HlsStreamingApi::get_segment(
+                &infrastructure,
+                ROOM,
+                &rung_media_id,
+                &generation.generation_id,
+                segment_name,
+            ),
+        )
+        .await
+        .map_err(|_| test_error("rung HLS segment did not load in time"))??;
+        assert_eq!(segment.len() % 188, 0, "rung segment must be MPEG-TS");
+        assert!(
+            segment
+                .as_chunks::<188>()
+                .0
+                .iter()
+                .all(|packet| packet[0] == 0x47),
+            "every rung MPEG-TS packet must start with the sync byte"
+        );
+
+        // An unconfigured rung is rejected instead of silently serving the
+        // source quality.
+        let unknown_rung = format!("{MEDIA}-1080p");
+        let unknown =
+            FlvStreamingApi::create_session_with_pull(&infrastructure, ROOM, &unknown_rung, None)
+                .await;
+        assert!(
+            unknown.is_err(),
+            "unconfigured rungs must not resolve to the source stream"
+        );
+
+        // Idle teardown: with every viewer gone, the rung stops by itself
+        // after the idle grace even while the source keeps publishing.
+        drop(flv_guards);
+        drop(rung_flv);
+        let rung_idled_out = timeout(Duration::from_secs(50), async {
+            loop {
+                let active = registry
+                    .get_active_generation(ROOM, &rung_media_id)
+                    .await
+                    .is_ok_and(|generation| generation.is_some());
+                if !active {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        })
+        .await
+        .is_ok();
+        assert!(
+            rung_idled_out,
+            "rung must stop after the idle grace with the source still live"
+        );
+
+        // Teardown: ending the source tears the rung down with it.
+        let _ = publisher.start_kill();
+        let _ = publisher.wait().await;
+        let rung_absent = timeout(Duration::from_secs(10), async {
+            loop {
+                let active = registry
+                    .get_active_generation(ROOM, &rung_media_id)
+                    .await
+                    .is_ok_and(|generation| generation.is_none());
+                if active {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .is_ok();
+        assert!(
+            rung_absent,
+            "rung generation must leave the registry after the source ends"
+        );
+
+        assert!(handle.shutdown_graceful(3).await);
         Ok(())
     }
 }

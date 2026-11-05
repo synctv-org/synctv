@@ -260,6 +260,54 @@ Typical choices: AWS S3, MinIO, Cloudflare R2, or compatible services. Configure
 6. With `shared_file`, TS segment requests are read by the current node from the shared path. Local backends still use publisher-node HLS gRPC proxying for remote playlist/segment reads.
 </Steps>
 
+## Live Transcoding (Quality Rungs)
+
+`livestream.transcode` lets the node that owns a source transcode it into additional quality rungs. In HLS the rungs appear as variants of the master playlist and players switch between them adaptively by bandwidth; HTTP-FLV has no manifest, so its playback list gains one selectable entry per rung and picking one switches to that rung's own transcoded stream.
+
+Prerequisite: an `ffmpeg` binary (H.264/AAC decode plus `libx264` and `aac` encoders). The official container image ships one; bare-binary deployments install their own. SyncTV always runs ffmpeg as a subprocess and never links it, so on binary deployments the licensing of the binary stays with the operator's choice of build.
+
+`enabled = true` alone uses the defaults: one local ffmpeg worker and a single 720p rung. Write out workers/presets only to customize:
+
+```toml
+[livestream.transcode]
+enabled = true
+
+[[livestream.transcode.workers]]
+engine = "ffmpeg"
+name = "local"
+priority = 100
+max_concurrent = 2
+binary = "ffmpeg"
+
+[[livestream.transcode.presets]]
+name = "720p"
+height = 720
+video_kbps = 2500
+audio_kbps = 96
+max_fps = 30
+```
+
+Playback semantics:
+
+- The HLS master playlist always contains the source-quality variant plus a variant per live rung (`NAME` carries the rung name for player quality menus). When a master is requested, the source-owning node opportunistically warms the best rung that is not live yet and waits up to about 10 seconds, so most sessions see the full ladder from their very first request and can use native HLS adaptive bitrate. A session whose warm-up timed out sees only the already-live variants; re-entering the room fetches a fresh master. Players fetch the master once per session — variants that go live later do not appear mid-session.
+- HTTP-FLV mode gains one clarity entry per offerable rung. Rungs below 720p rarely add reach, so the default offers only 720p.
+
+Scheduling semantics:
+
+- Demand driven: a rung is scheduled when a viewer selects it or a master playlist warms it, and stops roughly 30 seconds after its last viewer leaves. A failed rung cools down for 30 seconds.
+- Only the node that owns the source schedules transcoding. Other nodes read rung state from the registry and proxy traffic; they never ask the owner to transcode. When a rung is not registered, viewers fall back to the source quality immediately.
+- Rungs at or above the source resolution never start (no upscaling) and are excluded from HLS variants and FLV clarity entries.
+- Workers receive jobs in descending `priority`; when one is at capacity, the job falls through to lower-priority workers.
+- Rung output uses a fixed 2-second GOP so HLS segments cut cleanly on keyframes.
+
+Parameters:
+
+- `enabled`: turns the transcode subsystem on.
+- `workers`: the worker list, defaulting to one local ffmpeg worker. `name` is optional (used in logs); higher `priority` is preferred; with `engine = "ffmpeg"`, `max_concurrent` (default 1) and `binary` (default `ffmpeg`) configure the subprocess.
+- `presets`: quality rungs ordered best-first, defaulting to a single 720p entry. `name` becomes part of the stream identifier (safe characters only); `height` is the target height; `video_kbps`/`audio_kbps` are target bitrates; `max_fps` caps the output frame rate.
+
+Note: transcode input must be H.264/AAC in FLV. If ffmpeg cannot decode the source, the rung times out and falls back while source-quality playback continues unaffected.
+
 ## RTMP
 
 `livestream.rtmp_port` default: `1935`.

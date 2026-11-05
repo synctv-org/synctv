@@ -258,6 +258,8 @@ pub struct StreamRelayServiceImpl {
     hls_stream_registry: Option<HlsStreamRegistry>,
     external_publish_manager: Option<Arc<ExternalPublishManager>>,
     webrtc_session_manager: Option<Arc<WebRtcSessionManager>>,
+    /// Transcode manager for remote rung demand, present when transcode runs here.
+    transcode_manager: Option<Arc<crate::livestream::transcode::TranscodeManager>>,
 }
 
 impl StreamRelayServiceImpl {
@@ -278,6 +280,7 @@ impl StreamRelayServiceImpl {
             hls_stream_registry: None,
             external_publish_manager: None,
             webrtc_session_manager: None,
+            transcode_manager: None,
         }
     }
 
@@ -321,6 +324,16 @@ impl StreamRelayServiceImpl {
         manager: Arc<WebRtcSessionManager>,
     ) -> Self {
         self.webrtc_session_manager = Some(manager);
+        self
+    }
+
+    /// Set the transcode manager so remote nodes can forward rung demand.
+    #[must_use]
+    pub(crate) fn with_transcode_manager(
+        mut self,
+        manager: Option<Arc<crate::livestream::transcode::TranscodeManager>>,
+    ) -> Self {
+        self.transcode_manager = manager;
         self
     }
 
@@ -570,6 +583,11 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
         let media_id_clone = req.media_id.clone();
         let event_sender_clone = self.stream_hub_event_sender.clone();
         let child_token = self.cancel_token.child_token();
+        // A relayed rung counts as its viewers for the relay session's
+        // lifetime so the owner's idle stop leaves it alone.
+        let rung_guard = self.transcode_manager.as_ref().and_then(|manager| {
+            manager.attach_rung_viewer_for_stream_key(&req.room_id, &req.media_id)
+        });
         tokio::spawn(async move {
             forward_rtmp_packets(frame_receiver, tx, child_token).await;
 
@@ -583,6 +601,7 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
                 SubDataType::Frame,
             )
             .await;
+            drop(rung_guard);
         });
 
         subscription_guard.active = false;

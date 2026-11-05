@@ -120,13 +120,20 @@ impl AdminApiImpl {
         }
         builder = builder.metadata(provider_result.metadata);
 
-        let full_result = builder
+        let mut full_result = builder
             .build()
             .ok_or_else(|| ApiError::Internal("Failed to build PlaybackResult".to_string()))?;
 
-        let room_id = ctx.room_id().ok_or(ApiError::Internal(
-            "Missing room_id in provider context for playback signing".into(),
-        ))?;
+        // Match the client playback menu: live sources advertise their
+        // transcode rungs alongside the source quality.
+        crate::impls::client::playback::append_live_transcode_rungs(
+            self.live_streaming_infrastructure.as_ref(),
+            &mut full_result,
+        );
+
+        let room_id = ctx.room_id().ok_or_else(|| {
+            ApiError::Internal("Missing room_id in provider context for playback signing".into())
+        })?;
         let user_id = ctx.user_id().ok_or(ApiError::Internal(
             "Missing user_id in provider context for playback signing".into(),
         ))?;
@@ -252,10 +259,16 @@ impl AdminApiImpl {
         }
         builder = builder.metadata(provider_result.metadata);
 
-        let full_result = builder
+        let mut full_result = builder
             .target(target.clone())
             .build()
             .ok_or_else(|| ApiError::Internal("Failed to build PlaybackResult".to_string()))?;
+        // Match the client playback menu: live sources advertise their
+        // transcode rungs alongside the source quality.
+        crate::impls::client::playback::append_live_transcode_rungs(
+            self.live_streaming_infrastructure.as_ref(),
+            &mut full_result,
+        );
         let public_room_id = self
             .public_id_codec
             .encode_room_id(*room_id_model)

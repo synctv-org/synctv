@@ -556,6 +556,27 @@ config:
       maxSdpBytes: 262144
       maxSessions: 1000
       maxSessionDurationSeconds: 86400
+    ## Live transcode quality rungs, scheduled on demand by the node that
+    ## owns the live source. The ffmpeg engine spawns the ffmpeg binary
+    ## bundled in the official image. Presets are ordered best-first;
+    ## preset names must be valid as stream key components (letters,
+    ## digits, '-', '_').
+    transcode:
+      enabled: false
+      workers: []
+      # workers:
+      #   - name: "local"
+      #     priority: 100
+      #     engine: "ffmpeg"
+      #     maxConcurrent: 2
+      #     binary: "ffmpeg"
+      presets: []
+      # presets:
+      #   - name: "720p"
+      #     height: 720
+      #     videoKbps: 1200
+      #     audioKbps: 64
+      #     maxFps: 30
 
   ## FileStorageConfig
   ## The built-in "disabled" backend always exists. Database backends store

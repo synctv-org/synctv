@@ -16,6 +16,10 @@ pub use grpc::{StreamRelayServiceImpl, StreamRelayServiceServer};
 pub use livestream::server::{
     HlsS3Options, HlsStorageBackend, LivestreamConfig, LivestreamHandle, LivestreamServer,
 };
+pub use livestream::transcode::{
+    rung_stream_name, split_rung_stream_name, FfmpegWorker, FfmpegWorkerConfig, TranscodeConfig,
+    TranscodeManager, TranscodePreset, WorkerConfig, WorkerEngine,
+};
 pub use livestream::webrtc_session_manager::{
     WebRtcAnswer, WebRtcSessionConfig, WebRtcSessionManager,
 };

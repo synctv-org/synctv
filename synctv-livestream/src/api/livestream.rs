@@ -93,6 +93,8 @@ pub struct LiveStreamingInfrastructure {
     pub(crate) webrtc_session_manager: Arc<WebRtcSessionManager>,
     /// Authenticated client for forwarding session deletion to its owner node.
     pub(crate) webrtc_session_router: Option<WebRtcSessionRouter>,
+    /// Live transcode orchestrator, present only when transcode is enabled.
+    pub(crate) transcode: Option<Arc<crate::livestream::transcode::TranscodeManager>>,
 }
 
 impl LiveStreamingInfrastructure {
@@ -157,6 +159,7 @@ impl LiveStreamingInfrastructure {
             hls_proxy: None,
             webrtc_session_manager,
             webrtc_session_router: None,
+            transcode: None,
         }
     }
 
@@ -200,6 +203,21 @@ impl LiveStreamingInfrastructure {
     pub(crate) fn with_webrtc_session_router(mut self, router: WebRtcSessionRouter) -> Self {
         self.webrtc_session_router = Some(router);
         self
+    }
+
+    #[must_use]
+    pub(crate) fn with_transcode(
+        mut self,
+        manager: Option<Arc<crate::livestream::transcode::TranscodeManager>>,
+    ) -> Self {
+        self.transcode = manager;
+        self
+    }
+
+    /// The live transcode manager when transcode is enabled.
+    #[must_use]
+    pub fn transcode_manager(&self) -> Option<Arc<crate::livestream::transcode::TranscodeManager>> {
+        self.transcode.clone()
     }
 
     #[must_use]
@@ -693,7 +711,8 @@ impl LiveStreamingInfrastructure {
         )
         .with_cluster_secret(cluster_secret)
         .with_external_publish_manager(Arc::clone(&self.external_publish_manager))
-        .with_webrtc_session_manager(Arc::clone(&self.webrtc_session_manager));
+        .with_webrtc_session_manager(Arc::clone(&self.webrtc_session_manager))
+        .with_transcode_manager(self.transcode.clone());
 
         let relay_service = if let Some(segment_manager) = &self.segment_manager {
             relay_service.with_segment_manager(segment_manager.clone())
@@ -826,9 +845,14 @@ impl FlvStreamingApi {
         Ok(rx)
     }
 
-    /// Returns `(receiver, guard)`. The caller **must** hold the
-    /// [`StreamSubscriberGuard`] for the lifetime of the FLV streaming task
-    /// so the subscriber count is decremented when the viewer disconnects.
+    /// Returns `(receiver, guards)`. The caller **must** hold the
+    /// [`LiveStreamGuards`] for the lifetime of the FLV streaming task so
+    /// subscriber counts drop when the viewer disconnects.
+    ///
+    /// `media_id` may address a transcode rung (`{mediaId}-{rung}`): the
+    /// source stream is ensured first, the rung demand is registered, and the
+    /// session subscribes to the rung stream (relaying it when another node
+    /// owns the rung).
     ///
     /// # Arguments
     /// * `external_source` - If provided and no Redis publisher exists, starts an
@@ -840,23 +864,108 @@ impl FlvStreamingApi {
         external_source: Option<&synctv_core::models::LiveProxyMediaSourceConfig>,
     ) -> Result<(
         mpsc::Receiver<Result<Bytes, std::io::Error>>,
-        StreamSubscriberGuard,
+        LiveStreamGuards,
     )> {
-        let guard = match external_source {
-            Some(config) => {
+        let route = infrastructure.route_stream_key(media_id);
+
+        // The source stream must exist before any rung of it can: ensure (or
+        // lazily start) it under its base id.
+        let source = match external_source {
+            Some(config) => Some(
                 infrastructure
-                    .ensure_external_pull_stream(room_id, media_id, config)
-                    .await?
-            }
-            None => {
+                    .ensure_external_pull_stream(room_id, &route.base_media_id, config)
+                    .await?,
+            ),
+            None if route.rung.is_some() => None,
+            None => Some(
                 infrastructure
                     .ensure_pull_stream(room_id, media_id, None)
-                    .await?
-            }
+                    .await?,
+            ),
         };
 
-        let rx = Self::create_session(infrastructure, room_id, media_id).await?;
-        Ok((rx, guard))
+        // Register rung demand (source-owning node schedules it) and make
+        // the rung stream servable locally, relaying from a remote owner.
+        let mut rung = None;
+        let mut rung_pull = None;
+        if let (Some(rung_name), Some(manager)) = (&route.rung, &infrastructure.transcode) {
+            rung = Some(
+                manager
+                    .ensure_rung_stream(room_id, &route.base_media_id, rung_name)
+                    .await?,
+            );
+            rung_pull = Some(
+                infrastructure
+                    .ensure_pull_stream(room_id, &route.stream_media_id, None)
+                    .await?,
+            );
+        }
+
+        let rx = Self::create_session(infrastructure, room_id, &route.stream_media_id).await?;
+        Ok((
+            rx,
+            LiveStreamGuards {
+                source,
+                rung,
+                rung_pull,
+            },
+        ))
+    }
+}
+
+/// Lifetimes a live session depends on: the source pull (if relayed or
+/// external), the rung demand registration, and the rung relay pull. The
+/// guards act through `Drop`; their fields are never read.
+#[allow(dead_code)]
+pub struct LiveStreamGuards {
+    source: Option<StreamSubscriberGuard>,
+    rung: Option<crate::livestream::transcode::RungViewerGuard>,
+    rung_pull: Option<StreamSubscriberGuard>,
+}
+
+/// A media id that may address a transcode rung of a source stream.
+pub(crate) struct RoutedStreamKey {
+    pub base_media_id: String,
+    pub rung: Option<String>,
+    pub stream_media_id: String,
+}
+
+impl LiveStreamingInfrastructure {
+    /// Split a requested media id into its source and rung parts. A rung
+    /// suffix only counts when transcode is enabled and the suffix names a
+    /// configured preset; anything else addresses a plain stream.
+    pub(crate) fn route_stream_key(&self, media_id: &str) -> RoutedStreamKey {
+        if let Some(manager) = &self.transcode {
+            if let Some((base, rung)) =
+                crate::livestream::transcode::split_rung_stream_name(media_id)
+            {
+                if manager.presets().iter().any(|preset| preset.name == rung) {
+                    return RoutedStreamKey {
+                        base_media_id: base.to_string(),
+                        rung: Some(rung.to_string()),
+                        stream_media_id: media_id.to_string(),
+                    };
+                }
+            }
+        }
+        RoutedStreamKey {
+            base_media_id: media_id.to_string(),
+            rung: None,
+            stream_media_id: media_id.to_string(),
+        }
+    }
+
+    /// Refresh viewer accounting for a rung-addressed stream key, used by
+    /// per-request paths (HLS playlists and segments) whose cadence is far
+    /// below the rung idle grace.
+    pub(crate) fn attach_rung_viewer_for_stream_key(
+        &self,
+        room_id: &str,
+        media_id: &str,
+    ) -> Option<crate::livestream::transcode::RungViewerGuard> {
+        self.transcode
+            .as_ref()?
+            .attach_rung_viewer_for_stream_key(room_id, media_id)
     }
 }
 
@@ -893,17 +1002,20 @@ impl HlsStreamingApi {
     ///
     /// For live_proxy media, the external source is lazily pulled even when the
     /// first viewer is an HLS client. The returned guard is kept only for this
-    /// request; idle cleanup still owns long-term shutdown.
+    /// request; idle cleanup still owns long-term shutdown. A rung media id
+    /// registers its demand here; subsequent playlist and segment requests
+    /// refresh the rung's viewer accounting per request.
     pub async fn resolve_active_generation_with_pull(
         infrastructure: &LiveStreamingInfrastructure,
         room_id: &str,
         media_id: &str,
         external_source: Option<&synctv_core::models::LiveProxyMediaSourceConfig>,
     ) -> Result<Option<StreamGeneration>> {
+        let route = infrastructure.route_stream_key(media_id);
         let _guard = if let Some(source) = external_source {
             let active = infrastructure
                 .registry
-                .get_active_generation(room_id, media_id)
+                .get_active_generation(room_id, &route.base_media_id)
                 .await
                 .map_err(|error| {
                     StreamError::RegistryError(format!(
@@ -916,17 +1028,22 @@ impl HlsStreamingApi {
                 }
                 _ => Some(
                     infrastructure
-                        .ensure_external_pull_stream(room_id, media_id, source)
+                        .ensure_external_pull_stream(room_id, &route.base_media_id, source)
                         .await?,
                 ),
             }
         } else {
             None
         };
+        if let (Some(rung), Some(manager)) = (&route.rung, &infrastructure.transcode) {
+            let _rung_guard = manager
+                .ensure_rung_stream(room_id, &route.base_media_id, rung)
+                .await?;
+        }
 
         let generation = infrastructure
             .registry
-            .get_active_generation(room_id, media_id)
+            .get_active_generation(room_id, &route.stream_media_id)
             .await
             .map_err(|error| {
                 StreamError::RegistryError(format!(
@@ -937,7 +1054,7 @@ impl HlsStreamingApi {
             return Ok(generation);
         }
 
-        Self::wait_for_active_generation(infrastructure, room_id, media_id).await
+        Self::wait_for_active_generation(infrastructure, room_id, &route.stream_media_id).await
     }
 
     /// Returns `Ok(Some(playlist))` when a stream is found, `Ok(None)` when
@@ -955,6 +1072,7 @@ impl HlsStreamingApi {
     where
         F: Fn(&str) -> String,
     {
+        let _rung_guard = infrastructure.attach_rung_viewer_for_stream_key(room_id, media_id);
         let _activity_guard = infrastructure
             .external_publish_manager
             .subscribe_active_generation(room_id, media_id, generation_id)
@@ -1066,6 +1184,7 @@ impl HlsStreamingApi {
         generation_id: &str,
         segment_name: &str,
     ) -> Result<Bytes> {
+        let _rung_guard = infrastructure.attach_rung_viewer_for_stream_key(room_id, media_id);
         let _activity_guard = infrastructure
             .external_publish_manager
             .subscribe_active_generation(room_id, media_id, generation_id)

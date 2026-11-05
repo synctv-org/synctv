@@ -260,6 +260,54 @@ RTSP、外部 RTMP 与内部 RTMP 推流都进入同一个 Live StreamHub。Sync
 6. `shared_file` 的 TS 分片请求由当前节点从共享路径读取；本地 backend 仍使用 publisher-node HLS gRPC proxy 读取远端 playlist/segment。
 </Steps>
 
+## 直播转码（画质档位）
+
+`livestream.transcode` 让源所在节点把直播流转码出多个画质档位。HLS 的画质档位以主播放列表（master playlist）多变体的形式呈现，播放器按带宽自适应切换；HTTP-FLV 没有清单，播放列表会为每个档位多出一条可选清晰度，切档即切到独立的转码流。
+
+前置要求：`ffmpeg` 二进制（需要 H.264/AAC 解码和 `libx264`、`aac` 编码器）。官方容器镜像已内置；二进制部署需自行安装。SyncTV 始终通过子进程调用 ffmpeg、不链接它，二进制部署的许可义务由部署方自己选择的版本决定。
+
+只写 `enabled = true` 即可使用默认配置：一个本地 ffmpeg worker 和一个 720p 档位。要自定义时才需要写出 workers/presets：
+
+```toml
+[livestream.transcode]
+enabled = true
+
+[[livestream.transcode.workers]]
+engine = "ffmpeg"
+name = "local"
+priority = 100
+max_concurrent = 2
+binary = "ffmpeg"
+
+[[livestream.transcode.presets]]
+name = "720p"
+height = 720
+video_kbps = 2500
+audio_kbps = 96
+max_fps = 30
+```
+
+播放语义：
+
+- HLS 主播放列表始终包含源画质变体，并附带当前已活的档位变体（`NAME` 为档位名，播放器可显示）。播放器请求主播放列表时，源所在节点会顺便预热最优的未启动档位并最多等待约 10 秒，因此大多数会话从第一次请求起就有完整画质梯子，可以直接使用 HLS 自适应码率；个别预热超时的会话只看到已活的变体，重新进入房间后即可看到完整梯子。播放器只在会话开始时取一次主播放列表，中途新变体不会自动出现。
+- HTTP-FLV 模式为每个可提供的档位多一条清晰度条目；低于 720p 的档位通常没有额外价值，默认只提供 720p。
+
+调度语义：
+
+- 按需启动：有观众选择某档位（或主播放列表预热）时才调度转码；档位无观众约 30 秒后自动停止。失败档位有 30 秒冷却。
+- 只有源所在节点调度转码。其他节点从 registry 读取档位状态并代理流量，不会请求源节点开启转码；档位不存在时观众端立即回退到源画质。
+- 高于或等于源分辨率的档位不会启动（不做放大转码），也不会出现在 HLS 变体或 FLV 清晰度列表中。
+- worker 按 `priority` 降序接收任务；容量满时任务继续尝试低优先级 worker。
+- 档位流转码使用固定 2 秒 GOP，HLS 分片按关键帧整齐切割。
+
+参数说明：
+
+- `enabled`：是否启用转码子系统。
+- `workers`：转码 worker 列表，默认一个本地 ffmpeg worker。`name` 可选（用于日志标识）；`priority` 数值越大越优先；`engine = "ffmpeg"` 时可配 `max_concurrent`（并发任务数，默认 1）和 `binary`（ffmpeg 路径，默认 `ffmpeg`）。
+- `presets`：画质档位（best-first 排序），默认仅 720p。`name` 会成为流标识的一部分（只允许安全字符）；`height` 目标高度；`video_kbps`/`audio_kbps` 目标码率；`max_fps` 输出帧率上限。
+
+注意：转码输入必须是 FLV 封装的 H.264/AAC。源编码无法被 ffmpeg 解码时，该档位在就绪超时后回退，源画质播放不受影响。
+
 ## `livestream.rtmp_port`
 
 默认值：`1935`。

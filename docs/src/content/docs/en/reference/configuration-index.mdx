@@ -254,6 +254,9 @@ Top-level `logging` receives logs from the database, Redis, caches, proxies, rea
 | `livestream.webrtc.max_sdp_bytes` | bytes | `262144` | Limit for WHIP/WHEP SDP requests and upstream WHEP SDP responses |
 | `livestream.webrtc.max_sessions` | integer | `1000` | Total WHIP/WHEP session limit on one node |
 | `livestream.webrtc.max_session_duration_seconds` | seconds | `86400` | Maximum lifetime of one WHIP/WHEP session |
+| `livestream.transcode.enabled` | boolean | `false` | Master switch for live transcode quality rungs |
+| `livestream.transcode.workers` | table array | one local ffmpeg worker | Transcode workers (engine and capacity), ordered by priority |
+| `livestream.transcode.presets` | table array | a single 720p rung | Quality rungs (best-first); see [Livestream](../../configuration/livestream/) |
 
 ## `file_storage`
 

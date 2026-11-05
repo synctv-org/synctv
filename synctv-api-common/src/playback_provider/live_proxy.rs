@@ -9,7 +9,8 @@ use synctv_proto::playback_provider::live_proxy::{
 
 use super::common::{
     get_live_hls_master_chunks, get_live_hls_playlist_chunks, get_live_hls_segment_chunks,
-    live_flv_access_from_claims, playback_transport_action_to_chunk_stream, stream_live_flv_chunks,
+    hls_playlist_resource, hls_segment_resource, live_flv_access_from_claims, optional_rung,
+    playback_transport_action_to_chunk_stream, rung_scoped_resource, stream_live_flv_chunks,
     verify_playback_provider_access_with_deps, HasLivePlaybackFields,
     HasPlaybackProviderAccessFields, LiveFlvChunksRequest, LiveHlsMasterChunksRequest,
     LiveHlsPlaylistChunksRequest, LiveHlsSegmentChunksRequest, LivePlaybackApiRuntime,
@@ -47,6 +48,7 @@ pub async fn get_live_proxy_flv_stream(
 ) -> Result<LiveProxyFlvStreamResponseStream, ApiError> {
     crate::impls::validate_proto_request(&req)?;
     let head = req.head;
+    let rung = optional_rung(&req.rung);
     let action = resolve_live_proxy_flv_stream_action(&deps, req).await?;
     let stream = match action {
         PlaybackTransportAction::LiveFlv {
@@ -74,6 +76,7 @@ pub async fn get_live_proxy_flv_stream(
                     expires_at,
                     external_source,
                     head,
+                    rung,
                 },
             )
             .await?
@@ -138,6 +141,7 @@ pub async fn get_live_proxy_hls_playlist(
     let signature_user_id = req.uid.clone();
     let signature_room_id = req.rid.clone();
     let signature_expires_at = req.exp;
+    let rung = optional_rung(&req.rung);
     let action = resolve_live_proxy_hls_playlist_action(&deps, req).await?;
     let stream = match action {
         PlaybackTransportAction::LiveHlsPlaylist {
@@ -164,6 +168,7 @@ pub async fn get_live_proxy_hls_playlist(
                     signature_room_id,
                     signature_expires_at,
                     route_provider: "live-proxy".to_string(),
+                    rung,
                 },
             )
             .await?
@@ -181,6 +186,7 @@ pub async fn get_live_proxy_hls_segment(
 ) -> Result<LiveProxyHlsSegmentResponseStream, ApiError> {
     crate::impls::validate_proto_request(&req)?;
     let head = req.head;
+    let rung = optional_rung(&req.rung);
     let action = resolve_live_proxy_hls_segment_action(&deps, req).await?;
     let stream = match action {
         PlaybackTransportAction::LiveHlsSegment {
@@ -204,6 +210,7 @@ pub async fn get_live_proxy_hls_segment(
                     generation_id,
                     segment_name,
                     head,
+                    rung,
                 },
             )
             .await?
@@ -223,7 +230,7 @@ async fn resolve_live_proxy_flv_stream_action(
         deps,
         PlaybackProviderAccessRequest {
             version: &req.version,
-            resource: "flv-stream".to_string(),
+            resource: rung_scoped_resource("flv-stream", optional_rung(&req.rung).as_deref()),
             signature: &req.sig,
             user_id: &req.uid,
             room_id: &req.rid,
@@ -270,7 +277,10 @@ async fn resolve_live_proxy_hls_playlist_action(
         deps,
         PlaybackProviderAccessRequest {
             version: &req.version,
-            resource: format!("hls/{}/index.m3u8", req.generation_id),
+            resource: hls_playlist_resource(
+                &req.generation_id,
+                optional_rung(&req.rung).as_deref(),
+            ),
             signature: &req.sig,
             user_id: &req.uid,
             room_id: &req.rid,
@@ -298,7 +308,11 @@ async fn resolve_live_proxy_hls_segment_action(
         deps,
         PlaybackProviderAccessRequest {
             version: &req.version,
-            resource: format!("hls/{}/{}", req.generation_id, req.segment_name),
+            resource: hls_segment_resource(
+                &req.generation_id,
+                &req.segment_name,
+                optional_rung(&req.rung).as_deref(),
+            ),
             signature: &req.sig,
             user_id: &req.uid,
             room_id: &req.rid,

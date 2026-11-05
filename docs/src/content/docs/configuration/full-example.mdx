@@ -361,6 +361,20 @@ livestream:
     max_sdp_bytes: 262144
     max_sessions: 1000
     max_session_duration_seconds: 86400
+  transcode:
+    enabled: true
+    workers:
+      - name: "local"
+        priority: 100
+        engine: "ffmpeg"
+        max_concurrent: 2
+        binary: "ffmpeg"
+    presets:
+      - name: "720p"
+        height: 720
+        video_kbps: 1200
+        audio_kbps: 64
+        max_fps: 30
 
 file_storage:
   default_backend: "disabled"

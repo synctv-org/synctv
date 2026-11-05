@@ -43,6 +43,8 @@ pub enum PublishType {
     RtmpRelay,
     /// This node owns an external RTMP, RTSP, or HTTP-FLV pull and republishes it locally.
     ExternalPull,
+    /// This node transcodes a stream it owns and republishes a quality rung locally.
+    Transcode,
 }
 
 impl PublishType {

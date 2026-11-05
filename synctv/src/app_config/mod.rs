@@ -1100,6 +1100,8 @@ pub struct LivestreamConfig {
     pub flv_max_connection_duration_seconds: u64,
     pub flv_write_timeout_seconds: u64,
     pub webrtc: LivestreamWebRtcConfig,
+    /// Live transcode (quality rungs); disabled by default.
+    pub transcode: synctv_livestream::TranscodeConfig,
 }
 
 impl Default for LivestreamConfig {
@@ -1121,6 +1123,7 @@ impl Default for LivestreamConfig {
             flv_max_connection_duration_seconds: 86400,
             flv_write_timeout_seconds: 30,
             webrtc: LivestreamWebRtcConfig::default(),
+            transcode: synctv_livestream::TranscodeConfig::default(),
         }
     }
 }

@@ -19,11 +19,15 @@ use crate::providers::playback_provider::transport::{
 pub struct LiveProxyVersionPath {
     pub room_id: String,
     pub version: String,
+    #[serde(default)]
+    pub rung: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveProxySegmentPath {
+    #[serde(default)]
+    pub rung: Option<String>,
     pub room_id: String,
     pub version: String,
     pub generation_id: String,
@@ -33,6 +37,8 @@ pub struct LiveProxySegmentPath {
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveProxyPlaylistPath {
+    #[serde(default)]
+    pub rung: Option<String>,
     pub room_id: String,
     pub version: String,
     pub generation_id: String,
@@ -135,6 +141,7 @@ async fn live_proxy_flv_stream(
         .map_err(crate::http::error::map_api_error)?;
     let req = GetLiveProxyFlvStreamRequest {
         version: path.version,
+        rung: path.rung.clone().unwrap_or_default(),
         sig,
         uid,
         rid,
@@ -192,6 +199,9 @@ pub async fn get_live_proxy_hls_master(
         .map_err(crate::http::error::map_api_error)?;
     let req = GetLiveProxyHlsMasterRequest {
         version: path.version,
+        // Per-rung masters are gone; the master playlist itself carries the
+        // quality ladder as variants.
+        rung: String::new(),
         sig,
         uid,
         rid,
@@ -249,6 +259,7 @@ pub async fn get_live_proxy_hls_playlist(
         .map_err(crate::http::error::map_api_error)?;
     let req = GetLiveProxyHlsPlaylistRequest {
         version: path.version,
+        rung: path.rung.clone().unwrap_or_default(),
         generation_id: path.generation_id,
         sig,
         uid,
@@ -365,6 +376,7 @@ async fn live_proxy_hls_segment(
         .map_err(crate::http::error::map_api_error)?;
     let req = GetLiveProxyHlsSegmentRequest {
         version: path.version,
+        rung: path.rung.clone().unwrap_or_default(),
         generation_id: path.generation_id,
         segment_name: path.segment_name,
         sig,

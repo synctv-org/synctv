@@ -166,7 +166,7 @@ jobs:
 
       - name: Install build dependencies on Linux
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler nasm libclang-dev lld
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler nasm libclang-dev lld ffmpeg
 
       - name: Install build dependencies on macOS
         if: runner.os == 'macOS'
@@ -218,7 +218,7 @@ jobs:
 
       - name: Install build dependencies on Linux
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler nasm libclang-dev lld
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler nasm libclang-dev lld ffmpeg
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2

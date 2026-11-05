@@ -19,11 +19,15 @@ use crate::providers::playback_provider::transport::{
 pub struct RtmpVersionPath {
     pub room_id: String,
     pub version: String,
+    #[serde(default)]
+    pub rung: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RtmpSegmentPath {
+    #[serde(default)]
+    pub rung: Option<String>,
     pub room_id: String,
     pub version: String,
     pub generation_id: String,
@@ -33,6 +37,8 @@ pub struct RtmpSegmentPath {
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RtmpPlaylistPath {
+    #[serde(default)]
+    pub rung: Option<String>,
     pub room_id: String,
     pub version: String,
     pub generation_id: String,
@@ -135,6 +141,7 @@ async fn rtmp_flv_stream(
         .map_err(crate::http::error::map_api_error)?;
     let req = GetRtmpFlvStreamRequest {
         version: path.version,
+        rung: path.rung.clone().unwrap_or_default(),
         sig,
         uid,
         rid,
@@ -192,6 +199,9 @@ pub async fn get_rtmp_hls_master(
         .map_err(crate::http::error::map_api_error)?;
     let req = GetRtmpHlsMasterRequest {
         version: path.version,
+        // Per-rung masters are gone; the master playlist itself carries the
+        // quality ladder as variants.
+        rung: String::new(),
         sig,
         uid,
         rid,
@@ -249,6 +259,7 @@ pub async fn get_rtmp_hls_playlist(
         .map_err(crate::http::error::map_api_error)?;
     let req = GetRtmpHlsPlaylistRequest {
         version: path.version,
+        rung: path.rung.clone().unwrap_or_default(),
         generation_id: path.generation_id,
         sig,
         uid,
@@ -365,6 +376,7 @@ async fn rtmp_hls_segment(
         .map_err(crate::http::error::map_api_error)?;
     let req = GetRtmpHlsSegmentRequest {
         version: path.version,
+        rung: path.rung.clone().unwrap_or_default(),
         generation_id: path.generation_id,
         segment_name: path.segment_name,
         sig,

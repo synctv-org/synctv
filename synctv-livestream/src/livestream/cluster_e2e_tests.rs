@@ -29,6 +29,10 @@ use crate::{
 
 const ROOM: &str = "cluster-room";
 const MEDIA: &str = "cluster-media";
+/// Rung stream keys are `{mediaId}-{rung}` with numeric media ids; the
+/// cluster rung test publishes under a numeric id so the rung routing
+/// engages on both nodes.
+const RUNG_SOURCE_MEDIA: &str = "2001";
 const CLUSTER_SECRET: &str = "cluster-test-secret";
 
 struct RedisRuntime {
@@ -70,7 +74,7 @@ impl AuthCallback for RegistryAuth {
         if app_name != ROOM {
             return Err(anyhow::anyhow!("unexpected RTMP app").into());
         }
-        if stream_name != MEDIA {
+        if stream_name != MEDIA && stream_name != RUNG_SOURCE_MEDIA {
             return Err(anyhow::anyhow!("unexpected RTMP stream").into());
         }
         let registered = self
@@ -155,6 +159,7 @@ fn config(
         hls_s3: HlsS3Options::default(),
         ssrf_guard: SsrfGuard::strict_policy(),
         webrtc_session: crate::WebRtcSessionConfig::default(),
+        transcode: Default::default(),
     }
 }
 
@@ -230,10 +235,11 @@ async fn expect_flv_timestamp(
 
 async fn wait_for_publisher(
     infrastructure: &crate::LiveStreamingInfrastructure,
+    media: &str,
 ) -> Result<crate::StreamGeneration> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        if let Some(publisher) = infrastructure.find_publisher(ROOM, MEDIA).await? {
+        if let Some(publisher) = infrastructure.find_publisher(ROOM, media).await? {
             return Ok(publisher);
         }
         anyhow::ensure!(
@@ -246,6 +252,7 @@ async fn wait_for_publisher(
 
 async fn wait_for_remote_playlist_until<F>(
     infrastructure: &crate::LiveStreamingInfrastructure,
+    media: &str,
     generation_id: &str,
     ready: F,
     timeout_message: &str,
@@ -259,7 +266,7 @@ where
         if let Some(playlist) = HlsStreamingApi::generate_playlist_simple(
             infrastructure,
             ROOM,
-            MEDIA,
+            media,
             generation_id,
             &segment_url_base,
         )
@@ -276,10 +283,12 @@ where
 
 async fn wait_for_remote_playlist(
     infrastructure: &crate::LiveStreamingInfrastructure,
+    media: &str,
     generation_id: &str,
 ) -> Result<String> {
     wait_for_remote_playlist_until(
         infrastructure,
+        media,
         generation_id,
         |playlist| playlist.contains("#EXTINF:"),
         "remote HLS playlist was not generated",
@@ -289,10 +298,12 @@ async fn wait_for_remote_playlist(
 
 async fn wait_for_remote_endlist(
     infrastructure: &crate::LiveStreamingInfrastructure,
+    media: &str,
     generation_id: &str,
 ) -> Result<String> {
     wait_for_remote_playlist_until(
         infrastructure,
+        media,
         generation_id,
         |playlist| playlist.contains("#EXT-X-ENDLIST"),
         "remote HLS playlist did not expose EXT-X-ENDLIST after unregister",
@@ -302,10 +313,12 @@ async fn wait_for_remote_endlist(
 
 async fn wait_for_registry_absent(
     infrastructure: &crate::LiveStreamingInfrastructure,
+    media: &str,
+    timeout: Duration,
 ) -> Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + timeout;
     loop {
-        if infrastructure.find_publisher(ROOM, MEDIA).await?.is_none() {
+        if infrastructure.find_publisher(ROOM, media).await?.is_none() {
             return Ok(());
         }
         anyhow::ensure!(
@@ -406,7 +419,7 @@ async fn two_real_livestream_nodes_relay_rtmp_to_flv_and_proxy_memory_hls() -> R
     });
 
     let mut publisher = RtmpPublisher::connect(rtmp_address_a, ROOM, MEDIA).await?;
-    let publisher_info = wait_for_publisher(&node_b.infrastructure).await?;
+    let publisher_info = wait_for_publisher(&node_b.infrastructure, MEDIA).await?;
     assert_eq!(publisher_info.node_id, "node-a");
     assert_eq!(publisher_info.cluster_address, relay_address.to_string());
     assert!(
@@ -455,7 +468,8 @@ async fn two_real_livestream_nodes_relay_rtmp_to_flv_and_proxy_memory_hls() -> R
     expect_flv_timestamp(&mut second_flv, 25_001).await?;
 
     let playlist =
-        wait_for_remote_playlist(&node_b.infrastructure, &publisher_info.generation_id).await?;
+        wait_for_remote_playlist(&node_b.infrastructure, MEDIA, &publisher_info.generation_id)
+            .await?;
     let segment_names = playlist
         .lines()
         .filter_map(|line| {
@@ -494,13 +508,14 @@ async fn two_real_livestream_nodes_relay_rtmp_to_flv_and_proxy_memory_hls() -> R
     drop(second_flv);
     publisher.close();
     wait_for_local_endlist(&node_a.infrastructure, &publisher_info.generation_id).await?;
-    wait_for_registry_absent(&node_b.infrastructure).await?;
+    wait_for_registry_absent(&node_b.infrastructure, MEDIA, Duration::from_secs(5)).await?;
     let ended_playlist =
-        wait_for_remote_endlist(&node_b.infrastructure, &publisher_info.generation_id).await?;
+        wait_for_remote_endlist(&node_b.infrastructure, MEDIA, &publisher_info.generation_id)
+            .await?;
     assert!(ended_playlist.contains("#EXT-X-ENDLIST"));
 
     let mut replacement = RtmpPublisher::connect(rtmp_address_b, ROOM, MEDIA).await?;
-    let replacement_info = wait_for_publisher(&node_b.infrastructure).await?;
+    let replacement_info = wait_for_publisher(&node_b.infrastructure, MEDIA).await?;
     assert!(
         replacement_info.lease_epoch > publisher_info.lease_epoch,
         "same-key replacement must receive a newer fencing lease_epoch"
@@ -535,8 +550,12 @@ async fn two_real_livestream_nodes_relay_rtmp_to_flv_and_proxy_memory_hls() -> R
     replacement.send_video(10_001, true).await?;
     replacement.send_audio(10_001).await?;
 
-    let replacement_playlist =
-        wait_for_remote_playlist(&node_b.infrastructure, &replacement_info.generation_id).await?;
+    let replacement_playlist = wait_for_remote_playlist(
+        &node_b.infrastructure,
+        MEDIA,
+        &replacement_info.generation_id,
+    )
+    .await?;
     assert!(replacement_playlist.contains(&replacement_info.generation_id));
     assert!(!replacement_playlist.contains(&publisher_info.generation_id));
 
@@ -559,7 +578,284 @@ async fn two_real_livestream_nodes_relay_rtmp_to_flv_and_proxy_memory_hls() -> R
     );
 
     replacement.close();
-    wait_for_registry_absent(&node_b.infrastructure).await?;
+    wait_for_registry_absent(&node_b.infrastructure, MEDIA, Duration::from_secs(5)).await?;
+
+    assert!(node_b.shutdown_graceful(3).await);
+    relay_cancel.cancel();
+    tokio::time::timeout(Duration::from_secs(3), relay_task)
+        .await
+        .context("relay server did not shut down")???;
+    assert!(node_a.shutdown_graceful(3).await);
+    Ok(())
+}
+
+/// Cluster rung behavior end to end: the source-owning node schedules the
+/// transcode rung on demand, a remote node relays the already-registered
+/// rung (FLV and HLS) instead of scheduling its own worker, and a rung no
+/// node started is an immediate error on the remote node rather than a
+/// request for the owner to transcode. Requires Docker and a host `ffmpeg`.
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers) and a host ffmpeg binary"]
+async fn two_nodes_relay_transcode_rung_and_remote_demand_falls_back() -> Result<()> {
+    use crate::livestream::transcode::{
+        FfmpegWorkerConfig, TranscodeConfig, TranscodePreset, WorkerConfig, WorkerEngine,
+    };
+
+    const RUNG: &str = "360p";
+    const UNSTARTED_RUNG: &str = "480p";
+
+    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+
+    anyhow::ensure!(
+        std::process::Command::new("ffmpeg")
+            .arg("-version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success()),
+        "this test requires a host ffmpeg binary"
+    );
+
+    let (_redis, _client, manager) =
+        synctv_core_testing::start_redis_client_manager_with_label("livestream-cluster-rung-e2e")
+            .await;
+    let prefix = synctv_core_testing::test_redis_key_prefix("livestream-cluster-rung-e2e");
+    let registry_a = shared_registry(manager.clone(), &prefix);
+    let registry_b = shared_registry(manager, &prefix);
+
+    let rtmp_listener_a = TcpListener::bind("127.0.0.1:0").await?;
+    let rtmp_address_a = rtmp_listener_a.local_addr()?;
+    let rtmp_listener_b = TcpListener::bind("127.0.0.1:0").await?;
+    let rtmp_address_b = rtmp_listener_b.local_addr()?;
+    let relay_listener = TcpListener::bind("127.0.0.1:0").await?;
+    let relay_address = relay_listener.local_addr()?;
+
+    // Both nodes carry the same transcode configuration: the rung key must
+    // be recognized wherever a viewer connects, yet only the source-owning
+    // node may schedule a worker.
+    let transcode = TranscodeConfig {
+        enabled: true,
+        workers: vec![WorkerConfig {
+            name: None,
+            priority: 100,
+            engine: WorkerEngine::Ffmpeg(FfmpegWorkerConfig {
+                max_concurrent: 1,
+                binary: "ffmpeg".to_string(),
+            }),
+        }],
+        presets: vec![
+            TranscodePreset {
+                name: RUNG.to_string(),
+                height: 360,
+                video_kbps: 400,
+                audio_kbps: 64,
+                max_fps: 24,
+            },
+            TranscodePreset {
+                name: UNSTARTED_RUNG.to_string(),
+                height: 480,
+                video_kbps: 600,
+                audio_kbps: 64,
+                max_fps: 24,
+            },
+        ],
+    };
+    assert!(
+        transcode.validate().is_empty(),
+        "cluster rung test transcode config must validate"
+    );
+
+    let auth: Arc<dyn AuthCallback> = Arc::new(RegistryAuth {
+        registry: Arc::clone(&registry_a),
+        node_id: "node-a".to_string(),
+        cluster_address: relay_address.to_string(),
+    });
+    let mut config_a = config("node-a", rtmp_address_a, relay_address);
+    config_a.transcode = transcode.clone();
+    let mut node_a = LivestreamServer::new(config_a, registry_a, Arc::new(StreamTracker::new()))
+        .with_auth(auth)
+        .with_rtmp_listener(rtmp_listener_a)
+        .start()?;
+
+    let auth_b: Arc<dyn AuthCallback> = Arc::new(RegistryAuth {
+        registry: Arc::clone(&registry_b),
+        node_id: "node-b".to_string(),
+        cluster_address: rtmp_address_b.to_string(),
+    });
+    let mut config_b = config("node-b", rtmp_address_b, rtmp_address_b);
+    config_b.transcode = transcode;
+    let mut node_b = LivestreamServer::new(config_b, registry_b, Arc::new(StreamTracker::new()))
+        .with_auth(auth_b)
+        .with_rtmp_listener(rtmp_listener_b)
+        .start()?;
+
+    let relay_cancel = CancellationToken::new();
+    let relay_service = StreamRelayServiceServer::new(node_a.infrastructure.relay_service(
+        "node-a".to_string(),
+        CLUSTER_SECRET.to_string(),
+        relay_cancel.clone(),
+    ))
+    .accept_compressed(CompressionEncoding::Gzip)
+    .send_compressed(CompressionEncoding::Gzip);
+    let relay_cancel_for_server = relay_cancel.clone();
+    let relay_task = tokio::spawn(async move {
+        Server::builder()
+            .add_service(relay_service)
+            .serve_with_incoming_shutdown(
+                TcpListenerStream::new(relay_listener),
+                relay_cancel_for_server.cancelled_owned(),
+            )
+            .await
+    });
+
+    // A real, decodable 720p source published to the owning node.
+    let mut publisher = tokio::process::Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-re",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=1280x720:rate=24",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=44100",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-g",
+            "48",
+            "-profile:v",
+            "baseline",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "64k",
+            "-f",
+            "flv",
+            &format!("rtmp://{rtmp_address_a}/{ROOM}/{RUNG_SOURCE_MEDIA}"),
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()?;
+    let source_info = wait_for_publisher(&node_b.infrastructure, RUNG_SOURCE_MEDIA).await?;
+    assert_eq!(source_info.node_id, "node-a");
+
+    let rung_media_id = crate::rung_stream_name(RUNG_SOURCE_MEDIA, RUNG);
+
+    // The owner's own viewer brings the rung live.
+    let owner_demand = tokio::time::timeout(
+        Duration::from_secs(25),
+        FlvStreamingApi::create_session_with_pull(
+            &node_a.infrastructure,
+            ROOM,
+            &rung_media_id,
+            None,
+        ),
+    )
+    .await
+    .context("owner rung demand did not resolve in time")??;
+    let (mut owner_flv, owner_guards) = owner_demand;
+    expect_flv_av(&mut owner_flv).await?;
+
+    // A viewer on the remote node relays the already-registered rung.
+    let (mut remote_flv, remote_guards) = FlvStreamingApi::create_session_with_pull(
+        &node_b.infrastructure,
+        ROOM,
+        &rung_media_id,
+        None,
+    )
+    .await?;
+    expect_flv_av(&mut remote_flv).await?;
+
+    // A configured rung that no node started is an immediate fallback on
+    // the remote node: it never asks the owner to transcode.
+    let unstarted_media_id = crate::rung_stream_name(RUNG_SOURCE_MEDIA, UNSTARTED_RUNG);
+    let fallback_started_at = Instant::now();
+    let fallback = FlvStreamingApi::create_session_with_pull(
+        &node_b.infrastructure,
+        ROOM,
+        &unstarted_media_id,
+        None,
+    )
+    .await;
+    let fallback_elapsed = fallback_started_at.elapsed();
+    assert!(
+        fallback.is_err(),
+        "remote nodes must not schedule rungs they do not own"
+    );
+    assert!(
+        fallback_elapsed < Duration::from_secs(2),
+        "remote fallback must be immediate, took {fallback_elapsed:?}"
+    );
+
+    // An unconfigured rung never falls back to the source quality.
+    let unknown_media_id = crate::rung_stream_name(RUNG_SOURCE_MEDIA, "1080p");
+    let unknown = FlvStreamingApi::create_session_with_pull(
+        &node_b.infrastructure,
+        ROOM,
+        &unknown_media_id,
+        None,
+    )
+    .await;
+    assert!(unknown.is_err(), "unconfigured rungs must not resolve");
+
+    // Remote rung HLS: the generation, playlist, and a TS segment all
+    // address the rung stream key through the relay.
+    let rung_generation = HlsStreamingApi::resolve_active_generation_with_pull(
+        &node_b.infrastructure,
+        ROOM,
+        &rung_media_id,
+        None,
+    )
+    .await?
+    .context("remote rung HLS generation did not resolve")?;
+    assert_ne!(
+        rung_generation.generation_id, source_info.generation_id,
+        "the rung generation must be distinct from the source generation"
+    );
+    let playlist = wait_for_remote_playlist(
+        &node_b.infrastructure,
+        &rung_media_id,
+        &rung_generation.generation_id,
+    )
+    .await?;
+    let segment_name = playlist_segment_name(&playlist)?.to_string();
+    let segment = HlsStreamingApi::get_segment(
+        &node_b.infrastructure,
+        ROOM,
+        &rung_media_id,
+        &rung_generation.generation_id,
+        &segment_name,
+    )
+    .await?;
+    assert_mpeg_ts(&segment);
+
+    // Ending the source tears the rung down everywhere it is visible.
+    drop(remote_guards);
+    drop(remote_flv);
+    drop(owner_guards);
+    drop(owner_flv);
+    let _ = publisher.start_kill();
+    let _ = publisher.wait().await;
+    wait_for_registry_absent(
+        &node_b.infrastructure,
+        RUNG_SOURCE_MEDIA,
+        Duration::from_secs(10),
+    )
+    .await?;
+    wait_for_registry_absent(
+        &node_b.infrastructure,
+        &rung_media_id,
+        Duration::from_secs(10),
+    )
+    .await?;
 
     assert!(node_b.shutdown_graceful(3).await);
     relay_cancel.cancel();
@@ -667,7 +963,7 @@ async fn exercise_shared_storage_cluster(
     });
 
     let mut publisher = RtmpPublisher::connect(rtmp_address_a, ROOM, MEDIA).await?;
-    let publisher_info = wait_for_publisher(&node_b.infrastructure).await?;
+    let publisher_info = wait_for_publisher(&node_b.infrastructure, MEDIA).await?;
     assert_eq!(publisher_info.node_id, "node-a");
 
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -685,7 +981,8 @@ async fn exercise_shared_storage_cluster(
     publisher.send_audio(20_001).await?;
 
     let playlist =
-        wait_for_remote_playlist(&node_b.infrastructure, &publisher_info.generation_id).await?;
+        wait_for_remote_playlist(&node_b.infrastructure, MEDIA, &publisher_info.generation_id)
+            .await?;
     assert!(playlist.contains("#EXTINF:"));
     assert!(node_b
         .infrastructure
@@ -724,7 +1021,7 @@ async fn exercise_shared_storage_cluster(
 
     publisher.close();
     wait_for_local_endlist(&node_a.infrastructure, &publisher_info.generation_id).await?;
-    wait_for_registry_absent(&node_b.infrastructure).await?;
+    wait_for_registry_absent(&node_b.infrastructure, MEDIA, Duration::from_secs(5)).await?;
 
     drop(relay_listener_b);
     assert!(node_b.shutdown_graceful(3).await);

@@ -225,6 +225,96 @@ fn retain_live_whep_if_enabled(
     Ok(true)
 }
 
+/// Append the configured transcode rungs to a live playback result.
+///
+/// HTTP-FLV has no manifest of its own, so each flv source entry gains one
+/// sibling per eligible rung preset, labeled with the preset name; the rung
+/// rides in the media payload and becomes part of the signed URL resource.
+/// HLS needs no siblings: its master playlist carries the quality ladder as
+/// variants and the player adapts between them.
+pub(crate) fn append_live_transcode_rungs(
+    infrastructure: Option<&std::sync::Arc<synctv_livestream::LiveStreamingInfrastructure>>,
+    result: &mut synctv_core::models::media::PlaybackResult,
+) {
+    use synctv_core::models::media::{
+        PlaybackLiveProxyMedia, PlaybackMediaProvider, PlaybackRtmpMedia,
+    };
+
+    fn with_rung(provider: &PlaybackMediaProvider, rung: &str) -> Option<PlaybackMediaProvider> {
+        let mut provider = provider.clone();
+        match &mut provider {
+            PlaybackMediaProvider::Rtmp(PlaybackRtmpMedia::FlvStream { rung: slot, .. })
+            | PlaybackMediaProvider::LiveProxy(PlaybackLiveProxyMedia::FlvStream {
+                rung: slot,
+                ..
+            }) => *slot = Some(rung.to_string()),
+            _ => return None,
+        }
+        Some(provider)
+    }
+
+    let Some(infrastructure) = infrastructure else {
+        return;
+    };
+    let Some(manager) = infrastructure.transcode_manager() else {
+        return;
+    };
+    // RTMP pushes and LiveProxy pulls both publish into the stream hub, so
+    // transcode rungs serve either source kind.
+    if !matches!(
+        result.provider,
+        synctv_core::models::SourceProvider::Rtmp | synctv_core::models::SourceProvider::LiveProxy
+    ) {
+        return;
+    }
+    let media_id = result.id.or(match result.metadata.as_ref() {
+        Some(synctv_core::models::media::PlaybackMetadata::Live(metadata)) => {
+            Some(metadata.media_id)
+        }
+        _ => None,
+    });
+    let rungs: Vec<String> = match media_id {
+        Some(media_id) => manager
+            .eligible_presets(&result.room_id.to_string(), &media_id.to_string())
+            .into_iter()
+            .map(|preset| preset.name.clone())
+            .collect(),
+        None => manager
+            .presets()
+            .iter()
+            .map(|preset| preset.name.clone())
+            .collect(),
+    };
+    if rungs.is_empty() {
+        return;
+    }
+
+    let Some(info) = result.playback_infos.get_mut("flv") else {
+        return;
+    };
+    let sources = info.medias.clone();
+    let mut rung_medias = Vec::new();
+    for media in &sources {
+        if !matches!(
+            &media.provider,
+            PlaybackMediaProvider::Rtmp(PlaybackRtmpMedia::FlvStream { .. })
+                | PlaybackMediaProvider::LiveProxy(PlaybackLiveProxyMedia::FlvStream { .. })
+        ) {
+            continue;
+        }
+        for rung in &rungs {
+            let Some(provider) = with_rung(&media.provider, rung) else {
+                continue;
+            };
+            let mut entry = media.clone();
+            entry.name.clone_from(rung);
+            entry.provider = provider;
+            rung_medias.push(entry);
+        }
+    }
+    info.medias.extend(rung_medias);
+}
+
 async fn filter_unavailable_live_whep(
     infrastructure: Option<&std::sync::Arc<synctv_livestream::LiveStreamingInfrastructure>>,
     result: &mut synctv_core::models::media::PlaybackResult,
@@ -574,6 +664,10 @@ impl ClientApiImpl {
             &mut full_result,
         )
         .await?;
+        append_live_transcode_rungs(
+            self.live_streaming_infrastructure.as_ref(),
+            &mut full_result,
+        );
         let mut playback =
             self.sign_and_finalize_playback(&full_result, &ctx, actor, proxy_authorizer_id)?;
         attach_live_stream_generation(&mut playback, generation.as_ref());
@@ -728,6 +822,10 @@ impl ClientApiImpl {
             &mut full_result,
         )
         .await?;
+        append_live_transcode_rungs(
+            self.live_streaming_infrastructure.as_ref(),
+            &mut full_result,
+        );
         let mut playback =
             self.sign_and_finalize_playback(&full_result, &ctx, actor, proxy_authorizer_id)?;
         attach_live_stream_generation(&mut playback, generation.as_ref());

@@ -110,6 +110,20 @@ impl Gop {
         }
     }
 
+    /// Whether this GOP holds the maximum number of frames.
+    pub(crate) fn is_frame_full(&self) -> bool {
+        self.frozen.len() + self.pending.len() >= MAX_FRAMES_PER_GOP
+    }
+
+    /// Whether this GOP contains any video frame. Used to keep the
+    /// frame-cap rotation below strictly on audio-only GOPs.
+    pub(crate) fn contains_video(&self) -> bool {
+        self.pending
+            .iter()
+            .chain(self.frozen.iter())
+            .any(|frame| matches!(frame, FrameData::Video { .. }))
+    }
+
     /// Get estimated memory usage in bytes.
     #[must_use]
     pub const fn memory_bytes(&self) -> usize {
@@ -242,7 +256,22 @@ impl Gops {
             return;
         }
 
-        if is_key_frame {
+        // An audio-only stream never produces a video key frame, so the
+        // single active GOP would hit the frame cap and drop every later
+        // frame: bounded memory, but the cached window freezes on the oldest
+        // frames. Rotate on the cap for audio-only GOPs to keep the cached
+        // window fresh. GOPs containing video never split on a non-key frame
+        // (a GOP without a leading key frame leaves a new video subscriber
+        // with nothing decodable), so their frames keep being dropped until
+        // the next key frame arrives.
+        let rotate_on_audio_cap = !is_key_frame
+            && matches!(data, FrameData::Audio { .. })
+            && self
+                .entries
+                .back()
+                .is_some_and(|back| back.is_frame_full() && !back.contains_video());
+
+        if is_key_frame || rotate_on_audio_cap {
             // Freeze the current back GOP before pushing a new one,
             // so it's ready for zero-copy clone.
             let should_start_new_gop = self.entries.back().is_some_and(|back| !back.is_empty());
@@ -250,7 +279,11 @@ impl Gops {
                 if let Some(back) = self.entries.back_mut() {
                     back.freeze();
                 }
-                if self.entries.len() == self.size {
+                // `>=` rather than `==`: with a size of 1 the exact-equality
+                // check never matched again after the first rotation, so the
+                // deque grew one GOP per rotation with only the memory cap to
+                // bound it.
+                if self.entries.len() >= self.size {
                     self.evict_oldest_gop("GOP count limit reached");
                 }
                 self.entries.push_back(Gop::new());
@@ -309,6 +342,78 @@ mod tests {
             timestamp: 0,
             data: Bytes::from(vec![0u8; size]),
         }
+    }
+
+    #[test]
+    fn test_audio_only_gops_rotate_on_frame_cap() {
+        // An audio-only stream never sends a key frame; the cache must rotate
+        // on the frame cap so the cached window stays fresh instead of
+        // freezing on the oldest frames.
+        let mut gops = Gops::new(3, None);
+
+        let cap = MAX_FRAMES_PER_GOP;
+        for i in 0..u32::try_from(cap + 10).unwrap_or(u32::MAX) {
+            gops.save_frame_data(
+                FrameData::Audio {
+                    timestamp: i,
+                    data: Bytes::from(vec![0u8; 10]),
+                },
+                false,
+            );
+        }
+
+        assert!(
+            gops.gop_count() > 1,
+            "audio-only cache must rotate on the cap"
+        );
+        // The newest GOP holds the freshest frames, and the total frame count
+        // is bounded by the cap per GOP.
+        let gops_ref = gops.get_gops();
+        let total: usize = gops_ref.iter().map(Gop::len).sum();
+        assert!(total <= gops_ref.len() * cap);
+        let newest = gops_ref.back().unwrap_or_else(|| unreachable!());
+        assert!(!newest.is_empty());
+    }
+
+    #[test]
+    fn test_video_gop_never_splits_on_frame_cap() {
+        // GOPs that contain video must never rotate on a non-key frame: a
+        // late video subscriber needs a leading key frame to decode.
+        let mut gops = Gops::new(3, None);
+
+        let cap = MAX_FRAMES_PER_GOP;
+        gops.save_frame_data(video_frame(10), true);
+        for _ in 0..(cap + 10) {
+            gops.save_frame_data(
+                FrameData::Video {
+                    timestamp: 0,
+                    data: Bytes::from(vec![0u8; 10]),
+                },
+                false,
+            );
+        }
+
+        assert_eq!(gops.gop_count(), 1);
+        assert_eq!(gops.get_gops().front().map(Gop::len), Some(cap));
+    }
+
+    #[test]
+    fn test_rotation_keeps_gop_count_bounded_for_size_one() {
+        // With a size of 1 the rotation must keep the deque bounded (the old
+        // exact-equality eviction check let it grow one GOP per rotation).
+        let mut gops = Gops::new(1, None);
+
+        for _ in 0..(MAX_FRAMES_PER_GOP * 4) {
+            gops.save_frame_data(
+                FrameData::Audio {
+                    timestamp: 0,
+                    data: Bytes::from(vec![0u8; 10]),
+                },
+                false,
+            );
+        }
+
+        assert!(gops.gop_count() <= 2);
     }
 
     #[test]

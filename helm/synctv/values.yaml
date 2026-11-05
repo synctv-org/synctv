@@ -557,9 +557,10 @@ config:
       maxSessions: 1000
       maxSessionDurationSeconds: 86400
     ## Live transcode quality rungs, scheduled on demand by the node that
-    ## owns the live source. The ffmpeg engine requires an ffmpeg binary in
-    ## the container image. Presets are ordered best-first; preset names
-    ## must be valid as stream key components (letters, digits, '-', '_').
+    ## owns the live source. The ffmpeg engine spawns the ffmpeg binary
+    ## bundled in the official image. Presets are ordered best-first;
+    ## preset names must be valid as stream key components (letters,
+    ## digits, '-', '_').
     transcode:
       enabled: false
       workers: []

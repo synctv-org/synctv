@@ -502,7 +502,8 @@ livestream:
     max_session_duration_seconds: 86400
   # Live transcode quality rungs. Rungs are scheduled on demand by the node
   # that owns the live source; other nodes relay a rung that is already live.
-  # The ffmpeg engine requires an ffmpeg binary in the runtime image.
+  # The ffmpeg engine spawns an ffmpeg binary (bundled in the official
+  # container image; install one for bare-binary deployments).
   # Presets are ordered best-first; preset names must be usable as stream
   # key components (letters, digits, '-', '_').
   transcode:

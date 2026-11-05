@@ -264,7 +264,7 @@ RTSP、外部 RTMP 与内部 RTMP 推流都进入同一个 Live StreamHub。Sync
 
 `livestream.transcode` 让源所在节点把直播流转码出多个画质档位。HLS 的画质档位以主播放列表（master playlist）多变体的形式呈现，播放器按带宽自适应切换；HTTP-FLV 没有清单，播放列表会为每个档位多出一条可选清晰度，切档即切到独立的转码流。
 
-前置要求：服务器安装 `ffmpeg` 二进制（需要 H.264/AAC 解码和 `libx264`、`aac` 编码器）。SyncTV 通过子进程调用它，不捆绑、不链接 ffmpeg，因此二进制的许可义务由部署方自己选择的版本决定。
+前置要求：`ffmpeg` 二进制（需要 H.264/AAC 解码和 `libx264`、`aac` 编码器）。官方容器镜像已内置；二进制部署需自行安装。SyncTV 始终通过子进程调用 ffmpeg、不链接它，二进制部署的许可义务由部署方自己选择的版本决定。
 
 只写 `enabled = true` 即可使用默认配置：一个本地 ffmpeg worker 和一个 720p 档位。要自定义时才需要写出 workers/presets：
 

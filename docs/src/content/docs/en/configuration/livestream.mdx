@@ -264,7 +264,7 @@ Typical choices: AWS S3, MinIO, Cloudflare R2, or compatible services. Configure
 
 `livestream.transcode` lets the node that owns a source transcode it into additional quality rungs. In HLS the rungs appear as variants of the master playlist and players switch between them adaptively by bandwidth; HTTP-FLV has no manifest, so its playback list gains one selectable entry per rung and picking one switches to that rung's own transcoded stream.
 
-Prerequisite: an `ffmpeg` binary on the server (H.264/AAC decode plus `libx264` and `aac` encoders). SyncTV runs it as a subprocess; it never bundles or links ffmpeg, so licensing of the binary stays with the operator's choice of build.
+Prerequisite: an `ffmpeg` binary (H.264/AAC decode plus `libx264` and `aac` encoders). The official container image ships one; bare-binary deployments install their own. SyncTV always runs ffmpeg as a subprocess and never links it, so on binary deployments the licensing of the binary stays with the operator's choice of build.
 
 `enabled = true` alone uses the defaults: one local ffmpeg worker and a single 720p rung. Write out workers/presets only to customize:
 

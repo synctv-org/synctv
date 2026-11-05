@@ -230,7 +230,7 @@ fn retain_live_whep_if_enabled(
 /// Each hls/flv source entry gains one sibling per rung preset, labeled with
 /// the preset name; WHEP keeps only the source quality. The rung rides in
 /// the media payload and becomes part of the signed URL resource.
-fn append_live_transcode_rungs(
+pub(crate) fn append_live_transcode_rungs(
     infrastructure: Option<&std::sync::Arc<synctv_livestream::LiveStreamingInfrastructure>>,
     result: &mut synctv_core::models::media::PlaybackResult,
 ) {

@@ -2630,9 +2630,30 @@ mod tests {
             "unconfigured rungs must not resolve to the source stream"
         );
 
-        // Teardown: ending the source tears the rung down with it.
+        // Idle teardown: with every viewer gone, the rung stops by itself
+        // after the idle grace even while the source keeps publishing.
         drop(flv_guards);
         drop(rung_flv);
+        let rung_idled_out = timeout(Duration::from_secs(50), async {
+            loop {
+                let active = registry
+                    .get_active_generation(ROOM, &rung_media_id)
+                    .await
+                    .is_ok_and(|generation| generation.is_some());
+                if !active {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        })
+        .await
+        .is_ok();
+        assert!(
+            rung_idled_out,
+            "rung must stop after the idle grace with the source still live"
+        );
+
+        // Teardown: ending the source tears the rung down with it.
         let _ = publisher.start_kill();
         let _ = publisher.wait().await;
         let rung_absent = timeout(Duration::from_secs(10), async {

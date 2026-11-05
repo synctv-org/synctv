@@ -334,13 +334,15 @@ impl TranscodeManager {
         loop {
             if self.rung_is_registered(room_id, &rung_key).await {
                 // Upgrade the guard from waiting to subscribed: release()
-                // decrements by its current role, so flip the role after the
-                // subscriber count is in place.
+                // decrements by its current role, so move the count across
+                // before flipping the role. Leaving the waiting count behind
+                // would block the idle timeout forever.
                 let mut state = self.inner.state.lock().expect("transcode state poisoned");
                 if let Some(rung_state) = state
                     .get_mut(&guard.key)
                     .and_then(|source| source.rungs.get_mut(&guard.rung))
                 {
+                    rung_state.waiting_viewers = rung_state.waiting_viewers.saturating_sub(1);
                     rung_state.subscribers = rung_state.subscribers.saturating_add(1);
                     if let Some(running) = rung_state.running.as_mut() {
                         running.idle_since = None;

@@ -271,11 +271,9 @@ RTSP、外部 RTMP 与内部 RTMP 推流都进入同一个 Live StreamHub。Sync
 enabled = true
 
 [[livestream.transcode.workers]]
+engine = "ffmpeg"
 name = "local"
 priority = 100
-
-[livestream.transcode.workers.engine]
-engine = "ffmpeg"
 max_concurrent = 2
 binary = "ffmpeg"
 

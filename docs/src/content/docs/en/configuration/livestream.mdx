@@ -271,11 +271,9 @@ Prerequisite: an `ffmpeg` binary on the server (H.264/AAC decode plus `libx264` 
 enabled = true
 
 [[livestream.transcode.workers]]
+engine = "ffmpeg"
 name = "local"
 priority = 100
-
-[livestream.transcode.workers.engine]
-engine = "ffmpeg"
 max_concurrent = 2
 binary = "ffmpeg"
 

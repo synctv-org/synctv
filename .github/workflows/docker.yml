@@ -137,7 +137,9 @@ jobs:
     # buildkit v0.34.2) hangs the local export of pull-request builds
     # indefinitely at "exporting to client directory" regardless of cache
     # settings. Move forward once a newer release exports local output again.
-    uses: docker/github-builder/.github/workflows/build.yml@v1.18.1
+    # Pinned to the exact revision verified by the last successful
+    # pull-request image build in this repository.
+    uses: docker/github-builder/.github/workflows/build.yml@cbc9d42f8c89a55623392aadd03600965b80e963
     with:
       runner: |
         default=ubuntu-24.04
@@ -145,7 +147,13 @@ jobs:
         linux/arm64=ubuntu-24.04-arm
       distribute: true
       platforms: linux/amd64,linux/arm64
-      output: ${{ github.event_name == 'push' && 'image' || 'local' }}
+      # Always export through the image output. The runner image rolled from
+      # 20261025.353.1 to 20261101.360.1 stalls the client-directory copy of
+      # the local output ("exporting to client directory") indefinitely, with
+      # or without the builder cache, on any builder action revision.
+      # Pull-request builds keep push disabled, so the image only lands in
+      # the builder's store and the digest is still produced for validation.
+      output: image
       push: ${{ github.event_name == 'push' }}
       artifact-upload: false
       sign: ${{ github.event_name == 'push' && 'auto' || 'false' }}

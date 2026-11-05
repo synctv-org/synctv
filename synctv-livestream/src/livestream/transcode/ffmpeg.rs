@@ -186,7 +186,7 @@ impl TranscodeWorker for FfmpegWorker {
         tokio::spawn(async move {
             let mut demuxer = FlvIncrementalDemuxer::default();
             let mut buffer = BytesMut::new();
-            let mut chunk = [0u8; 64 * 1024];
+            let mut chunk = vec![0u8; 64 * 1024];
             loop {
                 let read = tokio::select! {
                     () = stdout_cancel.cancelled() => break,
@@ -209,11 +209,14 @@ impl TranscodeWorker for FfmpegWorker {
             }
         });
 
-        // stderr: keep a bounded tail for diagnostics, log notable lines.
+        // stderr: keep a bounded tail for failure diagnostics and surface
+        // complete lines live, so an input ffmpeg cannot decode is visible
+        // while the job runs instead of only after it exits.
         let stderr_cancel = cancel.clone();
         let stderr_tail_writer = Arc::clone(&stderr_tail);
         tokio::spawn(async move {
             let mut tail = Vec::new();
+            let mut partial_line = Vec::new();
             let mut chunk = [0u8; 4 * 1024];
             loop {
                 let read = tokio::select! {
@@ -228,10 +231,24 @@ impl TranscodeWorker for FfmpegWorker {
                     tail.drain(..overflow.min(tail.len()));
                 }
                 tail.extend_from_slice(&chunk[..read]);
-                *stderr_tail_writer.lock().expect("stderr tail poisoned") = tail.clone();
+                stderr_tail_writer
+                    .lock()
+                    .expect("stderr tail poisoned")
+                    .clone_from(&tail);
+                partial_line.extend_from_slice(&chunk[..read]);
+                while let Some(newline) = partial_line.iter().position(|byte| *byte == b'\n') {
+                    let line: Vec<u8> = partial_line.drain(..=newline).collect();
+                    let line = String::from_utf8_lossy(&line);
+                    let line = line.trim_end();
+                    if !line.is_empty() {
+                        debug!(target: "synctv::ffmpeg", "{line}");
+                    }
+                }
             }
-            for line in String::from_utf8_lossy(&tail).lines() {
-                debug!(target: "synctv::ffmpeg", "{line}");
+            let leftover = String::from_utf8_lossy(&partial_line);
+            let leftover = leftover.trim_end();
+            if !leftover.is_empty() {
+                debug!(target: "synctv::ffmpeg", "{leftover}");
             }
         });
 
@@ -356,6 +373,7 @@ async fn write_flv_tag<W>(writer: &mut W, frame: &FrameData) -> std::io::Result<
 where
     W: AsyncWriteExt + Unpin,
 {
+    const MAX_FLV_TAG_BODY: u32 = 0x00ff_ffff;
     let (tag_type, timestamp, data) = match frame {
         FrameData::Video { timestamp, data } => (FLV_TAG_VIDEO, *timestamp, data),
         FrameData::Audio { timestamp, data } => (FLV_TAG_AUDIO, *timestamp, data),
@@ -368,21 +386,31 @@ where
             "FLV tag body exceeds u32 size",
         )
     })?;
+    if data_size > MAX_FLV_TAG_BODY {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "FLV tag body exceeds the 24-bit size field",
+        ));
+    }
+    // Tag header layout: type, 24-bit size, 24-bit timestamp with the high
+    // byte in slot 7, three reserved zero bytes.
     let mut header = [0u8; FLV_TAG_HEADER_SIZE];
     header[0] = tag_type;
-    header[1] = (data_size >> 16) as u8;
-    header[2] = (data_size >> 8) as u8;
-    header[3] = data_size as u8;
-    header[4] = (timestamp >> 16) as u8;
-    header[5] = (timestamp >> 8) as u8;
-    header[6] = timestamp as u8;
-    header[7] = (timestamp >> 24) as u8;
-    header[8..11].fill(0);
+    header[1..4].copy_from_slice(&data_size.to_be_bytes()[1..]);
+    let timestamp = timestamp.to_be_bytes();
+    header[4] = timestamp[1];
+    header[5] = timestamp[2];
+    header[6] = timestamp[3];
+    header[7] = timestamp[0];
     writer.write_all(&header).await?;
     writer.write_all(data).await?;
-    writer
-        .write_all(&(FLV_TAG_HEADER_SIZE as u32 + data_size).to_be_bytes())
-        .await
+    let total = u32::try_from(FLV_TAG_HEADER_SIZE + data.len()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "FLV tag total size exceeds u32",
+        )
+    })?;
+    writer.write_all(&total.to_be_bytes()).await
 }
 
 /// Incremental FLV tag parser over a growing buffer, mirroring the
@@ -486,12 +514,17 @@ mod tests {
         let mut stream: Vec<u8> = FLV_HEADER.to_vec();
         let timestamp: u32 = 0x0102_0304;
         stream.push(FLV_TAG_VIDEO);
-        stream.extend_from_slice(&u32::try_from(body.len()).unwrap().to_be_bytes()[1..4]);
+        stream.extend_from_slice(
+            &u32::try_from(body.len())
+                .expect("body fits u32")
+                .to_be_bytes()[1..4],
+        );
         stream.extend_from_slice(&timestamp.to_be_bytes()[1..4]);
-        stream.push((timestamp >> 24) as u8);
+        stream.push(timestamp.to_be_bytes()[0]);
         stream.extend_from_slice(&[0, 0, 0]);
         stream.extend_from_slice(&body);
-        stream.extend_from_slice(&((FLV_TAG_HEADER_SIZE as u32 + body.len() as u32).to_be_bytes()));
+        let total = u32::try_from(FLV_TAG_HEADER_SIZE + body.len()).expect("tag size fits u32");
+        stream.extend_from_slice(&total.to_be_bytes());
 
         let mut demuxer = FlvIncrementalDemuxer::default();
         let mut buffer = BytesMut::from(&stream[..]);
@@ -514,7 +547,9 @@ mod tests {
             data: bytes::Bytes::from_static(&[0x17, 0x00, 0x00, 0x00, 0x01]),
         };
         let mut sink = Vec::new();
-        write_flv_tag(&mut sink, &frame).await.unwrap();
+        write_flv_tag(&mut sink, &frame)
+            .await
+            .expect("in-memory write succeeds");
 
         let mut demuxer = FlvIncrementalDemuxer::default();
         demuxer.header_parsed = true;

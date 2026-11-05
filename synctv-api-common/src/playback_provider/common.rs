@@ -388,6 +388,8 @@ pub struct LiveFlvChunksRequest {
     pub expires_at: i64,
     pub external_source: Option<synctv_core::models::LiveProxyMediaSourceConfig>,
     pub head: bool,
+    /// Transcode rung preset; `None` streams the source quality.
+    pub rung: Option<String>,
 }
 
 pub struct LiveHlsMasterChunksRequest {
@@ -400,6 +402,8 @@ pub struct LiveHlsMasterChunksRequest {
     pub signature_expires_at: i64,
     pub route_provider: String,
     pub external_source: Option<synctv_core::models::LiveProxyMediaSourceConfig>,
+    /// Transcode rung preset; `None` resolves the source quality.
+    pub rung: Option<String>,
 }
 
 pub struct LiveHlsPlaylistChunksRequest {
@@ -412,6 +416,8 @@ pub struct LiveHlsPlaylistChunksRequest {
     pub signature_room_id: String,
     pub signature_expires_at: i64,
     pub route_provider: String,
+    /// Transcode rung preset; `None` addresses the source quality.
+    pub rung: Option<String>,
 }
 
 pub struct LiveHlsSegmentChunksRequest {
@@ -420,6 +426,80 @@ pub struct LiveHlsSegmentChunksRequest {
     pub generation_id: String,
     pub segment_name: String,
     pub head: bool,
+    /// Transcode rung preset; `None` addresses the source quality.
+    pub rung: Option<String>,
+}
+
+/// Normalize a protocol rung field into `Option`: empty means the source.
+pub(crate) fn optional_rung(rung: &str) -> Option<String> {
+    if rung.is_empty() {
+        None
+    } else {
+        Some(rung.to_string())
+    }
+}
+
+/// Stream key of a live request: rung requests address the rung's own stream
+/// (`{mediaId}::{rung}`), which is how the hub, registry, and HLS storage
+/// identify transcoded output.
+pub(crate) fn live_stream_key(media_id: &str, rung: Option<&str>) -> String {
+    match rung {
+        Some(rung) => synctv_livestream::rung_stream_name(media_id, rung),
+        None => media_id.to_string(),
+    }
+}
+
+/// Signed resource for a rung-addressable single-segment live endpoint
+/// (`flv-stream`, `hls-master`): the rung appends a sub-resource so a
+/// signature cannot be replayed across qualities.
+pub(crate) fn rung_scoped_resource(prefix: &str, rung: Option<&str>) -> String {
+    match rung {
+        Some(rung) => format!("{prefix}/{rung}"),
+        None => prefix.to_string(),
+    }
+}
+
+/// Signed resource for a live HLS media playlist.
+pub(crate) fn hls_playlist_resource(generation_id: &str, rung: Option<&str>) -> String {
+    match rung {
+        Some(rung) => format!("hls/{generation_id}/{rung}/index.m3u8"),
+        None => format!("hls/{generation_id}/index.m3u8"),
+    }
+}
+
+/// Signed resource for a live HLS segment.
+pub(crate) fn hls_segment_resource(
+    generation_id: &str,
+    segment_name: &str,
+    rung: Option<&str>,
+) -> String {
+    match rung {
+        Some(rung) => format!("hls/{generation_id}/{rung}/{segment_name}"),
+        None => format!("hls/{generation_id}/{segment_name}"),
+    }
+}
+
+/// Total bitrate advertised for a rung in an HLS master playlist, taken from
+/// the preset the local transcode manager serves. Falls back to the source
+/// default when the preset is unknown here (for example on a relay node).
+pub(crate) fn rung_hls_bandwidth(
+    infrastructure: &synctv_livestream::LiveStreamingInfrastructure,
+    rung: Option<&str>,
+) -> u64 {
+    const SOURCE_BANDWIDTH: u64 = 8_000_000;
+    let Some(rung) = rung else {
+        return SOURCE_BANDWIDTH;
+    };
+    infrastructure
+        .transcode_manager()
+        .and_then(|manager| {
+            manager
+                .presets()
+                .iter()
+                .find(|preset| preset.name == rung)
+                .map(|preset| u64::from(preset.video_kbps + preset.audio_kbps) * 1000)
+        })
+        .unwrap_or(SOURCE_BANDWIDTH)
 }
 
 pub async fn stream_live_flv_chunks(
@@ -449,10 +529,11 @@ pub async fn stream_live_flv_chunks(
     let infrastructure = deps.live_streaming_infrastructure.ok_or_else(|| {
         ApiError::ServiceUnavailable("Live streaming service is unavailable".to_string())
     })?;
+    let stream_media_id = live_stream_key(&media_id_key, req.rung.as_deref());
     let (rx, stream_guards) = synctv_livestream::FlvStreamingApi::create_session_with_pull(
         infrastructure,
         &room_id_key,
-        &media_id_key,
+        &stream_media_id,
         req.external_source.as_ref(),
     )
     .await
@@ -563,10 +644,11 @@ pub async fn get_live_hls_master_chunks(
     let infrastructure = deps.live_streaming_infrastructure.ok_or_else(|| {
         ApiError::ServiceUnavailable("Live streaming service is unavailable".to_string())
     })?;
+    let stream_media_id = live_stream_key(&media_id_key, req.rung.as_deref());
     let generation = synctv_livestream::HlsStreamingApi::resolve_active_generation_with_pull(
         infrastructure,
         &room_id_key,
-        &media_id_key,
+        &stream_media_id,
         req.external_source.as_ref(),
     )
     .await
@@ -577,10 +659,11 @@ pub async fn get_live_hls_master_chunks(
             "Live stream is not currently available".to_string(),
         ));
     };
+    let bandwidth = rung_hls_bandwidth(infrastructure, req.rung.as_deref());
     let claims = ProxyUrlClaims {
         provider: req.provider_name,
         version: req.version.clone(),
-        resource: format!("hls/{}/index.m3u8", generation.generation_id),
+        resource: hls_playlist_resource(&generation.generation_id, req.rung.as_deref()),
         room_id: req.signature_room_id,
         user_id: req.signature_user_id,
         expires_at: req.signature_expires_at,
@@ -592,10 +675,12 @@ pub async fn get_live_hls_master_chunks(
         &req.route_provider,
         &req.version,
         &generation.generation_id,
+        req.rung.as_deref(),
         &signed_query,
     );
-    let content =
-        format!("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-STREAM-INF:BANDWIDTH=8000000\n{playlist_url}\n");
+    let content = format!(
+        "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-STREAM-INF:BANDWIDTH={bandwidth}\n{playlist_url}\n"
+    );
 
     Ok(hls_manifest_chunk_stream(content, 200, false))
 }
@@ -615,10 +700,11 @@ pub async fn get_live_hls_playlist_chunks(
             .timestamp()
             .saturating_add(HLS_ROLLING_RESOURCE_SIGNATURE_TTL_SECONDS),
     );
+    let rung = req.rung.clone();
     let playlist = synctv_livestream::HlsStreamingApi::generate_playlist(
         infrastructure,
         &req.room_id.to_string(),
-        &req.media_id.to_string(),
+        &live_stream_key(&req.media_id.to_string(), rung.as_deref()),
         &generation_id,
         |ts_name| {
             let extension = if segment_disguised_as_png {
@@ -630,7 +716,7 @@ pub async fn get_live_hls_playlist_chunks(
             let claims = ProxyUrlClaims {
                 provider: req.provider_name.clone(),
                 version: req.version.clone(),
-                resource: format!("hls/{generation_id}/{segment_name}"),
+                resource: hls_segment_resource(&generation_id, &segment_name, rung.as_deref()),
                 room_id: req.signature_room_id.clone(),
                 user_id: req.signature_user_id.clone(),
                 expires_at: media_expires_at,
@@ -643,6 +729,7 @@ pub async fn get_live_hls_playlist_chunks(
                 &req.version,
                 &generation_id,
                 &segment_name,
+                rung.as_deref(),
                 &signed_query,
             )
         },
@@ -683,7 +770,7 @@ pub async fn get_live_hls_segment_chunks(
     let ts_data = synctv_livestream::HlsStreamingApi::get_segment(
         infrastructure,
         &req.room_id.to_string(),
-        &req.media_id.to_string(),
+        &live_stream_key(&req.media_id.to_string(), req.rung.as_deref()),
         &req.generation_id,
         validated_name,
     )
@@ -1307,12 +1394,18 @@ fn build_hls_playlist_path(
     route_provider: &str,
     version: &str,
     generation_id: &str,
+    rung: Option<&str>,
     signed_query: &str,
 ) -> String {
-    format!(
-        "/api/playback-providers/{room_id}/{route_provider}/{version}/hls/{generation_id}/index.m3u8{}",
-        hls_query_suffix(signed_query)
-    )
+    let mut path =
+        format!("/api/playback-providers/{room_id}/{route_provider}/{version}/hls/{generation_id}");
+    if let Some(rung) = rung {
+        path.push('/');
+        path.push_str(rung);
+    }
+    path.push_str("/index.m3u8");
+    path.push_str(&hls_query_suffix(signed_query));
+    path
 }
 
 fn build_hls_segment_path(
@@ -1321,12 +1414,19 @@ fn build_hls_segment_path(
     version: &str,
     generation_id: &str,
     segment_name: &str,
+    rung: Option<&str>,
     signed_query: &str,
 ) -> String {
-    format!(
-        "/api/playback-providers/{room_id}/{route_provider}/{version}/hls/{generation_id}/{segment_name}{}",
-        hls_query_suffix(signed_query)
-    )
+    let mut path =
+        format!("/api/playback-providers/{room_id}/{route_provider}/{version}/hls/{generation_id}");
+    if let Some(rung) = rung {
+        path.push('/');
+        path.push_str(rung);
+    }
+    path.push('/');
+    path.push_str(segment_name);
+    path.push_str(&hls_query_suffix(signed_query));
+    path
 }
 
 fn hls_query_suffix(signed_query: &str) -> String {
@@ -1714,6 +1814,46 @@ mod tests {
     use synctv_realtime::sync::DisconnectSignal;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn rung_helpers_scope_resources_and_stream_keys() {
+        assert_eq!(optional_rung(""), None);
+        assert_eq!(optional_rung("720p").as_deref(), Some("720p"));
+
+        assert_eq!(live_stream_key("123", None), "123");
+        assert_eq!(live_stream_key("123", Some("720p")), "123-720p");
+
+        assert_eq!(
+            rung_scoped_resource("flv-stream", None),
+            "flv-stream".to_string()
+        );
+        assert_eq!(
+            rung_scoped_resource("flv-stream", Some("720p")),
+            "flv-stream/720p".to_string()
+        );
+        assert_eq!(
+            rung_scoped_resource("hls-master", Some("480p")),
+            "hls-master/480p".to_string()
+        );
+
+        assert_eq!(
+            hls_playlist_resource("gen1", None),
+            "hls/gen1/index.m3u8".to_string()
+        );
+        assert_eq!(
+            hls_playlist_resource("gen1", Some("480p")),
+            "hls/gen1/480p/index.m3u8".to_string()
+        );
+
+        assert_eq!(
+            hls_segment_resource("gen1", "seg0.ts", None),
+            "hls/gen1/seg0.ts".to_string()
+        );
+        assert_eq!(
+            hls_segment_resource("gen1", "seg0.ts", Some("360p")),
+            "hls/gen1/360p/seg0.ts".to_string()
+        );
+    }
 
     async fn start_mock_server() -> MockServer {
         MockServer::start().await

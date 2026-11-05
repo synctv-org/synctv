@@ -27,9 +27,9 @@ fn waiting(mut rung: RungState, viewers: u32) -> RungState {
     rung
 }
 
-fn sources(
-    entries: Vec<((String, String), Vec<(String, RungState)>)>,
-) -> HashMap<(String, String), SourceState> {
+type SourceEntries = Vec<((String, String), Vec<(String, RungState)>)>;
+
+fn sources(entries: SourceEntries) -> HashMap<(String, String), SourceState> {
     entries
         .into_iter()
         .map(|(key, rungs)| {
@@ -46,14 +46,19 @@ fn sources(
 
 #[test]
 fn rung_stream_names_round_trip() {
-    assert_eq!(rung_stream_name("media", "480p"), "media::480p");
+    assert_eq!(rung_stream_name("123", "480p"), "123-480p");
+    assert_eq!(split_rung_stream_name("123-480p"), Some(("123", "480p")));
+    // Preset names may contain the separator; the numeric base makes the
+    // first separator unambiguous.
     assert_eq!(
-        split_rung_stream_name("media::480p"),
-        Some(("media", "480p"))
+        split_rung_stream_name("123-high-quality"),
+        Some(("123", "high-quality"))
     );
-    assert_eq!(split_rung_stream_name("media"), None);
-    assert_eq!(split_rung_stream_name("::480p"), None);
-    assert_eq!(split_rung_stream_name("media::"), None);
+    assert_eq!(split_rung_stream_name("123"), None);
+    assert_eq!(split_rung_stream_name("-480p"), None);
+    assert_eq!(split_rung_stream_name("123-"), None);
+    // A stream key with a non-numeric base is never a rung key.
+    assert_eq!(split_rung_stream_name("media-480p"), None);
 }
 
 #[test]
@@ -108,7 +113,7 @@ fn pick_skips_running_unsupported_cooldown_and_low_value_rungs() {
         .get_mut(&("room".to_string(), "media".to_string()))
         .and_then(|source| source.rungs.get_mut("360p"))
         .expect("rung exists");
-    rung.last_failure = Some(Instant::now() - Duration::from_secs(31));
+    rung.last_failure = Instant::now().checked_sub(Duration::from_secs(31));
     let (_, rung, _) = pick_most_demanded(&elapsed_sources, &presets, Instant::now())
         .expect("pick after cooldown");
     assert_eq!(rung, "360p");
@@ -146,9 +151,15 @@ fn metadata_resolution_parses_real_amf_ecma_array() {
     properties.insert("height".to_string(), Amf0ValueType::Number(1080.0));
     properties.insert("videocodecid".to_string(), Amf0ValueType::Number(7.0));
     let mut writer = Amf0Writer::new();
-    writer.write_string(&"@setDataFrame".to_string()).unwrap();
-    writer.write_string(&"onMetaData".to_string()).unwrap();
-    writer.write_eacm_array(&properties).unwrap();
+    writer
+        .write_string(&"@setDataFrame".to_string())
+        .expect("AMF0 string writes into an in-memory buffer");
+    writer
+        .write_string(&"onMetaData".to_string())
+        .expect("AMF0 string writes into an in-memory buffer");
+    writer
+        .write_eacm_array(&properties)
+        .expect("AMF0 array writes into an in-memory buffer");
     let body = writer.extract_current_bytes();
 
     // The script tag body starts at the "onMetaData" value, matching how

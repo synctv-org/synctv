@@ -260,6 +260,56 @@ Typical choices: AWS S3, MinIO, Cloudflare R2, or compatible services. Configure
 6. With `shared_file`, TS segment requests are read by the current node from the shared path. Local backends still use publisher-node HLS gRPC proxying for remote playlist/segment reads.
 </Steps>
 
+## Live Transcoding (Quality Rungs)
+
+`livestream.transcode` lets the node that owns a source transcode it into additional quality rungs (for example 720p/480p/360p). HLS and HTTP-FLV playback lists gain one selectable entry per rung; picking one switches to that rung's own transcoded stream.
+
+Prerequisite: an `ffmpeg` binary on the server (H.264/AAC decode plus `libx264` and `aac` encoders). SyncTV runs it as a subprocess; it never bundles or links ffmpeg, so licensing of the binary stays with the operator's choice of build.
+
+```toml
+[livestream.transcode]
+enabled = true
+
+[[livestream.transcode.workers]]
+name = "local"
+priority = 100
+
+[livestream.transcode.workers.engine]
+engine = "ffmpeg"
+max_concurrent = 2
+binary = "ffmpeg"
+
+[[livestream.transcode.presets]]
+name = "720p"
+height = 720
+video_kbps = 2500
+audio_kbps = 128
+max_fps = 30
+
+[[livestream.transcode.presets]]
+name = "480p"
+height = 480
+video_kbps = 1000
+audio_kbps = 96
+max_fps = 30
+```
+
+Scheduling semantics:
+
+- Demand driven: a rung is scheduled only when a viewer selects it, and stops roughly 30 seconds after its last viewer leaves. A failed rung cools down for 30 seconds.
+- Only the node that owns the source schedules transcoding. Other nodes read rung state from the registry and proxy traffic; they never ask the owner to transcode. When a rung is not registered, viewers fall back to the source quality immediately.
+- Rungs at or above the source resolution never start (no upscaling).
+- Workers receive jobs in descending `priority`; when one is at capacity, the job falls through to lower-priority workers.
+- Rung output uses a fixed 2-second GOP so HLS segments cut cleanly on keyframes.
+
+Parameters:
+
+- `enabled`: turns the transcode subsystem on.
+- `workers`: the worker list. `name` is optional (used in logs); higher `priority` is preferred; with `engine = "ffmpeg"`, `max_concurrent` (default 1) and `binary` (default `ffmpeg`) configure the subprocess.
+- `presets`: quality rungs. `name` becomes part of the stream identifier (safe characters only); `height` is the target height; `video_kbps`/`audio_kbps` are target bitrates; `max_fps` caps the output frame rate.
+
+Note: transcode input must be H.264/AAC in FLV. If ffmpeg cannot decode the source, the rung times out and falls back while source-quality playback continues unaffected.
+
 ## RTMP
 
 `livestream.rtmp_port` default: `1935`.

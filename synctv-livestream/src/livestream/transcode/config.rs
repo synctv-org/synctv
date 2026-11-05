@@ -214,9 +214,15 @@ impl TranscodeConfig {
         for preset in &self.presets {
             if preset.name.trim().is_empty() {
                 problems.push("transcode preset names must not be empty".to_string());
-            } else if preset.name.contains(':') {
+            } else if let Err(error) = crate::util::validate_stream_id_component(
+                &super::rung_stream_name("0", &preset.name),
+                "rung stream name",
+            ) {
+                // The preset name rides inside the rung stream key, so it
+                // must satisfy the same identifier rules the registry and
+                // relay enforce (`:`, path separators, control characters).
                 problems.push(format!(
-                    "transcode preset name '{}' must not contain ':'",
+                    "transcode preset name '{}' is not usable as a stream key: {error}",
                     preset.name
                 ));
             } else if !preset_names.insert(preset.name.clone()) {
@@ -278,7 +284,7 @@ mod tests {
         let result = toml::from_str::<TranscodeConfig>(
             "enabled = true\n[[workers]]\nengine = \"remote-x\"\n",
         );
-        let error = result.err().expect("unknown engine must be rejected");
+        let error = result.expect_err("unknown engine must be rejected");
         assert!(
             error.to_string().contains("remote-x"),
             "error should name the unknown engine: {error}"
@@ -307,7 +313,7 @@ mod tests {
     }
 
     #[test]
-    fn preset_names_must_be_unique_and_colon_free() {
+    fn preset_names_must_be_unique_and_stream_key_safe() {
         let mut config = TranscodeConfig::default();
         config.presets[0].name = config.presets[1].name.clone();
         config.presets[2].name = "480:p".to_string();
@@ -317,7 +323,7 @@ mod tests {
             .any(|problem| problem.contains("duplicated")));
         assert!(problems
             .iter()
-            .any(|problem| problem.contains("must not contain ':'")));
+            .any(|problem| problem.contains("not usable as a stream key")));
     }
 
     #[test]

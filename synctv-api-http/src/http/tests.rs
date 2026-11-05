@@ -3054,12 +3054,48 @@ async fn test_streaming_proxy_routes_preserve_options_preflight() -> TestResult 
             .header(axum::http::header::ORIGIN, "https://example.com")
             .body(Body::empty()),
     )?;
-    let live_proxy_preflight = test_response(app.oneshot(live_proxy_request).await)?;
+    let live_proxy_preflight = test_response(app.clone().oneshot(live_proxy_request).await)?;
     assert_ne!(
         live_proxy_preflight.status(),
         StatusCode::METHOD_NOT_ALLOWED,
         "live_proxy playback-provider route must handle browser preflight"
     );
+
+    // Transcode rung variants of the live routes must match real routes, or
+    // players would see a 404/405 instead of a signed-access error.
+    for uri in [
+        "/api/playback-providers/room/live/ver1/flv-stream/720p",
+        "/api/playback-providers/room/rtmp/ver1/flv-stream/720p",
+        "/api/playback-providers/room/live/ver1/hls-master/720p",
+        "/api/playback-providers/room/rtmp/ver1/hls-master/720p",
+        "/api/playback-providers/room/live/ver1/hls/gen1/720p/index.m3u8",
+        "/api/playback-providers/room/rtmp/ver1/hls/gen1/720p/index.m3u8",
+        "/api/playback-providers/room/live/ver1/hls/gen1/720p/seg0.ts",
+        "/api/playback-providers/room/rtmp/ver1/hls/gen1/720p/seg0.ts",
+        "/api/playback-providers/room/live-proxy/ver1/flv-stream/720p",
+        "/api/playback-providers/room/live-proxy/ver1/hls-master/720p",
+        "/api/playback-providers/room/live-proxy/ver1/hls/gen1/720p/index.m3u8",
+        "/api/playback-providers/room/live-proxy/ver1/hls/gen1/720p/seg0.ts",
+    ] {
+        let rung_request = test_request(
+            Request::builder()
+                .method("OPTIONS")
+                .uri(uri)
+                .header(axum::http::header::ORIGIN, "https://example.com")
+                .body(Body::empty()),
+        )?;
+        let rung_preflight = test_response(app.clone().oneshot(rung_request).await)?;
+        assert_ne!(
+            rung_preflight.status(),
+            StatusCode::METHOD_NOT_ALLOWED,
+            "rung playback-provider route {uri} must handle browser preflight"
+        );
+        assert_ne!(
+            rung_preflight.status(),
+            StatusCode::NOT_FOUND,
+            "rung playback-provider route {uri} must match a registered route"
+        );
+    }
     Ok(())
 }
 

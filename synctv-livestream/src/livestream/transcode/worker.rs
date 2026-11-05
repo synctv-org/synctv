@@ -23,7 +23,7 @@ impl TranscodeJob {
     /// Registry/StreamHub stream name of the rung produced by this job.
     #[must_use]
     pub fn rung_stream_name(&self) -> String {
-        format!("{}::{}", self.media_id, self.preset.name)
+        super::rung_stream_name(&self.media_id, &self.preset.name)
     }
 }
 

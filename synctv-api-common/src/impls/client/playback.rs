@@ -238,24 +238,6 @@ fn append_live_transcode_rungs(
         PlaybackLiveProxyMedia, PlaybackMediaProvider, PlaybackRtmpMedia,
     };
 
-    let Some(infrastructure) = infrastructure else {
-        return;
-    };
-    let Some(manager) = infrastructure.transcode_manager() else {
-        return;
-    };
-    if result.provider != synctv_core::models::SourceProvider::Rtmp {
-        return;
-    }
-    let rungs: Vec<String> = manager
-        .presets()
-        .iter()
-        .map(|preset| preset.name.clone())
-        .collect();
-    if rungs.is_empty() {
-        return;
-    }
-
     fn with_rung(provider: &PlaybackMediaProvider, rung: &str) -> Option<PlaybackMediaProvider> {
         let mut provider = provider.clone();
         match &mut provider {
@@ -270,6 +252,29 @@ fn append_live_transcode_rungs(
             _ => return None,
         }
         Some(provider)
+    }
+
+    let Some(infrastructure) = infrastructure else {
+        return;
+    };
+    let Some(manager) = infrastructure.transcode_manager() else {
+        return;
+    };
+    // RTMP pushes and LiveProxy pulls both publish into the stream hub, so
+    // transcode rungs serve either source kind.
+    if !matches!(
+        result.provider,
+        synctv_core::models::SourceProvider::Rtmp | synctv_core::models::SourceProvider::LiveProxy
+    ) {
+        return;
+    }
+    let rungs: Vec<String> = manager
+        .presets()
+        .iter()
+        .map(|preset| preset.name.clone())
+        .collect();
+    if rungs.is_empty() {
+        return;
     }
 
     for mode in ["hls", "flv"] {
@@ -295,7 +300,7 @@ fn append_live_transcode_rungs(
                     continue;
                 };
                 let mut entry = media.clone();
-                entry.name = rung.clone();
+                entry.name.clone_from(rung);
                 entry.provider = provider;
                 rung_medias.push(entry);
             }

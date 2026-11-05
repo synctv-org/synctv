@@ -58,18 +58,29 @@ const RUNG_READY_POLL: Duration = Duration::from_millis(200);
 /// Cadence of the scheduler's periodic housekeeping tick.
 const SCHEDULER_TICK: Duration = Duration::from_secs(1);
 
-/// Stream name of a rung inside StreamHub and the cluster registry.
+/// Separator between the numeric source media id and the rung preset inside a
+/// rung stream name. Stream identifiers must not contain `:`, so the rung key
+/// keeps to characters the registry and relay validators accept.
+const RUNG_SEPARATOR: char = '-';
+
+/// Stream name of a rung inside StreamHub and the cluster registry:
+/// `{mediaId}-{preset}`.
 #[must_use]
 pub fn rung_stream_name(media_id: &str, rung: &str) -> String {
-    format!("{media_id}::{rung}")
+    format!("{media_id}{RUNG_SEPARATOR}{rung}")
 }
 
 /// Split a rung stream name back into `(media_id, rung)`.
+///
+/// Only a numeric base counts: source media ids are numeric, so the first
+/// separator after a digit run is unambiguous and no hand-picked stream name
+/// can be mistaken for a rung of another stream.
 #[must_use]
 pub fn split_rung_stream_name(stream_name: &str) -> Option<(&str, &str)> {
-    stream_name
-        .split_once("::")
-        .filter(|&(media, rung)| !media.is_empty() && !rung.is_empty())
+    let (media, rung) = stream_name.split_once(RUNG_SEPARATOR)?;
+    let is_rung_key =
+        !media.is_empty() && !rung.is_empty() && media.bytes().all(|byte| byte.is_ascii_digit());
+    is_rung_key.then_some((media, rung))
 }
 
 type SourceKey = (String, String);
@@ -226,7 +237,7 @@ impl TranscodeManager {
                 )
             })
             .collect();
-        slots.sort_by(|a, b| b.0.cmp(&a.0));
+        slots.sort_by_key(|(priority, _)| std::cmp::Reverse(*priority));
         let workers = slots.into_iter().map(|(_, slot)| slot).collect();
         let inner = Arc::new(ManagerInner {
             config,
@@ -442,14 +453,13 @@ impl ManagerInner {
             let mut state = self.state.lock().expect("transcode state poisoned");
             state
                 .remove(&(room_id.to_string(), media_id.to_string()))
-                .map(|source| {
+                .map_or_else(Vec::new, |source| {
                     source
                         .rungs
                         .into_values()
                         .filter_map(|rung_state| rung_state.running.map(|running| running.cancel))
                         .collect::<Vec<_>>()
                 })
-                .unwrap_or_default()
         };
         for cancel in cancels {
             cancel.cancel();
@@ -563,16 +573,13 @@ async fn scheduler_tick(inner: &Arc<ManagerInner>) {
 
     // Subscribe to the source before submitting so the job never races the
     // stream disappearing mid-startup.
-    let input = match subscribe_source_frames(inner, &room_id, &media_id).await {
-        Some(input) => input,
-        None => {
-            info!(
-                room_id,
-                media_id, rung, "Source gone before transcode submission; dropping demand"
-            );
-            inner.clear_source(&room_id, &media_id);
-            return;
-        }
+    let Some(input) = subscribe_source_frames(inner, &room_id, &media_id).await else {
+        info!(
+            room_id,
+            media_id, rung, "Source gone before transcode submission; dropping demand"
+        );
+        inner.clear_source(&room_id, &media_id);
+        return;
     };
     // Watch the subscription's metadata so failed picks and future picks can
     // skip rungs at or above the source resolution.
@@ -730,8 +737,7 @@ async fn scheduler_tick(inner: &Arc<ManagerInner>) {
         // A publisher failure carries the more precise cause; a
         // worker failure alone still means the rung ended badly.
         let outcome = match (publisher_result, worker_result) {
-            (Err(error), _) => Err(error),
-            (Ok(()), Ok(Ok(Err(error)))) => Err(error),
+            (Err(error), _) | (Ok(()), Ok(Ok(Err(error)))) => Err(error),
             (Ok(()), _) => Ok(()),
         };
         supervisor_inner.note_rung_finished(
@@ -752,14 +758,13 @@ fn pick_most_demanded<'a>(
     now: std::time::Instant,
 ) -> Option<(&'a SourceKey, &'a str, u32)> {
     let mut best: Option<(&SourceKey, &str, u32)> = None;
-    for (key, source) in sources.iter() {
+    for (key, source) in sources {
         // Skip rungs at or above the source resolution: they would only
         // re-encode at the source's own quality.
         let min_height = source
             .source_resolution
-            .map(|(_, height)| height)
-            .unwrap_or(u32::MAX);
-        for (rung, rung_state) in source.rungs.iter() {
+            .map_or(u32::MAX, |(_, height)| height);
+        for (rung, rung_state) in &source.rungs {
             if rung_state.running.is_some()
                 || rung_state.unsupported.is_some()
                 || rung_state.waiting_viewers == 0
@@ -854,7 +859,9 @@ pub(crate) fn parse_metadata_resolution(data: &[u8]) -> Option<(u32, u32)> {
     })?;
     let number = |key: &str| -> Option<u32> {
         match map.get(key)? {
-            Amf0ValueType::Number(value) if *value >= 1.0 && *value <= u32::MAX as f64 => {
+            Amf0ValueType::Number(value) if *value >= 1.0 && *value <= f64::from(u32::MAX) => {
+                // Range-checked above; fractional metadata floors.
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 Some(*value as u32)
             }
             _ => None,

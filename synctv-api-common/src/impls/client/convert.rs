@@ -4912,11 +4912,15 @@ fn rung_resource(
     resource_prefix: &'static str,
     rung: Option<&str>,
 ) -> (&'static str, String, i64, String, String) {
-    let resource = match rung {
-        Some(rung) => format!("{resource_prefix}/{rung}"),
-        None => resource_prefix.to_string(),
+    // The rung is its own path segment: keep the structural slash raw and
+    // percent-encode only the segment itself, mirroring the server routes.
+    let (path, resource) = match rung {
+        Some(rung) => (
+            format!("{resource_prefix}/{}", path_segment_encode(rung)),
+            format!("{resource_prefix}/{rung}"),
+        ),
+        None => (resource_prefix.to_string(), resource_prefix.to_string()),
     };
-    let path = path_segment_encode(&resource);
     (provider, version, expires_at, path, resource)
 }
 
@@ -6187,6 +6191,90 @@ mod playback_conversion_tests {
             "room-1",
         )
         .expect("signature should keep the stable internal RTMP provider name");
+    }
+
+    #[test]
+    fn live_transcode_rung_urls_bind_the_rung_into_path_and_signature() {
+        let key = signing_key();
+        let signing = signing_context(&key);
+        let room_id = synctv_core::models::RoomId::new();
+        let media_id = synctv_core::models::MediaId::new();
+        let expires_at = synctv_core::SystemClock.now().timestamp() + 1800;
+
+        let cases = [
+            (
+                PlaybackRtmpMedia::FlvStream {
+                    version: "live-v1".to_string(),
+                    expires_at,
+                    room_id,
+                    media_id,
+                    rung: Some("720p".to_string()),
+                },
+                "flv-stream/720p",
+                "flv-stream",
+                "/api/playback-providers/room-1/live/live-v1/flv-stream/720p?",
+            ),
+            (
+                PlaybackRtmpMedia::HlsMaster {
+                    version: "live-v1".to_string(),
+                    expires_at,
+                    room_id,
+                    media_id,
+                    rung: Some("480p".to_string()),
+                },
+                "hls-master/480p",
+                "hls-master",
+                "/api/playback-providers/room-1/live/live-v1/hls-master/480p?",
+            ),
+        ];
+
+        for (media_provider, resource, source_resource, url_prefix) in cases {
+            let info = PlaybackInfo::builder()
+                .add_media(PlaybackMedia {
+                    name: "rung".to_string(),
+                    format: "flv".to_string(),
+                    expire_at: None,
+                    metadata: None,
+                    p2p_swarm_id: None,
+                    provider: PlaybackMediaProvider::Rtmp(media_provider),
+                })
+                .build();
+
+            let proto = try_playback_to_proto(
+                &playback_result_with_mode("flv", info),
+                &codec(),
+                Some(&signing),
+            )
+            .expect("playback should convert");
+            let media = &proto.playback_infos["flv"].medias[0];
+
+            assert!(
+                media.url.starts_with(url_prefix),
+                "unexpected rung URL: {}",
+                media.url
+            );
+            // The rung is part of the HMAC-bound resource: the signature of
+            // one quality must not verify for another.
+            key.parse_and_verify_playback_query(
+                signed_query(&media.url),
+                synctv_core::provider::RtmpProvider::NAME,
+                "live-v1",
+                resource,
+                "room-1",
+            )
+            .expect("rung signature should bind the rung resource");
+            assert!(
+                key.parse_and_verify_playback_query(
+                    signed_query(&media.url),
+                    synctv_core::provider::RtmpProvider::NAME,
+                    "live-v1",
+                    source_resource,
+                    "room-1",
+                )
+                .is_err(),
+                "source-quality resource must not verify a rung signature"
+            );
+        }
     }
 
     #[test]

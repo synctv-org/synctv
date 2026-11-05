@@ -27,6 +27,7 @@ metadata:
 {{- $hlsStorage := $livestream.hlsStorage | default dict }}
 {{- $hlsStorageType := $hlsStorage.type | default "memory" }}
 {{- $livestreamWebRtc := $livestream.webrtc | default dict }}
+{{- $livestreamTranscode := $livestream.transcode | default dict }}
 data:
   synctv.yaml: |
     {{ if .Values.config.dataDir }}
@@ -349,6 +350,36 @@ data:
         max_sdp_bytes: {{ printf "%d" (int64 ($livestreamWebRtc.maxSdpBytes | default 262144)) }}
         max_sessions: {{ $livestreamWebRtc.maxSessions | default 1000 }}
         max_session_duration_seconds: {{ $livestreamWebRtc.maxSessionDurationSeconds | default 86400 }}
+      {{- if $livestreamTranscode }}
+      transcode:
+        enabled: {{ $livestreamTranscode.enabled | default false }}
+        {{- if $livestreamTranscode.workers }}
+        workers:
+          {{- range $worker := $livestreamTranscode.workers }}
+          - engine: {{ $worker.engine | default "ffmpeg" | quote }}
+            {{- if $worker.name }}
+            name: {{ $worker.name | quote }}
+            {{- end }}
+            priority: {{ $worker.priority | default 100 }}
+            max_concurrent: {{ $worker.maxConcurrent | default 1 }}
+            binary: {{ $worker.binary | default "ffmpeg" | quote }}
+          {{- end }}
+        {{- else }}
+        workers: []
+        {{- end }}
+        {{- if $livestreamTranscode.presets }}
+        presets:
+          {{- range $preset := $livestreamTranscode.presets }}
+          - name: {{ $preset.name | quote }}
+            height: {{ $preset.height }}
+            video_kbps: {{ $preset.videoKbps }}
+            audio_kbps: {{ $preset.audioKbps | default 64 }}
+            max_fps: {{ $preset.maxFps | default 30 }}
+          {{- end }}
+        {{- else }}
+        presets: []
+        {{- end }}
+      {{- end }}
 
     file_storage:
       default_backend: {{ $fileStorage.defaultBackend | default "disabled" | quote }}

@@ -500,6 +500,30 @@ livestream:
     max_sdp_bytes: 262144
     max_sessions: 1000
     max_session_duration_seconds: 86400
+  # Live transcode quality rungs. Rungs are scheduled on demand by the node
+  # that owns the live source; other nodes relay a rung that is already live.
+  # The ffmpeg engine requires an ffmpeg binary in the runtime image.
+  # Presets are ordered best-first; preset names must be usable as stream
+  # key components (letters, digits, '-', '_').
+  transcode:
+    enabled: true
+    workers:
+      - name: "local"
+        priority: 100
+        engine: "ffmpeg"
+        max_concurrent: 2
+        binary: "ffmpeg"
+    presets:
+      - name: "720p"
+        height: 720
+        video_kbps: 1200
+        audio_kbps: 64
+        max_fps: 30
+      - name: "360p"
+        height: 360
+        video_kbps: 400
+        audio_kbps: 64
+        max_fps: 24
 
 file_storage:
   # Named backend selected by product features when they do not override it.

@@ -803,6 +803,15 @@ pub(crate) fn apply_env_overrides_with(
         "SYNCTV_LIVESTREAM_GOP_CACHE_MAX_MEMORY_MB",
         &mut config.livestream.gop_cache_max_memory_mb,
     )?;
+    env_override_bool(
+        "SYNCTV_LIVESTREAM_TRANSCODE_ENABLED",
+        &mut config.livestream.transcode.enabled,
+    )?;
+    apply_json_env_override(
+        "SYNCTV_LIVESTREAM_TRANSCODE",
+        &mut config.livestream.transcode,
+        get_env,
+    )?;
     env_override_enum("SYNCTV_LIVESTREAM_HLS_STORAGE_TYPE", &mut |val| {
         let backend = val.parse()?;
         config.livestream.hls_storage = config
@@ -1478,6 +1487,42 @@ mod tests {
         assert!(error.to_string().contains(
             "Invalid JSON value for environment variable SYNCTV_LIVESTREAM_WEBRTC_ICE_SERVERS"
         ));
+    }
+
+    #[test]
+    fn livestream_transcode_accepts_json_environment_override() {
+        let mut config = Config::default();
+        let env = HashMap::from([(
+            "SYNCTV_LIVESTREAM_TRANSCODE",
+            r#"{"enabled":true,"workers":[{"name":"local","priority":100,"engine":"ffmpeg","max_concurrent":2,"binary":"ffmpeg"}],"presets":[{"name":"360p","height":360,"video_kbps":400,"audio_kbps":64,"max_fps":24}]}"#
+                .to_string(),
+        )]);
+
+        apply_env_overrides_with(&mut config, &|name| env.get(name).cloned())
+            .expect("transcode environment override should apply");
+
+        assert!(config.livestream.transcode.enabled);
+        assert_eq!(config.livestream.transcode.workers.len(), 1);
+        assert_eq!(
+            config
+                .livestream
+                .transcode
+                .presets
+                .first()
+                .map(|preset| { (preset.name.as_str(), preset.height, preset.video_kbps) }),
+            Some(("360p", 360, 400))
+        );
+    }
+
+    #[test]
+    fn livestream_transcode_enabled_accepts_bool_environment_override() {
+        let mut config = Config::default();
+        let env = HashMap::from([("SYNCTV_LIVESTREAM_TRANSCODE_ENABLED", "true".to_string())]);
+
+        apply_env_overrides_with(&mut config, &|name| env.get(name).cloned())
+            .expect("transcode enabled override should apply");
+
+        assert!(config.livestream.transcode.enabled);
     }
 
     #[test]

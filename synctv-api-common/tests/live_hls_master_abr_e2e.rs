@@ -46,7 +46,7 @@ impl AuthCallback for RegistryAuth {
                 app_name,
                 stream_name,
                 &self.node_id,
-                "master-e2e-user",
+                "abr-e2e-user",
                 "127.0.0.1:0",
                 &generation_id.to_string(),
             )
@@ -75,7 +75,7 @@ fn config(rtmp_address: std::net::SocketAddr) -> LivestreamConfig {
     LivestreamConfig {
         rtmp_address: rtmp_address.to_string(),
         gop_cache_size: 1024 * 1024,
-        node_id: "master-e2e-node".to_string(),
+        node_id: "abr-e2e-node".to_string(),
         cleanup_check_interval_seconds: 1,
         stream_timeout_seconds: 30,
         distributed_enabled: false,
@@ -134,7 +134,7 @@ async fn hls_master_warms_and_lists_transcode_rung_variants() -> anyhow::Result<
     let rtmp_address = listener.local_addr()?;
     let auth: Arc<dyn AuthCallback> = Arc::new(RegistryAuth {
         registry: Arc::clone(&registry),
-        node_id: "master-e2e-node".to_string(),
+        node_id: "abr-e2e-node".to_string(),
     });
     let mut server = LivestreamServer::new(
         config(rtmp_address),
@@ -200,7 +200,7 @@ async fn hls_master_warms_and_lists_transcode_rung_variants() -> anyhow::Result<
     }
 
     let signing_key =
-        ProxySigningKey::try_derive_from(b"master-abr-e2e-secret").expect("derive signing key");
+        ProxySigningKey::try_derive_from(b"abr-e2e-secret").expect("derive signing key");
     let connection_manager = ConnectionManager::new(ConnectionLimits::default());
     let livestream_config = LivestreamRuntimeSettings {
         rtmp_port: rtmp_address.port(),
@@ -231,7 +231,7 @@ async fn hls_master_warms_and_lists_transcode_rung_variants() -> anyhow::Result<
 
     // The first master fetch itself warms the rung and answers with the
     // full ladder: the source variant plus the live transcode rung.
-    let master = tokio::time::timeout(Duration::from_secs(30), async {
+    let master_playlist = tokio::time::timeout(Duration::from_secs(30), async {
         let mut stream = get_live_hls_master_chunks(deps, request)
             .await
             .map_err(|error| anyhow::anyhow!("master request failed: {error:?}"))?;
@@ -244,14 +244,14 @@ async fn hls_master_warms_and_lists_transcode_rung_variants() -> anyhow::Result<
     })
     .await??;
 
-    let stream_infs = master
+    let stream_infs = master_playlist
         .lines()
         .filter(|line| line.starts_with("#EXT-X-STREAM-INF"))
         .collect::<Vec<_>>();
     assert_eq!(
         stream_infs.len(),
         2,
-        "master must list the source and the {RUNG} rung, got:\n{master}"
+        "master must list the source and the {RUNG} rung, got:\n{master_playlist}"
     );
     assert!(
         stream_infs[0].starts_with("#EXT-X-STREAM-INF:BANDWIDTH=8000000"),
@@ -264,7 +264,7 @@ async fn hls_master_warms_and_lists_transcode_rung_variants() -> anyhow::Result<
         "the rung variant carries the preset bandwidth and name"
     );
 
-    let urls = master
+    let urls = master_playlist
         .lines()
         .filter(|line| line.starts_with("/api/playback-providers/"))
         .collect::<Vec<_>>();

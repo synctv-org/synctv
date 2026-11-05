@@ -6103,6 +6103,7 @@ mod playback_conversion_tests {
                     expires_at,
                     room_id,
                     media_id,
+                    rung: None,
                 }),
             })
             .build();
@@ -6158,6 +6159,7 @@ mod playback_conversion_tests {
                     expires_at,
                     room_id,
                     media_id,
+                    rung: None,
                 }),
             })
             .build();

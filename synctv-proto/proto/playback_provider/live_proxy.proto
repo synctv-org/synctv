@@ -12,6 +12,8 @@ message GetLiveProxyFlvStreamRequest {
   string rid = 4 [(buf.validate.field).string.min_len = 1];
   int64 exp = 5;
   bool head = 6;
+  // Transcode rung preset; empty means the source quality.
+  string rung = 7;
 }
 
 message LiveProxyFlvStreamResponse {
@@ -24,6 +26,8 @@ message GetLiveProxyHlsMasterRequest {
   string uid = 3 [(buf.validate.field).string.min_len = 1];
   string rid = 4 [(buf.validate.field).string.min_len = 1];
   int64 exp = 5;
+  // Transcode rung preset; empty means the source quality.
+  string rung = 6;
 }
 
 message LiveProxyHlsMasterResponse {
@@ -37,6 +41,8 @@ message GetLiveProxyHlsPlaylistRequest {
   string uid = 4 [(buf.validate.field).string.min_len = 1];
   string rid = 5 [(buf.validate.field).string.min_len = 1];
   int64 exp = 6;
+  // Transcode rung preset; empty means the source quality.
+  string rung = 7;
 }
 
 message LiveProxyHlsPlaylistResponse {
@@ -53,6 +59,8 @@ message GetLiveProxyHlsSegmentRequest {
   int64 exp = 7;
   optional string range = 8;
   bool head = 9;
+  // Transcode rung preset; empty means the source quality.
+  string rung = 10;
 }
 
 message LiveProxyHlsSegmentResponse {

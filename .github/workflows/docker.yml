@@ -133,12 +133,7 @@ jobs:
       contents: read
       packages: write
       id-token: write
-    # Pinned to the last known good revision: the v1 moving tag picked up
-    # updates on 2026-11-05 (runtime module 0.109.0 and later merges) that
-    # hang the `output: local` export of pull-request builds indefinitely at
-    # "exporting to client directory". Re-evaluate the pin once upstream v1
-    # exports local output again.
-    uses: docker/github-builder/.github/workflows/build.yml@53d69a684c2b329519bb6adefe1b98f1fd116b96  # v1
+    uses: docker/github-builder/.github/workflows/build.yml@v1
     with:
       runner: |
         default=ubuntu-24.04
@@ -154,7 +149,7 @@ jobs:
       # mounts whose restore, on top of the build and the full-image local
       # export, can exhaust the runner disk and stall the export indefinitely.
       cache: false
-      cache-mode: max
+      cache-mode: min
       cache-scope: synctv-image
       build-args: |
         SYNCTV_CARGO_BUILD_PROFILE=${{ github.event_name == 'pull_request' && 'dev' || 'release' }}

@@ -133,7 +133,11 @@ jobs:
       contents: read
       packages: write
       id-token: write
-    uses: docker/github-builder/.github/workflows/build.yml@v1
+    # Pinned to v1.18.1: the v1.19.0 stack (runtime 0.109.0, buildx v0.38.2,
+    # buildkit v0.34.2) hangs the local export of pull-request builds
+    # indefinitely at "exporting to client directory" regardless of cache
+    # settings. Move forward once a newer release exports local output again.
+    uses: docker/github-builder/.github/workflows/build.yml@v1.18.1
     with:
       runner: |
         default=ubuntu-24.04

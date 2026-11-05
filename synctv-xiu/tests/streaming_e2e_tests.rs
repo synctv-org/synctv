@@ -1045,7 +1045,10 @@ async fn wait_for_playlist_matching<F>(
 where
     F: Fn(&synctv_xiu::hls::StreamProcessorState) -> bool,
 {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // A generous readiness ceiling: ffmpeg-CLI publishers must spawn, probe
+    // their stdin fixture, and finish the RTMP handshake inside this window,
+    // and CI runs the whole suite in parallel on small runners.
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if let Some(state) = server.registry.iter().find_map(|entry| {
             let state = entry.value().read();
@@ -1677,7 +1680,9 @@ async fn wait_for_ended_segments(
     server: &TestServer,
     state: &Arc<parking_lot::RwLock<synctv_xiu::hls::StreamProcessorState>>,
 ) -> Result<Vec<Vec<u8>>> {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // Generous ceiling: the ffmpeg CLI publisher still has to flush, close its
+    // RTMP connection, and exit before the server can end the generation.
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let (ended, names) = {
             let state = state.read();

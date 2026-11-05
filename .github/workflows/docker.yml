@@ -133,7 +133,12 @@ jobs:
       contents: read
       packages: write
       id-token: write
-    uses: docker/github-builder/.github/workflows/build.yml@v1
+    # Pinned to the last known good revision: the v1 moving tag picked up
+    # updates on 2026-11-05 (runtime module 0.109.0 and later merges) that
+    # hang the `output: local` export of pull-request builds indefinitely at
+    # "exporting to client directory". Re-evaluate the pin once upstream v1
+    # exports local output again.
+    uses: docker/github-builder/.github/workflows/build.yml@53d69a684c2b329519bb6adefe1b98f1fd116b96  # v1
     with:
       runner: |
         default=ubuntu-24.04

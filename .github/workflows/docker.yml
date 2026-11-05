@@ -145,11 +145,10 @@ jobs:
       push: ${{ github.event_name == 'push' }}
       artifact-upload: false
       sign: ${{ github.event_name == 'push' && 'auto' || 'false' }}
-      # Cache only release builds. max-mode PR caches carry multi-GB cargo
-      # cache mounts whose restore, on top of the dev-profile build and the
-      # full-image local export, can exhaust the runner disk and stall the
-      # export indefinitely.
-      cache: ${{ github.event_name == 'push' }}
+      # Builder cache disabled: max-mode caches carry multi-GB cargo cache
+      # mounts whose restore, on top of the build and the full-image local
+      # export, can exhaust the runner disk and stall the export indefinitely.
+      cache: false
       cache-mode: max
       cache-scope: synctv-image
       build-args: |

@@ -2460,7 +2460,9 @@ impl BilibiliClient {
             } else {
                 return Err(BilibiliError::Parse("Invalid Bilibili PGC URL".to_string()));
             }
-        } else if segments.first() == Some(&"watchlater") {
+        } else if segments.first() == Some(&"watchlater")
+            || segments.starts_with(&["list", "watchlater"])
+        {
             BilibiliResource::WatchLater
         } else if segments.first() == Some(&"list") {
             let list_id = positive_id(

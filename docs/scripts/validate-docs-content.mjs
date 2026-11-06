@@ -139,18 +139,25 @@ function validateEnglishMirrors() {
 }
 
 function loadStarlightIcons() {
+  // Starlight < 0.42 ships TypeScript sources at the package root; 0.42+
+  // publishes only compiled JS under dist/. Accept either layout.
   const iconFiles = [
-    path.join(starlightRoot, 'components-internals/Icons.ts'),
-    path.join(starlightRoot, 'user-components/file-tree-icons.ts'),
-  ];
+    ['components-internals/Icons.ts', 'dist/components-internals/Icons.js'],
+    ['user-components/file-tree-icons.ts', 'dist/user-components/file-tree-icons.js'],
+  ]
+    .map((candidates) => candidates.map((candidate) => path.join(starlightRoot, candidate)))
+    .map((candidates) => candidates.find((candidate) => fs.existsSync(candidate)))
+    .filter(Boolean);
   const icons = new Set();
-  const iconKeyPattern = /^\s*(?:'([^']+)'|([A-Za-z0-9_.$-]+))\s*:/gm;
+  // Compiled dist files quote all object keys, so accept double quotes, single
+  // quotes, and bare identifiers.
+  const iconKeyPattern = /^\s*(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_.$:-]+))\s*:/gm;
 
   for (const file of iconFiles) {
     const text = fs.readFileSync(file, 'utf8');
     let match;
     while ((match = iconKeyPattern.exec(text))) {
-      icons.add(match[1] || match[2]);
+      icons.add(match[1] || match[2] || match[3]);
     }
   }
 

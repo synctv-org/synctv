@@ -126,14 +126,19 @@ fn build() -> Result<(), String> {
             dist.display()
         ));
     }
+    let mut files = collect_files(&dist, false)?;
+    files.retain(|path| {
+        path.strip_prefix(&dist).is_ok_and(|relative| {
+            !build_support::is_pruned_engine_artifact(&relative.to_string_lossy())
+        })
+    });
     if let Some(export_dir) = env::var_os(EXPORT_ENV)
         .map(PathBuf::from)
         .map(|path| absolute_control_path(control_base, path))
     {
         ensure_disjoint_directories(&dist, &export_dir)?;
-        replace_directory(&dist, &export_dir)?;
+        export_dist_files(&dist, &export_dir, &files)?;
     }
-    let files = collect_files(&dist, false)?;
     let fingerprint = build_fingerprint(
         &format!("{source_identity}:{}", hash_files(&dist, &files)?),
         &flutter_version,
@@ -142,7 +147,7 @@ fn build() -> Result<(), String> {
     generate_assets(&dist, &files, &out_dir, &cache_dir, &fingerprint)
 }
 
-fn replace_directory(source: &Path, destination: &Path) -> Result<(), String> {
+fn export_dist_files(dist: &Path, destination: &Path, files: &[PathBuf]) -> Result<(), String> {
     if destination.exists() {
         fs::remove_dir_all(destination).map_err(|error| {
             format!(
@@ -151,32 +156,21 @@ fn replace_directory(source: &Path, destination: &Path) -> Result<(), String> {
             )
         })?;
     }
-    copy_directory(source, destination)
-}
-
-fn copy_directory(source: &Path, destination: &Path) -> Result<(), String> {
-    fs::create_dir_all(destination).map_err(|error| {
-        format!(
-            "failed to create Web UI export {}: {error}",
-            destination.display()
-        )
-    })?;
-    for entry in fs::read_dir(source)
-        .map_err(|error| format!("failed to read {}: {error}", source.display()))?
-    {
-        let entry =
-            entry.map_err(|error| format!("failed to inspect {}: {error}", source.display()))?;
-        let destination_path = destination.join(entry.file_name());
-        if entry.path().is_dir() {
-            copy_directory(&entry.path(), &destination_path)?;
-        } else if entry.path().is_file() {
-            fs::copy(entry.path(), &destination_path).map_err(|error| {
+    for path in files {
+        let relative = path
+            .strip_prefix(dist)
+            .map_err(|error| format!("failed to relativize {}: {error}", path.display()))?;
+        let target = destination.join(relative);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
                 format!(
-                    "failed to export Web asset {}: {error}",
-                    entry.path().display()
+                    "failed to create Web UI export {}: {error}",
+                    parent.display()
                 )
             })?;
         }
+        fs::copy(path, &target)
+            .map_err(|error| format!("failed to export Web asset {}: {error}", path.display()))?;
     }
     Ok(())
 }

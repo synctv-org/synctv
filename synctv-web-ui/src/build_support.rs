@@ -532,6 +532,16 @@ pub fn build_fingerprint(
     hex::encode(hasher.finalize())
 }
 
+/// Whether a dist-relative file is an engine symbolication map. Nothing in
+/// the generated runtime JavaScript fetches `*.js.symbols`; they only help
+/// developers demangle engine stack traces offline. Builds exclude them from
+/// the exported dist and the embedded asset table; the source and cache
+/// directories themselves are never modified.
+pub(crate) fn is_pruned_engine_artifact(relative: &str) -> bool {
+    let path = relative.trim_start_matches("./");
+    path.starts_with("canvaskit/") && path.ends_with(".js.symbols")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -857,5 +867,26 @@ mod tests {
             .output()?;
         assert!(output.status.success());
         Ok(String::from_utf8(output.stdout)?.trim().to_owned())
+    }
+
+    #[test]
+    fn engine_artifact_predicate_targets_only_symbolication_maps() {
+        for (path, pruned) in [
+            ("canvaskit/canvaskit.js.symbols", true),
+            ("canvaskit/chromium/canvaskit.js.symbols", true),
+            ("canvaskit/skwasm.js.symbols", true),
+            ("canvaskit/wimp.js.symbols", true),
+            ("canvaskit/canvaskit.js", false),
+            ("canvaskit/canvaskit.wasm", false),
+            ("canvaskit/chromium/canvaskit.wasm", false),
+            ("canvaskit/skwasm_heavy.wasm", false),
+            ("canvaskit/wimp.js", false),
+            ("canvaskit/wimp.wasm", false),
+            ("canvaskit/experimental_webparagraph/canvaskit.wasm", false),
+            ("main.dart.js", false),
+            ("assets/fonts/Roboto.ttf", false),
+        ] {
+            assert_eq!(is_pruned_engine_artifact(path), pruned, "{path}");
+        }
     }
 }

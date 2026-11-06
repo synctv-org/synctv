@@ -67,6 +67,8 @@ spec:
         - name: bootstrap-postgresql-app-db
           image: {{ include "synctv.managedImage" (list . .Values.postgresql.kubeblocks.bootstrapImage "postgres" "18.1-bookworm") | quote }}
           imagePullPolicy: {{ .Values.postgresql.kubeblocks.bootstrapImage.pullPolicy | default "IfNotPresent" }}
+          resources:
+            {{- toYaml (.Values.postgresql.kubeblocks.bootstrapResources | default (dict "requests" (dict "cpu" "10m" "memory" "32Mi") "limits" (dict "memory" "64Mi"))) | nindent 12 }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           env:

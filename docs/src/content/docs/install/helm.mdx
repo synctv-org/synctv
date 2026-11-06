@@ -5,6 +5,7 @@ description: Kubernetes Helm chart 配置、HTTP/gRPC Service、Ingress、Secret
 
 import { Aside, Code } from '@astrojs/starlight/components';
 import {
+  githubUrl,
   helmChartName,
   helmChartVersion,
   helmOciChartReference,
@@ -32,22 +33,7 @@ Helm 面向已有 Kubernetes、Ingress 和集中式 Secret 管理的平台。单
 | HLS 存储 | 小规模用 publisher-node proxy，高流量用 RWX/S3 | 多副本共享同一存储视图 |
 | metrics | 私网抓取并启用鉴权 | `/metrics` 保持在受控网络 |
 
-最小生产 values 骨架：
-
-```yaml
-config:
-  bootstrap:
-    createRootUser: true
-  cluster:
-    enabled: false
-
-existingSecret: "synctv-production-secret"
-
-ingress:
-  enabled: true
-  hosts:
-    - host: synctv.example.com
-```
+Chart 的默认 values 可以直接部署，不需要提供 values 文件；生产环境按需覆盖即可。全部可配置项见 [values.yaml]({githubUrl}/blob/main/helm/synctv/values.yaml)。
 
 ## 安装内容
 
@@ -73,7 +59,7 @@ ingress:
   --namespace synctv \
   --create-namespace`} lang="bash" />
 
-完整可安装 Chart 地址为 <code>{helmOciChartReference}</code>。发布命名空间为 <code>{helmOciNamespace}</code>。生产环境使用自己的 values 文件：
+完整可安装 Chart 地址为 <code>{helmOciChartReference}</code>。发布命名空间为 <code>{helmOciNamespace}</code>。全部可配置项见 [values.yaml]({githubUrl}/blob/main/helm/synctv/values.yaml)，生产环境使用自己的 values 文件：
 
 <Code code={`helm install ${helmChartName} ${helmOciChartReference} \\
   --version ${helmChartVersion} \\
@@ -93,15 +79,7 @@ SyncTV 进程内部 HTTP REST 和 gRPC 使用同一个容器端口，但 Helm ch
 | `synctv-metrics` | `metrics.enabled=true` 时的专用指标入口 | `metrics` |
 | `synctv-grpc` | gRPC 专用入口 | `grpc` |
 
-为什么拆开：
-
-- Ingress controller 通常需要对 gRPC backend 使用独立协议配置。
-- HTTP 和 gRPC 虽然同端口，但 Kubernetes Service/Ingress 层需要不同语义。
-- metrics selector 可以只匹配专用 metrics Service，避免误抓公网 API/RTMP 或 gRPC Service。
-
-`config.server.grpcCompressionEnabled` 默认是 `true`，会让 gRPC 客户端和服务端协商 gzip 压缩。跨节点调用、Ingress 转发、批量响应较多时通常保持开启；如果你的 gRPC 调用都在本地低延迟网络且 CPU 比带宽更紧张，可以显式关闭。
-
-`config.fileStorage.backends.<name>.compression` 控制数据库文件存储后端写入 PostgreSQL `file_blob_parts` 永久分段的压缩算法，默认 `zstd`。`compressionMinSizeBytes` 默认 `4096`，`compressionMinSavingsPercent` 默认 `10`，压缩收益低于阈值时写入原始 bytes。Database 文件存储使用永久分段并从分段服务 HTTP Range；S3 文件存储使用原生 multipart 直传支持 GB 级断点续传。
+为什么拆开：Ingress controller 对 gRPC backend 需要独立的协议配置，专用 metrics Service 也让抓取 selector 不会误匹配公网入口。
 
 S3 文件存储凭证建议挂载 Kubernetes Secret，并在 Helm values 中设置 camelCase 的 `accessKeyIdFile` / `secretAccessKeyFile`。生成的 SyncTV YAML 会使用 snake_case 的 `access_key_id_file` / `secret_access_key_file` 路径，并在启动时读取 Secret 文件。
 
@@ -288,17 +266,7 @@ external PostgreSQL 必须通过 `existingSecret` 的 `SYNCTV_DATABASE_PASSWORD`
 
 应用 Service、PDB 和应用 NetworkPolicy 只选择带有 `app.kubernetes.io/component=app` 的 Pod。Chart 管理的 PostgreSQL 和 Redis 使用各自的 component label；启用 NetworkPolicy ingress 隔离时，Chart 会为它们渲染依赖专用 ingress policy，只允许 SyncTV 应用 Pod 访问对应端口。因此启用 NetworkPolicy 不会把 API 流量路由到依赖 Pod，也不会把依赖和 SyncTV 自身隔离开。
 
-Redis 连接管理相关的 Helm 值：
-
-```yaml
-config:
-  redis:
-    connectTimeoutSeconds: 5
-    responseTimeoutSeconds: 5
-    pipelineBufferSize: 512
-```
-
-`responseTimeoutSeconds` 限制 Redis 命令等待响应的时间；`pipelineBufferSize` 控制 connection manager 内部 pipeline buffer。高并发短命令场景可以适度调大，普通部署保持默认即可。
+Redis 连接超时和 pipeline 大小通过 `config.redis.connectTimeoutSeconds`、`responseTimeoutSeconds`、`pipelineBufferSize` 调整，普通部署保持默认即可。
 
 ## `config.dataDir`
 

@@ -40,7 +40,13 @@ postgresql:
     persistence:
       size: 20Gi
       storageClass: ""
-    resources: {}
+    resources:
+      requests:
+        cpu: 500m
+        memory: 512Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
   kubeblocks:
     clusterName: ""
     clusterDef: "postgresql"
@@ -59,6 +65,12 @@ postgresql:
     replicas: 2
     terminationPolicy: Retain
     disableExporter: true
+    bootstrapResources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        memory: 64Mi
     storage:
       size: 20Gi
       storageClass: ""
@@ -90,7 +102,13 @@ redis:
     persistence:
       size: 8Gi
       storageClass: ""
-    resources: {}
+    resources:
+      requests:
+        cpu: 500m
+        memory: 512Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
   kubeblocks:
     clusterName: ""
     clusterDef: "redis"

@@ -126,6 +126,22 @@ fn build() -> Result<(), String> {
             dist.display()
         ));
     }
+    if loaded
+        .config
+        .build
+        .arguments
+        .iter()
+        .any(|arg| arg == "--release")
+    {
+        let pruned_bytes = build_support::prune_flutter_engine_artifacts(&dist)?;
+        if pruned_bytes > 0 {
+            println!(
+                "cargo:warning=Pruned {} bytes of Flutter engine symbolication maps from {}",
+                pruned_bytes,
+                dist.display()
+            );
+        }
+    }
     if let Some(export_dir) = env::var_os(EXPORT_ENV)
         .map(PathBuf::from)
         .map(|path| absolute_control_path(control_base, path))

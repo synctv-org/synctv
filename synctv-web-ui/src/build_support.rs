@@ -534,50 +534,20 @@ pub fn build_fingerprint(
 
 /// Whether a dist-relative file is an engine symbolication map. Nothing in
 /// the generated runtime JavaScript fetches `*.js.symbols`; they only help
-/// developers demangle engine stack traces offline.
+/// developers demangle engine stack traces offline. Release builds exclude
+/// them from the exported dist and the embedded asset table; the source and
+/// cache directories themselves are never modified.
 pub(crate) fn is_pruned_engine_artifact(relative: &str) -> bool {
     let path = relative.trim_start_matches("./");
     path.starts_with("canvaskit/") && path.ends_with(".js.symbols")
 }
 
-/// Flutter copies the engine's symbolication maps (`*.js.symbols`) into every
-/// web build even though no shipped code fetches them, and each dist file is
-/// embedded three times (raw, Brotli, gzip). Release builds drop them; debug
-/// and profile builds keep everything. Returns the bytes removed.
-pub fn prune_flutter_engine_artifacts(dist: &Path) -> Result<u64, String> {
-    fn visit(dir: &Path, root: &Path, freed: &mut u64) -> Result<(), String> {
-        for entry in fs::read_dir(dir)
-            .map_err(|error| format!("failed to list {}: {error}", dir.display()))?
-        {
-            let entry =
-                entry.map_err(|error| format!("failed to read {}: {error}", dir.display()))?;
-            let path = entry.path();
-            if path.is_dir() {
-                visit(&path, root, freed)?;
-            } else {
-                let relative = path
-                    .strip_prefix(root)
-                    .map_err(|error| format!("failed to relativize {}: {error}", path.display()))?;
-                if is_pruned_engine_artifact(&relative.to_string_lossy()) {
-                    let size = entry
-                        .metadata()
-                        .map_err(|error| format!("failed to stat {}: {error}", path.display()))?
-                        .len();
-                    fs::remove_file(&path)
-                        .map_err(|error| format!("failed to remove {}: {error}", path.display()))?;
-                    *freed += size;
-                }
-            }
-        }
-        Ok(())
-    }
-    let canvaskit = dist.join("canvaskit");
-    if !canvaskit.is_dir() {
-        return Ok(0);
-    }
-    let mut freed = 0;
-    visit(&canvaskit, dist, &mut freed)?;
-    Ok(freed)
+/// `flutter build` defaults to release mode, so a build is non-release only
+/// when `--debug` or `--profile` is passed explicitly.
+pub(crate) fn is_release_profile(arguments: &[String]) -> bool {
+    !arguments
+        .iter()
+        .any(|arg| arg == "--debug" || arg == "--profile")
 }
 
 #[cfg(test)]
@@ -929,36 +899,17 @@ mod tests {
     }
 
     #[test]
-    fn prune_removes_symbolication_maps_and_keeps_renderer_variants() {
-        let directory = tempfile::tempdir().expect("tempdir");
-        let dist = directory.path();
-        let files = [
-            ("canvaskit/canvaskit.js", false),
-            ("canvaskit/canvaskit.wasm", false),
-            ("canvaskit/canvaskit.js.symbols", true),
-            ("canvaskit/chromium/canvaskit.js", false),
-            ("canvaskit/chromium/canvaskit.wasm", false),
-            ("canvaskit/chromium/canvaskit.js.symbols", true),
-            ("canvaskit/skwasm.js", false),
-            ("canvaskit/skwasm.wasm", false),
-            ("canvaskit/skwasm.js.symbols", true),
-            ("canvaskit/skwasm_heavy.wasm", false),
-            ("canvaskit/wimp.js", false),
-            ("canvaskit/wimp.wasm", false),
-            ("canvaskit/experimental_webparagraph/canvaskit.wasm", false),
-            ("main.dart.js", false),
-        ];
-        for (path, _) in &files {
-            let file = dist.join(path);
-            fs::create_dir_all(file.parent().expect("parent directory")).expect("create dir");
-            fs::write(&file, b"payload").expect("write file");
-        }
-        let freed = prune_flutter_engine_artifacts(dist).expect("prune");
-        assert!(freed > 0);
-        for (path, pruned) in &files {
-            assert_eq!(dist.join(path).is_file(), !pruned, "{path}");
-        }
-        assert!(dist.join("canvaskit/experimental_webparagraph").is_dir());
-        assert_eq!(prune_flutter_engine_artifacts(dist).expect("reprune"), 0);
+    fn release_profile_defaults_to_release_and_honors_mode_flags() {
+        assert!(is_release_profile(&[]));
+        assert!(is_release_profile(&[
+            "--release".to_owned(),
+            "--wasm".to_owned()
+        ]));
+        assert!(is_release_profile(&["--wasm".to_owned()]));
+        assert!(!is_release_profile(&[
+            "--wasm".to_owned(),
+            "--debug".to_owned()
+        ]));
+        assert!(!is_release_profile(&["--profile".to_owned()]));
     }
 }

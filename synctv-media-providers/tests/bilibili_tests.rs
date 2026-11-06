@@ -95,6 +95,24 @@ fn test_match_url_current_watch_later_list_url() {
 }
 
 #[test]
+fn test_match_url_favorites_ml_urls() {
+    for url in [
+        "https://www.bilibili.com/list/ml1234567?oid=170001&bvid=BV1xx411c7mD",
+        "https://www.bilibili.com/medialist/detail/ml1234567",
+        "https://www.bilibili.com/medialist/play/ml1234567?from=space",
+    ] {
+        let matched = BilibiliClient::match_url(url).unwrap();
+        assert_eq!(
+            matched.resource,
+            BilibiliResource::FavoriteVideos {
+                media_id: 1_234_567
+            },
+            "{url}"
+        );
+    }
+}
+
+#[test]
 fn test_match_url_unrecognized_returns_err() {
     let result = BilibiliClient::match_url("https://example.com/not-bilibili");
     assert!(result.is_err());

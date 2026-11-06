@@ -127,13 +127,11 @@ fn build() -> Result<(), String> {
         ));
     }
     let mut files = collect_files(&dist, false)?;
-    if build_support::is_release_profile(&loaded.config.build.arguments) {
-        files.retain(|path| {
-            path.strip_prefix(&dist).is_ok_and(|relative| {
-                !build_support::is_pruned_engine_artifact(&relative.to_string_lossy())
-            })
-        });
-    }
+    files.retain(|path| {
+        path.strip_prefix(&dist).is_ok_and(|relative| {
+            !build_support::is_pruned_engine_artifact(&relative.to_string_lossy())
+        })
+    });
     if let Some(export_dir) = env::var_os(EXPORT_ENV)
         .map(PathBuf::from)
         .map(|path| absolute_control_path(control_base, path))

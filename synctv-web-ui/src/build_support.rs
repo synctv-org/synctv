@@ -534,20 +534,12 @@ pub fn build_fingerprint(
 
 /// Whether a dist-relative file is an engine symbolication map. Nothing in
 /// the generated runtime JavaScript fetches `*.js.symbols`; they only help
-/// developers demangle engine stack traces offline. Release builds exclude
-/// them from the exported dist and the embedded asset table; the source and
-/// cache directories themselves are never modified.
+/// developers demangle engine stack traces offline. Builds exclude them from
+/// the exported dist and the embedded asset table; the source and cache
+/// directories themselves are never modified.
 pub(crate) fn is_pruned_engine_artifact(relative: &str) -> bool {
     let path = relative.trim_start_matches("./");
     path.starts_with("canvaskit/") && path.ends_with(".js.symbols")
-}
-
-/// `flutter build` defaults to release mode, so a build is non-release only
-/// when `--debug` or `--profile` is passed explicitly.
-pub(crate) fn is_release_profile(arguments: &[String]) -> bool {
-    !arguments
-        .iter()
-        .any(|arg| arg == "--debug" || arg == "--profile")
 }
 
 #[cfg(test)]
@@ -896,20 +888,5 @@ mod tests {
         ] {
             assert_eq!(is_pruned_engine_artifact(path), pruned, "{path}");
         }
-    }
-
-    #[test]
-    fn release_profile_defaults_to_release_and_honors_mode_flags() {
-        assert!(is_release_profile(&[]));
-        assert!(is_release_profile(&[
-            "--release".to_owned(),
-            "--wasm".to_owned()
-        ]));
-        assert!(is_release_profile(&["--wasm".to_owned()]));
-        assert!(!is_release_profile(&[
-            "--wasm".to_owned(),
-            "--debug".to_owned()
-        ]));
-        assert!(!is_release_profile(&["--profile".to_owned()]));
     }
 }

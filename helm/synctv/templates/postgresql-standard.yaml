@@ -71,10 +71,8 @@ spec:
               command: ["sh", "-ec", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
             initialDelaySeconds: 5
             periodSeconds: 5
-          {{- with .Values.postgresql.standard.resources }}
           resources:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
+            {{- toYaml (.Values.postgresql.standard.resources | default (dict "requests" (dict "cpu" "500m" "memory" "512Mi") "limits" (dict "cpu" "500m" "memory" "512Mi"))) | nindent 12 }}
   volumeClaimTemplates:
     - metadata:
         name: data

@@ -2694,7 +2694,7 @@ message PlaybackClientProfile {
   // Must match the server's current playback client profile version.
   uint32 profile_version = 9;
   PlaybackClientEnvironment environment = 10 [(buf.validate.field).enum.defined_only = true];
-  repeated PlaybackMediaCapability media_capabilities = 11 [(buf.validate.field).repeated.max_items = 64];
+  repeated PlaybackMediaCapability media_capabilities = 11 [(buf.validate.field).repeated.max_items = 128];
   bool supports_custom_http_headers = 12;
   bool supports_provider_proxy = 13;
   reserved 14 to 19;

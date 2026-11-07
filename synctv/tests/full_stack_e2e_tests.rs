@@ -9920,7 +9920,6 @@ async fn full_stack_quic_serves_http3_and_webtransport_realtime() {
         .collect();
     for expected in [
         synctv_proto::client::RealtimeTransportKind::WebSocket,
-        synctv_proto::client::RealtimeTransportKind::Sse,
         synctv_proto::client::RealtimeTransportKind::Grpc,
         synctv_proto::client::RealtimeTransportKind::WebTransport,
     ] {

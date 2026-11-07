@@ -9801,10 +9801,36 @@ async fn full_stack_grpc_message_stream_requires_membership() {
     // per-test isolated server
 }
 
-/// Finds a free UDP port on loopback for the HTTP/3 listener.
-fn free_udp_port() -> u16 {
-    let socket = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind udp probe");
-    socket.local_addr().expect("udp probe addr").port()
+/// Finds a loopback port that is currently free on both TCP and UDP for the
+/// shared HTTPS/HTTP-3 listener. Probing UDP alone races with concurrent
+/// tests' ephemeral TCP allocations while the test containers start up, and a
+/// TCP collision leaves the HTTPS listener unable to bind.
+fn free_shared_tls_port() -> u16 {
+    for _ in 0..64 {
+        let udp = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind udp probe");
+        let port = udp.local_addr().expect("udp probe addr").port();
+        drop(udp);
+        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return port;
+        }
+    }
+    panic!("no loopback port free on both TCP and UDP after 64 probes");
+}
+
+/// Waits until the loopback TCP port accepts connections. The server binds
+/// the HTTPS listener asynchronously inside its own task after the prebound
+/// plain-HTTP listener is already serving, so tests must not race that bind.
+async fn wait_for_tcp_listener(port: u16) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        match tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
+            Ok(_) => return,
+            Err(_) if std::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => panic!("tcp port {port} never accepted connections: {error}"),
+        }
+    }
 }
 
 /// Writes an ephemeral self-signed ECDSA certificate + key as PEM files.
@@ -9859,7 +9885,7 @@ async fn full_stack_quic_serves_http3_and_webtransport_realtime() {
     let temp_dir = std::env::temp_dir().join(format!("synctv-quic-{}", unique_test_suffix()));
     std::fs::create_dir_all(&temp_dir).expect("temp dir");
     let (cert_path, key_path) = write_self_signed_pem(&temp_dir);
-    let udp_port = free_udp_port();
+    let udp_port = free_shared_tls_port();
 
     // nginx-style shared port: HTTPS on TCP and h3 on UDP use one number.
     let tls_port = udp_port;
@@ -9895,6 +9921,7 @@ async fn full_stack_quic_serves_http3_and_webtransport_realtime() {
 
     // The HTTPS listener serves the same API on TCP with the shared
     // certificate on the same port number as the h3 UDP listener.
+    wait_for_tcp_listener(tls_port).await;
     {
         let tls_client = test_https_client_with_root(&cert_path);
         let https_url = format!("https://127.0.0.1:{tls_port}/api/public/time");

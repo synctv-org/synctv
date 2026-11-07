@@ -4727,66 +4727,6 @@ mod websocket_e2e {
             Ok(other) => panic!("Unexpected result: {other}"),
         }
     }
-    // ------------------------------------------------------------------
-    // HTTP realtime sessions (SSE downlink + REST uplink)
-    // ------------------------------------------------------------------
-
-    /// Minimal SSE reader over a streaming reqwest response: yields
-    /// `(event_name, data)` pairs, skipping keepalive comments.
-    struct SseReader {
-        response: reqwest::Response,
-        buffer: Vec<u8>,
-    }
-
-    impl SseReader {
-        fn new(response: reqwest::Response) -> Self {
-            Self {
-                response,
-                buffer: Vec::new(),
-            }
-        }
-
-        async fn next_event(&mut self, timeout: std::time::Duration) -> Option<(String, String)> {
-            let deadline = tokio::time::Instant::now() + timeout;
-            loop {
-                if let Some(event) = self.take_event() {
-                    return Some(event);
-                }
-                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-                if remaining.is_zero() {
-                    return None;
-                }
-                match tokio::time::timeout(remaining, self.response.chunk()).await {
-                    Ok(Ok(Some(chunk))) => self.buffer.extend_from_slice(&chunk),
-                    Ok(Ok(None) | Err(_)) | Err(_) => return self.take_event(),
-                }
-            }
-        }
-
-        /// Parses one complete event (terminated by a blank line) off the
-        /// buffer, returning `None` when no complete event is available.
-        fn take_event(&mut self) -> Option<(String, String)> {
-            loop {
-                let text = String::from_utf8_lossy(&self.buffer).into_owned();
-                let end = text.find("\n\n")?;
-                let block = text[..end].to_string();
-                self.buffer.drain(..end + 2);
-                let mut name = String::new();
-                let mut data = Vec::new();
-                for line in block.lines() {
-                    if let Some(value) = line.strip_prefix("event:") {
-                        name = value.trim().to_string();
-                    } else if let Some(value) = line.strip_prefix("data:") {
-                        data.push(value.trim_start().to_string());
-                    }
-                }
-                if name.is_empty() && data.is_empty() {
-                    continue; // keepalive comment
-                }
-                return Some((name, data.join("\n")));
-            }
-        }
-    }
 }
 
 #[cfg(test)]

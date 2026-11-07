@@ -2375,13 +2375,13 @@ impl BilibiliClient {
                     area_id: positive_id(&area_id, "live area ID")?,
                 }
             } else {
-                let room_id = segments
-                    .strip_prefix(&["live"])
-                    .unwrap_or(&segments)
-                    .first()
-                    .ok_or_else(|| {
-                        BilibiliError::Parse("Missing Bilibili live room ID".to_string())
-                    })?;
+                // `/live/{id}`, the pop-out player `/blanc/{id}` and mobile share `/h5/{id}`.
+                let room_id = match segments.first() {
+                    Some(&("live" | "blanc" | "h5")) => &segments[1..],
+                    _ => &segments[..],
+                }
+                .first()
+                .ok_or_else(|| BilibiliError::Parse("Missing Bilibili live room ID".to_string()))?;
                 BilibiliResource::Live {
                     room_id: positive_id(room_id, "live room ID")?,
                 }

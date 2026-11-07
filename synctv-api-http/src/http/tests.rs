@@ -1803,36 +1803,6 @@ async fn test_native_passkey_association_documents_are_served_from_config() -> T
 
 #[tokio::test]
 #[ignore = "Requires Docker-backed PostgreSQL"]
-async fn test_realtime_session_routes_enforce_signaling_body_limit() -> TestResult {
-    // Regression (uplink retention): the realtime-session routes must carry
-    // the 64 KiB signaling body limit (the REST counterpart of the WS/WT
-    // frame caps). The limit rejects oversized bodies before auth or the
-    // handler runs, so any valid AppState asserts it.
-    let oversized = vec![b'x'; 65 * 1024];
-    for uri in [
-        "/api/rooms/room_123/realtime/sessions",
-        "/api/rooms/room_123/realtime/sessions/sess_1/messages",
-    ] {
-        let app = register_all_routes().with_state(test_app_state());
-        let request = test_request(
-            Request::builder()
-                .method("POST")
-                .uri(uri)
-                .header(axum::http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from(oversized.clone())),
-        )?;
-        let response = test_response(app.oneshot(request).await)?;
-        assert_eq!(
-            response.status(),
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "realtime-session uplink over 64 KiB must be rejected before handling: {uri}"
-        );
-    }
-    Ok(())
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn test_playback_navigation_routes_are_reachable_via_project_router() -> TestResult {
     synctv_core::install_process_crypto_provider();
     for (method, uri, body) in [

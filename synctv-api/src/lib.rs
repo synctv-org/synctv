@@ -11,7 +11,4 @@ pub use synctv_api_http::{
     hsts_header, liveness_check, map_api_error, security_headers_middleware,
     start_proxy_cache_lifecycle, websocket_handler, AuthMethod,
 };
-pub use synctv_api_http::{
-    create_realtime_session, delete_realtime_session, get_server_info, realtime_session_events,
-    send_realtime_session_message, RoomWebTransportHandler, WEBTRANSPORT_ROOMS_PATH,
-};
+pub use synctv_api_http::{get_server_info, RoomWebTransportHandler, WEBTRANSPORT_ROOMS_PATH};

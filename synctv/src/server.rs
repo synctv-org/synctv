@@ -2944,12 +2944,6 @@ the shared server TLS configuration"
                 graceful_cancel_clone.cancel();
             };
 
-            // Lease sweeper for HTTP realtime sessions; cancels remaining
-            // sessions when the server shuts down gracefully.
-            shared_http_app_state
-                .realtime_sessions
-                .spawn_watchdog(graceful_cancel.clone());
-
             let mut router = http_router.merge(grpc_router);
 
             // Shared TLS material: the HTTPS listener (TCP) and the HTTP/3

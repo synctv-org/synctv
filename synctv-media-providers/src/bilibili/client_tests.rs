@@ -555,6 +555,13 @@ fn test_match_url_live() -> TestResult {
     let matched = BilibiliClient::match_url("https://live.bilibili.com/76?live_from=85002")?;
     assert_eq!(matched.resource, BilibiliResource::Live { room_id: 76 });
 
+    let matched =
+        BilibiliClient::match_url("https://live.bilibili.com/blanc/1017?liteVersion=true")?;
+    assert_eq!(matched.resource, BilibiliResource::Live { room_id: 1017 });
+
+    let matched = BilibiliClient::match_url("https://live.bilibili.com/h5/3")?;
+    assert_eq!(matched.resource, BilibiliResource::Live { room_id: 3 });
+
     let matched = BilibiliClient::match_url("https://live.bilibili.com/21452505#main")?;
     assert_eq!(
         matched.resource,

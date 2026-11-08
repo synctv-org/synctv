@@ -63,4 +63,15 @@ mod tests {
         }
         Ok(())
     }
+
+    #[test]
+    fn proxy_slice_cache_config_maps_range_fetch_concurrency() -> TestResult {
+        let mut config = ApiRuntimeSettings::default();
+        assert_eq!(config.proxy_slice_cache.range_fetch_concurrency, 4);
+
+        config.proxy_slice_cache.range_fetch_concurrency = 12;
+        let slice_cache_config = proxy_slice_cache_options_from_runtime_settings(&config);
+        assert_eq!(slice_cache_config.range_fetch_concurrency, 12);
+        Ok(())
+    }
 }

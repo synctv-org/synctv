@@ -13,7 +13,8 @@ use anyhow::Context as _;
 use axum::body::Body;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
+use futures::{StreamExt as _, TryStreamExt as _};
 use synctv_common::ExecutionControl;
 
 use crate::{
@@ -34,8 +35,21 @@ use super::range::{
 use super::status::CacheStatus;
 use super::store::SliceCache;
 use super::types::{
-    CachedFullResponse, CachedSlice, FullResponseFetchResult, HeadResourceResult, SliceFetchResult,
+    CachedFullResponse, CachedSlice, FetchedSlice, FullResponseFetchResult, HeadResourceResult,
+    SliceFetchResult,
 };
+
+/// Maximum client range size that is assembled fully before the response is
+/// committed to the client.
+///
+/// Once a `206` with `Content-Length` is committed, a slice-fetch failure
+/// later in the range can only truncate the body (fewer bytes than
+/// declared), which client players surface as a decode error and respond to
+/// by destroying and rebuilding the player. Ranges at or below this size are
+/// completed up front so an upstream failure becomes a pre-commit error that
+/// candidate failover (or a plain error status) can still react to. Larger
+/// ranges keep the lazy streaming behavior to bound memory usage.
+const RANGE_EAGER_ASSEMBLY_MAX_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Decides whether a failed range probe may be retried as an ordinary GET.
 ///
@@ -180,6 +194,31 @@ struct RangeSliceRequest<'a> {
     known_total_size: Option<u64>,
 }
 
+/// Lazy streaming state for the range slice stream.
+struct LazyRangeState {
+    idx: u64,
+    chunk: Option<PendingChunk>,
+    ahead: Option<SliceFetchJoin>,
+}
+
+/// Inputs for assembling a bounded range response fully before commit.
+struct AssembleRangeRequest<'a> {
+    cache: &'a SliceCache,
+    url: &'a str,
+    provider_headers: &'a ProviderHeaders,
+    request_control: Option<&'a ExecutionControl>,
+    upstream_header_timeout: Option<Duration>,
+    first_slice: FetchedSlice,
+    first_slice_index: u64,
+    last_slice_index: u64,
+    range_start: u64,
+    range_end: u64,
+    content_length: u64,
+    total_size: u64,
+    first_status: CacheStatus,
+    response_header_slice: CachedSlice,
+}
+
 fn proxy_error_from_client_range_error(error: ClientRangeError) -> ProxyError {
     match error {
         ClientRangeError::InvalidRequest(message) => ProxyError::InvalidRequest(message),
@@ -202,6 +241,68 @@ fn check_stream_active(request_control: Option<&ExecutionControl>) -> Result<(),
     Ok(())
 }
 
+/// Handle of a background slice fetch spawned by [`spawn_slice_fetch`].
+type SliceFetchJoin = tokio::task::JoinHandle<Result<SliceFetchResult, anyhow::Error>>;
+
+/// Spawn a background fetch for one slice.
+///
+/// Streaming paths use this to keep the next slice's upstream fetch running
+/// while the current chunk is still being delivered to the client, hiding the
+/// upstream latency behind the client transfer. Dropping the returned handle
+/// detaches the task; the fetch then simply completes into the cache, where
+/// the per-slice lock coalesces it with any concurrent request.
+fn spawn_slice_fetch(
+    cache: &SliceCache,
+    url: &str,
+    provider_headers: &ProviderHeaders,
+    slice_index: u64,
+    total_size: u64,
+    request_control: Option<&ExecutionControl>,
+    upstream_header_timeout: Option<Duration>,
+) -> SliceFetchJoin {
+    let cache = cache.clone();
+    let url = url.to_string();
+    let provider_headers = provider_headers.clone();
+    let request_control = request_control.cloned();
+    tokio::spawn(async move {
+        cache
+            .get_or_fetch_slice_or_bypass_with_control(
+                &url,
+                &provider_headers,
+                slice_index,
+                Some(total_size),
+                request_control.as_ref(),
+                upstream_header_timeout,
+            )
+            .await
+    })
+}
+
+/// Await a background slice fetch and return its data.
+async fn await_slice_fetch(handle: SliceFetchJoin, context: &str) -> Result<Bytes, io::Error> {
+    let result = handle
+        .await
+        .map_err(|error| io::Error::other(format!("Slice prefetch task failed: {error}")))?;
+    match result {
+        Ok(SliceFetchResult::Slice(fetched)) => Ok(fetched.slice.data),
+        Ok(SliceFetchResult::Bypass(resp)) => Err(io::Error::other(format!(
+            "Upstream returned {} {context}",
+            resp.status()
+        ))),
+        Err(error) => Err(io::Error::other(format!(
+            "Slice cache fetch failed: {error}"
+        ))),
+    }
+}
+
+/// The chunk a lazy slice stream will yield next.
+enum PendingChunk {
+    /// Already fetched and cropped; ready to yield.
+    Ready(Bytes),
+    /// Fetch in flight for this position.
+    Fetch(SliceFetchJoin),
+}
+
 struct FullResourceStream {
     cache: SliceCache,
     url: String,
@@ -211,6 +312,13 @@ struct FullResourceStream {
     first_chunk: Bytes,
     request_control: Option<ExecutionControl>,
     upstream_header_timeout: Option<Duration>,
+}
+
+/// Lazy streaming state for the full-resource slice stream.
+struct FullResourceState {
+    idx: u64,
+    chunk: Option<PendingChunk>,
+    ahead: Option<SliceFetchJoin>,
 }
 
 fn full_resource_slice_stream(
@@ -227,38 +335,78 @@ fn full_resource_slice_stream(
         upstream_header_timeout,
     } = cfg;
 
+    // The first slice is already in hand; prefetch the second so its fetch
+    // overlaps with delivering the first chunk.
+    let initial_prefetch = (total_slices > 1).then(|| {
+        spawn_slice_fetch(
+            &cache,
+            &url,
+            &provider_headers,
+            1,
+            total_size,
+            request_control.as_ref(),
+            upstream_header_timeout,
+        )
+    });
+
     futures::stream::try_unfold(
-        (0_u64, Some(first_chunk)),
-        move |(slice_index, mut first_chunk)| {
+        FullResourceState {
+            idx: 0,
+            chunk: Some(PendingChunk::Ready(first_chunk)),
+            ahead: initial_prefetch,
+        },
+        move |mut state| {
             let cache = cache.clone();
             let url = url.clone();
             let provider_headers = provider_headers.clone();
             let request_control = request_control.clone();
             async move {
-                if slice_index >= total_slices {
-                    return Ok::<Option<(Bytes, _)>, io::Error>(None);
-                }
+                let chunk = match state.chunk.take() {
+                    None => return Ok::<Option<(Bytes, _)>, io::Error>(None),
+                    Some(PendingChunk::Ready(bytes)) => bytes,
+                    Some(PendingChunk::Fetch(handle)) => {
+                        await_slice_fetch(handle, "while streaming full resource").await?
+                    }
+                };
                 check_stream_active(request_control.as_ref())?;
-                let next_index = slice_index.saturating_add(1);
-                let chunk = if let Some(chunk) = first_chunk.take() {
-                    Ok(chunk)
+                let next_idx = state.idx.saturating_add(1);
+                let next_state = if next_idx >= total_slices {
+                    FullResourceState {
+                        idx: next_idx,
+                        chunk: None,
+                        ahead: None,
+                    }
                 } else {
-                    cache
-                        .get_or_fetch_slice_with_control(
+                    let chunk = match state.ahead.take() {
+                        Some(handle) => PendingChunk::Fetch(handle),
+                        None => PendingChunk::Fetch(spawn_slice_fetch(
+                            &cache,
                             &url,
                             &provider_headers,
-                            slice_index,
+                            next_idx,
+                            total_size,
+                            request_control.as_ref(),
+                            upstream_header_timeout,
+                        )),
+                    };
+                    let ahead = (next_idx.saturating_add(1) < total_slices).then(|| {
+                        spawn_slice_fetch(
+                            &cache,
+                            &url,
+                            &provider_headers,
+                            next_idx.saturating_add(1),
                             total_size,
                             request_control.as_ref(),
                             upstream_header_timeout,
                         )
-                        .await
-                        .map(|(data, _status)| data)
-                        .map_err(|error| {
-                            io::Error::other(format!("Slice cache fetch failed: {error}"))
-                        })
-                }?;
-                Ok(Some((chunk, (next_index, first_chunk))))
+                    });
+                    FullResourceState {
+                        idx: next_idx,
+                        chunk: Some(chunk),
+                        ahead,
+                    }
+                };
+                Ok(Some((chunk, next_state)))
             }
         },
     )
@@ -670,57 +818,120 @@ async fn range_slice_cache_path(request: RangeSliceRequest<'_>) -> Result<Respon
         .and_then(|len| len.checked_add(1))
         .ok_or_else(|| anyhow::anyhow!("Range content length overflow"))?;
 
+    if content_length <= RANGE_EAGER_ASSEMBLY_MAX_BYTES {
+        return assemble_range_response(AssembleRangeRequest {
+            cache,
+            url,
+            provider_headers,
+            request_control,
+            upstream_header_timeout,
+            first_slice,
+            first_slice_index,
+            last_slice_index,
+            range_start,
+            range_end,
+            content_length,
+            total_size,
+            first_status,
+            response_header_slice: response_header_slice.clone(),
+        })
+        .await;
+    }
+
     let cache = cache.clone();
     let url = url.to_string();
     let provider_headers = provider_headers.clone();
     let request_control = request_control.cloned();
-    let first_slice = Some(first_slice);
+    let slice_size = cache.config().slice_size as u64;
+
+    // The first slice is already in hand; crop it now and prefetch the next
+    // slice so its upstream fetch overlaps with delivering the first chunk.
+    let first_slice_start = first_slice_index
+        .checked_mul(slice_size)
+        .ok_or_else(|| anyhow::anyhow!("Slice start overflow"))?;
+    let first_chunk = crop_slice_for_range(
+        &first_slice.slice.data,
+        first_slice_start,
+        range_start,
+        range_end,
+    )
+    .map_err(anyhow::Error::from)?;
+    let initial_prefetch = (first_slice_index.saturating_add(1) <= last_slice_index).then(|| {
+        spawn_slice_fetch(
+            &cache,
+            &url,
+            &provider_headers,
+            first_slice_index.saturating_add(1),
+            total_size,
+            request_control.as_ref(),
+            upstream_header_timeout,
+        )
+    });
+
     let stream = futures::stream::try_unfold(
-        (first_slice_index, first_slice),
-        move |(idx, mut first_slice)| {
+        LazyRangeState {
+            idx: first_slice_index,
+            chunk: Some(PendingChunk::Ready(first_chunk)),
+            ahead: initial_prefetch,
+        },
+        move |mut state| {
             let cache = cache.clone();
             let url = url.clone();
             let provider_headers = provider_headers.clone();
             let request_control = request_control.clone();
             async move {
-                if idx > last_slice_index {
-                    return Ok::<Option<(Bytes, _)>, io::Error>(None);
-                }
+                let chunk = match state.chunk.take() {
+                    None => return Ok::<Option<(Bytes, _)>, io::Error>(None),
+                    Some(PendingChunk::Ready(bytes)) => bytes,
+                    Some(PendingChunk::Fetch(handle)) => {
+                        let data =
+                            await_slice_fetch(handle, "while streaming cached range").await?;
+                        let slice_start = state
+                            .idx
+                            .checked_mul(slice_size)
+                            .ok_or_else(|| io::Error::other("Slice start overflow"))?;
+                        crop_slice_for_range(&data, slice_start, range_start, range_end)?
+                    }
+                };
                 check_stream_active(request_control.as_ref())?;
-                let next_idx = idx.saturating_add(1);
-                let slice_result = if let Some(slice) = first_slice.take() {
-                    Ok(slice)
+                let next_idx = state.idx.saturating_add(1);
+                let next_state = if next_idx > last_slice_index {
+                    LazyRangeState {
+                        idx: next_idx,
+                        chunk: None,
+                        ahead: None,
+                    }
                 } else {
-                    match cache
-                        .get_or_fetch_slice_or_bypass_with_control(
+                    let chunk = match state.ahead.take() {
+                        Some(handle) => PendingChunk::Fetch(handle),
+                        None => PendingChunk::Fetch(spawn_slice_fetch(
+                            &cache,
                             &url,
                             &provider_headers,
-                            idx,
-                            Some(total_size),
+                            next_idx,
+                            total_size,
+                            request_control.as_ref(),
+                            upstream_header_timeout,
+                        )),
+                    };
+                    let ahead = (next_idx.saturating_add(1) <= last_slice_index).then(|| {
+                        spawn_slice_fetch(
+                            &cache,
+                            &url,
+                            &provider_headers,
+                            next_idx.saturating_add(1),
+                            total_size,
                             request_control.as_ref(),
                             upstream_header_timeout,
                         )
-                        .await
-                    {
-                        Ok(SliceFetchResult::Slice(slice)) => Ok(slice),
-                        Ok(SliceFetchResult::Bypass(resp)) => Err(io::Error::other(format!(
-                            "Upstream returned {} while streaming cached range",
-                            resp.status()
-                        ))),
-                        Err(error) => Err(io::Error::other(format!(
-                            "Slice cache fetch failed: {error}"
-                        ))),
+                    });
+                    LazyRangeState {
+                        idx: next_idx,
+                        chunk: Some(chunk),
+                        ahead,
                     }
                 };
-
-                let chunk = slice_result.and_then(|fetched| {
-                    let slice_start = idx
-                        .checked_mul(cache.config().slice_size as u64)
-                        .ok_or_else(|| io::Error::other("Slice start overflow"))?;
-                    crop_slice_for_range(&fetched.slice.data, slice_start, range_start, range_end)
-                });
-
-                chunk.map(|chunk| Some((chunk, (next_idx, first_slice))))
+                Ok(Some((chunk, next_state)))
             }
         },
     );
@@ -738,6 +949,134 @@ async fn range_slice_cache_path(request: RangeSliceRequest<'_>) -> Result<Respon
 
     builder
         .body(Body::from_stream(stream))
+        .map_err(|e| anyhow::anyhow!("Failed to build cached response: {e}"))
+}
+
+/// Assemble a bounded range response entirely before committing it.
+///
+/// Every slice the range touches is fetched (or taken from cache) up front —
+/// the remaining slices with bounded concurrency after the first slice
+/// provides the total size and validators — and the cropped chunks are
+/// concatenated into a single body. Any upstream failure therefore happens
+/// before the response is committed, so callers with multiple candidate URLs
+/// can fail over, and single-candidate callers receive a clean error instead
+/// of a truncated `206` whose body is shorter than its `Content-Length`.
+async fn assemble_range_response(
+    request: AssembleRangeRequest<'_>,
+) -> Result<Response, anyhow::Error> {
+    let AssembleRangeRequest {
+        cache,
+        url,
+        provider_headers,
+        request_control,
+        upstream_header_timeout,
+        first_slice,
+        first_slice_index,
+        last_slice_index,
+        range_start,
+        range_end,
+        content_length,
+        total_size,
+        first_status,
+        response_header_slice,
+    } = request;
+
+    let slice_size = cache.config().slice_size as u64;
+    let mut body = BytesMut::with_capacity(
+        usize::try_from(content_length)
+            .map_err(|_| anyhow::anyhow!("Range content length overflow"))?,
+    );
+
+    let first_slice_start = first_slice_index
+        .checked_mul(slice_size)
+        .ok_or_else(|| anyhow::anyhow!("Slice start overflow"))?;
+    let first_chunk = crop_slice_for_range(
+        &first_slice.slice.data,
+        first_slice_start,
+        range_start,
+        range_end,
+    )
+    .map_err(anyhow::Error::from)?;
+    body.extend_from_slice(&first_chunk);
+
+    // Fetch the remaining slices with bounded concurrency, then crop them in
+    // order. The first error aborts the assembly and drops the other in-flight
+    // fetches before the response is committed. Per-request fan-out is capped
+    // by range_fetch_concurrency; concurrent requests for the same slice are
+    // single-flighted by the per-key lock.
+    if last_slice_index > first_slice_index {
+        let positions: Vec<u64> = ((first_slice_index + 1)..=last_slice_index).collect();
+        let fetch_concurrency = cache
+            .config()
+            .range_fetch_concurrency
+            .clamp(1, positions.len());
+        let fetched_slices: Vec<(usize, FetchedSlice)> =
+            futures::stream::iter(positions.into_iter().enumerate())
+                .map(|(position, slice_index)| {
+                    let cache = cache.clone();
+                    let url = url.to_string();
+                    let provider_headers = provider_headers.clone();
+                    let request_control = request_control.cloned();
+                    async move {
+                        let fetched = cache
+                            .get_or_fetch_slice_or_bypass_with_control(
+                                &url,
+                                &provider_headers,
+                                slice_index,
+                                Some(total_size),
+                                request_control.as_ref(),
+                                upstream_header_timeout,
+                            )
+                            .await
+                            .context("Slice cache fetch failed while assembling range response")?;
+                        match fetched {
+                            SliceFetchResult::Slice(fetched) => Ok((position, fetched)),
+                            SliceFetchResult::Bypass(resp) => Err(anyhow::anyhow!(
+                                "Upstream returned {} while assembling cached range",
+                                resp.status()
+                            )),
+                        }
+                    }
+                })
+                .buffer_unordered(fetch_concurrency)
+                .try_collect::<Vec<_>>()
+                .await?;
+        // buffer_unordered yields in completion order; the body must be
+        // assembled in slice order regardless of which fetch finished first.
+        let mut fetched_slices = fetched_slices;
+        fetched_slices.sort_unstable_by_key(|(position, _)| *position);
+        for (position, fetched) in fetched_slices {
+            let slice_index = first_slice_index + 1 + position as u64;
+            let slice_start = slice_index
+                .checked_mul(slice_size)
+                .ok_or_else(|| anyhow::anyhow!("Slice start overflow"))?;
+            let chunk =
+                crop_slice_for_range(&fetched.slice.data, slice_start, range_start, range_end)
+                    .map_err(anyhow::Error::from)?;
+            body.extend_from_slice(&chunk);
+        }
+    }
+
+    if body.len() as u64 != content_length {
+        return Err(anyhow::anyhow!(
+            "Assembled range response length mismatch: got {}, expected {content_length}",
+            body.len()
+        ));
+    }
+
+    let mut builder = Response::builder()
+        .status(StatusCode::PARTIAL_CONTENT)
+        .header(
+            "Content-Range",
+            format_content_range(range_start, range_end, total_size),
+        )
+        .header("Content-Length", content_length.to_string())
+        .header("Accept-Ranges", "bytes")
+        .header("X-Cache-Status", first_status.as_str());
+    builder = apply_cached_slice_response_headers(builder, &response_header_slice);
+
+    builder
+        .body(Body::from(body.freeze()))
         .map_err(|e| anyhow::anyhow!("Failed to build cached response: {e}"))
 }
 

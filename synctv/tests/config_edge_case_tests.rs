@@ -99,6 +99,20 @@ fn test_config_debug_redacts_secrets() {
 }
 
 #[test]
+fn test_config_validate_rejects_zero_range_fetch_concurrency() {
+    let mut config = AppConfig::default();
+    config.proxy_slice_cache.range_fetch_concurrency = 0;
+
+    let errors = config
+        .validate()
+        .expect_err("zero concurrency must be rejected");
+
+    assert!(errors
+        .iter()
+        .any(|e| e.contains("proxy_slice_cache.range_fetch_concurrency")));
+}
+
+#[test]
 fn test_config_validate_rejects_empty_root_password_when_creating_root() {
     let mut config = AppConfig::default();
     config.bootstrap.root_password = String::new();

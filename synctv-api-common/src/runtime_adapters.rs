@@ -27,6 +27,7 @@ pub fn proxy_slice_cache_options_from_runtime_settings(
             runtime_settings.proxy_slice_cache.stale_max_age_seconds,
         ),
         stale_while_revalidate: runtime_settings.proxy_slice_cache.stale_while_revalidate,
+        range_fetch_concurrency: runtime_settings.proxy_slice_cache.range_fetch_concurrency,
         backend,
         eviction_interval: Duration::from_secs(
             runtime_settings.proxy_slice_cache.eviction_interval_seconds,
@@ -60,6 +61,17 @@ mod tests {
             }
             CacheBackendConfig::Memory => return Err(anyhow::anyhow!("expected file backend")),
         }
+        Ok(())
+    }
+
+    #[test]
+    fn proxy_slice_cache_config_maps_range_fetch_concurrency() -> TestResult {
+        let mut config = ApiRuntimeSettings::default();
+        assert_eq!(config.proxy_slice_cache.range_fetch_concurrency, 4);
+
+        config.proxy_slice_cache.range_fetch_concurrency = 12;
+        let slice_cache_config = proxy_slice_cache_options_from_runtime_settings(&config);
+        assert_eq!(slice_cache_config.range_fetch_concurrency, 12);
         Ok(())
     }
 }

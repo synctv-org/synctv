@@ -1165,6 +1165,10 @@ pub(crate) fn apply_env_overrides_with(
         &mut config.proxy_slice_cache.slice_size_bytes,
     )?;
     env_override_parse(
+        "SYNCTV_PROXY_SLICE_CACHE_RANGE_FETCH_CONCURRENCY",
+        &mut config.proxy_slice_cache.range_fetch_concurrency,
+    )?;
+    env_override_parse(
         "SYNCTV_PROXY_SLICE_CACHE_MAX_CACHE_SIZE_BYTES",
         &mut config.proxy_slice_cache.max_cache_size_bytes,
     )?;

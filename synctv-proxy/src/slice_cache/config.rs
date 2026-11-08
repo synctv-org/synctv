@@ -24,6 +24,9 @@ pub struct SliceCacheConfig {
     /// Whether to serve a stale entry while a background revalidation
     /// is in progress. Default: `true`.
     pub stale_while_revalidate: bool,
+    /// Maximum number of slice fetches kept in flight per client request
+    /// while eagerly assembling a bounded range response. Default: 4.
+    pub range_fetch_concurrency: usize,
     /// Which storage backend to use. Default: `Memory`.
     pub backend: CacheBackendConfig,
     /// How often the background eviction task runs. Default: 60 seconds.
@@ -42,6 +45,7 @@ impl Default for SliceCacheConfig {
             segment_ttl: Duration::from_mins(5),
             stale_max_age: Duration::from_mins(1),
             stale_while_revalidate: true,
+            range_fetch_concurrency: 4,
             backend: CacheBackendConfig::default(),
             eviction_interval: Duration::from_mins(1),
             watermark_ratio: 0.875, // 7/8

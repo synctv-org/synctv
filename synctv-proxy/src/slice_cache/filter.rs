@@ -13,7 +13,7 @@ use anyhow::Context as _;
 use axum::body::Body;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use synctv_common::ExecutionControl;
 
 use crate::{
@@ -34,8 +34,21 @@ use super::range::{
 use super::status::CacheStatus;
 use super::store::SliceCache;
 use super::types::{
-    CachedFullResponse, CachedSlice, FullResponseFetchResult, HeadResourceResult, SliceFetchResult,
+    CachedFullResponse, CachedSlice, FetchedSlice, FullResponseFetchResult, HeadResourceResult,
+    SliceFetchResult,
 };
+
+/// Maximum client range size that is assembled fully before the response is
+/// committed to the client.
+///
+/// Once a `206` with `Content-Length` is committed, a slice-fetch failure
+/// later in the range can only truncate the body (fewer bytes than
+/// declared), which client players surface as a decode error and respond to
+/// by destroying and rebuilding the player. Ranges at or below this size are
+/// completed up front so an upstream failure becomes a pre-commit error that
+/// candidate failover (or a plain error status) can still react to. Larger
+/// ranges keep the lazy streaming behavior to bound memory usage.
+const RANGE_EAGER_ASSEMBLY_MAX_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Decides whether a failed range probe may be retried as an ordinary GET.
 ///
@@ -178,6 +191,24 @@ struct RangeSliceRequest<'a> {
     upstream_header_timeout: Option<Duration>,
     plan: ClientRangePlan,
     known_total_size: Option<u64>,
+}
+
+/// Inputs for assembling a bounded range response fully before commit.
+struct AssembleRangeRequest<'a> {
+    cache: &'a SliceCache,
+    url: &'a str,
+    provider_headers: &'a ProviderHeaders,
+    request_control: Option<&'a ExecutionControl>,
+    upstream_header_timeout: Option<Duration>,
+    first_slice: FetchedSlice,
+    first_slice_index: u64,
+    last_slice_index: u64,
+    range_start: u64,
+    range_end: u64,
+    content_length: u64,
+    total_size: u64,
+    first_status: CacheStatus,
+    response_header_slice: CachedSlice,
 }
 
 fn proxy_error_from_client_range_error(error: ClientRangeError) -> ProxyError {
@@ -670,6 +701,26 @@ async fn range_slice_cache_path(request: RangeSliceRequest<'_>) -> Result<Respon
         .and_then(|len| len.checked_add(1))
         .ok_or_else(|| anyhow::anyhow!("Range content length overflow"))?;
 
+    if content_length <= RANGE_EAGER_ASSEMBLY_MAX_BYTES {
+        return assemble_range_response(AssembleRangeRequest {
+            cache,
+            url,
+            provider_headers,
+            request_control,
+            upstream_header_timeout,
+            first_slice,
+            first_slice_index,
+            last_slice_index,
+            range_start,
+            range_end,
+            content_length,
+            total_size,
+            first_status,
+            response_header_slice: response_header_slice.clone(),
+        })
+        .await;
+    }
+
     let cache = cache.clone();
     let url = url.to_string();
     let provider_headers = provider_headers.clone();
@@ -738,6 +789,100 @@ async fn range_slice_cache_path(request: RangeSliceRequest<'_>) -> Result<Respon
 
     builder
         .body(Body::from_stream(stream))
+        .map_err(|e| anyhow::anyhow!("Failed to build cached response: {e}"))
+}
+
+/// Assemble a bounded range response entirely before committing it.
+///
+/// Every slice the range touches is fetched (or taken from cache) up front
+/// and the cropped chunks are concatenated into a single body. Any upstream
+/// failure therefore happens before the response is committed, so callers
+/// with multiple candidate URLs can fail over, and single-candidate callers
+/// receive a clean error instead of a truncated `206` whose body is shorter
+/// than its `Content-Length`.
+async fn assemble_range_response(
+    request: AssembleRangeRequest<'_>,
+) -> Result<Response, anyhow::Error> {
+    let AssembleRangeRequest {
+        cache,
+        url,
+        provider_headers,
+        request_control,
+        upstream_header_timeout,
+        first_slice,
+        first_slice_index,
+        last_slice_index,
+        range_start,
+        range_end,
+        content_length,
+        total_size,
+        first_status,
+        response_header_slice,
+    } = request;
+
+    let slice_size = cache.config().slice_size as u64;
+    let mut body = BytesMut::with_capacity(
+        usize::try_from(content_length)
+            .map_err(|_| anyhow::anyhow!("Range content length overflow"))?,
+    );
+
+    let first_slice_start = first_slice_index
+        .checked_mul(slice_size)
+        .ok_or_else(|| anyhow::anyhow!("Slice start overflow"))?;
+    let first_chunk =
+        crop_slice_for_range(&first_slice.slice.data, first_slice_start, range_start, range_end)
+            .map_err(anyhow::Error::from)?;
+    body.extend_from_slice(&first_chunk);
+
+    for slice_index in first_slice_index + 1..=last_slice_index {
+        let fetched = match cache
+            .get_or_fetch_slice_or_bypass_with_control(
+                url,
+                provider_headers,
+                slice_index,
+                Some(total_size),
+                request_control,
+                upstream_header_timeout,
+            )
+            .await
+            .context("Slice cache fetch failed while assembling range response")?
+        {
+            SliceFetchResult::Slice(fetched) => fetched,
+            SliceFetchResult::Bypass(resp) => {
+                return Err(anyhow::anyhow!(
+                    "Upstream returned {} while assembling cached range",
+                    resp.status()
+                ));
+            }
+        };
+        let slice_start = slice_index
+            .checked_mul(slice_size)
+            .ok_or_else(|| anyhow::anyhow!("Slice start overflow"))?;
+        let chunk = crop_slice_for_range(&fetched.slice.data, slice_start, range_start, range_end)
+            .map_err(anyhow::Error::from)?;
+        body.extend_from_slice(&chunk);
+    }
+
+    if body.len() as u64 != content_length {
+        return Err(anyhow::anyhow!(
+            "Assembled range response length mismatch: got {}, expected {content_length}",
+            body.len()
+        ));
+    }
+
+    let mut builder = Response::builder()
+        .status(StatusCode::PARTIAL_CONTENT)
+        .header(
+            "Content-Range",
+            format_content_range(range_start, range_end, total_size),
+        )
+        .header("Content-Length", content_length.to_string())
+        .header("Accept-Ranges", "bytes")
+        .header("X-Cache-Status", first_status.as_str());
+    builder = apply_cached_slice_response_headers(builder, &response_header_slice);
+
+    builder
+        .body(Body::from(body.freeze()))
         .map_err(|e| anyhow::anyhow!("Failed to build cached response: {e}"))
 }
 

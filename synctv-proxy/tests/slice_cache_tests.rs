@@ -4558,3 +4558,159 @@ async fn test_file_backend_rejects_corrupt_header_len() {
         "Corrupted cache file with huge header_len should not be loaded"
     );
 }
+
+/// A client range spanning multiple slices must fail before the response is
+/// committed when a later slice cannot be fetched. The previous behavior
+/// committed a 206 with Content-Length and streamed lazily, so a truncated
+/// upstream body produced a response shorter than declared -- exactly the
+/// failure mode that makes players discard the segment and rebuild.
+#[tokio::test]
+async fn test_multi_slice_range_fails_before_commit_when_later_slice_truncates() {
+    use tokio::io::AsyncWriteExt;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("test listener should bind an ephemeral loopback port");
+    let address = listener
+        .local_addr()
+        .expect("test listener should expose its address");
+    let total_size: u64 = 4096;
+    let server_task = tokio::spawn(async move {
+        // Slice 0: a complete, valid 206.
+        let (mut stream, _) = listener.accept().await.expect("slice 0 request");
+        read_test_http_request(&mut stream).await;
+        let mut body = vec![0xA1u8; 1024];
+        stream
+            .write_all(
+                format!(
+                    "HTTP/1.1 206 Partial Content\r\n\
+                     Content-Range: bytes 0-1023/{total_size}\r\n\
+                     Content-Length: 1024\r\n\
+                     Content-Type: application/octet-stream\r\n\
+                     Connection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await
+            .expect("write slice 0 headers");
+        stream
+            .write_all(&body)
+            .await
+            .expect("write slice 0 body");
+        body.clear();
+        stream.shutdown().await.expect("close slice 0 response");
+        drop(stream);
+
+        // Slice 1: declare 1024 bytes but send only 100, then close -- a
+        // truncated upstream body.
+        let (mut stream, _) = listener.accept().await.expect("slice 1 request");
+        read_test_http_request(&mut stream).await;
+        stream
+            .write_all(
+                format!(
+                    "HTTP/1.1 206 Partial Content\r\n\
+                     Content-Range: bytes 1024-2047/{total_size}\r\n\
+                     Content-Length: 1024\r\n\
+                     Content-Type: application/octet-stream\r\n\
+                     Connection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await
+            .expect("write slice 1 headers");
+        stream
+            .write_all(&[0xA2u8; 100])
+            .await
+            .expect("write truncated slice 1 body");
+        stream.shutdown().await.expect("close truncated response");
+        drop(stream);
+    });
+
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .resolve("cdn.example.com", address)
+        .build()
+        .expect("client should build");
+    let guard = synctv_common::ssrf::SsrfGuard::builder()
+        .extra_allowed_host("cdn.example.com".to_string())
+        .build();
+    let cache = SliceCache::new_with_client_and_ssrf_guard(
+        SliceCacheConfig {
+            slice_size: 1024,
+            ..Default::default()
+        },
+        client,
+        guard,
+    )
+    .expect("mock slice cache should build");
+    let url = format!("http://cdn.example.com:{}/truncated.bin", address.port());
+    let headers = HashMap::new();
+
+    let result = proxy_slice(&cache, Some("bytes=0-2047"), &url, &headers).await;
+
+    let error = result.expect_err("truncated later slice must fail the whole range pre-commit");
+    assert!(
+        error_chain_contains(&error, "Failed to read slice body"),
+        "error should originate from the truncated upstream body, got: {error:#}"
+    );
+    assert_eq!(
+        synctv_proxy::proxy_error_kind(&error),
+        None,
+        "the failure must remain failover-eligible for multi-candidate callers"
+    );
+
+    server_task.await.expect("test server task");
+}
+
+/// Ranges above the eager-assembly threshold keep the lazy streaming path so
+/// memory stays bounded for huge range requests.
+#[tokio::test]
+async fn test_oversized_range_still_streams_slice_by_slice() {
+    let mock_server = MockServer::start().await;
+    let total_size: u64 = 16 * 1024 * 1024;
+    let slice_size = 8usize * 1024 * 1024;
+    let slice0 = Bytes::from(vec![0x61u8; slice_size]);
+    let slice1 = Bytes::from(vec![0x62u8; slice_size]);
+
+    for (index, body) in [(0_u64, slice0.clone()), (1, slice1.clone())] {
+        let start = index * slice_size as u64;
+        let end = start + slice_size as u64 - 1;
+        Mock::given(method("GET"))
+            .and(path("/oversized.bin"))
+            .and(header("Range", format!("bytes={start}-{end}")))
+            .respond_with(
+                ResponseTemplate::new(206)
+                    .set_body_bytes(body)
+                    .insert_header("Content-Range", format!("bytes {start}-{end}/{total_size}"))
+                    .insert_header("Content-Length", slice_size.to_string()),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+    }
+
+    let config = SliceCacheConfig {
+        slice_size,
+        ..Default::default()
+    };
+    let cache = slice_cache_for_mock(config, &mock_server);
+    let url = mock_public_url(&mock_server, "/oversized.bin");
+    let headers = HashMap::new();
+
+    let response = proxy_slice(&cache, Some("bytes=0-"), &url, &headers)
+        .await
+        .expect("oversized range should stream");
+
+    assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        response
+            .headers()
+            .get("Content-Range")
+            .map(|v| v.to_str().unwrap()),
+        Some(format!("bytes 0-{}/{total_size}", total_size - 1).as_str()),
+    );
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body.len() as u64, total_size);
+    assert_eq!(&body[..slice_size], &slice0[..]);
+    assert_eq!(&body[slice_size..], &slice1[..]);
+}

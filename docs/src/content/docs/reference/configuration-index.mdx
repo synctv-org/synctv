@@ -417,6 +417,7 @@ file_storage:
 | `proxy_slice_cache.file_cache_dir` | 路径 | `""` | slice cache 文件目录 |
 | `proxy_slice_cache.eviction_interval_seconds` | 秒数 | `60` | 后台驱逐检查间隔 |
 | `proxy_slice_cache.watermark_ratio` | 浮点数 | `0.875` | 驱逐后的目标水位比例 |
+| `proxy_slice_cache.range_fetch_concurrency` | 整数 | `4` | 单个客户端请求组装 Range 响应时的最大并发回源分片数 |
 
 ## `messaging_rate_limits`
 

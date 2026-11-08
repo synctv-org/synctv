@@ -44,6 +44,7 @@ proxy_slice_cache:
   file_cache_dir: "cache/proxy-slice"
   eviction_interval_seconds: 60
   watermark_ratio: 0.875
+  range_fetch_concurrency: 4
 ```
 
 上面配置的实际文件路径是：
@@ -66,6 +67,7 @@ proxy_slice_cache:
 | `proxy_slice_cache.file_cache_dir` | `""` | 文件后端要放到指定目录时 | 文件后端启用后为空会使用 `data_dir/cache/proxy-slice` 默认目录 |
 | `proxy_slice_cache.eviction_interval_seconds` | `60` | 想调整后台容量清理频率时 | 太短增加后台开销，太长可能短时超出容量 |
 | `proxy_slice_cache.watermark_ratio` | `0.875` | 想调整触发驱逐后的目标水位时 | 太高会频繁驱逐，太低会一次释放更多缓存 |
+| `proxy_slice_cache.range_fetch_concurrency` | `4` | 想加快跨多个分片的 Range 响应，或想减少对源的瞬时并发时 | 该上限只约束单个客户端请求的并发回源数；不同用户请求同一分片会合并为一次回源，调大主要增加对源的瞬时压力 |
 
 环境变量：
 
@@ -80,6 +82,7 @@ SYNCTV_PROXY_SLICE_CACHE_FILE_BACKEND_ENABLED=true
 SYNCTV_PROXY_SLICE_CACHE_FILE_CACHE_DIR=cache/proxy-slice
 SYNCTV_PROXY_SLICE_CACHE_EVICTION_INTERVAL_SECONDS=60
 SYNCTV_PROXY_SLICE_CACHE_WATERMARK_RATIO=0.875
+SYNCTV_PROXY_SLICE_CACHE_RANGE_FETCH_CONCURRENCY=4
 ```
 
 ## 生产部署

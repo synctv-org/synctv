@@ -4956,3 +4956,120 @@ async fn test_streaming_range_prefetches_next_slice_before_body_poll() {
         .expect("server task should finish after serving the prefetched slice")
         .expect("test server task");
 }
+
+/// `buffer_unordered` yields fetch results in completion order. The assembled
+/// body must still be in slice order when a later slice finishes first, so
+/// the origin deliberately answers the last slice before the middle one.
+#[tokio::test]
+async fn test_eager_assembly_preserves_slice_order_when_completions_reorder() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("test listener should bind an ephemeral loopback port");
+    let address = listener
+        .local_addr()
+        .expect("test listener should expose its address");
+    let slice_size = 1024 * 1024usize;
+    let total_size: u64 = 3 * slice_size as u64;
+    let server_task = tokio::spawn(async move {
+        async fn write_slice_response(
+            stream: &mut tokio::net::TcpStream,
+            start: u64,
+            len: usize,
+            total_size: u64,
+            filler: u8,
+        ) {
+            use tokio::io::AsyncWriteExt;
+            stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 206 Partial Content\r\n\
+                         Content-Range: bytes {start}-{}/{total_size}\r\n\
+                         Content-Length: {len}\r\n\
+                         Content-Type: application/octet-stream\r\n\
+                         ETag: \"reorder-v1\"\r\n\
+                         Connection: close\r\n\r\n",
+                        start + len as u64 - 1
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .expect("write slice headers");
+            stream
+                .write_all(&vec![filler; len])
+                .await
+                .expect("write slice body");
+            stream.shutdown().await.expect("close slice response");
+        }
+
+        // Slice 0 first: its response unlocks the concurrent phase.
+        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+            .await
+            .expect("slice 0 accept should not time out")
+            .expect("slice 0 request");
+        read_test_http_request(&mut stream).await;
+        write_slice_response(&mut stream, 0, slice_size, total_size, 0x01).await;
+        drop(stream);
+
+        // Hold both later requests, then answer the LAST slice first.
+        let mut held: Vec<(tokio::net::TcpStream, String)> = Vec::new();
+        while held.len() < 2 {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                .await
+                .expect("concurrent slice accept should not time out")
+                .expect("concurrent slice request");
+            let request_bytes = read_test_http_request(&mut stream).await;
+            let request = String::from_utf8_lossy(&request_bytes);
+            held.push((stream, request.to_string()));
+        }
+        for (start, filler) in [(2 * slice_size as u64, 0x03u8), (slice_size as u64, 0x02)] {
+            let (mut stream, _) = held
+                .iter()
+                .position(|(_, request)| {
+                    request.contains(&format!("bytes={start}-{}", start + slice_size as u64 - 1))
+                })
+                .map(|position| held.remove(position))
+                .expect("held request for slice should exist");
+            write_slice_response(&mut stream, start, slice_size, total_size, filler).await;
+        }
+    });
+
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .resolve("cdn.example.com", address)
+        .build()
+        .expect("client should build");
+    let guard = synctv_common::ssrf::SsrfGuard::builder()
+        .extra_allowed_host("cdn.example.com".to_string())
+        .build();
+    let cache = SliceCache::new_with_client_and_ssrf_guard(
+        SliceCacheConfig {
+            slice_size,
+            ..Default::default()
+        },
+        client,
+        guard,
+    )
+    .expect("mock slice cache should build");
+    let url = format!("http://cdn.example.com:{}/reorder.bin", address.port());
+    let headers = HashMap::new();
+
+    let response = tokio::time::timeout(
+        Duration::from_secs(10),
+        proxy_slice(&cache, Some("bytes=0-3145727"), &url, &headers),
+    )
+    .await
+    .expect("concurrent assembly should not deadlock")
+    .expect("assembled range should succeed");
+
+    assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body.len() as u64, total_size);
+    assert_eq!(&body[..slice_size], &vec![0x01u8; slice_size][..]);
+    assert_eq!(
+        &body[slice_size..2 * slice_size],
+        &vec![0x02u8; slice_size][..]
+    );
+    assert_eq!(&body[2 * slice_size..], &vec![0x03u8; slice_size][..]);
+
+    server_task.await.expect("test server task");
+}

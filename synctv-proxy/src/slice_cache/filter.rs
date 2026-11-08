@@ -1041,6 +1041,10 @@ async fn assemble_range_response(
                 .buffer_unordered(fetch_concurrency)
                 .try_collect::<Vec<_>>()
                 .await?;
+        // buffer_unordered yields in completion order; the body must be
+        // assembled in slice order regardless of which fetch finished first.
+        let mut fetched_slices = fetched_slices;
+        fetched_slices.sort_unstable_by_key(|(position, _)| *position);
         for (position, fetched) in fetched_slices {
             let slice_index = first_slice_index + 1 + position as u64;
             let slice_start = slice_index

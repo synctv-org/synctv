@@ -829,9 +829,13 @@ async fn assemble_range_response(
     let first_slice_start = first_slice_index
         .checked_mul(slice_size)
         .ok_or_else(|| anyhow::anyhow!("Slice start overflow"))?;
-    let first_chunk =
-        crop_slice_for_range(&first_slice.slice.data, first_slice_start, range_start, range_end)
-            .map_err(anyhow::Error::from)?;
+    let first_chunk = crop_slice_for_range(
+        &first_slice.slice.data,
+        first_slice_start,
+        range_start,
+        range_end,
+    )
+    .map_err(anyhow::Error::from)?;
     body.extend_from_slice(&first_chunk);
 
     for slice_index in first_slice_index + 1..=last_slice_index {

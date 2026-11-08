@@ -4593,10 +4593,7 @@ async fn test_multi_slice_range_fails_before_commit_when_later_slice_truncates()
             )
             .await
             .expect("write slice 0 headers");
-        stream
-            .write_all(&body)
-            .await
-            .expect("write slice 0 body");
+        stream.write_all(&body).await.expect("write slice 0 body");
         body.clear();
         stream.shutdown().await.expect("close slice 0 response");
         drop(stream);

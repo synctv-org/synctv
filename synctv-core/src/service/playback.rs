@@ -295,6 +295,39 @@ impl PlaybackService {
         Ok(Duration::from_millis(skew_millis.max(0).unsigned_abs()).as_secs_f64())
     }
 
+    /// Applies a play/pause/seek/speed patch to the persisted anchor.
+    fn apply_state_patch(
+        state: &mut RoomPlaybackState,
+        playing: Option<bool>,
+        position: Option<f64>,
+        speed: Option<f64>,
+        received_at: chrono::DateTime<chrono::Utc>,
+        client_elapsed_seconds: f64,
+    ) {
+        // Re-anchor `updated_at` below without losing the time already played.
+        if position.is_none() {
+            state.position = state.computed_position();
+        }
+        if let Some(p) = playing {
+            state.is_playing = p;
+        }
+        if let Some(ct) = position {
+            let target_playing = playing.unwrap_or(state.is_playing);
+            let target_speed = speed.unwrap_or(state.speed);
+            state.position = Self::compensate_client_position(
+                ct,
+                target_playing,
+                target_speed,
+                client_elapsed_seconds,
+            );
+        }
+        if let Some(s) = speed {
+            state.speed = s;
+        }
+        state.updated_at = received_at;
+        // version is incremented by the SQL UPDATE, not here
+    }
+
     fn compensate_client_position(
         position: f64,
         playing: bool,
@@ -1346,12 +1379,9 @@ impl PlaybackService {
 
         let state = self
             .update_state(room_id, |state| {
-                if !playing {
-                    // Snapshot the computed playback position before pausing so that
-                    // the stored position reflects where the user actually was.
-                    // Without this, resuming would jump back to the last persisted time.
-                    state.position = state.computed_position();
-                }
+                // Snapshot before re-anchoring `updated_at`; otherwise pausing, or
+                // playing an already-playing room, rewinds to the last persisted time.
+                state.position = state.computed_position();
                 state.is_playing = playing;
                 state.updated_at = self.clock.now();
                 // version is incremented by the SQL UPDATE, not here
@@ -2948,34 +2978,14 @@ impl PlaybackService {
         let client_elapsed_seconds = Self::client_elapsed_seconds(received_at, client_time_millis)?;
 
         let apply_update = |state: &mut RoomPlaybackState| {
-            // Snapshot the computed playback position before changing is_playing
-            // or speed, just like set_playing() and change_speed() do individually.
-            // Without this, pausing or changing speed via update_multiple would
-            // store the wrong position.
-            let needs_snapshot = matches!(playing, Some(false)) || speed.is_some();
-            if needs_snapshot && position.is_none() {
-                // Only snapshot if the caller didn't provide an explicit position
-                state.position = state.computed_position();
-            }
-
-            if let Some(p) = playing {
-                state.is_playing = p;
-            }
-            if let Some(ct) = position {
-                let target_playing = playing.unwrap_or(state.is_playing);
-                let target_speed = speed.unwrap_or(state.speed);
-                state.position = Self::compensate_client_position(
-                    ct,
-                    target_playing,
-                    target_speed,
-                    client_elapsed_seconds,
-                );
-            }
-            if let Some(s) = speed {
-                state.speed = s;
-            }
-            state.updated_at = received_at;
-            // version is incremented by the SQL UPDATE, not here
+            Self::apply_state_patch(
+                state,
+                playing,
+                position,
+                speed,
+                received_at,
+                client_elapsed_seconds,
+            );
         };
 
         let state = if expected_version.is_some() || expected_source.is_some() {

@@ -1294,3 +1294,21 @@ mod version_check_tests {
         assert!((cached.position - 100.0).abs() < f64::EPSILON);
     }
 }
+
+#[test]
+fn test_play_while_already_playing_keeps_elapsed_position() {
+    let now = crate::SystemClock.now();
+    let mut state = RoomPlaybackState::new(RoomId::expect_positive(20_002));
+    state.position = 10.0;
+    state.is_playing = true;
+    state.updated_at = now - chrono::Duration::seconds(60);
+
+    PlaybackService::apply_state_patch(&mut state, Some(true), None, None, now, 0.0);
+
+    assert!(
+        state.position >= 69.0,
+        "re-sending play must not rewind playback, got {}",
+        state.position
+    );
+    assert!(state.is_playing);
+}

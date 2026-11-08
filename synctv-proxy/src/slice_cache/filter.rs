@@ -51,17 +51,6 @@ use super::types::{
 /// ranges keep the lazy streaming behavior to bound memory usage.
 const RANGE_EAGER_ASSEMBLY_MAX_BYTES: u64 = 8 * 1024 * 1024;
 
-/// Maximum number of slice fetches kept in flight while eagerly assembling a
-/// bounded range response.
-///
-/// Fetching the remaining slices concurrently collapses a range spanning N
-/// slices from N sequential upstream round trips into roughly
-/// `1 + ceil((N - 1) / this)` waves (the first slice is still fetched alone
-/// because its response provides the total size and validators). The bound
-/// keeps bursts against the origin modest; browsers routinely hold six
-/// parallel connections to one host.
-const RANGE_EAGER_FETCH_CONCURRENCY: usize = 4;
-
 /// Decides whether a failed range probe may be retried as an ordinary GET.
 ///
 /// A `200 OK` response to a range probe already provides a valid complete
@@ -1012,9 +1001,15 @@ async fn assemble_range_response(
 
     // Fetch the remaining slices with bounded concurrency, then crop them in
     // order. The first error aborts the assembly and drops the other in-flight
-    // fetches before the response is committed.
+    // fetches before the response is committed. Per-request fan-out is capped
+    // by range_fetch_concurrency; concurrent requests for the same slice are
+    // single-flighted by the per-key lock.
     if last_slice_index > first_slice_index {
         let positions: Vec<u64> = ((first_slice_index + 1)..=last_slice_index).collect();
+        let fetch_concurrency = cache
+            .config()
+            .range_fetch_concurrency
+            .clamp(1, positions.len());
         let fetched_slices: Vec<(usize, FetchedSlice)> =
             futures::stream::iter(positions.into_iter().enumerate())
                 .map(|(position, slice_index)| {
@@ -1043,7 +1038,7 @@ async fn assemble_range_response(
                         }
                     }
                 })
-                .buffer_unordered(RANGE_EAGER_FETCH_CONCURRENCY)
+                .buffer_unordered(fetch_concurrency)
                 .try_collect::<Vec<_>>()
                 .await?;
         for (position, fetched) in fetched_slices {

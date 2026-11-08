@@ -1218,6 +1218,11 @@ impl AppConfig {
                     .push("proxy_slice_cache.file_cache_dir must be an absolute path".to_string());
             }
         }
+        if self.proxy_slice_cache.range_fetch_concurrency == 0 {
+            errors.push(
+                "proxy_slice_cache.range_fetch_concurrency must be greater than 0".to_string(),
+            );
+        }
         if self.proxy_slice_cache.slice_size_bytes == 0 {
             errors.push("proxy_slice_cache.slice_size_bytes must be greater than 0".to_string());
         }

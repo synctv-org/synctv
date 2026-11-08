@@ -557,6 +557,7 @@ fn proxy_slice_cache_runtime_settings(config: &AppConfig) -> ProxySliceCacheRunt
         file_cache_dir: config.proxy_slice_cache.file_cache_dir.clone(),
         eviction_interval_seconds: config.proxy_slice_cache.eviction_interval_seconds,
         watermark_ratio: config.proxy_slice_cache.watermark_ratio,
+        range_fetch_concurrency: config.proxy_slice_cache.range_fetch_concurrency,
     }
 }
 

@@ -27,6 +27,7 @@ pub fn proxy_slice_cache_options_from_runtime_settings(
             runtime_settings.proxy_slice_cache.stale_max_age_seconds,
         ),
         stale_while_revalidate: runtime_settings.proxy_slice_cache.stale_while_revalidate,
+        range_fetch_concurrency: runtime_settings.proxy_slice_cache.range_fetch_concurrency,
         backend,
         eviction_interval: Duration::from_secs(
             runtime_settings.proxy_slice_cache.eviction_interval_seconds,

@@ -167,6 +167,7 @@ pub struct ProxySliceCacheRuntimeSettings {
     pub file_cache_dir: String,
     pub eviction_interval_seconds: u64,
     pub watermark_ratio: f64,
+    pub range_fetch_concurrency: usize,
 }
 
 impl Default for ProxySliceCacheRuntimeSettings {
@@ -182,6 +183,7 @@ impl Default for ProxySliceCacheRuntimeSettings {
             file_cache_dir: String::new(),
             eviction_interval_seconds: 60,
             watermark_ratio: 0.875,
+            range_fetch_concurrency: 4,
         }
     }
 }

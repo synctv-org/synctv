@@ -427,6 +427,12 @@ proxy_slice_cache:
   # Enable range-based proxy slice caching at process startup.
   # This is not dynamically toggled at runtime.
   enabled: true
+  # Maximum in-flight slice fetches per client request while assembling a
+  # bounded range response (default 4). Total upstream fan-out stays bounded
+  # by per-slice single-flighting across concurrent requests.
+  # Environment variables:
+  #   SYNCTV_PROXY_SLICE_CACHE_RANGE_FETCH_CONCURRENCY
+  # range_fetch_concurrency: 4
   # Enable persisted proxy slice files on local/shared storage.
   file_backend_enabled: false
   # Relative file_cache_dir values are resolved from data_dir.

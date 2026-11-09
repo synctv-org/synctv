@@ -10,6 +10,13 @@ ignore = [
     # the fix (>=0.7.6) has no 0.5.x backport. Ignore until opaque-ke releases
     # against elliptic-curve >=0.14.
     "RUSTSEC-2026-0387",
+    # libsqlite3-sys 0.37.0 bundles a SQLite with CVE-2026-119375
+    # (RUSTSEC-2026-0459). The crate reaches the tree only through the sqlx
+    # 0.9.0 macros chain (sqlx-macros-core -> sqlx-sqlite); the server links
+    # no SQLite and runs PostgreSQL exclusively. sqlx pins
+    # libsqlite3-sys =0.37.0 and no sqlx release carries >=0.39 yet. Drop
+    # this ignore once sqlx ships the bundled-SQLite refresh.
+    "RUSTSEC-2026-0459",
 ]
 informational_warnings = ["notice", "unmaintained", "unsound"]
 

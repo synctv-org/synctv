@@ -1160,7 +1160,10 @@ impl MediaProvider for SynologyProvider {
             })?
             .current_mode;
         self.ensure_playback_proxy_mode_supported(source_config, current_mode)?;
-        let owner = *ctx.user_id().ok_or(ProviderError::CredentialRequired)?;
+        let owner = ctx
+            .credential_owner_or_user_id()
+            .copied()
+            .ok_or(ProviderError::CredentialRequired)?;
         let server_id = Self::source_server_id(source_config)?;
         let repo = self.credential_repo_or(ctx.credential_repo)?;
         self.authenticated_with_repo(repo, owner, server_id).await?;

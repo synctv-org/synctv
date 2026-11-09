@@ -2777,9 +2777,6 @@ async fn resolve_optional_bilibili_cookies(
     ctx: &ProviderContext<'_>,
     credential_user_id: Option<UserId>,
 ) -> Result<(HashMap<String, String>, String), ProviderError> {
-    if matches!(ctx.actor(), super::ProviderActor::Guest) {
-        return Ok((HashMap::new(), "guest-anonymous".to_string()));
-    }
     let Some(credential_user_id) = credential_user_id else {
         return Ok((HashMap::new(), "anonymous".to_string()));
     };
@@ -2798,9 +2795,9 @@ fn bilibili_optional_credential_user_id(
     ctx: &ProviderContext<'_>,
     credential_policy: ProviderCredentialPolicy,
 ) -> Result<Option<UserId>, ProviderError> {
-    if matches!(ctx.actor(), super::ProviderActor::Guest) {
-        return Ok(None);
-    }
+    // Shared resources resolve the creator's credential for every actor —
+    // guests included, matching the dynamic playlist path and the other
+    // credential-backed providers.
     let credential_user_id = ctx.selected_credential_user_id(credential_policy);
     if credential_policy.uses_resource_owner() && credential_user_id.is_none() {
         return Err(ProviderError::Internal(
@@ -6039,15 +6036,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn guest_playback_uses_anonymous_bilibili_access() -> TestResult {
-        let viewer_id = crate::models::UserId::expect_positive(7);
+    async fn guest_playback_without_shared_credentials_uses_anonymous_access() -> TestResult {
         let context = ProviderContext::new("test", ProviderActor::Guest);
 
-        let (cookies, partition) =
-            provider_ok(super::resolve_optional_bilibili_cookies(&context, Some(viewer_id)).await)?;
+        let credential_user_id = provider_ok(super::bilibili_optional_credential_user_id(
+            &context,
+            super::ProviderCredentialPolicy::Viewer,
+        ))?;
+        assert_eq!(credential_user_id, None);
 
+        let (cookies, partition) =
+            provider_ok(super::resolve_optional_bilibili_cookies(&context, None).await)?;
         assert!(cookies.is_empty());
-        assert_eq!(partition, "guest-anonymous");
+        assert_eq!(partition, "anonymous");
+        Ok(())
+    }
+
+    #[test]
+    fn guest_shared_playback_uses_creator_credential() -> TestResult {
+        let creator_id = crate::models::UserId::expect_positive(7);
+        let context =
+            ProviderContext::new("test", ProviderActor::Guest).with_credential_owner_id(creator_id);
+
+        let credential_user_id = provider_ok(super::bilibili_optional_credential_user_id(
+            &context,
+            super::ProviderCredentialPolicy::ResourceOwner,
+        ))?;
+        assert_eq!(credential_user_id, Some(creator_id));
+        Ok(())
+    }
+
+    #[test]
+    fn user_playback_without_sharing_uses_viewer_credential() -> TestResult {
+        let viewer_id = crate::models::UserId::expect_positive(10);
+        let context = ProviderContext::new("test", ProviderActor::User(viewer_id));
+
+        let credential_user_id = provider_ok(super::bilibili_optional_credential_user_id(
+            &context,
+            super::ProviderCredentialPolicy::Viewer,
+        ))?;
+        assert_eq!(credential_user_id, Some(viewer_id));
         Ok(())
     }
 

@@ -107,6 +107,9 @@ impl DouyinClient {
         if let Some(index) = segments.iter().position(|value| *value == "video") {
             return numeric_resource(segments.get(index + 1).copied(), false);
         }
+        if let Some((_, id)) = url.query_pairs().find(|(key, _)| key == "modal_id") {
+            return numeric_resource(Some(&id), false);
+        }
         if host == "live.douyin.com" {
             return room_resource(segments.first().copied());
         }
@@ -885,6 +888,21 @@ mod tests {
                 web_rid: "room_name".to_string()
             }
         );
+    }
+
+    #[test]
+    fn parses_modal_id_video_urls() {
+        for url in [
+            "https://www.douyin.com/jingxuan?modal_id=7123456789012345678",
+            "https://www.douyin.com/user/MS4wLjABAAAA?modal_id=7123456789012345678&from=x",
+        ] {
+            assert_eq!(
+                DouyinClient::parse_resource(url).expect("test operation should succeed"),
+                DouyinResource::Video {
+                    aweme_id: "7123456789012345678".to_string()
+                }
+            );
+        }
     }
 
     #[tokio::test]

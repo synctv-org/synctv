@@ -5242,6 +5242,268 @@ async fn test_eager_assembly_fails_pre_commit_when_later_slice_bypasses() {
     );
 }
 
+/// A later slice's upstream client error (e.g. a signed-URL authorization or
+/// risk-control rejection) is relayed to the client instead of being masked
+/// as a synthetic proxy failure, so the player sees the upstream's verdict.
+#[tokio::test]
+async fn test_eager_assembly_relays_upstream_client_error() {
+    let mock_server = MockServer::start().await;
+    let total_size = 4096usize;
+
+    Mock::given(method("GET"))
+        .and(path("/rejected-later.bin"))
+        .and(header("Range", "bytes=0-1023"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(Bytes::from(vec![0xC1u8; 1024]))
+                .insert_header("Content-Range", format!("bytes 0-1023/{total_size}"))
+                .insert_header("Content-Length", "1024")
+                .insert_header("ETag", "\"rejected-later-v1\""),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/rejected-later.bin"))
+        .and(header("Range", "bytes=1024-2047"))
+        .respond_with(ResponseTemplate::new(403).set_body_string("ip mismatch"))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let config = SliceCacheConfig {
+        slice_size: 1024,
+        ..Default::default()
+    };
+    let cache = slice_cache_for_mock(config, &mock_server);
+    let url = mock_public_url(&mock_server, "/rejected-later.bin");
+    let headers = HashMap::new();
+
+    let response = proxy_slice(&cache, Some("bytes=0-2047"), &url, &headers)
+        .await
+        .expect("an upstream client error for a later slice must be relayed, not failed");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        response.headers().get("X-Cache-Status").unwrap(),
+        "BYPASS",
+        "relayed upstream rejections are marked as bypass"
+    );
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("relayed rejection body should be readable")
+        .to_bytes();
+    assert_eq!(&body[..], b"ip mismatch");
+}
+
+/// `416` stays a failover-eligible error: a stale total-size can make our
+/// internal slice range unsatisfiable while the client's own range is valid,
+/// so it must not be forwarded.
+#[tokio::test]
+async fn test_eager_assembly_keeps_416_failover_eligible() {
+    let mock_server = MockServer::start().await;
+    let total_size = 4096usize;
+
+    Mock::given(method("GET"))
+        .and(path("/stale-416.bin"))
+        .and(header("Range", "bytes=0-1023"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(Bytes::from(vec![0xD1u8; 1024]))
+                .insert_header("Content-Range", format!("bytes 0-1023/{total_size}"))
+                .insert_header("Content-Length", "1024")
+                .insert_header("ETag", "\"stale-416-v1\""),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/stale-416.bin"))
+        .and(header("Range", "bytes=1024-2047"))
+        .respond_with(ResponseTemplate::new(416))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let config = SliceCacheConfig {
+        slice_size: 1024,
+        ..Default::default()
+    };
+    let cache = slice_cache_for_mock(config, &mock_server);
+    let url = mock_public_url(&mock_server, "/stale-416.bin");
+    let headers = HashMap::new();
+
+    let error = proxy_slice(&cache, Some("bytes=0-2047"), &url, &headers)
+        .await
+        .expect_err("a 416 for a later slice must stay a failover-eligible error");
+    assert!(
+        error_chain_contains(&error, "while assembling cached range"),
+        "error should name the assembly bypass, got: {error:#}"
+    );
+    assert_eq!(
+        synctv_proxy::proxy_error_kind(&error),
+        None,
+        "the failure must remain failover-eligible for multi-candidate callers"
+    );
+}
+
+/// The first slice's upstream client error is relayed by the bypass path —
+/// the exact shape reported for rejected media URLs (206 for one slice,
+/// then 403 for every later request).
+#[tokio::test]
+async fn test_first_slice_client_error_relays_upstream_response() {
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/rejected-first.bin"))
+        .respond_with(ResponseTemplate::new(403).set_body_string("forbidden"))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let config = SliceCacheConfig {
+        slice_size: 1024,
+        ..Default::default()
+    };
+    let cache = slice_cache_for_mock(config, &mock_server);
+    let url = mock_public_url(&mock_server, "/rejected-first.bin");
+    let headers = HashMap::new();
+
+    let response = proxy_slice(&cache, Some("bytes=0-2047"), &url, &headers)
+        .await
+        .expect("a first-slice upstream rejection must be relayed, not failed");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(response.headers().get("X-Cache-Status").unwrap(), "BYPASS");
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("relayed rejection body should be readable")
+        .to_bytes();
+    assert_eq!(&body[..], b"forbidden");
+}
+
+/// On the lazy streaming path (ranges above the eager-assembly threshold) the
+/// `206` is already committed when a later slice is rejected, so the body
+/// must terminate with an error after delivering the first slice instead of
+/// pretending the response completed.
+#[tokio::test]
+async fn test_lazy_range_body_errors_after_upstream_rejects_next_slice() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("test listener should bind an ephemeral loopback port");
+    let address = listener
+        .local_addr()
+        .expect("test listener should expose its address");
+    let slice_size = 1024 * 1024usize;
+    let total_size: u64 = 16 * slice_size as u64;
+    let server_task = tokio::spawn(async move {
+        // Slice 0 succeeds and provides the total size.
+        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+            .await
+            .expect("slice 0 accept should not time out")
+            .expect("slice 0 request");
+        read_test_http_request(&mut stream).await;
+        {
+            use tokio::io::AsyncWriteExt;
+            stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 206 Partial Content\r\n\
+                         Content-Range: bytes 0-{}/{}\r\n\
+                         Content-Length: {}\r\n\
+                         Content-Type: application/octet-stream\r\n\
+                         ETag: \"lazy-reject-v1\"\r\n\
+                         Connection: close\r\n\r\n",
+                        slice_size - 1,
+                        total_size,
+                        slice_size
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .expect("write slice 0 headers");
+            stream
+                .write_all(&vec![0xE1u8; slice_size])
+                .await
+                .expect("write slice 0 body");
+            stream.shutdown().await.expect("close slice 0 response");
+        }
+
+        // The prefetched slice 1 is rejected.
+        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+            .await
+            .expect("slice 1 accept should not time out")
+            .expect("slice 1 request");
+        read_test_http_request(&mut stream).await;
+        {
+            use tokio::io::AsyncWriteExt;
+            stream
+                .write_all(
+                    b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .expect("write slice 1 rejection");
+            stream.shutdown().await.expect("close slice 1 response");
+        }
+    });
+
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .resolve("cdn.example.com", address)
+        .build()
+        .expect("client should build");
+    let guard = synctv_common::ssrf::SsrfGuard::builder()
+        .extra_allowed_host("cdn.example.com".to_string())
+        .build();
+    let cache = SliceCache::new_with_client_and_ssrf_guard(
+        SliceCacheConfig {
+            slice_size,
+            ..Default::default()
+        },
+        client,
+        guard,
+    )
+    .expect("mock slice cache should build");
+    let url = format!("http://cdn.example.com:{}/lazy-reject.bin", address.port());
+    let headers = HashMap::new();
+
+    let response = tokio::time::timeout(
+        Duration::from_secs(10),
+        proxy_slice(&cache, Some("bytes=0-"), &url, &headers),
+    )
+    .await
+    .expect("lazy range should not deadlock")
+    .expect("lazy range should build a response");
+    assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+
+    let mut body = response.into_body();
+    let mut received = 0usize;
+    let mut errored = false;
+    while let Some(frame) = body.frame().await {
+        if let Ok(frame) = frame {
+            if let Some(data) = frame.data_ref() {
+                received += data.len();
+            }
+        } else {
+            errored = true;
+            break;
+        }
+    }
+    assert!(
+        received >= slice_size,
+        "the committed first slice must be delivered, got {received} bytes"
+    );
+    assert!(errored, "the body must terminate with an error, not EOF");
+    tokio::time::timeout(Duration::from_secs(5), server_task)
+        .await
+        .expect("server task should finish")
+        .expect("test server task");
+}
+
 /// `range_fetch_concurrency: 1` serializes the eager fetches: while slice 1's
 /// response is held back, slice 2 must not be requested yet.
 #[tokio::test]

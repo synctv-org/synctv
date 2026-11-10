@@ -1293,6 +1293,7 @@ impl SliceCache {
             };
             if bypass_on_non_partial && resp2.status() != reqwest::StatusCode::PARTIAL_CONTENT {
                 self.updating_keys.remove(&key);
+                warn_upstream_slice_rejection(&resp2, slice_index, url);
                 return Ok(SliceFetchResult::Bypass(resp2));
             }
             let result = self
@@ -1317,6 +1318,7 @@ impl SliceCache {
 
         if bypass_on_non_partial && resp.status() != reqwest::StatusCode::PARTIAL_CONTENT {
             self.updating_keys.remove(&key);
+            warn_upstream_slice_rejection(&resp, slice_index, url);
             return Ok(SliceFetchResult::Bypass(resp));
         }
 
@@ -1624,6 +1626,50 @@ impl SliceCache {
     pub async fn sync_seen_keys(&self) {
         self.seen_keys.run_pending_tasks().await;
     }
+}
+
+/// Log an upstream client-error rejection of a slice range request.
+///
+/// These rejections are relayed to the client (bypass), so without this log
+/// the reason — for example a signed-URL authorization or risk-control
+/// rejection on a media CDN — would be invisible server-side. The URL is
+/// reduced to its host plus a few non-secret diagnostic query parameters;
+/// full signed URLs stay out of the logs.
+fn warn_upstream_slice_rejection(resp: &reqwest::Response, slice_index: u64, url: &str) {
+    if !resp.status().is_client_error() {
+        return;
+    }
+    let (host, expire, upstream_ip, itag) = match url::Url::parse(url) {
+        Ok(parsed) => {
+            let mut expire = None;
+            let mut upstream_ip = None;
+            let mut itag = None;
+            for (key, value) in parsed.query_pairs() {
+                match &*key {
+                    "expire" => expire = Some(value.to_string()),
+                    "ip" => upstream_ip = Some(value.to_string()),
+                    "itag" => itag = Some(value.to_string()),
+                    _ => {}
+                }
+            }
+            (
+                parsed.host_str().unwrap_or_default().to_string(),
+                expire,
+                upstream_ip,
+                itag,
+            )
+        }
+        Err(_) => (String::new(), None, None, None),
+    };
+    tracing::warn!(
+        status = %resp.status(),
+        slice_index,
+        host = %host,
+        url_expire = expire,
+        upstream_client_ip = upstream_ip,
+        itag,
+        "Upstream rejected a slice range request; relaying the response to the client"
+    );
 }
 
 #[cfg(test)]

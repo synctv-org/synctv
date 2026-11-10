@@ -952,6 +952,26 @@ async fn range_slice_cache_path(request: RangeSliceRequest<'_>) -> Result<Respon
         .map_err(|e| anyhow::anyhow!("Failed to build cached response: {e}"))
 }
 
+/// Error surfaced while eagerly assembling a bounded range response.
+enum RangeAssemblyError {
+    Fetch(anyhow::Error),
+    /// The upstream answered a slice fetch with a client error; the response
+    /// is carried back so it can be relayed to the client.
+    UpstreamRejected(reqwest::Response),
+}
+
+/// Client errors are the upstream's own verdict on this exact resource URL —
+/// for example a signed-URL authorization or risk-control rejection — so they
+/// are relayed to the client instead of being masked as a proxy failure.
+///
+/// `416` is excluded: a stale total-size can make our internal slice range
+/// unsatisfiable while the client's range is still valid, so it must surface
+/// as a proxy error (failover-eligible for multi-candidate callers) rather
+/// than being forwarded.
+fn upstream_client_error_should_pass_through(status: reqwest::StatusCode) -> bool {
+    status.is_client_error() && status.as_u16() != 416
+}
+
 /// Assemble a bounded range response entirely before committing it.
 ///
 /// Every slice the range touches is fetched (or taken from cache) up front —
@@ -1011,7 +1031,7 @@ async fn assemble_range_response(
             .range_fetch_concurrency
             .clamp(1, positions.len());
         let fetched_slices: Vec<(usize, FetchedSlice)> =
-            futures::stream::iter(positions.into_iter().enumerate())
+            match futures::stream::iter(positions.into_iter().enumerate())
                 .map(|(position, slice_index)| {
                     let cache = cache.clone();
                     let url = url.to_string();
@@ -1028,19 +1048,39 @@ async fn assemble_range_response(
                                 upstream_header_timeout,
                             )
                             .await
-                            .context("Slice cache fetch failed while assembling range response")?;
+                            .map_err(|error| {
+                                RangeAssemblyError::Fetch(error.context(
+                                    "Slice cache fetch failed while assembling range response",
+                                ))
+                            })?;
                         match fetched {
                             SliceFetchResult::Slice(fetched) => Ok((position, fetched)),
-                            SliceFetchResult::Bypass(resp) => Err(anyhow::anyhow!(
-                                "Upstream returned {} while assembling cached range",
-                                resp.status()
-                            )),
+                            SliceFetchResult::Bypass(resp) => {
+                                if upstream_client_error_should_pass_through(resp.status()) {
+                                    return Err(RangeAssemblyError::UpstreamRejected(resp));
+                                }
+                                Err(RangeAssemblyError::Fetch(anyhow::anyhow!(
+                                    "Upstream returned {} while assembling cached range",
+                                    resp.status()
+                                )))
+                            }
                         }
                     }
                 })
                 .buffer_unordered(fetch_concurrency)
                 .try_collect::<Vec<_>>()
-                .await?;
+                .await
+            {
+                Ok(fetched_slices) => fetched_slices,
+                Err(RangeAssemblyError::UpstreamRejected(resp)) => {
+                    // The upstream's own verdict on this resource URL (for
+                    // example a signed-URL authorization or risk-control
+                    // rejection) is more useful to the client than a synthetic
+                    // proxy failure; relay it before the response is committed.
+                    return stream_existing_response_with_status(resp, CacheStatus::Bypass);
+                }
+                Err(RangeAssemblyError::Fetch(error)) => return Err(error),
+            };
         // buffer_unordered yields in completion order; the body must be
         // assembled in slice order regardless of which fetch finished first.
         let mut fetched_slices = fetched_slices;

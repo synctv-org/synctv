@@ -116,7 +116,7 @@ prost = "=0.14.4"
 prost-types = "=0.14.4"
 prost-reflect = { version = "=0.16.5", features = ["derive"] }
 prost-reflect-build = "=0.16.1"
-prost-protovalidate = "=0.6.0"
+prost-protovalidate = "=0.6.1"
 pbjson = "=0.9.0"
 pbjson-build = "=0.9.0"
 pbjson-types = "=0.9.0"
@@ -191,6 +191,8 @@ sha2 = "=0.11.1"
 sm3 = "=0.5.0"
 md-5 = "=0.11.0"
 hmac = "=0.13.0"
+# rsa 0.10 removed the `sha2` feature that crypto-glue (via webauthn-rs 0.6)
+# still requires; blocked until webauthn-rs moves off crypto-glue 0.10.0-rc.18.
 rsa = "=0.9.10"
 subtle = "=2.6.1"
 
@@ -200,7 +202,7 @@ serde_json = "=1.0.154"
 quick-xml = "=0.42.0"
 serde_yaml = "=0.9.34"
 serde_ignored = "=0.1.14"
-toml = "=1.2.0"
+toml = "=1.2.1"
 serde_urlencoded = "=0.7.1"
 serde_html_form = "=0.4.1"
 serde_path_to_error = "=0.1.20"
@@ -215,7 +217,7 @@ lru = "=0.19.0"
 
 # IDs & Crypto
 nanoid = "=0.5.0"
-uuid = { version = "=1.29.0", features = ["v4", "v5", "serde"] }
+uuid = { version = "=1.29.2", features = ["v4", "v5", "serde"] }
 sqids = "=0.4.2"
 rand = "=0.10.3"
 rand_08 = { package = "rand", version = "=0.8.6" }
@@ -231,13 +233,13 @@ iana-time-zone = "=0.1.65"
 synctv-xiu = { path = "synctv-xiu", default-features = false }
 webrtc = "=0.21.1"
 rtc = "=0.21.1"
-sdp = "=0.17.2"
+sdp = "=0.17.3"
 opus = "=0.4.0"
 fdk-aac = "=0.8.0"
 retina = "=0.4.21"
 rust_h265 = "=0.4.1"
 rusty_aac = { version = "=2.0.1", default-features = false }
-rusty_h264 = "=0.17.0"
+rusty_h264 = "=0.17.2"
 
 # Object Storage
 opendal = { version = "=0.59.5", default-features = false, features = [
@@ -275,10 +277,10 @@ url = "=2.5.8"
 percent-encoding = "=2.3.2"
 urlencoding = "=2.1.3"
 regex = "=1.13.1"
-oxc_allocator = "=0.157.0"
-oxc_ast = "=0.157.0"
-oxc_parser = "=0.157.0"
-oxc_span = "=0.157.0"
+oxc_allocator = "=0.158.0"
+oxc_ast = "=0.158.0"
+oxc_parser = "=0.158.0"
+oxc_span = "=0.158.0"
 boa_engine = { version = "=0.22.0", default-features = false }
 byteorder = "=1.5.0"
 http = "=1.5.0"
@@ -289,7 +291,7 @@ prometheus = { version = "=0.14.0", features = ["process"] }
 
 # Time
 chrono = { version = "=0.4.45", features = ["serde"] }
-html-escape = "=0.3.0"
+html-escape = "=0.3.1"
 rsntp = "=4.1.2"
 
 # Kubernetes (in-cluster client for leader election & service discovery)
@@ -322,7 +324,7 @@ lettre = { version = "=0.11.23", default-features = false, features = [
 handlebars = { version = "=6.4.4", features = ["no_logging"] }
 
 # Compression
-flate2 = { version = "=1.1.10", default-features = false, features = ["zlib-rs"] }
+flate2 = { version = "=1.1.11", default-features = false, features = ["zlib-rs"] }
 brotli = "=9.1.1"
 lz4_flex = { version = "=0.14.0", default-features = false, features = [
     "alloc",

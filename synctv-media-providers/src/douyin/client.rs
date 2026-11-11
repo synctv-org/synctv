@@ -107,11 +107,16 @@ impl DouyinClient {
         if let Some(index) = segments.iter().position(|value| *value == "video") {
             return numeric_resource(segments.get(index + 1).copied(), false);
         }
-        if let Some((_, id)) = url.query_pairs().find(|(key, _)| key == "modal_id") {
-            return numeric_resource(Some(&id), false);
-        }
         if host == "live.douyin.com" {
             return room_resource(segments.first().copied());
+        }
+        // Feed and profile pages carry the aweme ID as a `modal_id` query
+        // parameter. The host check runs first so a live-room URL keeps its
+        // room semantics even when it carries unrelated query parameters.
+        // Note that image posts use the same parameter, so a note ID parses
+        // here and only fails later when the video detail is fetched.
+        if let Some((_, id)) = url.query_pairs().find(|(key, _)| key == "modal_id") {
+            return numeric_resource(Some(&id), false);
         }
         Err(ProviderClientError::InvalidConfig(
             "Douyin URL must identify a video or live room".to_string(),
@@ -903,6 +908,19 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn live_room_host_wins_over_modal_id_query() {
+        assert_eq!(
+            DouyinClient::parse_resource(
+                "https://live.douyin.com/8888888?modal_id=7123456789012345678"
+            )
+            .expect("test operation should succeed"),
+            DouyinResource::Live {
+                web_rid: "8888888".to_string()
+            }
+        );
     }
 
     #[tokio::test]

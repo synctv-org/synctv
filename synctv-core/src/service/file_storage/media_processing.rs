@@ -1,17 +1,17 @@
 use std::sync::Arc;
 
 use crate::{
+    Error, Result,
     models::{
         FileMetadata, FileObjectKind, FileObjectVariant, FileUploadPolicy, FileVariantMetadata,
         NewStoredFile,
     },
     repository::{FileStorageRepository, UpsertFileObjectGroup, UpsertFileObjectVariant},
-    service::file_storage::{validation::validate_file_dimensions, FileObjectReader},
-    Error, Result,
+    service::file_storage::{FileObjectReader, validation::validate_file_dimensions},
 };
-use image::{codecs::jpeg::JpegEncoder, DynamicImage, GenericImageView, ImageReader};
+use image::{DynamicImage, GenericImageView, ImageReader, codecs::jpeg::JpegEncoder};
 
-use super::{payload_len_i64, FileStorageService};
+use super::{FileStorageService, payload_len_i64};
 
 const IMAGE_VARIANT_MIME_TYPE: &str = "image/jpeg";
 const IMAGE_VARIANT_QUALITY: u8 = 78;

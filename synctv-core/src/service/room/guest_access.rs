@@ -1,9 +1,9 @@
 use chrono::Duration;
 
 use crate::{
+    Error, Result,
     models::{RoomId, RoomPermissionSet, RoomRole, RoomSettings},
     service::{RoomService, RuntimeSettingsStore},
-    Error, Result,
 };
 
 impl RoomService {

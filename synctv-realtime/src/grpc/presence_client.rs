@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::{stream, StreamExt};
+use futures::{StreamExt, stream};
 use moka::sync::Cache;
 use synctv_cluster::discovery::{ClusterNodeDirectory, NodeInfo};
 use synctv_core::models::UserId;
@@ -10,8 +10,8 @@ use tonic::transport::{Channel, Endpoint};
 use tracing::{debug, warn};
 
 use super::proto::{
-    realtime_presence_service_client::RealtimePresenceServiceClient as GrpcClient,
     GetUserOnlineStatusRequest, GetUserOnlineStatusResponse, UserOnlineStatus,
+    realtime_presence_service_client::RealtimePresenceServiceClient as GrpcClient,
 };
 use crate::error::{Error, Result};
 
@@ -336,8 +336,8 @@ mod tests {
     }
 
     #[test]
-    fn attach_secret_rejects_empty_cluster_secret(
-    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn attach_secret_rejects_empty_cluster_secret()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let client = test_client(String::new())?;
         let mut request = tonic::Request::new(GetUserOnlineStatusRequest { user_ids: vec![1] });
 
@@ -353,8 +353,8 @@ mod tests {
     }
 
     #[test]
-    fn attach_secret_sets_cluster_secret_metadata(
-    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn attach_secret_sets_cluster_secret_metadata()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let client = test_client("cluster-secret".to_string())?;
         let mut request = tonic::Request::new(GetUserOnlineStatusRequest { user_ids: vec![1] });
 

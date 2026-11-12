@@ -1,4 +1,4 @@
-use super::{middleware::RequestMetadata, AppResult, AppState};
+use super::{AppResult, AppState, middleware::RequestMetadata};
 
 mod chat;
 pub(crate) mod execute;
@@ -23,6 +23,7 @@ pub(crate) use chat::{
     __path_pin_chat_message, __path_search_chat_messages, __path_send_chat_message,
     __path_set_chat_reaction, __path_unpin_chat_message,
 };
+pub(crate) use chat::{GetChatHistoryQuery, GetChatMessageContextQuery};
 pub(crate) use chat::{
     clear_chat_reaction, delete_chat_message, edit_chat_message, get_chat_history,
     get_chat_message, get_chat_message_context, get_chat_message_read_receipts,
@@ -30,7 +31,6 @@ pub(crate) use chat::{
     list_pinned_chat_messages, mark_chat_read, pin_chat_message, search_chat_messages,
     send_chat_message, set_chat_reaction, unpin_chat_message,
 };
-pub(crate) use chat::{GetChatHistoryQuery, GetChatMessageContextQuery};
 pub(crate) use execute::execute_room_actor_endpoint;
 use execute::request_metadata;
 #[cfg(feature = "openapi")]
@@ -137,7 +137,7 @@ pub(crate) use types::{
 #[cfg(feature = "openapi")]
 pub(crate) use watch::{__path_watch_chat_events, __path_watch_chat_pin_events};
 #[cfg(test)]
-use watch::{sse_event_from_server_message, sse_event_id_from_resource_event, CancelOnDropStream};
+use watch::{CancelOnDropStream, sse_event_from_server_message, sse_event_id_from_resource_event};
 pub(crate) use watch::{
     watch_chat_events, watch_chat_pin_events, watch_playlist_items, watch_room_members,
     watch_room_settings,

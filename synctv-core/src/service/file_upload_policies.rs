@@ -181,9 +181,9 @@ pub fn playlist_cover_upload_policy() -> FileUploadPolicy {
 mod tests {
     use super::*;
     use crate::{
+        Error,
         models::{CreateFileUploadSession, UserId},
         service::file_storage::validate_create_file_upload_session,
-        Error,
     };
 
     fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {

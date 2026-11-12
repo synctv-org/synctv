@@ -1,15 +1,15 @@
 use axum::{
     body::Body,
-    http::{header, HeaderMap, HeaderValue, Method, StatusCode},
-    response::{sse::Event, Response},
+    http::{HeaderMap, HeaderValue, Method, StatusCode, header},
+    response::{Response, sse::Event},
 };
 use futures::{Stream, StreamExt};
 use std::convert::Infallible;
 use synctv_proto::{client::ErrorMessage, playback_provider::common::StreamChunk};
 
 use crate::http::{
-    error::{map_api_error, AppResult},
     AppError, AppState,
+    error::{AppResult, map_api_error},
 };
 use synctv_api_common::impls::{ApiError, EndpointRateLimitCategory};
 
@@ -274,10 +274,10 @@ pub async fn stream_http_response<T, S>(
     request_meta: crate::http::middleware::RequestMetadata,
     method: Method,
     build_stream: impl FnOnce(
-            synctv_core::provider::ExecutionControl,
-        ) -> futures::future::BoxFuture<'static, Result<S, ApiError>>
-        + Send
-        + 'static,
+        synctv_core::provider::ExecutionControl,
+    ) -> futures::future::BoxFuture<'static, Result<S, ApiError>>
+    + Send
+    + 'static,
 ) -> AppResult<Response>
 where
     T: PlaybackProviderHttpResponse + Send + 'static,

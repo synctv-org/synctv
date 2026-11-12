@@ -1,12 +1,12 @@
-use futures::{stream, StreamExt as _, TryStreamExt as _};
+use futures::{StreamExt as _, TryStreamExt as _, stream};
 #[cfg(test)]
 use synctv_core::models::RoomId;
 use synctv_core::models::UserId;
 use synctv_core::service::FileStorageService;
 
 use super::{
-    try_admin_room_member_to_proto_with_settings, try_admin_user_to_proto,
-    try_managed_room_to_proto, AdminApiImpl, ApiError,
+    AdminApiImpl, ApiError, try_admin_room_member_to_proto_with_settings, try_admin_user_to_proto,
+    try_managed_room_to_proto,
 };
 
 const ADMIN_ROOM_ASSET_CONCURRENCY: usize = 16;

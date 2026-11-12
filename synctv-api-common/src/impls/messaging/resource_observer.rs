@@ -16,12 +16,12 @@ use synctv_core::{
 use synctv_realtime::sync::{CacheTarget, RealtimeEvent};
 
 use super::MessageSender;
+use crate::impls::client::RoomActor;
 use crate::impls::client::convert::{
     chat_message_selection_from_proto_values, playback_client_profile_from_proto,
     proto_role_filter_to_room_role, room_settings_to_proto, try_playback_state_to_proto,
     try_room_member_to_proto_with_permissions,
 };
-use crate::impls::client::RoomActor;
 use crate::impls::messaging::{
     chat_message_event_to_proto, chat_pin_event_to_proto, online_event_to_proto,
     room_member_event_to_proto,
@@ -30,8 +30,8 @@ use crate::impls::playback::PlaybackService;
 use crate::impls::playlist_items_snapshot::PlaylistItemsSnapshotService;
 use crate::impls::room_settings_snapshot::RoomSettingsSnapshotService;
 use crate::resource_change::{
-    provider_credential_resource_invalidation, resource_invalidations_for_cache_targets,
-    resource_invalidations_for_room_event, ResourceInvalidation,
+    ResourceInvalidation, provider_credential_resource_invalidation,
+    resource_invalidations_for_cache_targets, resource_invalidations_for_room_event,
 };
 use synctv_proto::client::{OnlineEventKind, ResourceDeliveryMode, ServerMessage};
 
@@ -1260,10 +1260,10 @@ impl MediaResourceHub {
         {
             return None;
         }
-        if let Some(entry) = state.in_flight_refreshes.get(refresh_key) {
-            if entry.subscription_generation == subscription_generation {
-                return Some(entry.clone());
-            }
+        if let Some(entry) = state.in_flight_refreshes.get(refresh_key)
+            && entry.subscription_generation == subscription_generation
+        {
+            return Some(entry.clone());
         }
         let entry = MediaResourceRefreshEntry {
             result: Arc::new(tokio::sync::OnceCell::new()),
@@ -1727,28 +1727,23 @@ impl MediaResourceHub {
                         if chat_event.kind == ChatEventKind::Deleted
                             && chat_event.message.message.delete_reason.as_deref()
                                 == Some("account closure")
-                        {
-                            if let RealtimeEvent::ChatMessageEvent {
+                            && let RealtimeEvent::ChatMessageEvent {
                                 event: incoming_event,
                                 ..
                             } = event
-                            {
-                                if let Ok(Some(current)) = observer
-                                    .room_service
-                                    .get_chat_message_from_primary(
-                                        &incoming_event.room_id,
-                                        incoming_event.message.message.id,
-                                    )
-                                    .await
-                                {
-                                    if current.deleted_at.is_none() {
-                                        // A delayed account-delete outbox
-                                        // event must not hide a message
-                                        // restored since it was queued.
-                                        continue;
-                                    }
-                                }
-                            }
+                            && let Ok(Some(current)) = observer
+                                .room_service
+                                .get_chat_message_from_primary(
+                                    &incoming_event.room_id,
+                                    incoming_event.message.message.id,
+                                )
+                                .await
+                            && current.deleted_at.is_none()
+                        {
+                            // A delayed account-delete outbox
+                            // event must not hide a message
+                            // restored since it was queued.
+                            continue;
                         }
                         let mut updated_observation = observation.clone();
                         let cursor = event_cursor.clone().unwrap_or_else(|| {
@@ -2199,21 +2194,20 @@ impl MediaResourceHub {
                             entry.force,
                             evaluation.clone(),
                         );
-                        if let Some(cursor) = event_cursor.as_ref() {
-                            if !ResourceObserver::apply_event_cursor_to_observation(
+                        if let Some(cursor) = event_cursor.as_ref()
+                            && !ResourceObserver::apply_event_cursor_to_observation(
                                 &mut entry.observation,
                                 cursor,
-                            ) {
-                                continue;
-                            }
+                            )
+                        {
+                            continue;
                         }
                         let mut changed_message = update.changed_message;
                         if let (Some(changed), Some(cursor)) =
                             (changed_message.as_mut(), event_cursor.as_ref())
+                            && entry.observation.exposes_client_event_cursor()
                         {
-                            if entry.observation.exposes_client_event_cursor() {
-                                changed.event_cursor = Some(cursor.clone());
-                            }
+                            changed.event_cursor = Some(cursor.clone());
                         }
                         match self
                             .send_and_commit_subscription_update(
@@ -2312,16 +2306,16 @@ impl MediaResourceHub {
         if subscription_revision != revision {
             return SubscriptionRefreshCommit::Stale;
         }
-        if let Some(changed) = changed_message {
-            if let Err(error) = observer.send_server_message(ServerMessage {
+        if let Some(changed) = changed_message
+            && let Err(error) = observer.send_server_message(ServerMessage {
                 message: Some(
                     synctv_proto::client::server_message::Message::ResourceEvent(changed),
                 ),
-            }) {
-                state.subscriptions.remove(key);
-                state.bump_subscription_generation();
-                return SubscriptionRefreshCommit::SendFailed(error);
-            }
+            })
+        {
+            state.subscriptions.remove(key);
+            state.bump_subscription_generation();
+            return SubscriptionRefreshCommit::SendFailed(error);
         }
         if let Some(subscription) = state.subscriptions.get_mut(key) {
             subscription.observation = observation;

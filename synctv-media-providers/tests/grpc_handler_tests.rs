@@ -3,11 +3,11 @@
 //! Tests for gRPC service validation layers (input validation before dispatching to HTTP clients).
 
 #![allow(clippy::unwrap_used)]
+use synctv_media_providers::grpc::AlistService;
 use synctv_media_providers::grpc::alist::alist_server::Alist;
 use synctv_media_providers::grpc::alist::{
-    login_req, FsGetReq, FsListReq, FsOtherReq, FsSearchReq, LoginReq, MeReq,
+    FsGetReq, FsListReq, FsOtherReq, FsSearchReq, LoginReq, MeReq, login_req,
 };
-use synctv_media_providers::grpc::AlistService;
 use tonic::{Code, Request};
 
 #[tokio::test]

@@ -11,8 +11,8 @@ use synctv_api::{AdminApiImpl, AdminApiOptions, ApiError, ClientApiImpl};
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     models::{
-        room_settings::RequireApproval, ReviewRequestId, ReviewStatus, RoomSettings, SignupMethod,
-        User, UserId, UserRole, UserStatus,
+        ReviewRequestId, ReviewStatus, RoomSettings, SignupMethod, User, UserId, UserRole,
+        UserStatus, room_settings::RequireApproval,
     },
     repository::{ProviderInstanceRepository, SettingsRepository, UserRepository},
     service::{

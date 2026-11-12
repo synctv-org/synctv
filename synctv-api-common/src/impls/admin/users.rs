@@ -1,8 +1,8 @@
 use synctv_core::models::{AuditDetails, AuditUpdatedFields, UserId, UserRole, UserStatus};
 
 use super::{
-    auth_factors_to_proto, check_role_hierarchy, i64_to_i32_api, user_preferences_to_proto,
-    AdminApiImpl, ApiError, RequestContext, LOCAL_MANAGEMENT_ACTOR_USER_ID,
+    AdminApiImpl, ApiError, LOCAL_MANAGEMENT_ACTOR_USER_ID, RequestContext, auth_factors_to_proto,
+    check_role_hierarchy, i64_to_i32_api, user_preferences_to_proto,
 };
 
 fn optional_trimmed(value: &str) -> Option<String> {

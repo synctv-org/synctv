@@ -1,5 +1,5 @@
 use base64::Engine;
-use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
+use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use reqwest::{Client, Method, RequestBuilder, Response};
 use serde::de::DeserializeOwned;
 use url::Url;
@@ -10,7 +10,7 @@ use super::types::{
     NextcloudLoginFlowCredentials, NextcloudServerInfo, NextcloudUser, OcsEnvelope,
 };
 use crate::{
-    check_response, fetch_json, text_with_limit, ProviderClientError, PROVIDER_USER_AGENT,
+    PROVIDER_USER_AGENT, ProviderClientError, check_response, fetch_json, text_with_limit,
 };
 
 const PATH_SEGMENT: &AsciiSet = &CONTROLS

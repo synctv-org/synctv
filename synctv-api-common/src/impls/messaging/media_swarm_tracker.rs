@@ -4,7 +4,7 @@ use dashmap::DashMap;
 use rand::seq::IteratorRandom;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
-use synctv_core::{models::RoomId, RedisConnectionRuntime};
+use synctv_core::{RedisConnectionRuntime, models::RoomId};
 
 const MEMBERSHIP_TTL: Duration = Duration::from_secs(90);
 const LOCAL_PRUNE_INTERVAL: Duration = Duration::from_secs(30);
@@ -290,9 +290,11 @@ mod tests {
             .expect("discovery should succeed");
 
         assert_eq!(peers.len(), MAX_MEDIA_SWARM_PEERS);
-        assert!(peers
-            .iter()
-            .all(|peer| peer.connection_id != "conn_current"));
+        assert!(
+            peers
+                .iter()
+                .all(|peer| peer.connection_id != "conn_current")
+        );
     }
 
     #[tokio::test]
@@ -305,25 +307,31 @@ mod tests {
             .await
             .expect("first announce should succeed");
 
-        assert!(tracker
-            .announce(room_a, "usr_b".into(), "conn_b".into(), "swarm-b")
-            .await
-            .expect("other swarm announce should succeed")
-            .is_empty());
-        assert!(tracker
-            .announce(room_b, "usr_c".into(), "conn_c".into(), "swarm-a")
-            .await
-            .expect("other room announce should succeed")
-            .is_empty());
+        assert!(
+            tracker
+                .announce(room_a, "usr_b".into(), "conn_b".into(), "swarm-b")
+                .await
+                .expect("other swarm announce should succeed")
+                .is_empty()
+        );
+        assert!(
+            tracker
+                .announce(room_b, "usr_c".into(), "conn_c".into(), "swarm-a")
+                .await
+                .expect("other room announce should succeed")
+                .is_empty()
+        );
         tracker
             .leave(room_a, "usr_a", "conn_a", "swarm-a")
             .await
             .expect("leave should succeed");
-        assert!(tracker
-            .announce(room_a, "usr_d".into(), "conn_d".into(), "swarm-a")
-            .await
-            .expect("post-leave discovery should succeed")
-            .is_empty());
+        assert!(
+            tracker
+                .announce(room_a, "usr_d".into(), "conn_d".into(), "swarm-a")
+                .await
+                .expect("post-leave discovery should succeed")
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -340,18 +348,24 @@ mod tests {
             .await
             .expect("membership announcement should succeed");
 
-        assert!(tracker
-            .contains(room_id, "usr_a", "conn_a", "swarm-a")
-            .await
-            .expect("membership lookup should succeed"));
-        assert!(!tracker
-            .contains(room_id, "usr_b", "conn_a", "swarm-a")
-            .await
-            .expect("actor mismatch lookup should succeed"));
-        assert!(!tracker
-            .contains(room_id, "usr_a", "conn_a", "swarm-b")
-            .await
-            .expect("swarm mismatch lookup should succeed"));
+        assert!(
+            tracker
+                .contains(room_id, "usr_a", "conn_a", "swarm-a")
+                .await
+                .expect("membership lookup should succeed")
+        );
+        assert!(
+            !tracker
+                .contains(room_id, "usr_b", "conn_a", "swarm-a")
+                .await
+                .expect("actor mismatch lookup should succeed")
+        );
+        assert!(
+            !tracker
+                .contains(room_id, "usr_a", "conn_a", "swarm-b")
+                .await
+                .expect("swarm mismatch lookup should succeed")
+        );
     }
 
     #[tokio::test]

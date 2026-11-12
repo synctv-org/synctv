@@ -18,7 +18,7 @@ use synctv_xiu::{
         },
         handshake::{define::ClientHandshakeState, handshake_client::SimpleHandshakeClient},
         messages::{
-            define::{msg_type_id, RtmpMessageData},
+            define::{RtmpMessageData, msg_type_id},
             parser::MessageParser,
         },
         netconnection::writer::{ConnectProperties, NetConnection},

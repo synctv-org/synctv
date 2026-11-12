@@ -249,10 +249,10 @@ fn collect_transformers(
 ) -> Result<(), ProviderClientError> {
     match statement {
         Statement::FunctionDeclaration(function) => {
-            if function_has_marker(function.body.as_deref(), source, marker) {
-                if let Some(id) = &function.id {
-                    transformers.push(id.name.to_string());
-                }
+            if function_has_marker(function.body.as_deref(), source, marker)
+                && let Some(id) = &function.id
+            {
+                transformers.push(id.name.to_string());
             }
         }
         Statement::ExpressionStatement(statement) => {

@@ -192,7 +192,7 @@ impl PesMuxer {
 
 #[cfg(test)]
 mod tests {
-    use super::{define, Pes, PesMuxer};
+    use super::{Pes, PesMuxer, define};
 
     #[test]
     fn write_pes_header_accepts_large_valid_pts_values() {

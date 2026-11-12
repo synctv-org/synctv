@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::Utc;
-use futures::{stream, StreamExt};
+use futures::{StreamExt, stream};
 use sha2::{Digest, Sha256};
 
 use super::{
@@ -21,9 +21,9 @@ use crate::models::media::{
     PlaybackSubtitle, PlaybackSubtitleProvider,
 };
 use crate::models::{
-    normalize_provider_instance_name, normalize_provider_instance_name_owned,
     CloudreveMediaSourceConfig, CloudrevePlaylistSourceConfig, MediaSourceConfig, PlayMode,
     PlaylistSourceConfig, ProviderCredential, ProviderTarget, UserId, UserProviderCredential,
+    normalize_provider_instance_name, normalize_provider_instance_name_owned,
 };
 use crate::repository::UserProviderCredentialRepository;
 use synctv_media_providers::cloudreve::{CloudreveClient, CloudreveFile, CloudreveUser};
@@ -873,14 +873,14 @@ fn mark_cloudreve_playback_resources(
         if mode_name == original_default_mode {
             default_selection = selection;
         }
-        if selection.direct {
-            if let Some(direct_info) = super::build_direct_playback_info_for_client(
+        if selection.direct
+            && let Some(direct_info) = super::build_direct_playback_info_for_client(
                 &mode_name,
                 &original_info,
                 client_profile,
-            ) {
-                generated.insert(mode_name.clone(), direct_info);
-            }
+            )
+        {
+            generated.insert(mode_name.clone(), direct_info);
         }
         if !selection.proxy {
             continue;
@@ -1916,9 +1916,11 @@ mod tests {
         );
         assert_eq!(proxy_only.default_mode, "proxy_direct");
         assert!(!proxy_only.playback_infos.contains_key("direct"));
-        assert!(proxy_only
-            .playback_infos
-            .keys()
-            .all(|mode_name| mode_name.starts_with("proxy_")));
+        assert!(
+            proxy_only
+                .playback_infos
+                .keys()
+                .all(|mode_name| mode_name.starts_with("proxy_"))
+        );
     }
 }

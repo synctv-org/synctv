@@ -15,7 +15,7 @@ use tracing::warn;
 use super::partitioning::{len_to_u64, retention_seconds_to_i64, u32_to_i32};
 use super::{FileStorageCleanupOrigin, FileStorageService};
 use crate::models::{ChatAttachment, DeletionSource, FileReferenceTarget, RoomId};
-use crate::repository::{realtime_outbox::RealtimeOutboxStatus, FileStorageRepository};
+use crate::repository::{FileStorageRepository, realtime_outbox::RealtimeOutboxStatus};
 use crate::{Error, InternalExt, Result};
 
 const UNREFERENCED_FILE_REFERENCE_KIND: &str = "unreferenced_file";

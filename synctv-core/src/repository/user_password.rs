@@ -2,8 +2,8 @@ use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 
 use crate::{
-    models::{OpaquePasswordRecord, User, UserId},
     Error, Result,
+    models::{OpaquePasswordRecord, User, UserId},
 };
 
 #[derive(sqlx::FromRow)]

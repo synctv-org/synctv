@@ -1,13 +1,13 @@
 use std::sync::{Arc, Mutex};
 
 use super::*;
-use crate::service::file_storage::{
-    file_object_key, file_ownership_proof_digest, file_part_manifest_digest,
-    file_storage_object_base_path, file_storage_public_url, ownership_proof_chunks_from_bytes,
-    upload_session_part_size, validate_create_file_upload_session, DatabaseFileStorageService,
-    S3CompatibleFileStorageService, S3FileStorageConfig, FILE_UPLOAD_TOKEN_HEADER,
-};
 use crate::service::MAX_CHAT_ATTACHMENT_SIZE_BYTES;
+use crate::service::file_storage::{
+    DatabaseFileStorageService, FILE_UPLOAD_TOKEN_HEADER, S3CompatibleFileStorageService,
+    S3FileStorageConfig, file_object_key, file_ownership_proof_digest, file_part_manifest_digest,
+    file_storage_object_base_path, file_storage_public_url, ownership_proof_chunks_from_bytes,
+    upload_session_part_size, validate_create_file_upload_session,
+};
 use crate::{
     cache::{KeyBuilder, UsernameCache},
     models::{
@@ -20,8 +20,8 @@ use crate::{
         RoomSettingsRepository, UpsertFileObject, UserRepository,
     },
     service::{
-        chat_attachment_upload_policy, BruteForceProtection, DisabledFileStorageService,
-        InMemoryTokenBlacklistStore, JwtService, RateLimiter, RoomService, RuntimeSettingsStore,
+        BruteForceProtection, DisabledFileStorageService, InMemoryTokenBlacklistStore, JwtService,
+        RateLimiter, RoomService, RuntimeSettingsStore, chat_attachment_upload_policy,
     },
 };
 use image::ImageEncoder;
@@ -1497,11 +1497,13 @@ async fn s3_file_storage_creates_resumable_upload_session() {
             .map(String::as_str),
         Some("image/png")
     );
-    assert!(session
-        .upload_headers
-        .get(FILE_UPLOAD_TOKEN_HEADER)
-        .map(String::as_str)
-        .is_some());
+    assert!(
+        session
+            .upload_headers
+            .get(FILE_UPLOAD_TOKEN_HEADER)
+            .map(String::as_str)
+            .is_some()
+    );
     assert!(session.upload_id.is_none());
     assert!(session.file.id.starts_with("file_"));
     assert_eq!(session.file.storage_backend, "s3");

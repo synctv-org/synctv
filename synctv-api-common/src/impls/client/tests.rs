@@ -4,8 +4,8 @@ use super::convert::*;
 use crate::impls::ApiError;
 use async_trait::async_trait;
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 use synctv_core::models::{
     MediaId, Playlist, PlaylistBrowseAccessMode, PlaylistId, RoomGuestPermissionBits, RoomId,
@@ -305,8 +305,8 @@ async fn test_shared_room_actor_playlist_items_rejects_guest_without_media_resou
 }
 
 #[tokio::test]
-async fn test_shared_room_actor_playlist_items_rejects_guest_even_if_media_resource_permission_requested(
-) {
+async fn test_shared_room_actor_playlist_items_rejects_guest_even_if_media_resource_permission_requested()
+ {
     let requested = RoomPermissionSet(
         synctv_core::models::RoomAdminPermissionBits::BROWSE_LIBRARY
             | synctv_core::models::RoomAdminPermissionBits::USE_VOICE_CHAT,

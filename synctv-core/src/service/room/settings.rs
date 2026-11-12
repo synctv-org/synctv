@@ -1,11 +1,11 @@
 use crate::{
+    Error, Result,
     cache::CacheDomain,
     models::{
         AuditAction, AuditDetails, AuditTargetType, RoomId, RoomSettings,
         SettingsValidationContext, UserId,
     },
     service::optimistic_retry,
-    Error, Result,
 };
 
 use super::{RealtimeOutboxSettingsEventFactory, RoomService};

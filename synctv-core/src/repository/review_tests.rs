@@ -1,6 +1,6 @@
 use super::required_count;
-use crate::test_helpers::{err, ok};
 use crate::Error;
+use crate::test_helpers::{err, ok};
 
 #[test]
 fn required_count_rejects_missing_count_result() {

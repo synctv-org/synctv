@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::{models::UserId, service::UserService, Error, Result};
+use crate::{Error, Result, models::UserId, service::UserService};
 
 impl UserService {
     pub(crate) async fn cache_username_best_effort(
@@ -151,14 +151,14 @@ impl UserService {
     }
 
     pub(crate) async fn notify_user_invalidation(&self, user_id: &UserId) {
-        if let Some(ref service) = self.cache_invalidation {
-            if let Err(e) = service.invalidate_and_broadcast_user(user_id).await {
-                tracing::warn!(
-                    error = %e,
-                    user_id = %user_id,
-                    "Failed to broadcast user cache invalidation"
-                );
-            }
+        if let Some(ref service) = self.cache_invalidation
+            && let Err(e) = service.invalidate_and_broadcast_user(user_id).await
+        {
+            tracing::warn!(
+                error = %e,
+                user_id = %user_id,
+                "Failed to broadcast user cache invalidation"
+            );
         }
     }
 }

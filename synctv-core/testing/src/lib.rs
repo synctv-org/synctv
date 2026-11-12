@@ -30,28 +30,27 @@ pub(crate) fn test_temp_dir() -> PathBuf {
 }
 
 pub use external_service::{
-    start_external_service, ExternalServiceContainer, ExternalServiceRequest,
+    ExternalServiceContainer, ExternalServiceRequest, start_external_service,
 };
 pub use l2_envelope::{timestamped_l2_envelope, unversioned_l2_envelope, versioned_l2_envelope};
 pub use postgres::{
-    connect_test_pool_url, create_test_database_url_with_label,
+    TestContainer, TestDatabase, connect_test_pool_url, create_test_database_url_with_label,
     create_test_database_with_db_and_label, create_test_database_with_options_and_label,
     create_test_pool, create_test_pool_with_db_and_label, create_test_pool_with_options_and_label,
     ensure_audit_partition_for, ensure_chat_partition_for, ensure_notification_partition_for,
-    ensure_playback_history_partition_for, postgres_connection_url_with_credentials, TestContainer,
-    TestDatabase,
+    ensure_playback_history_partition_for, postgres_connection_url_with_credentials,
 };
 pub use redis::{
-    redis_connection_manager, redis_multiplexed_connection, start_redis,
+    RedisContainer, redis_connection_manager, redis_multiplexed_connection, start_redis,
     start_redis_client_manager, start_redis_client_manager_with_label,
     start_redis_client_url_with_label, start_redis_handle, start_redis_url,
     start_redis_url_with_label, start_redis_with_client, test_redis_key_prefix,
-    wait_for_redis_ready, RedisContainer,
+    wait_for_redis_ready,
 };
-pub use result::{err, ok, some, TestOptionExt, TestResultExt};
+pub use result::{TestOptionExt, TestResultExt, err, ok, some};
 pub use rustfs::{
-    start_rustfs, test_rustfs_base_path, test_rustfs_bucket_name, RustfsContainer, RustfsS3Config,
-    RUSTFS_ACCESS_KEY, RUSTFS_REGION, RUSTFS_SECRET_KEY,
+    RUSTFS_ACCESS_KEY, RUSTFS_REGION, RUSTFS_SECRET_KEY, RustfsContainer, RustfsS3Config,
+    start_rustfs, test_rustfs_base_path, test_rustfs_bucket_name,
 };
 pub use services::{
     create_empty_provider_instance_manager, create_test_brute_force_protection_service,
@@ -68,5 +67,5 @@ pub use source_config::{
 };
 #[cfg(feature = "streaming")]
 pub use streaming::{
-    aac_test_tag, avc_test_tag, RtmpMediaMessage, RtmpMediaType, RtmpPlayer, RtmpPublisher,
+    RtmpMediaMessage, RtmpMediaType, RtmpPlayer, RtmpPublisher, aac_test_tag, avc_test_tag,
 };

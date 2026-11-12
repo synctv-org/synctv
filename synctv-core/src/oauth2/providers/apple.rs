@@ -6,9 +6,9 @@
 
 use super::oidc::OidcProvider;
 use super::validate_required_oauth2_field;
+use crate::Error;
 use crate::oauth2::{OAuth2Authorization, OAuth2AuthorizationMode, OAuth2UserInfo, Provider};
 use crate::service::OAuth2ProviderPrivateConfig;
-use crate::Error;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -227,12 +227,16 @@ mod tests {
         .checked("Apple provider should be created");
 
         assert!(provider.validate_authorization_redirect_url(None).is_ok());
-        assert!(provider
-            .validate_authorization_redirect_url(Some(redirect_url))
-            .is_ok());
-        assert!(provider
-            .validate_authorization_redirect_url(Some("https://other.example.com/callback"))
-            .is_ok());
+        assert!(
+            provider
+                .validate_authorization_redirect_url(Some(redirect_url))
+                .is_ok()
+        );
+        assert!(
+            provider
+                .validate_authorization_redirect_url(Some("https://other.example.com/callback"))
+                .is_ok()
+        );
     }
 
     #[test]
@@ -255,9 +259,11 @@ mod tests {
         let Err(error) = result else {
             panic!("Apple factory should reject OIDC config");
         };
-        assert!(error
-            .to_string()
-            .contains("Apple provider requires apple config"));
+        assert!(
+            error
+                .to_string()
+                .contains("Apple provider requires apple config")
+        );
     }
 
     #[test]

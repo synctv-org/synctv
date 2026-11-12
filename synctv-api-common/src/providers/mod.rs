@@ -27,11 +27,11 @@ use synctv_realtime::fanout::RealtimeEventService;
 pub use alist::{AlistApiImpl, ProviderApiRuntime};
 pub use bilibili::BilibiliApiImpl;
 pub use cloudreve::CloudreveApiImpl;
+pub use common::{ProviderCommonApiImpl, ProviderCommonApiRuntime};
 pub use common::{
     provider_instance_name_for_provider, provider_instance_name_for_response,
     resolve_bound_instance_name,
 };
-pub use common::{ProviderCommonApiImpl, ProviderCommonApiRuntime};
 pub(crate) use discovery::{discovered_media, discovered_playlist};
 pub use douyin::DouyinApiImpl;
 pub use emby::EmbyApiImpl;

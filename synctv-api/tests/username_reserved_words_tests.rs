@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used)]
 
-use synctv_core::validation::{UsernameValidator, RESERVED_USERNAMES};
+use synctv_core::validation::{RESERVED_USERNAMES, UsernameValidator};
 
 #[test]
 fn test_reserved_usernames_are_rejected_case_insensitively() {

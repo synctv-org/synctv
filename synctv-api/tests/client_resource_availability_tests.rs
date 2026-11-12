@@ -11,8 +11,8 @@ use synctv_api::ClientApiImpl;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     models::{
-        room_settings::AllowGuestJoin, Media, MediaId, Playlist, PlaylistId, RoomId, SignupMethod,
-        User, UserId, UserRole, UserStatus,
+        Media, MediaId, Playlist, PlaylistId, RoomId, SignupMethod, User, UserId, UserRole,
+        UserStatus, room_settings::AllowGuestJoin,
     },
     repository::{MediaRepository, PlaylistRepository, SettingsRepository, UserRepository},
     service::{
@@ -20,7 +20,7 @@ use synctv_core::{
         RoomServiceOptions, RuntimeSettingsStore, SettingsService, UserService,
     },
 };
-use synctv_core_testing::{create_test_pool, create_test_pool_with_db_and_label, TestContainer};
+use synctv_core_testing::{TestContainer, create_test_pool, create_test_pool_with_db_and_label};
 use synctv_realtime::sync::{ConnectionLimits, ConnectionManager};
 
 fn public_id_codec() -> synctv_api::PublicIdCodec {

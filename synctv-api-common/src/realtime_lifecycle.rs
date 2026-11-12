@@ -205,17 +205,17 @@ impl RealtimeLifecycleService for DefaultRealtimeLifecycleService {
     ) -> Result<(), StreamError> {
         let room_id_key = room_id.to_string();
         let media_id_key = media_id.to_string();
-        if let Some(infra) = &self.live_streaming_infrastructure {
-            if let Err(error) = infra.kick_publisher(&room_id_key, &media_id_key).await {
-                let stream_error = StreamError::StreamHubError(error.to_string());
-                tracing::warn!(
-                    room_id = %room_id,
-                    media_id = %media_id,
-                    error = %stream_error,
-                    "Failed to kick local publisher"
-                );
-                return Err(stream_error);
-            }
+        if let Some(infra) = &self.live_streaming_infrastructure
+            && let Err(error) = infra.kick_publisher(&room_id_key, &media_id_key).await
+        {
+            let stream_error = StreamError::StreamHubError(error.to_string());
+            tracing::warn!(
+                room_id = %room_id,
+                media_id = %media_id,
+                error = %stream_error,
+                "Failed to kick local publisher"
+            );
+            return Err(stream_error);
         }
         Ok(())
     }
@@ -528,15 +528,15 @@ mod tests {
             other => {
                 return Err(test_error(format!(
                     "expected KickUser event, got {other:?}"
-                )))
+                )));
             }
         }
         Ok(())
     }
 
     #[tokio::test]
-    async fn test_realtime_lifecycle_disconnect_user_from_room_only_cleans_local_room_publishers(
-    ) -> TestResult {
+    async fn test_realtime_lifecycle_disconnect_user_from_room_only_cleans_local_room_publishers()
+    -> TestResult {
         let connection_service: Arc<dyn ConnectionRuntime> =
             Arc::new(ConnectionManager::new(ConnectionLimits::default()));
         let mut disconnect_rx = connection_service.subscribe_disconnect();

@@ -8,8 +8,8 @@ use bytes::Bytes;
 use moka::future::Cache;
 use std::fmt::Write as _;
 use std::time::Duration;
-use tonic::codec::CompressionEncoding;
 use tonic::Request;
+use tonic::codec::CompressionEncoding;
 use tracing::debug;
 
 use synctv_xiu::hls::DEFAULT_HLS_GENERATION_RETENTION;
@@ -21,8 +21,8 @@ use crate::util::{
 
 use super::connection_pool::GrpcConnectionPool;
 use super::proto::{
-    stream_relay_service_client::StreamRelayServiceClient, GetHlsPlaylistRequest,
-    GetHlsSegmentRequest,
+    GetHlsPlaylistRequest, GetHlsSegmentRequest,
+    stream_relay_service_client::StreamRelayServiceClient,
 };
 
 #[derive(Debug)]
@@ -484,7 +484,7 @@ mod tests {
         storage::{HlsStorage, MemoryStorage},
     };
     use tokio_util::sync::CancellationToken;
-    use tonic::transport::{server::TcpIncoming, Server};
+    use tonic::transport::{Server, server::TcpIncoming};
 
     type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -1075,20 +1075,22 @@ mod tests {
                 .await?,
             Some(Bytes::from_static(b"lease_epoch-2"))
         );
-        assert!(client
-            .get_playlist(
-                HlsRelayRoute::new(
-                    &relay_url,
-                    "room",
-                    "media",
-                    &replacement_generation_id_string,
-                    1,
-                ),
-                "/segments/",
-                ".ts",
-            )
-            .await
-            .is_err());
+        assert!(
+            client
+                .get_playlist(
+                    HlsRelayRoute::new(
+                        &relay_url,
+                        "room",
+                        "media",
+                        &replacement_generation_id_string,
+                        1,
+                    ),
+                    "/segments/",
+                    ".ts",
+                )
+                .await
+                .is_err()
+        );
 
         server_cancel.cancel();
         relay_cancel.cancel();
@@ -1117,19 +1119,21 @@ mod tests {
                 .await?,
             Some(Bytes::from_static(b"lease_epoch-2"))
         );
-        assert!(client
-            .get_segment(
-                HlsRelayRoute::new(
-                    &relay_url,
-                    "room",
-                    "media",
-                    &replacement_generation_id_string,
-                    2,
-                ),
-                "29676270_uncached",
-            )
-            .await
-            .is_err());
+        assert!(
+            client
+                .get_segment(
+                    HlsRelayRoute::new(
+                        &relay_url,
+                        "room",
+                        "media",
+                        &replacement_generation_id_string,
+                        2,
+                    ),
+                    "29676270_uncached",
+                )
+                .await
+                .is_err()
+        );
         Ok(())
     }
 }

@@ -3,13 +3,13 @@ use std::collections::HashMap;
 use sqlx::{Postgres, Transaction};
 
 use crate::{
+    Result,
     models::{RoomId, RoomMember, RoomRole, UserId},
     repository::room_member::{
         MemberPermissionExactVersionUpdate, MemberRolePermissionExactVersionUpdate,
         RemovedRoomMember,
     },
     service::{PermissionWriteFence, RoomService},
-    Result,
 };
 
 use super::permission_fence_guard::PendingRoomMemberPermissionFence;

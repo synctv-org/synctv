@@ -3,7 +3,7 @@ use {
     crate::bytesio::net_io::TNetIO,
     crate::flv::amf0::{amf0_writer::Amf0Writer, define::Amf0ValueType},
     crate::rtmp::{
-        chunk::{define as chunk_define, packetizer::ChunkPacketizer, ChunkInfo},
+        chunk::{ChunkInfo, define as chunk_define, packetizer::ChunkPacketizer},
         messages::define as messages_define,
     },
     indexmap::IndexMap,

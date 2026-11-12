@@ -1,9 +1,9 @@
 use sqlx::{Postgres, Transaction};
 
 use crate::{
+    Error, Result,
     models::{OpaquePasswordRecord, ReviewStatus, SignupMethod, UserId},
     service::UserService,
-    Error, Result,
 };
 
 use super::super::super::registration_types::{

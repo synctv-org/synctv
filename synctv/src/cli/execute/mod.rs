@@ -2,9 +2,9 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, Context, Result};
-use serde::de::DeserializeOwned;
+use anyhow::{Context, Result, anyhow, bail};
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use synctv_management::proto as management_proto;
 
 use crate::admin_client::RemoteAdminSession;
@@ -16,8 +16,9 @@ use super::commands::*;
 use super::completion::execute_completion;
 use super::context::{CliConfigContext, RemoteCliContext};
 use super::output::{
-    config_json_for_display, mask_connection_url, print_humanized_structured_output, print_json,
-    print_toml, print_yaml, redact_config_for_display, ConfigOutputFormat, RemoteOutputFormat,
+    ConfigOutputFormat, RemoteOutputFormat, config_json_for_display, mask_connection_url,
+    print_humanized_structured_output, print_json, print_toml, print_yaml,
+    redact_config_for_display,
 };
 use super::output_dto::{
     GetPlaybackCliOutput, KickStreamCliOutput, PlaybackPullUrlCliOutput, PlaybackStartCliOutput,
@@ -28,14 +29,14 @@ const MANAGEMENT_UNARY_RPC_TIMEOUT: Duration = Duration::from_secs(30);
 const MANAGEMENT_STOP_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 
 macro_rules! management_unary_call {
-    ($session:expr, $operation:expr, $method:ident, $request:expr) => {{
+    ($session:expr_2021, $operation:expr_2021, $method:ident, $request:expr_2021) => {{
         let mut client = $session.management_client();
         management_unary_response($operation, client.$method($request)).await
     }};
 }
 
 macro_rules! provider_call {
-    ($args:expr, $method:ident, $wrapper:ident, $request:expr) => {{
+    ($args:expr_2021, $method:ident, $wrapper:ident, $request:expr_2021) => {{
         let access = &$args.access;
         let remote = &access.remote;
         let (session, actor) = connect_provider_actor_access(access).await?;
@@ -116,13 +117,13 @@ fn log_startup_diagnostics(config: &crate::app_config::AppConfig) {
 }
 
 #[cfg(test)]
-pub(in crate::cli) use db::{database_summary, DatabaseCliOutput};
+pub(in crate::cli) use db::{DatabaseCliOutput, database_summary};
 #[cfg(test)]
 pub(in crate::cli) use serve::switch_process_working_dir_to_data_dir;
 #[cfg(test)]
 pub(in crate::cli) use stop::{
-    stop_stream_disconnect_can_be_treated_as_success, stop_stream_end_can_be_treated_as_success,
-    synthesize_stop_completion_if_needed, StopServerEventOutput, StopServerOutput,
+    StopServerEventOutput, StopServerOutput, stop_stream_disconnect_can_be_treated_as_success,
+    stop_stream_end_can_be_treated_as_success, synthesize_stop_completion_if_needed,
 };
 
 pub async fn execute(cli: Cli) -> Result<()> {
@@ -1178,13 +1179,13 @@ fn media_source_config_json_to_proto(
     raw: &str,
 ) -> Result<synctv_proto::source_config::MediaSourceConfig> {
     use synctv_proto::source_config::{
-        media_source_config, AcFunMediaSourceConfig, AlistMediaSourceConfig,
-        BilibiliMediaSourceConfig, CctvMediaSourceConfig, CloudreveMediaSourceConfig,
-        DirectUrlMediaSourceConfig, DouyinMediaSourceConfig, DouyuMediaSourceConfig,
-        EmbyMediaSourceConfig, FnosMediaSourceConfig, HuyaMediaSourceConfig,
-        LiveProxyMediaSourceConfig, NextcloudMediaSourceConfig, QnapMediaSourceConfig,
-        SeafileMediaSourceConfig, SynologyMediaSourceConfig, TikTokMediaSourceConfig,
-        TrueNasMediaSourceConfig, TwitchMediaSourceConfig, YoutubeMediaSourceConfig,
+        AcFunMediaSourceConfig, AlistMediaSourceConfig, BilibiliMediaSourceConfig,
+        CctvMediaSourceConfig, CloudreveMediaSourceConfig, DirectUrlMediaSourceConfig,
+        DouyinMediaSourceConfig, DouyuMediaSourceConfig, EmbyMediaSourceConfig,
+        FnosMediaSourceConfig, HuyaMediaSourceConfig, LiveProxyMediaSourceConfig,
+        NextcloudMediaSourceConfig, QnapMediaSourceConfig, SeafileMediaSourceConfig,
+        SynologyMediaSourceConfig, TikTokMediaSourceConfig, TrueNasMediaSourceConfig,
+        TwitchMediaSourceConfig, YoutubeMediaSourceConfig, media_source_config,
     };
 
     let provider =
@@ -1363,11 +1364,11 @@ fn playlist_source_config_json_to_proto(
     raw: &str,
 ) -> Result<synctv_proto::source_config::PlaylistSourceConfig> {
     use synctv_proto::source_config::{
-        playlist_source_config, AlistPlaylistSourceConfig, BilibiliPlaylistSourceConfig,
-        CloudrevePlaylistSourceConfig, DouyinPlaylistSourceConfig, EmbyPlaylistSourceConfig,
-        FnosPlaylistSourceConfig, NextcloudPlaylistSourceConfig, QnapPlaylistSourceConfig,
-        SeafilePlaylistSourceConfig, SynologyPlaylistSourceConfig, TikTokPlaylistSourceConfig,
-        TrueNasPlaylistSourceConfig, TwitchPlaylistSourceConfig, YoutubePlaylistSourceConfig,
+        AlistPlaylistSourceConfig, BilibiliPlaylistSourceConfig, CloudrevePlaylistSourceConfig,
+        DouyinPlaylistSourceConfig, EmbyPlaylistSourceConfig, FnosPlaylistSourceConfig,
+        NextcloudPlaylistSourceConfig, QnapPlaylistSourceConfig, SeafilePlaylistSourceConfig,
+        SynologyPlaylistSourceConfig, TikTokPlaylistSourceConfig, TrueNasPlaylistSourceConfig,
+        TwitchPlaylistSourceConfig, YoutubePlaylistSourceConfig, playlist_source_config,
     };
 
     let provider = match provider {
@@ -1500,10 +1501,10 @@ where
         register_mask_path(path, &mut paths, &mut seen)?;
         let mut value = serde_json::from_str(raw_value)
             .unwrap_or_else(|_| serde_json::Value::String(raw_value.to_string()));
-        if let serde_json::Value::String(name) = &value {
-            if let Some(enum_value) = cli_settings_enum_value(path, name) {
-                value = serde_json::Value::Number(enum_value.into());
-            }
+        if let serde_json::Value::String(name) = &value
+            && let Some(enum_value) = cli_settings_enum_value(path, name)
+        {
+            value = serde_json::Value::Number(enum_value.into());
         }
         if value.is_null() {
             bail!("--set '{path}' cannot use null; use --unset {path}");

@@ -7,7 +7,7 @@ use reqwest::{Method, Url};
 use serde_json::json;
 use sha1::{Digest, Sha1};
 
-use crate::{check_response, fetch_json, text_with_limit, ProviderClientError};
+use crate::{ProviderClientError, check_response, fetch_json, text_with_limit};
 
 use super::{
     YoutubeChallengeSolver, YoutubeListItem, YoutubeListPage, YoutubePlayerResponse,
@@ -598,14 +598,13 @@ fn visit_renderers(value: &serde_json::Value, page: &mut YoutubeListPage) {
                     | "playlistVideoRenderer"
                     | "compactVideoRenderer"
                     | "reelItemRenderer" => {
-                        if let Some(item) = parse_video_renderer(value, key == "reelItemRenderer") {
-                            if !page
+                        if let Some(item) = parse_video_renderer(value, key == "reelItemRenderer")
+                            && !page
                                 .items
                                 .iter()
                                 .any(|existing| existing.video_id == item.video_id)
-                            {
-                                page.items.push(item);
-                            }
+                        {
+                            page.items.push(item);
                         }
                     }
                     "lockupViewModel" => {

@@ -212,22 +212,29 @@ impl TranscodeConfig {
         for preset in &self.presets {
             if preset.name.trim().is_empty() {
                 problems.push("transcode preset names must not be empty".to_string());
-            } else if let Err(error) = crate::util::validate_stream_id_component(
-                &super::rung_stream_name("0", &preset.name),
-                "rung stream name",
-            ) {
-                // The preset name rides inside the rung stream key, so it
-                // must satisfy the same identifier rules the registry and
-                // relay enforce (`:`, path separators, control characters).
-                problems.push(format!(
-                    "transcode preset name '{}' is not usable as a stream key: {error}",
-                    preset.name
-                ));
-            } else if !preset_names.insert(preset.name.clone()) {
-                problems.push(format!(
-                    "transcode preset name '{}' is duplicated",
-                    preset.name
-                ));
+            } else {
+                match crate::util::validate_stream_id_component(
+                    &super::rung_stream_name("0", &preset.name),
+                    "rung stream name",
+                ) {
+                    Err(error) => {
+                        // The preset name rides inside the rung stream key, so it
+                        // must satisfy the same identifier rules the registry and
+                        // relay enforce (`:`, path separators, control characters).
+                        problems.push(format!(
+                            "transcode preset name '{}' is not usable as a stream key: {error}",
+                            preset.name
+                        ));
+                    }
+                    _ => {
+                        if !preset_names.insert(preset.name.clone()) {
+                            problems.push(format!(
+                                "transcode preset name '{}' is duplicated",
+                                preset.name
+                            ));
+                        }
+                    }
+                }
             }
             if preset.height == 0 || preset.height > 4320 {
                 problems.push(format!(
@@ -299,15 +306,19 @@ mod tests {
             engine: WorkerEngine::Ffmpeg(FfmpegWorkerConfig::default()),
         });
         let problems = config.validate();
-        assert!(problems
-            .iter()
-            .any(|problem| problem.contains("duplicated")));
+        assert!(
+            problems
+                .iter()
+                .any(|problem| problem.contains("duplicated"))
+        );
 
         config.workers[0].name = Some("  ".to_string());
         let problems = config.validate();
-        assert!(problems
-            .iter()
-            .any(|problem| problem.contains("empty name")));
+        assert!(
+            problems
+                .iter()
+                .any(|problem| problem.contains("empty name"))
+        );
     }
 
     #[test]
@@ -320,12 +331,16 @@ mod tests {
             ..base
         });
         let problems = config.validate();
-        assert!(problems
-            .iter()
-            .any(|problem| problem.contains("duplicated")));
-        assert!(problems
-            .iter()
-            .any(|problem| problem.contains("not usable as a stream key")));
+        assert!(
+            problems
+                .iter()
+                .any(|problem| problem.contains("duplicated"))
+        );
+        assert!(
+            problems
+                .iter()
+                .any(|problem| problem.contains("not usable as a stream key"))
+        );
     }
 
     #[test]
@@ -335,10 +350,12 @@ mod tests {
             max_concurrent: 0,
             binary: "ffmpeg".to_string(),
         });
-        assert!(config
-            .validate()
-            .iter()
-            .any(|problem| problem.contains("max_concurrent must be at least 1")));
+        assert!(
+            config
+                .validate()
+                .iter()
+                .any(|problem| problem.contains("max_concurrent must be at least 1"))
+        );
     }
 
     #[test]

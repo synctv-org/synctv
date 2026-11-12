@@ -14,7 +14,7 @@ use super::{
     DouyuSession, DouyuStreamFormat, DouyuVariant,
 };
 use crate::{
-    check_response, fetch_json, text_with_limit, ProviderClientError, PROVIDER_USER_AGENT,
+    PROVIDER_USER_AGENT, ProviderClientError, check_response, fetch_json, text_with_limit,
 };
 
 const DOUYU_ORIGIN: &str = "https://www.douyu.com";
@@ -635,9 +635,11 @@ mod tests {
         };
         let qualities = qualities(&data);
         assert_eq!(qualities.len(), 6);
-        assert!(qualities
-            .iter()
-            .any(|value| value.codec == DouyuCodec::Hevc));
+        assert!(
+            qualities
+                .iter()
+                .any(|value| value.codec == DouyuCodec::Hevc)
+        );
         assert!(qualities.iter().any(|value| value.codec == DouyuCodec::Aac));
         assert!(qualities.iter().all(|value| !value.cdn.starts_with("scdn")));
     }

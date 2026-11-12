@@ -46,10 +46,12 @@ fn test_build_wildcard_cors_response() -> TestResult {
         response_header(&response, "Access-Control-Max-Age").transpose()?,
         Some("86400")
     );
-    assert!(response
-        .headers()
-        .get("Access-Control-Allow-Credentials")
-        .is_none());
+    assert!(
+        response
+            .headers()
+            .get("Access-Control-Allow-Credentials")
+            .is_none()
+    );
     assert!(response.headers().get("Vary").is_none());
     Ok(())
 }
@@ -59,10 +61,12 @@ fn test_build_no_origin_cors_response() -> TestResult {
     let response = build_no_origin_cors_response();
 
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
-    assert!(response
-        .headers()
-        .get("Access-Control-Allow-Origin")
-        .is_none());
+    assert!(
+        response
+            .headers()
+            .get("Access-Control-Allow-Origin")
+            .is_none()
+    );
     assert_eq!(
         response_header(&response, "Access-Control-Allow-Methods").transpose()?,
         Some("GET, HEAD, OPTIONS")
@@ -96,10 +100,12 @@ fn test_build_allowed_cors_response() -> TestResult {
         response_header(&response, "Access-Control-Allow-Origin").transpose()?,
         Some(origin)
     );
-    assert!(response
-        .headers()
-        .get("Access-Control-Allow-Credentials")
-        .is_none());
+    assert!(
+        response
+            .headers()
+            .get("Access-Control-Allow-Credentials")
+            .is_none()
+    );
     assert_eq!(
         response_header(&response, "Vary").transpose()?,
         Some("Origin")
@@ -126,10 +132,12 @@ fn test_handle_cors_preflight_no_origin_header() {
     let response = handle_cors_preflight(None, &config);
 
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
-    assert!(response
-        .headers()
-        .get("Access-Control-Allow-Origin")
-        .is_none());
+    assert!(
+        response
+            .headers()
+            .get("Access-Control-Allow-Origin")
+            .is_none()
+    );
 }
 
 #[test]
@@ -151,10 +159,12 @@ fn test_handle_cors_preflight_origin_allowed() -> TestResult {
         response_header(&response, "Access-Control-Allow-Origin").transpose()?,
         Some(allowed_origin)
     );
-    assert!(response
-        .headers()
-        .get("Access-Control-Allow-Credentials")
-        .is_none());
+    assert!(
+        response
+            .headers()
+            .get("Access-Control-Allow-Credentials")
+            .is_none()
+    );
     assert_eq!(
         response_header(&response, "Vary").transpose()?,
         Some("Origin")

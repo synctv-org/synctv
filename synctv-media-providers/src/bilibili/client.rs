@@ -2,13 +2,13 @@
 #![allow(clippy::must_use_candidate)]
 
 use std::collections::HashMap;
+use std::future::Future;
 #[cfg(not(any(feature = "tls-webpki-roots", feature = "tls-native-roots")))]
 use std::future::ready;
-use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -17,7 +17,7 @@ use futures_util::{SinkExt, StreamExt};
 use md5::{Digest, Md5};
 use regex::Regex;
 use reqwest::Client;
-use serde::{de::DeserializeOwned, Deserialize};
+use serde::{Deserialize, de::DeserializeOwned};
 use synctv_common::ssrf::SsrfGuard;
 #[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots"))]
 use tokio::net::TcpStream;
@@ -25,13 +25,13 @@ use tokio::sync::{Mutex as AsyncMutex, OnceCell};
 use tokio::task::JoinHandle;
 #[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots"))]
 use tokio_tungstenite::client_async_tls_with_config;
+use tokio_tungstenite::tungstenite::Message;
 #[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots", test))]
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
-use tokio_tungstenite::tungstenite::Message;
 
 use super::types;
 use crate::error::with_retry;
-use crate::error::{check_response, json_with_limit, ProviderClientError as BilibiliError};
+use crate::error::{ProviderClientError as BilibiliError, check_response, json_with_limit};
 
 static RE_BVID: LazyLock<Result<Regex, regex::Error>> =
     LazyLock::new(|| Regex::new(r"BV[a-zA-Z0-9]+"));
@@ -663,11 +663,9 @@ impl BilibiliClient {
         };
 
         // Fast path: serve a valid cached key without acquiring the refresh lock.
-        if !force_refresh {
-            if let Some(key) = self.wbi_state.get_valid_wbi_key() {
-                self.wbi_state.record_success();
-                return Ok(key);
-            }
+        if !force_refresh && let Some(key) = self.wbi_state.get_valid_wbi_key() {
+            self.wbi_state.record_success();
+            return Ok(key);
         }
 
         if self.wbi_state.has_exceeded_max_failures() {
@@ -1249,13 +1247,13 @@ impl BilibiliClient {
         }
 
         // Check data.status field -- non-zero indicates SMS login failure
-        if let Some(data) = &json.data {
-            if data.status != 0 {
-                return Err(BilibiliError::Api {
-                    code: i64::from(data.status),
-                    message: format!("SMS login failed with status: {}", data.status),
-                });
-            }
+        if let Some(data) = &json.data
+            && data.status != 0
+        {
+            return Err(BilibiliError::Api {
+                code: i64::from(data.status),
+                message: format!("SMS login failed with status: {}", data.status),
+            });
         }
 
         if cookies.is_empty() {
@@ -3658,10 +3656,10 @@ impl LiveDanmakuConnection {
         let mut handle_guard = self.heartbeat_handle.lock().await;
 
         // Already running
-        if let Some(ref handle) = *handle_guard {
-            if !handle.is_finished() {
-                return false;
-            }
+        if let Some(ref handle) = *handle_guard
+            && !handle.is_finished()
+        {
+            return false;
         }
 
         // Reset stop flag
@@ -4129,11 +4127,10 @@ fn parse_danmaku_packet(data: &[u8]) -> std::vec::Vec<DanmakuMessage> {
             // Compressed data contains concatenated sub-packets with headers;
             // uncompressed (v0/v1) body is raw JSON.
             if protocol_version == 0 || protocol_version == 1 {
-                if let Ok(json) = serde_json::from_slice::<serde_json::Value>(payload) {
-                    if let Some(cmd) = json.get("cmd").and_then(|v| v.as_str()) {
+                if let Ok(json) = serde_json::from_slice::<serde_json::Value>(payload)
+                    && let Some(cmd) = json.get("cmd").and_then(|v| v.as_str()) {
                         messages.push(parse_danmaku_cmd(cmd, &json));
                     }
-                }
             } else {
                 // Iterate over ALL sub-packets inside the decompressed buffer
                 let mut offset = 0usize;
@@ -4152,11 +4149,10 @@ fn parse_danmaku_packet(data: &[u8]) -> std::vec::Vec<DanmakuMessage> {
                         break;
                     }
                     let sub_body = &payload[offset + hdr_len..offset + pkt_len];
-                    if let Ok(json) = serde_json::from_slice::<serde_json::Value>(sub_body) {
-                        if let Some(cmd) = json.get("cmd").and_then(|v| v.as_str()) {
+                    if let Ok(json) = serde_json::from_slice::<serde_json::Value>(sub_body)
+                        && let Some(cmd) = json.get("cmd").and_then(|v| v.as_str()) {
                             messages.push(parse_danmaku_cmd(cmd, &json));
                         }
-                    }
                     offset += pkt_len;
                 }
             }

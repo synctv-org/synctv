@@ -13,14 +13,14 @@
 //! 3. If the holder crashes, the lease expires and another pod acquires it
 //! 4. Uses optimistic concurrency (resourceVersion) to prevent split-brain
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::Context;
 use k8s_openapi::api::coordination::v1::Lease;
-use kube::api::{Api, PostParams};
 use kube::Client;
+use kube::api::{Api, PostParams};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
@@ -41,7 +41,7 @@ const DEFAULT_GRACE_PERIOD_MAX_SECS: u64 = 60;
 /// At the default renew interval of 10s, 3 failures = ~30s of no leader.
 const LEADER_VACANCY_THRESHOLD: u64 = 3;
 
-use super::{publish_leadership_event, LeadershipEvent};
+use super::{LeadershipEvent, publish_leadership_event};
 
 fn metric_i64(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)

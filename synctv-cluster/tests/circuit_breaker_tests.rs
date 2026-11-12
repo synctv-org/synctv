@@ -4,11 +4,11 @@
 //! These tests verify the circuit breaker behavior without requiring Redis.
 
 #![allow(clippy::unwrap_used)]
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use failsafe::{backoff, failure_policy, Config as CbConfig};
+use failsafe::{Config as CbConfig, backoff, failure_policy};
 
 /// Create a circuit breaker matching the production configuration:
 /// opens after 3 consecutive failures, exponential backoff 10s..60s.

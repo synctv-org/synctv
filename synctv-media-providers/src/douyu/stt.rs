@@ -81,9 +81,11 @@ mod tests {
         let message = encode(&[("type", "chatmsg"), ("txt", "a@b/c")]);
         let packet = packet(&message).expect("packet should encode");
         let mut buffer = packet[..8].to_vec();
-        assert!(take_packets(&mut buffer)
-            .expect("partial packet should parse")
-            .is_empty());
+        assert!(
+            take_packets(&mut buffer)
+                .expect("partial packet should parse")
+                .is_empty()
+        );
         buffer.extend_from_slice(&packet[8..]);
         let frames = take_packets(&mut buffer).expect("complete packet should parse");
         assert_eq!(frames.len(), 1);

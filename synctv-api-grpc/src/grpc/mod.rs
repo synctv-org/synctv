@@ -338,7 +338,7 @@ async fn set_registered_grpc_services_with_status(
     health_reporter.set_service_status("", status).await;
 
     macro_rules! set_service_status {
-        ($health_reporter:expr, $condition:expr, $service_type:ty) => {
+        ($health_reporter:expr_2021, $condition:expr_2021, $service_type:ty) => {
             if $condition {
                 if serving {
                     $health_reporter.set_serving::<$service_type>().await;
@@ -1465,8 +1465,8 @@ async fn build_axum_router_with_health(
                             Some(rx) => Box::pin(async move {
                                 if rx.changed().await.is_err() {
                                     tracing::debug!(
-                                    "Notification-to-realtime bridge shutdown signal channel closed"
-                                );
+                                        "Notification-to-realtime bridge shutdown signal channel closed"
+                                    );
                                 }
                             }),
                             None => Box::pin(std::future::pending()),
@@ -2329,21 +2329,21 @@ pub async fn serve(mut grpc_options: GrpcServerOptions<'_>) -> anyhow::Result<()
 #[cfg(test)]
 mod tests {
     use super::{
-        build_fallback_http_app_state, cluster_node_id, extract_client_ip,
-        grpc_service_registration_plan, grpc_unary_request_timeout, map_api_error,
-        relay_cancellation_token, set_registered_grpc_services_not_serving,
-        set_registered_grpc_services_serving, should_register_cluster_grpc_service,
-        should_register_email_service, should_register_livestream_relay_service,
-        validate_cluster_grpc_runtime_requirements, wait_for_grpc_shutdown,
-        FallbackHttpAppStateDeps, GrpcHealthRegistrationState,
+        FallbackHttpAppStateDeps, GrpcHealthRegistrationState, build_fallback_http_app_state,
+        cluster_node_id, extract_client_ip, grpc_service_registration_plan,
+        grpc_unary_request_timeout, map_api_error, relay_cancellation_token,
+        set_registered_grpc_services_not_serving, set_registered_grpc_services_serving,
+        should_register_cluster_grpc_service, should_register_email_service,
+        should_register_livestream_relay_service, validate_cluster_grpc_runtime_requirements,
+        wait_for_grpc_shutdown,
     };
     use crate::grpc::{ClientServiceImpl, ClientServiceOptions};
     use std::net::SocketAddr;
     use std::sync::Arc;
     use std::time::Duration;
     use synctv_api_common::impls::{
-        client::RoomActor, AdminApiImpl, AdminApiOptions, AdminApiRuntime, ClientApiImpl,
-        ClientApiOptions, ClientApiRuntime, ClientApiRuntimeServices, RequestExecutor,
+        AdminApiImpl, AdminApiOptions, AdminApiRuntime, ClientApiImpl, ClientApiOptions,
+        ClientApiRuntime, ClientApiRuntimeServices, RequestExecutor, client::RoomActor,
     };
     use synctv_api_common::providers::{
         AlistApiImpl, BilibiliApiImpl, CloudreveApiImpl, EmbyApiImpl, ProviderApiRuntime,
@@ -2543,9 +2543,9 @@ mod tests {
         assert_eq!(status.message(), "request budget exceeded");
     }
     use tonic::metadata::{MetadataKey, MetadataValue};
+    use tonic_health::pb::HealthCheckRequest;
     use tonic_health::pb::health_check_response::ServingStatus;
     use tonic_health::pb::health_server::Health;
-    use tonic_health::pb::HealthCheckRequest;
     use tonic_health::server::HealthService;
     use tower::ServiceExt;
 
@@ -3207,10 +3207,7 @@ mod tests {
             "standalone gRPC fallback HTTP state must reuse the injected connection service for client APIs"
         );
         assert!(
-            Arc::ptr_eq(
-                &admin_api.connection_service,
-                &connection_service
-            ),
+            Arc::ptr_eq(&admin_api.connection_service, &connection_service),
             "standalone gRPC fallback HTTP state must reuse the injected connection service for admin APIs"
         );
         assert!(
@@ -3499,13 +3496,11 @@ mod tests {
                     synctv_proto::client::watch_chat_events_event::Event::ResourceEvent(
                         changed,
                     ) => {
-                        if let Some(synctv_proto::client::resource_event::Payload::ChatEvent(
-                            chat,
-                        )) = changed.payload.as_ref()
+                        if let Some(synctv_proto::client::resource_event::Payload::ChatEvent(chat)) =
+                            changed.payload.as_ref()
+                            && let Some(message) = chat.message.as_ref()
                         {
-                            if let Some(message) = chat.message.as_ref() {
-                                rendered.push_str(&message.content);
-                            }
+                            rendered.push_str(&message.content);
                         }
                     }
                     synctv_proto::client::watch_chat_events_event::Event::Observed(_) => {}
@@ -3816,27 +3811,33 @@ mod tests {
     fn test_user_notification_fanout_requires_distributed_delivery_only_when_available() {
         let requirement = RealtimeDeliveryRequirement::DistributedIfAvailable;
 
-        assert!(!RealtimeDeliveryOutcome::from_publish_only(
-            false,
-            RealtimeMetrics {
-                distributed_enabled: true,
-            },
-        )
-        .satisfies(requirement));
-        assert!(RealtimeDeliveryOutcome::from_publish_only(
-            true,
-            RealtimeMetrics {
-                distributed_enabled: true,
-            },
-        )
-        .satisfies(requirement));
-        assert!(RealtimeDeliveryOutcome::from_publish_only(
-            false,
-            RealtimeMetrics {
-                distributed_enabled: false,
-            },
-        )
-        .satisfies(requirement));
+        assert!(
+            !RealtimeDeliveryOutcome::from_publish_only(
+                false,
+                RealtimeMetrics {
+                    distributed_enabled: true,
+                },
+            )
+            .satisfies(requirement)
+        );
+        assert!(
+            RealtimeDeliveryOutcome::from_publish_only(
+                true,
+                RealtimeMetrics {
+                    distributed_enabled: true,
+                },
+            )
+            .satisfies(requirement)
+        );
+        assert!(
+            RealtimeDeliveryOutcome::from_publish_only(
+                false,
+                RealtimeMetrics {
+                    distributed_enabled: false,
+                },
+            )
+            .satisfies(requirement)
+        );
     }
 
     #[test]

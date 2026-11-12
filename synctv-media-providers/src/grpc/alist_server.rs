@@ -3,8 +3,8 @@
 //! Thin wrapper around `AlistService` that implements gRPC server trait.
 
 use super::alist::{
-    alist_server::Alist, FsGetReq, FsGetResp, FsListReq, FsListResp, FsOtherReq, FsOtherResp,
-    FsSearchReq, FsSearchResp, LoginReq, LoginResp, MeReq, MeResp,
+    FsGetReq, FsGetResp, FsListReq, FsListResp, FsOtherReq, FsOtherResp, FsSearchReq, FsSearchResp,
+    LoginReq, LoginResp, MeReq, MeResp, alist_server::Alist,
 };
 use super::error_mapper::map_provider_error;
 use crate::alist::{AlistInterface, AlistService as AlistServiceImpl};

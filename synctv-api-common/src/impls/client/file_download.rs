@@ -41,8 +41,8 @@ where
 pub fn avatar_chunk_stream(
     download: synctv_core::models::FileObjectDownload,
 ) -> impl futures::Stream<Item = Result<synctv_proto::client::UserAvatarObjectResponse, ApiError>>
-       + Send
-       + 'static {
++ Send
++ 'static {
     generic_chunk_stream(
         download,
         |mime_type, content_manifest_sha256, data, content_range, total_size_bytes| {
@@ -61,8 +61,8 @@ pub fn chat_attachment_chunk_stream(
     room_id: String,
     download: synctv_core::models::FileObjectDownload,
 ) -> impl futures::Stream<Item = Result<synctv_proto::client::ChatAttachmentObjectResponse, ApiError>>
-       + Send
-       + 'static {
++ Send
++ 'static {
     generic_chunk_stream(
         download,
         move |mime_type, content_manifest_sha256, data, content_range, total_size_bytes| {
@@ -81,8 +81,8 @@ pub fn chat_attachment_chunk_stream(
 pub fn media_cover_chunk_stream(
     download: synctv_core::models::FileObjectDownload,
 ) -> impl futures::Stream<Item = Result<synctv_proto::client::MediaCoverObjectResponse, ApiError>>
-       + Send
-       + 'static {
++ Send
++ 'static {
     generic_chunk_stream(
         download,
         |mime_type, content_manifest_sha256, data, content_range, total_size_bytes| {
@@ -100,8 +100,8 @@ pub fn media_cover_chunk_stream(
 pub fn media_thumbnail_chunk_stream(
     download: synctv_core::models::FileObjectDownload,
 ) -> impl futures::Stream<Item = Result<synctv_proto::client::MediaThumbnailObjectResponse, ApiError>>
-       + Send
-       + 'static {
++ Send
++ 'static {
     generic_chunk_stream(
         download,
         |mime_type, content_manifest_sha256, data, content_range, total_size_bytes| {
@@ -119,8 +119,8 @@ pub fn media_thumbnail_chunk_stream(
 pub fn room_cover_chunk_stream(
     download: synctv_core::models::FileObjectDownload,
 ) -> impl futures::Stream<Item = Result<synctv_proto::client::RoomCoverObjectResponse, ApiError>>
-       + Send
-       + 'static {
++ Send
++ 'static {
     generic_chunk_stream(
         download,
         |mime_type, content_manifest_sha256, data, content_range, total_size_bytes| {
@@ -138,8 +138,8 @@ pub fn room_cover_chunk_stream(
 pub fn playlist_cover_chunk_stream(
     download: synctv_core::models::FileObjectDownload,
 ) -> impl futures::Stream<Item = Result<synctv_proto::client::PlaylistCoverObjectResponse, ApiError>>
-       + Send
-       + 'static {
++ Send
++ 'static {
     generic_chunk_stream(
         download,
         |mime_type, content_manifest_sha256, data, content_range, total_size_bytes| {

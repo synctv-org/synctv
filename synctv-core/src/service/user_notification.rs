@@ -4,16 +4,15 @@
 //! These are database-backed notifications that persist until read/deleted
 
 use crate::{
+    Error, Result,
     models::{
         id::UserId,
         notification::{
-            default_notification_data, CreateNotificationRequest, MarkAllAsReadRequest,
-            MarkAsReadRequest, Notification, NotificationData, NotificationListQuery,
-            NotificationType,
+            CreateNotificationRequest, MarkAllAsReadRequest, MarkAsReadRequest, Notification,
+            NotificationData, NotificationListQuery, NotificationType, default_notification_data,
         },
     },
     repository::NotificationRepository,
-    Error, Result,
 };
 
 /// Event emitted when a notification is created, for real-time push.

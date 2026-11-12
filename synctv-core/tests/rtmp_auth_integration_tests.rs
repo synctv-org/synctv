@@ -28,7 +28,7 @@ use synctv_core::{
         RoomService, UserService,
     },
 };
-use synctv_core_testing::{create_test_pool, ok, some, start_redis, RedisContainer, TestContainer};
+use synctv_core_testing::{RedisContainer, TestContainer, create_test_pool, ok, some, start_redis};
 
 async fn create_test_infra() -> (
     TestContainer,

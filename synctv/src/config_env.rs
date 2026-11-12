@@ -200,36 +200,35 @@ pub(crate) fn apply_env_overrides_with(
             }
             Ok(())
         };
-    let env_override_parse = |name: &str,
-                              target: &mut dyn std::any::Any|
-     -> Result<(), ConfigError> {
-        macro_rules! parse_into {
-                    ($ty:ty) => {
-                        if let Some(target) = target.downcast_mut::<$ty>() {
-                            if let Some(val) = get_env(name) {
-                                let parsed = val.parse().map_err(|error| {
-                                    ConfigError::Message(format!(
-                                        "Invalid value for environment variable {name}: '{val}' ({error})"
-                                    ))
-                                })?;
-                                *target = parsed;
-                            }
-                            return Ok(());
-                        }
-                    };
+    let env_override_parse =
+        |name: &str, target: &mut dyn std::any::Any| -> Result<(), ConfigError> {
+            macro_rules! parse_into {
+            ($ty:ty) => {
+                if let Some(target) = target.downcast_mut::<$ty>() {
+                    if let Some(val) = get_env(name) {
+                        let parsed = val.parse().map_err(|error| {
+                            ConfigError::Message(format!(
+                                "Invalid value for environment variable {name}: '{val}' ({error})"
+                            ))
+                        })?;
+                        *target = parsed;
+                    }
+                    return Ok(());
                 }
-        parse_into!(u16);
-        parse_into!(u8);
-        parse_into!(u32);
-        parse_into!(u64);
-        parse_into!(usize);
-        parse_into!(i32);
-        parse_into!(i64);
-        parse_into!(f64);
-        Err(ConfigError::Message(format!(
-            "Unsupported environment override target type for {name}"
-        )))
-    };
+            };
+        }
+            parse_into!(u16);
+            parse_into!(u8);
+            parse_into!(u32);
+            parse_into!(u64);
+            parse_into!(usize);
+            parse_into!(i32);
+            parse_into!(i64);
+            parse_into!(f64);
+            Err(ConfigError::Message(format!(
+                "Unsupported environment override target type for {name}"
+            )))
+        };
     let env_override_bool = |name: &str, target: &mut bool| -> Result<(), ConfigError> {
         if let Some(val) = get_env(name) {
             match val.to_lowercase().as_str() {
@@ -670,8 +669,8 @@ pub(crate) fn apply_env_overrides_with(
             "sentinel" => config.redis.deployment_mode = RedisDeploymentMode::Sentinel,
             _ => {
                 return Err(ConfigError::Message(format!(
-                        "Invalid value for environment variable SYNCTV_REDIS_DEPLOYMENT_MODE: '{val}' (expected one of: standalone, sentinel)"
-                    )));
+                    "Invalid value for environment variable SYNCTV_REDIS_DEPLOYMENT_MODE: '{val}' (expected one of: standalone, sentinel)"
+                )));
             }
         }
         Ok(())
@@ -979,8 +978,8 @@ pub(crate) fn apply_env_overrides_with(
             "peer_to_peer" => config.webrtc.mode = WebRTCMode::PeerToPeer,
             _ => {
                 return Err(ConfigError::Message(format!(
-                        "Invalid value for environment variable SYNCTV_WEBRTC_MODE: '{val}' (expected one of: signaling_only, peer_to_peer)"
-                    )));
+                    "Invalid value for environment variable SYNCTV_WEBRTC_MODE: '{val}' (expected one of: signaling_only, peer_to_peer)"
+                )));
             }
         }
         Ok(())
@@ -1614,9 +1613,11 @@ mod tests {
         let error = apply_env_overrides_with(&mut config, &|name| env.get(name).cloned())
             .expect_err("invalid QUIC port should be rejected");
 
-        assert!(error
-            .to_string()
-            .contains("SYNCTV_SERVER_QUIC_PORT: 'not-a-port'"));
+        assert!(
+            error
+                .to_string()
+                .contains("SYNCTV_SERVER_QUIC_PORT: 'not-a-port'")
+        );
     }
 
     #[test]

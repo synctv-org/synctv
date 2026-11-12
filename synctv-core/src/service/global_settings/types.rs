@@ -1530,8 +1530,8 @@ impl PublicSettings {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_rtmp_advertise_address, validate_webrtc_settings, IceServerList, PermissionSet,
-        WebRtcRuntimeSettings,
+        IceServerList, PermissionSet, WebRtcRuntimeSettings, parse_rtmp_advertise_address,
+        validate_webrtc_settings,
     };
     use crate::models::RoomAdminPermissionBits;
     use std::str::FromStr;
@@ -1565,18 +1565,22 @@ mod tests {
     #[test]
     fn voice_participant_limit_accepts_mesh_operating_range() {
         for max_voice_participants_per_room in [2, 8, 32] {
-            assert!(validate_webrtc_settings(&WebRtcRuntimeSettings {
-                external_ice_servers: IceServerList::new(),
-                max_voice_participants_per_room,
-            })
-            .is_ok());
+            assert!(
+                validate_webrtc_settings(&WebRtcRuntimeSettings {
+                    external_ice_servers: IceServerList::new(),
+                    max_voice_participants_per_room,
+                })
+                .is_ok()
+            );
         }
         for max_voice_participants_per_room in [1, 33] {
-            assert!(validate_webrtc_settings(&WebRtcRuntimeSettings {
-                external_ice_servers: IceServerList::new(),
-                max_voice_participants_per_room,
-            })
-            .is_err());
+            assert!(
+                validate_webrtc_settings(&WebRtcRuntimeSettings {
+                    external_ice_servers: IceServerList::new(),
+                    max_voice_participants_per_room,
+                })
+                .is_err()
+            );
         }
     }
 

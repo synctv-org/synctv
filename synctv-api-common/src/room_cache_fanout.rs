@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use synctv_core::models::RoomId;
-use synctv_realtime::fanout::{publish_best_effort, RealtimeFanoutService};
+use synctv_realtime::fanout::{RealtimeFanoutService, publish_best_effort};
 use synctv_realtime::sync::{CacheTarget, PublishRequest, RealtimeEvent};
 
 pub use synctv_realtime::fanout::RoomCacheFanoutService;
@@ -103,7 +103,7 @@ mod tests {
                     other => {
                         return Err(test_error(format!(
                             "expected CacheTarget::Room, got {other:?}"
-                        )))
+                        )));
                     }
                 }
                 assert!(!event_id.is_empty());
@@ -111,7 +111,7 @@ mod tests {
             other => {
                 return Err(test_error(format!(
                     "expected CacheInvalidate, got {other:?}"
-                )))
+                )));
             }
         }
         Ok(())
@@ -139,7 +139,7 @@ mod tests {
             other => {
                 return Err(test_error(format!(
                     "expected CacheInvalidate, got {other:?}"
-                )))
+                )));
             }
         }
         Ok(())

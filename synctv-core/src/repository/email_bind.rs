@@ -3,8 +3,8 @@ use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::{
-    models::{EmailTokenType, UserId},
     Error, Result,
+    models::{EmailTokenType, UserId},
 };
 
 #[derive(Clone)]

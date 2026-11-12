@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use synctv_core::repository::realtime_outbox::{
-    RealtimeOutboxEvent, RealtimeOutboxRepository, REALTIME_OUTBOX_CHANNEL,
+    REALTIME_OUTBOX_CHANNEL, RealtimeOutboxEvent, RealtimeOutboxRepository,
 };
 use synctv_realtime::sync::RealtimeManager;
 use tokio::time::Instant;
@@ -126,10 +126,10 @@ async fn dispatch_once(
         }
     }
 
-    if !unprocessed_ids.is_empty() {
-        if let Err(error) = outbox.release_claims(worker_id, &unprocessed_ids).await {
-            warn!(error = %error, count = unprocessed_ids.len(), "Failed to release unprocessed realtime outbox claims");
-        }
+    if !unprocessed_ids.is_empty()
+        && let Err(error) = outbox.release_claims(worker_id, &unprocessed_ids).await
+    {
+        warn!(error = %error, count = unprocessed_ids.len(), "Failed to release unprocessed realtime outbox claims");
     }
 
     if cancel.is_cancelled() {

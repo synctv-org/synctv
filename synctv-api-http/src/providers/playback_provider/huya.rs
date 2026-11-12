@@ -1,7 +1,7 @@
 use axum::{
     extract::{Path, RawQuery, State},
     http::{HeaderMap, Method},
-    response::{sse::KeepAlive, IntoResponse, Sse},
+    response::{IntoResponse, Sse, sse::KeepAlive},
 };
 use futures::{FutureExt, StreamExt};
 #[cfg(feature = "openapi")]
@@ -11,10 +11,10 @@ use synctv_proto::playback_provider::huya::{
     WatchHuyaDanmakuRequest,
 };
 
-use crate::http::{middleware::RequestMetadata, AppResult, AppState};
+use crate::http::{AppResult, AppState, middleware::RequestMetadata};
 use crate::providers::playback_provider::transport::{
-    query, range_header, signed_query_fields, stream_http_response, target_url,
-    PlaybackProviderHttpResponse,
+    PlaybackProviderHttpResponse, query, range_header, signed_query_fields, stream_http_response,
+    target_url,
 };
 use synctv_api_common::impls::EndpointRateLimitCategory;
 

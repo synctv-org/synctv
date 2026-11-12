@@ -16,10 +16,10 @@ use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     credential_encryption::CredentialEncryption,
     models::{
-        room::AutoPlaySettings, room_settings::AutoPlay, Media, MediaId, PlayMode,
-        PlaybackAlistMedia, PlaybackMedia, PlaybackMediaProvider, Playlist, PlaylistId,
-        ProviderInstance, ProviderTarget, RoomAdminPermissionBits, RoomId, RoomMember, RoomRole,
-        RoomSettings, SortDirection, SourceProvider, User, UserId, UserRole, UserStatus,
+        Media, MediaId, PlayMode, PlaybackAlistMedia, PlaybackMedia, PlaybackMediaProvider,
+        Playlist, PlaylistId, ProviderInstance, ProviderTarget, RoomAdminPermissionBits, RoomId,
+        RoomMember, RoomRole, RoomSettings, SortDirection, SourceProvider, User, UserId, UserRole,
+        UserStatus, room::AutoPlaySettings, room_settings::AutoPlay,
     },
     provider::{
         DynamicListQuery, DynamicListResult, DynamicPagination, DynamicPlaylistItem,
@@ -37,7 +37,7 @@ use synctv_core::{
     service::{ProvidersManager, RemoteProviderManager},
 };
 use synctv_core_testing::{
-    create_test_pool, ensure_playback_history_partition_for, TestOptionExt, TestResultExt,
+    TestOptionExt, TestResultExt, create_test_pool, ensure_playback_history_partition_for,
 };
 fn make_user_service(pool: &PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
@@ -622,9 +622,11 @@ async fn insert_test_provider_instance(pool: &PgPool, name: &str, provider: &str
         timeout: "10s".to_string(),
         tls: false,
         insecure_tls: false,
-        providers: vec![provider
-            .parse::<SourceProvider>()
-            .checked("test provider should be known")],
+        providers: vec![
+            provider
+                .parse::<SourceProvider>()
+                .checked("test provider should be known"),
+        ],
         enabled: true,
         created_at: now,
         updated_at: now,
@@ -778,10 +780,12 @@ async fn test_sequential_advance_preserves_static_playlist_context() {
         .await
         .checked("history should be listed");
     assert_eq!(history.entries.len(), 2);
-    assert!(history
-        .entries
-        .iter()
-        .all(|entry| entry.playlist_id == Some(playlist.id)));
+    assert!(
+        history
+            .entries
+            .iter()
+            .all(|entry| entry.playlist_id == Some(playlist.id))
+    );
     let latest_entry = history
         .entries
         .first()
@@ -909,10 +913,12 @@ async fn test_playback_history_sort_delete_and_clear() {
         .await
         .checked("playback state should be readable");
     let position_before_delete = before_delete.computed_position();
-    assert!(playback
-        .delete_playback_history_entry_for_user(&room.id, owner.id, oldest.entries[1].id, None,)
-        .await
-        .checked("history entry should be deleted"));
+    assert!(
+        playback
+            .delete_playback_history_entry_for_user(&room.id, owner.id, oldest.entries[1].id, None,)
+            .await
+            .checked("history entry should be deleted")
+    );
     let after_delete = playback
         .get_state(&room.id)
         .await
@@ -923,15 +929,19 @@ async fn test_playback_history_sort_delete_and_clear() {
         after_delete.computed_position() >= position_before_delete - 0.1,
         "deleting history must not move active playback backwards"
     );
-    assert!(!playback
-        .delete_playback_history_entry_for_user(&room.id, owner.id, oldest.entries[1].id, None,)
-        .await
-        .checked("repeated history deletion should be idempotent"));
+    assert!(
+        !playback
+            .delete_playback_history_entry_for_user(&room.id, owner.id, oldest.entries[1].id, None,)
+            .await
+            .checked("repeated history deletion should be idempotent")
+    );
 
-    assert!(playback
-        .delete_playback_history_entry_for_user(&room.id, owner.id, newest.entries[0].id, None,)
-        .await
-        .checked("current history entry should be deleted"));
+    assert!(
+        playback
+            .delete_playback_history_entry_for_user(&room.id, owner.id, newest.entries[0].id, None,)
+            .await
+            .checked("current history entry should be deleted")
+    );
     let after_current_delete = playback
         .get_state(&room.id)
         .await
@@ -1302,15 +1312,19 @@ async fn test_deleted_media_and_playlist_cascade_playback_history() {
         .list_playback_history(&room.id, None, 20, SortDirection::Desc)
         .await
         .checked("history should be listed");
-    assert!(history
-        .entries
-        .iter()
-        .all(|entry| entry.media_id != Some(deleted_media.id)
-            && entry.media_id != Some(playlist_media.id)));
-    assert!(history
-        .entries
-        .iter()
-        .any(|entry| Some(entry.id) == history.history_cursor_id));
+    assert!(
+        history
+            .entries
+            .iter()
+            .all(|entry| entry.media_id != Some(deleted_media.id)
+                && entry.media_id != Some(playlist_media.id))
+    );
+    assert!(
+        history
+            .entries
+            .iter()
+            .any(|entry| Some(entry.id) == history.history_cursor_id)
+    );
 }
 
 #[tokio::test]
@@ -1380,14 +1394,18 @@ async fn test_history_view_permission_cannot_change_playback() {
         .id;
     let settings = make_settings_with_mode(PlayMode::Sequential);
 
-    assert!(playback
-        .play_next_for_user(&room.id, viewer.id, &settings, None)
-        .await
-        .is_err());
-    assert!(playback
-        .play_history_entry_for_user(&room.id, viewer.id, entry_id, None)
-        .await
-        .is_err());
+    assert!(
+        playback
+            .play_next_for_user(&room.id, viewer.id, &settings, None)
+            .await
+            .is_err()
+    );
+    assert!(
+        playback
+            .play_history_entry_for_user(&room.id, viewer.id, entry_id, None)
+            .await
+            .is_err()
+    );
     let state = playback
         .get_state(&room.id)
         .await

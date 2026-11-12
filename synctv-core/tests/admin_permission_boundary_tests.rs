@@ -13,13 +13,13 @@ use std::sync::Arc;
 use chrono::Utc;
 use sqlx::PgPool;
 use synctv_core::{
+    Error,
     cache::{KeyBuilder, UsernameCache},
     models::{RoomRole, User, UserId, UserRole, UserStatus},
     repository::UserRepository,
     service::{
         BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, RoomService, UserService,
     },
-    Error,
 };
 use synctv_core_testing::{create_test_pool, ok, some};
 // Test Infrastructure

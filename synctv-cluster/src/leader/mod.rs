@@ -240,11 +240,11 @@ use std::sync::Arc;
 
 use std::time::Duration;
 
-use tokio::sync::{broadcast, Mutex as TokioMutex};
+use tokio::sync::{Mutex as TokioMutex, broadcast};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use synctv_core::{service::DistributedLock, RedisConnectionRuntime, SharedStateProfile};
+use synctv_core::{RedisConnectionRuntime, SharedStateProfile, service::DistributedLock};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LeaderElectionMode {
@@ -431,7 +431,7 @@ pub fn build_managed_leader_runtime(
     options: LeaderRuntimeOptions,
     node_id: &str,
     shared_state_profile: &SharedStateProfile,
-) -> impl std::future::Future<Output = anyhow::Result<Arc<dyn ManagedLeaderRuntime>>> {
+) -> impl std::future::Future<Output = anyhow::Result<Arc<dyn ManagedLeaderRuntime>>> + use<> {
     let result = if options.cluster_enabled {
         match options.leader_election_mode {
             LeaderElectionMode::K8sLease => Err(anyhow::anyhow!(

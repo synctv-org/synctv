@@ -7,8 +7,8 @@
 //! - Connection management
 //! - Metrics and monitoring
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
@@ -666,15 +666,15 @@ impl RealtimeManager {
         }
 
         let mut local_sent = 0;
-        if event.delivers_to_room_channel() {
-            if let Some(room_id) = event.room_id().copied() {
-                local_sent = if event.is_critical() {
-                    self.message_hub
-                        .broadcast_critical_background(&room_id, &event)
-                } else {
-                    self.message_hub.broadcast(&room_id, &event)
-                };
-            }
+        if event.delivers_to_room_channel()
+            && let Some(room_id) = event.room_id().copied()
+        {
+            local_sent = if event.is_critical() {
+                self.message_hub
+                    .broadcast_critical_background(&room_id, &event)
+            } else {
+                self.message_hub.broadcast(&room_id, &event)
+            };
         }
         if event.delivers_to_admin_channel() {
             super::events::publish_admin_event(&self.admin_event_tx, event, "local");
@@ -829,17 +829,17 @@ impl RealtimeManager {
                                 // internal retry failed.
                                 warn!("Node key expired in Redis, internal auto-registration failed; \
                                        attempting re-registration with stored cluster_address");
-                                if let Err(e) = node_registry
+                                match node_registry
                                     .register(stored_cluster_address.clone())
                                     .await
-                                {
+                                { Err(e) => {
                                     error!(
                                         error = %e,
                                         "Re-registration with stored cluster_address also failed; will retry on next heartbeat"
                                     );
-                                } else {
+                                } _ => {
                                     info!("Re-registration with stored cluster_address succeeded");
-                                }
+                                }}
                             }
                             Ok(HeartbeatResult::EpochMismatch(remote_epoch)) => {
                                 // Increment epoch mismatch counter
@@ -853,8 +853,7 @@ impl RealtimeManager {
 
                                 if let Err(e) = node_registry
                                     .register(stored_cluster_address.clone())
-                                    .await
-                                {
+                                    .await {
                                     error!(
                                         error = %e,
                                         "Re-registration with stored cluster_address also failed after epoch mismatch"
@@ -879,13 +878,12 @@ impl RealtimeManager {
                                     synctv_core::metrics::cluster::CLUSTER_EPOCH_MISMATCH_QUARANTINE.set(1);
 
                                     // Resign leadership if we are the leader
-                                    if let Some(ref elector) = leader_elector {
-                                        if elector.is_leader() {
+                                    if let Some(ref elector) = leader_elector
+                                        && elector.is_leader() {
                                             warn!("Resigning leadership due to epoch mismatch (split-brain prevention)");
                                             // Call resign to immediately release the distributed lock
                                             elector.resign().await;
                                         }
-                                    }
                                 }
                             }
                             Ok(HeartbeatResult::EmptyAddress) => {
@@ -894,19 +892,19 @@ impl RealtimeManager {
                                      attempting re-registration with stored cluster_address ({})",
                                     stored_cluster_address
                                 );
-                                if let Err(e) = node_registry
+                                match node_registry
                                     .register(stored_cluster_address.clone())
                                     .await
-                                {
+                                { Err(e) => {
                                     error!(
                                         error = %e,
                                         "Re-registration with stored cluster_address failed; \
                                          node remains unreachable by peers"
                                     );
-                                } else {
+                                } _ => {
                                     info!("Re-registration with stored cluster_address succeeded; \
                                            node should be reachable again");
-                                }
+                                }}
                             }
                             Err(e) => {
                                 // Increment independent failure counter for business logic
@@ -974,10 +972,13 @@ impl RealtimeManager {
             // Unregister only after heartbeat has stopped, ensuring the
             // registration won't be re-created by a concurrent heartbeat tick.
             if let Some(ref registry) = state.node_registry {
-                if let Err(e) = registry.unregister().await {
-                    warn!(error = %e, "Failed to unregister node during shutdown");
-                } else {
-                    info!("Node unregistered from Redis during shutdown");
+                match registry.unregister().await {
+                    Err(e) => {
+                        warn!(error = %e, "Failed to unregister node during shutdown");
+                    }
+                    _ => {
+                        info!("Node unregistered from Redis during shutdown");
+                    }
                 }
             }
         }
@@ -990,7 +991,9 @@ impl RealtimeManager {
                 debug!("Critical-event retry tasks completed during shutdown");
             }
             Err(_) => {
-                warn!("Critical-event retry tasks did not finish within 5s timeout during shutdown; proceeding");
+                warn!(
+                    "Critical-event retry tasks did not finish within 5s timeout during shutdown; proceeding"
+                );
             }
         }
 
@@ -1111,18 +1114,18 @@ impl RealtimeManager {
         let mut local_sent = 0;
 
         // Get room_id for broadcasting
-        if event.delivers_to_room_channel() {
-            if let Some(room_id) = event.room_id() {
-                // Critical events must not be silently dropped on a full
-                // subscriber queue: deliver with a bounded wait in the
-                // background instead of the lossy try_send.
-                local_sent = if is_critical {
-                    self.message_hub
-                        .broadcast_critical_background(room_id, &event)
-                } else {
-                    self.message_hub.broadcast(room_id, &event)
-                };
-            }
+        if event.delivers_to_room_channel()
+            && let Some(room_id) = event.room_id()
+        {
+            // Critical events must not be silently dropped on a full
+            // subscriber queue: deliver with a bounded wait in the
+            // background instead of the lossy try_send.
+            local_sent = if is_critical {
+                self.message_hub
+                    .broadcast_critical_background(room_id, &event)
+            } else {
+                self.message_hub.broadcast(room_id, &event)
+            };
         }
 
         // Admin-routed events reach app-level handlers and user-targeted WebSocket handlers.

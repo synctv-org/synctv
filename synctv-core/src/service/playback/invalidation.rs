@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use tokio::task::JoinHandle;
@@ -7,10 +7,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::{
+    Error, Result,
     cache::{CacheInvalidationRuntime, InvalidationMessage, PlaybackStateCache},
     models::{RoomId, RoomPlaybackState},
     service::playback::PlaybackService,
-    Error, Result,
 };
 
 #[derive(Debug)]
@@ -166,27 +166,27 @@ impl PlaybackService {
     }
 
     pub async fn invalidate_playback_cache(&self, room_id: &RoomId) {
-        if let Some(ref service) = self.invalidation_service {
-            if let Err(error) = service.invalidate_playback_state(room_id).await {
-                tracing::warn!(
-                    error = %error,
-                    room_id = %room_id,
-                    "Failed to broadcast playback state cache invalidation"
-                );
-            }
+        if let Some(ref service) = self.invalidation_service
+            && let Err(error) = service.invalidate_playback_state(room_id).await
+        {
+            tracing::warn!(
+                error = %error,
+                room_id = %room_id,
+                "Failed to broadcast playback state cache invalidation"
+            );
         }
 
         let cache_key = room_id.to_string();
         self.playback_cache.invalidate(&cache_key).await;
 
-        if let Some(l2_cache) = self.playback_l2_cache() {
-            if let Err(error) = l2_cache.invalidate(room_id).await {
-                tracing::warn!(
-                    error = %error,
-                    room_id = %room_id,
-                    "Failed to invalidate playback state from L2 cache"
-                );
-            }
+        if let Some(l2_cache) = self.playback_l2_cache()
+            && let Err(error) = l2_cache.invalidate(room_id).await
+        {
+            tracing::warn!(
+                error = %error,
+                room_id = %room_id,
+                "Failed to invalidate playback state from L2 cache"
+            );
         }
     }
 

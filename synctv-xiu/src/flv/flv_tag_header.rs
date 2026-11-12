@@ -1,7 +1,7 @@
 use crate::bytesio::bytes_writer::BytesWriter;
 
 use {
-    super::{define, errors::FlvDemuxerError, Marshal, Unmarshal},
+    super::{Marshal, Unmarshal, define, errors::FlvDemuxerError},
     crate::bytesio::{bytes_errors::BytesWriteError, bytes_reader::BytesReader},
     bytes::BytesMut,
 };

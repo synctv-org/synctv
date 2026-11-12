@@ -1,9 +1,9 @@
 use futures::StreamExt;
 use std::sync::Arc;
 use synctv_core::models::{
+    AuditDetails, CredentialProviderInstanceName, NewProviderInstance, ProviderInstance,
     normalize_provider_instance_name, resolve_provider_instance_binding,
-    validate_provider_instance_name, AuditDetails, CredentialProviderInstanceName,
-    NewProviderInstance, ProviderInstance,
+    validate_provider_instance_name,
 };
 use synctv_core::models::{SortDirection as CoreSortDirection, UserId};
 use synctv_core::provider::ExecutionControl;

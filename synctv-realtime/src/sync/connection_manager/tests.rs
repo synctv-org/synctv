@@ -3,7 +3,7 @@ use super::model::system_time_to_unix_secs;
 use super::redis_state::DISTRIBUTED_COUNTER_TTL_SECONDS;
 use super::*;
 use std::time::UNIX_EPOCH;
-use synctv_core_testing::{start_redis_url_with_label, RedisContainer};
+use synctv_core_testing::{RedisContainer, start_redis_url_with_label};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 type TestResult = std::result::Result<(), BoxError>;

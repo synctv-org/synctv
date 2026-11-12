@@ -6,7 +6,7 @@ use synctv_core::{
     service::{ContentReportListQuery, ContentReportListScope},
 };
 
-use super::{content_report_row_to_proto, i64_to_i32_api, AdminApiImpl, ApiError, RequestContext};
+use super::{AdminApiImpl, ApiError, RequestContext, content_report_row_to_proto, i64_to_i32_api};
 
 fn content_report_list_query(
     api: &AdminApiImpl,

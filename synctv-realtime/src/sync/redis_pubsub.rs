@@ -1,12 +1,12 @@
 use anyhow::{Context, Result};
 use futures::stream::StreamExt;
-use redis::streams::StreamReadReply;
 use redis::AsyncCommands;
+use redis::streams::StreamReadReply;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use synctv_core::RedisCoordinationRuntime;
 use tokio::sync::{broadcast, mpsc, oneshot};
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
@@ -109,6 +109,7 @@ const BUFFER_WARN_THRESHOLD: usize =
 // deduplication, application-owned remote-event side effects, and local
 // broadcast uniformly.
 
+use super::RealtimeEvent;
 use super::backpressure::BufferPressureState;
 use super::backpressure::PublishBackpressure;
 use super::dedup::{DedupKey, MessageDeduplicator};
@@ -119,7 +120,6 @@ use super::transport::{
     RealtimeEventHandler, RealtimeMessageTransport, RealtimeMessageTransportConfig,
     RealtimeMessageTransportFactory, RealtimeMessageTransportRuntime,
 };
-use super::RealtimeEvent;
 use synctv_core::models::id::RoomId;
 
 enum SelectResult {
@@ -609,7 +609,7 @@ impl RedisPubSub {
 
                             // Macro to reduce duplication in shutdown flush logic
                             macro_rules! flush_event {
-                                ($req:expr, $is_critical:expr, $label:expr) => {{
+                                ($req:expr_2021, $is_critical:expr_2021, $label:expr_2021) => {{
                                     let mut req = $req;
                                     if flush_failed {
                                         if $is_critical {
@@ -1332,10 +1332,10 @@ impl RedisPubSub {
         // events to be published between the signal and snapshot completion,
         // leading to them being delivered via PubSub while catch-up is still
         // in progress and potentially processed out of order.
-        if let Some(ready_tx) = subscriber_ready_tx.take() {
-            if ready_tx.send(()).is_err() {
-                debug!("Redis subscriber readiness receiver was dropped after catch-up");
-            }
+        if let Some(ready_tx) = subscriber_ready_tx.take()
+            && ready_tx.send(()).is_err()
+        {
+            debug!("Redis subscriber readiness receiver was dropped after catch-up");
         }
 
         // Process incoming messages with dynamic room subscription management.
@@ -2268,13 +2268,13 @@ impl PublishRequest {
     }
 
     pub fn acknowledge_success(&mut self) {
-        if let Some(ack) = self.ack.take() {
-            if ack.send(Ok(())).is_err() {
-                debug!(
-                    event_type = %self.event.event_type(),
-                    "Redis publish ack receiver dropped before success acknowledgement"
-                );
-            }
+        if let Some(ack) = self.ack.take()
+            && ack.send(Ok(())).is_err()
+        {
+            debug!(
+                event_type = %self.event.event_type(),
+                "Redis publish ack receiver dropped before success acknowledgement"
+            );
         }
     }
 

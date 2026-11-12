@@ -2,10 +2,10 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 
+use super::RealtimeEvent;
 use super::dedup::MessageDeduplicator;
 use super::redis_pubsub::PublishRequest;
 use super::runtime::RoomMessageRuntime;
-use super::RealtimeEvent;
 use crate::error::Result;
 use synctv_core::models::RoomId;
 

@@ -7,13 +7,14 @@ use std::sync::Arc;
 use chrono::Utc;
 use sqlx::PgPool;
 use synctv_core::{
+    Error,
     cache::{KeyBuilder, UsernameCache},
     models::{
-        room_settings::{AllowAutoJoin, MaxMembers, RequireApproval},
         AddMemberOptions, DeletionSource, Media, MediaId, MyRoomListQuery, PageParams, Playlist,
         PlaylistId, ReviewRequestId, RoomAdminPermissionBits, RoomId, RoomListQuery, RoomRole,
         RoomSettings, RoomStatus, SourceProvider, UpsertRoomCategory, UpsertRoomLabel, User,
         UserId, UserRole, UserStatus,
+        room_settings::{AllowAutoJoin, MaxMembers, RequireApproval},
     },
     repository::{
         MediaRepository, PlaylistRepository, ReviewRepository, RoomMemberRepository,
@@ -26,9 +27,8 @@ use synctv_core::{
         RoomCategoryUpdate, RoomEvent, RoomPasswordPolicy, RoomService, RoomServiceOptions,
         RuntimeSettingsStore, SettingsService, UserService,
     },
-    Error,
 };
-use synctv_core_testing::{create_test_pool, TestOptionExt, TestResultExt};
+use synctv_core_testing::{TestOptionExt, TestResultExt, create_test_pool};
 
 async fn expire_kick_cooldown(pool: &PgPool, room_id: RoomId, user_id: UserId) {
     sqlx::query!(
@@ -937,20 +937,24 @@ async fn test_leave_room_member_succeeds() {
         .await
         .checked("test operation should succeed");
 
-    assert!(member_repo
-        .is_member(&room.id, &joiner.id)
-        .await
-        .checked("test operation should succeed"));
+    assert!(
+        member_repo
+            .is_member(&room.id, &joiner.id)
+            .await
+            .checked("test operation should succeed")
+    );
 
     room_service
         .leave_room(room.id, joiner.id)
         .await
         .checked("test operation should succeed");
 
-    assert!(!member_repo
-        .is_member(&room.id, &joiner.id)
-        .await
-        .checked("test operation should succeed"));
+    assert!(
+        !member_repo
+            .is_member(&room.id, &joiner.id)
+            .await
+            .checked("test operation should succeed")
+    );
 }
 
 #[tokio::test]
@@ -1238,26 +1242,32 @@ async fn test_leave_room_cleans_member_created_media_resources() {
         .await
         .checked("test operation should succeed");
 
-    assert!(!member_repo
-        .is_member(&room.id, &member.id)
-        .await
-        .checked("test operation should succeed"));
+    assert!(
+        !member_repo
+            .is_member(&room.id, &member.id)
+            .await
+            .checked("test operation should succeed")
+    );
     let preserved_playlist = playlist_repo
         .get_by_id(&playlist.id)
         .await
         .checked("test operation should succeed")
         .checked("ordinary playlist should remain after its creator leaves");
     assert_eq!(preserved_playlist.creator_id, Some(member.id));
-    assert!(playlist_repo
-        .get_by_id(&dynamic_playlist.id)
-        .await
-        .checked("test operation should succeed")
-        .is_none());
-    assert!(playlist_repo
-        .get_by_id(&nested_dynamic_playlist.id)
-        .await
-        .checked("test operation should succeed")
-        .is_none());
+    assert!(
+        playlist_repo
+            .get_by_id(&dynamic_playlist.id)
+            .await
+            .checked("test operation should succeed")
+            .is_none()
+    );
+    assert!(
+        playlist_repo
+            .get_by_id(&nested_dynamic_playlist.id)
+            .await
+            .checked("test operation should succeed")
+            .is_none()
+    );
     let preserved_static_child = playlist_repo
         .get_by_id(&preserved_static_child.id)
         .await
@@ -1270,11 +1280,13 @@ async fn test_leave_room_cleans_member_created_media_resources() {
         .checked("test operation should succeed")
         .checked("another member's media should survive malformed dynamic nesting");
     assert!(preserved_owner_media.playlist_id.is_none());
-    assert!(media_repo
-        .get_by_id(&media.id)
-        .await
-        .checked("test operation should succeed")
-        .is_none());
+    assert!(
+        media_repo
+            .get_by_id(&media.id)
+            .await
+            .checked("test operation should succeed")
+            .is_none()
+    );
 
     let listed_playlists = room_service
         .list_client_playlists(
@@ -1314,29 +1326,39 @@ async fn test_leave_room_cleans_member_created_media_resources() {
         ))
         .await
         .checked("test operation should succeed");
-    assert!(!room_service
-        .media_availability(&stale_media)
-        .await
-        .checked("test operation should succeed")
-        .is_available());
-    assert!(!room_service
-        .playlist_availability(&stale_dynamic_playlist)
-        .await
-        .checked("test operation should succeed")
-        .is_available());
-    assert!(room_service
-        .ensure_client_usable_media(&stale_media)
-        .await
-        .is_err());
-    assert!(room_service
-        .ensure_client_usable_playlist(&stale_dynamic_playlist)
-        .await
-        .is_err());
-    assert!(room_service
-        .media_service()
-        .get_dynamic_playlist_browse_path(room.id, owner.id, &stale_dynamic_playlist.id, None,)
-        .await
-        .is_err());
+    assert!(
+        !room_service
+            .media_availability(&stale_media)
+            .await
+            .checked("test operation should succeed")
+            .is_available()
+    );
+    assert!(
+        !room_service
+            .playlist_availability(&stale_dynamic_playlist)
+            .await
+            .checked("test operation should succeed")
+            .is_available()
+    );
+    assert!(
+        room_service
+            .ensure_client_usable_media(&stale_media)
+            .await
+            .is_err()
+    );
+    assert!(
+        room_service
+            .ensure_client_usable_playlist(&stale_dynamic_playlist)
+            .await
+            .is_err()
+    );
+    assert!(
+        room_service
+            .media_service()
+            .get_dynamic_playlist_browse_path(room.id, owner.id, &stale_dynamic_playlist.id, None,)
+            .await
+            .is_err()
+    );
 
     let refreshed_state = room_service
         .playback_service()
@@ -1449,30 +1471,38 @@ async fn test_kick_member_cleans_resources_and_blocks_until_cooldown_expires() {
         .await
         .checked("test operation should succeed");
 
-    assert!(!member_repo
-        .is_member(&room.id, &target.id)
-        .await
-        .checked("test operation should succeed"));
-    assert!(member_repo
-        .is_in_kick_cooldown(&room.id, &target.id)
-        .await
-        .checked("test operation should succeed"));
+    assert!(
+        !member_repo
+            .is_member(&room.id, &target.id)
+            .await
+            .checked("test operation should succeed")
+    );
+    assert!(
+        member_repo
+            .is_in_kick_cooldown(&room.id, &target.id)
+            .await
+            .checked("test operation should succeed")
+    );
     let preserved_playlist = playlist_repo
         .get_by_id(&playlist.id)
         .await
         .checked("test operation should succeed")
         .checked("ordinary playlist should remain after its creator is kicked");
     assert_eq!(preserved_playlist.creator_id, Some(target.id));
-    assert!(playlist_repo
-        .get_by_id(&dynamic_playlist.id)
-        .await
-        .checked("test operation should succeed")
-        .is_none());
-    assert!(media_repo
-        .get_by_id(&media.id)
-        .await
-        .checked("test operation should succeed")
-        .is_none());
+    assert!(
+        playlist_repo
+            .get_by_id(&dynamic_playlist.id)
+            .await
+            .checked("test operation should succeed")
+            .is_none()
+    );
+    assert!(
+        media_repo
+            .get_by_id(&media.id)
+            .await
+            .checked("test operation should succeed")
+            .is_none()
+    );
 
     let refreshed_state = room_service
         .playback_service()
@@ -1493,10 +1523,12 @@ async fn test_kick_member_cleans_resources_and_blocks_until_cooldown_expires() {
     );
 
     expire_kick_cooldown(&pool, room.id, target.id).await;
-    assert!(room_service
-        .join_room(room.id, target.id, None)
-        .await
-        .is_ok());
+    assert!(
+        room_service
+            .join_room(room.id, target.id, None)
+            .await
+            .is_ok()
+    );
 }
 
 #[tokio::test]
@@ -1927,10 +1959,12 @@ async fn test_delete_room_sets_deleted_at() {
         .await
         .checked("test operation should succeed");
 
-    assert!(room_repo
-        .exists(&room.id)
-        .await
-        .checked("test operation should succeed"));
+    assert!(
+        room_repo
+            .exists(&room.id)
+            .await
+            .checked("test operation should succeed")
+    );
 
     room_service
         .delete_room(room.id, owner.id)
@@ -2318,9 +2352,11 @@ async fn test_join_room_uses_current_password_state_after_updates() {
         .await
         .checked("cleared password should allow join");
     assert_eq!(joined_room.id, room.id);
-    assert!(members
-        .iter()
-        .any(|member| member.user_id == clear_joiner.id));
+    assert!(
+        members
+            .iter()
+            .any(|member| member.user_id == clear_joiner.id)
+    );
 
     room_service
         .update_room_password(&room.id, Some("AddedPassword123".to_string()))
@@ -2341,9 +2377,11 @@ async fn test_join_room_uses_current_password_state_after_updates() {
         .await
         .checked("added password should allow join");
     assert_eq!(joined_room.id, room.id);
-    assert!(members
-        .iter()
-        .any(|member| member.user_id == added_joiner.id));
+    assert!(
+        members
+            .iter()
+            .any(|member| member.user_id == added_joiner.id)
+    );
 }
 
 #[tokio::test]
@@ -3111,14 +3149,18 @@ async fn test_room_password_uses_unique_salt_per_room() {
         "OPAQUE credential records should differ per room"
     );
 
-    assert!(room_service
-        .check_room_password(&room1.id, "SamePassword123")
-        .await
-        .checked("test operation should succeed"));
-    assert!(room_service
-        .check_room_password(&room2.id, "SamePassword123")
-        .await
-        .checked("test operation should succeed"));
+    assert!(
+        room_service
+            .check_room_password(&room1.id, "SamePassword123")
+            .await
+            .checked("test operation should succeed")
+    );
+    assert!(
+        room_service
+            .check_room_password(&room2.id, "SamePassword123")
+            .await
+            .checked("test operation should succeed")
+    );
 }
 
 #[tokio::test]
@@ -3365,10 +3407,12 @@ async fn test_room_settings_guest_mode_change_kicks_guests() {
         .checked("test operation should succeed");
 
     // Verify guest is a member
-    assert!(member_repo
-        .is_member(&room.id, &guest.id)
-        .await
-        .checked("test operation should succeed"));
+    assert!(
+        member_repo
+            .is_member(&room.id, &guest.id)
+            .await
+            .checked("test operation should succeed")
+    );
     let guest_version_before = room_service
         .get_room_guest_version(&room.id)
         .await
@@ -3650,10 +3694,12 @@ async fn test_manage_room_settings_disabling_guest_join_kicks_guests() {
         )
         .await
         .checked("test operation should succeed");
-    assert!(member_repo
-        .is_member(&room.id, &guest.id)
-        .await
-        .checked("test operation should succeed"));
+    assert!(
+        member_repo
+            .is_member(&room.id, &guest.id)
+            .await
+            .checked("test operation should succeed")
+    );
 
     let updated_settings = RoomSettings {
         allow_guest_join: synctv_core::models::room_settings::AllowGuestJoin(false),
@@ -3686,7 +3732,10 @@ async fn test_manage_room_settings_disabling_guest_join_kicks_guests() {
 
     assert!(guest_kicked, "full settings replacement should kick guests");
     assert!(
-        !member_repo.is_member(&room.id, &guest.id).await.checked("test operation should succeed"),
+        !member_repo
+            .is_member(&room.id, &guest.id)
+            .await
+            .checked("test operation should succeed"),
         "guest membership should be revoked after disabling guest join via full settings replacement"
     );
 }
@@ -3735,10 +3784,12 @@ async fn test_room_settings_password_required_triggers_guest_kick() {
         )
         .await
         .checked("test operation should succeed");
-    assert!(member_repo
-        .is_member(&room.id, &guest.id)
-        .await
-        .checked("test operation should succeed"));
+    assert!(
+        member_repo
+            .is_member(&room.id, &guest.id)
+            .await
+            .checked("test operation should succeed")
+    );
     let guest_version_before = room_service
         .get_room_guest_version(&room.id)
         .await
@@ -3931,21 +3982,27 @@ async fn test_delete_entries_removes_media_and_playlists_in_one_request() {
     assert_eq!(result.deleted_media_ids.len(), 2);
     assert!(result.deleted_media_ids.contains(&root_media.id));
     assert!(result.deleted_media_ids.contains(&child_media.id));
-    assert!(playlist_repo
-        .get_by_id(&top_level_playlist.id)
-        .await
-        .checked("test operation should succeed")
-        .is_none());
-    assert!(media_repo
-        .get_by_id(&root_media.id)
-        .await
-        .checked("test operation should succeed")
-        .is_none());
-    assert!(media_repo
-        .get_by_id(&child_media.id)
-        .await
-        .checked("test operation should succeed")
-        .is_none());
+    assert!(
+        playlist_repo
+            .get_by_id(&top_level_playlist.id)
+            .await
+            .checked("test operation should succeed")
+            .is_none()
+    );
+    assert!(
+        media_repo
+            .get_by_id(&root_media.id)
+            .await
+            .checked("test operation should succeed")
+            .is_none()
+    );
+    assert!(
+        media_repo
+            .get_by_id(&child_media.id)
+            .await
+            .checked("test operation should succeed")
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -4116,11 +4173,13 @@ async fn test_delete_entries_allows_foreign_playlist_delete_with_delete_any_perm
         .checked("test operation should succeed");
 
     assert_eq!(result.deleted_playlists, 1);
-    assert!(playlist_repo
-        .get_by_id(&playlist.id)
-        .await
-        .checked("test operation should succeed")
-        .is_none());
+    assert!(
+        playlist_repo
+            .get_by_id(&playlist.id)
+            .await
+            .checked("test operation should succeed")
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -4253,11 +4312,13 @@ async fn test_delete_entries_allows_admin_default_delete_movie_any_for_foreign_m
         .checked("test operation should succeed");
 
     assert_eq!(result.deleted_media, 1);
-    assert!(media_repo
-        .get_by_id(&media.id)
-        .await
-        .checked("test operation should succeed")
-        .is_none());
+    assert!(
+        media_repo
+            .get_by_id(&media.id)
+            .await
+            .checked("test operation should succeed")
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -4504,26 +4565,34 @@ async fn test_clear_playlist_scope_keeps_target_playlist_and_removes_children() 
     assert_eq!(result.deleted_count, 2);
     assert_eq!(result.deleted_playlists, 1);
     assert_eq!(result.deleted_playlist_ids, vec![child.id]);
-    assert!(playlist_repo
-        .get_by_id(&parent.id)
-        .await
-        .checked("test operation should succeed")
-        .is_some());
-    assert!(playlist_repo
-        .get_by_id(&child.id)
-        .await
-        .checked("test operation should succeed")
-        .is_none());
-    assert!(media_repo
-        .get_by_id(&parent_media.id)
-        .await
-        .checked("test operation should succeed")
-        .is_none());
-    assert!(media_repo
-        .get_by_id(&child_media.id)
-        .await
-        .checked("test operation should succeed")
-        .is_none());
+    assert!(
+        playlist_repo
+            .get_by_id(&parent.id)
+            .await
+            .checked("test operation should succeed")
+            .is_some()
+    );
+    assert!(
+        playlist_repo
+            .get_by_id(&child.id)
+            .await
+            .checked("test operation should succeed")
+            .is_none()
+    );
+    assert!(
+        media_repo
+            .get_by_id(&parent_media.id)
+            .await
+            .checked("test operation should succeed")
+            .is_none()
+    );
+    assert!(
+        media_repo
+            .get_by_id(&child_media.id)
+            .await
+            .checked("test operation should succeed")
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -4599,16 +4668,20 @@ async fn test_delete_entries_counts_media_deleted_via_playlist_cascade() {
         result.deleted_media, 2,
         "delete_entries must count media removed through playlist cascade"
     );
-    assert!(media_repo
-        .get_by_id(&parent_media.id)
-        .await
-        .checked("test operation should succeed")
-        .is_none());
-    assert!(media_repo
-        .get_by_id(&child_media.id)
-        .await
-        .checked("test operation should succeed")
-        .is_none());
+    assert!(
+        media_repo
+            .get_by_id(&parent_media.id)
+            .await
+            .checked("test operation should succeed")
+            .is_none()
+    );
+    assert!(
+        media_repo
+            .get_by_id(&child_media.id)
+            .await
+            .checked("test operation should succeed")
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -4789,11 +4862,13 @@ async fn test_delete_entries_rejects_currently_playing_resources_without_force()
         matches!(result, Err(Error::InvalidInput(_))),
         "deleting currently playing media without force must be rejected"
     );
-    assert!(media_repo
-        .get_by_id(&media.id)
-        .await
-        .checked("test operation should succeed")
-        .is_some());
+    assert!(
+        media_repo
+            .get_by_id(&media.id)
+            .await
+            .checked("test operation should succeed")
+            .is_some()
+    );
 
     let playlist_room = room_service
         .create_room(
@@ -4852,11 +4927,13 @@ async fn test_delete_entries_rejects_currently_playing_resources_without_force()
         matches!(result, Err(Error::InvalidInput(_))),
         "deleting an ancestor playlist of the currently playing media without force must be rejected"
     );
-    assert!(playlist_repo
-        .get_by_id(&parent.id)
-        .await
-        .checked("test operation should succeed")
-        .is_some());
+    assert!(
+        playlist_repo
+            .get_by_id(&parent.id)
+            .await
+            .checked("test operation should succeed")
+            .is_some()
+    );
 }
 
 #[tokio::test]
@@ -4908,11 +4985,13 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_playing_res
         .checked("test operation should succeed");
 
     assert_eq!(result.deleted_media, 1);
-    assert!(media_repo
-        .get_by_id(&media.id)
-        .await
-        .checked("test operation should succeed")
-        .is_none());
+    assert!(
+        media_repo
+            .get_by_id(&media.id)
+            .await
+            .checked("test operation should succeed")
+            .is_none()
+    );
 
     let state = room_service
         .playback_service()
@@ -4987,21 +5066,27 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_playing_res
         "force deleting an ancestor playlist must count descendants too"
     );
     assert_eq!(result.deleted_media, 1);
-    assert!(playlist_repo
-        .get_by_id(&parent.id)
-        .await
-        .checked("test operation should succeed")
-        .is_none());
-    assert!(playlist_repo
-        .get_by_id(&child.id)
-        .await
-        .checked("test operation should succeed")
-        .is_none());
-    assert!(media_repo
-        .get_by_id(&media.id)
-        .await
-        .checked("test operation should succeed")
-        .is_none());
+    assert!(
+        playlist_repo
+            .get_by_id(&parent.id)
+            .await
+            .checked("test operation should succeed")
+            .is_none()
+    );
+    assert!(
+        playlist_repo
+            .get_by_id(&child.id)
+            .await
+            .checked("test operation should succeed")
+            .is_none()
+    );
+    assert!(
+        media_repo
+            .get_by_id(&media.id)
+            .await
+            .checked("test operation should succeed")
+            .is_none()
+    );
 
     let state = room_service
         .playback_service()
@@ -5137,10 +5222,12 @@ async fn test_room_creation_creates_all_related_records_atomically() {
         .checked("test operation should succeed");
 
     let room_repo = RoomRepository::new(pool.clone());
-    assert!(room_repo
-        .exists(&room.id)
-        .await
-        .checked("test operation should succeed"));
+    assert!(
+        room_repo
+            .exists(&room.id)
+            .await
+            .checked("test operation should succeed")
+    );
 
     let member_repo = RoomMemberRepository::new(pool.clone());
     let creator_membership = member_repo
@@ -5630,16 +5717,20 @@ async fn test_room_exists_is_efficient() {
         .await
         .checked("test operation should succeed");
 
-    assert!(room_service
-        .room_exists(&room.id)
-        .await
-        .checked("test operation should succeed"));
+    assert!(
+        room_service
+            .room_exists(&room.id)
+            .await
+            .checked("test operation should succeed")
+    );
 
     let missing_room_id = synctv_core::models::RoomId::new();
-    assert!(!room_service
-        .room_exists(&missing_room_id)
-        .await
-        .checked("test operation should succeed"));
+    assert!(
+        !room_service
+            .room_exists(&missing_room_id)
+            .await
+            .checked("test operation should succeed")
+    );
 }
 
 #[tokio::test]
@@ -6790,11 +6881,13 @@ async fn test_admin_delete_orphaned_room_rejects_invalid_requests() {
         matches!(result, Err(Error::Authorization(_))),
         "Non-admin user must not be able to delete orphaned rooms"
     );
-    assert!(room_repo
-        .get_by_id(&orphan_room.id)
-        .await
-        .checked("test operation should succeed")
-        .is_some());
+    assert!(
+        room_repo
+            .get_by_id(&orphan_room.id)
+            .await
+            .checked("test operation should succeed")
+            .is_some()
+    );
 
     let creator = user_repo
         .create(&make_user("orphan_already_del"))
@@ -8002,9 +8095,11 @@ async fn test_room_taxonomy_is_admin_curated_and_filterable() {
         .list_room_labels(false, Some(movie.id))
         .await
         .checked("test operation should succeed");
-    assert!(labels_with_disabled
-        .iter()
-        .any(|label| label.id == disabled.id));
+    assert!(
+        labels_with_disabled
+            .iter()
+            .any(|label| label.id == disabled.id)
+    );
 
     let (all_rooms, total) = room_service
         .list_accessible_rooms(&RoomListQuery::default())

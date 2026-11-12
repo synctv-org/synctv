@@ -17,15 +17,15 @@ use super::{
     ProviderError, ProviderPlaybackSessionLifecycle, SourceConfig, SourceCover,
 };
 use crate::models::{
-    detect_direct_url_format, normalize_provider_instance_name,
-    normalize_provider_instance_name_owned, MediaSourceConfig, PlayMode, PlaybackMedia,
-    PlaybackMediaMetadata, PlaybackMediaProvider, PlaybackMetadata, PlaybackSubtitle,
-    PlaybackSubtitleProvider, PlaylistSourceConfig, ProviderCredential, ProviderPlaybackSession,
-    ProviderTarget, SynologyApiBinding, SynologyAudioTrackMetadata, SynologyLibraryItemKind,
-    SynologyMediaSource, SynologyMediaSourceConfig, SynologyPlaybackMetadata,
-    SynologyPlaybackProfile, SynologyPlaybackResource, SynologyPlaybackSession,
-    SynologyPlaylistSource, SynologyPlaylistSourceConfig, SynologySubtitleMetadata, SynologyTarget,
-    UserId, UserProviderCredential,
+    MediaSourceConfig, PlayMode, PlaybackMedia, PlaybackMediaMetadata, PlaybackMediaProvider,
+    PlaybackMetadata, PlaybackSubtitle, PlaybackSubtitleProvider, PlaylistSourceConfig,
+    ProviderCredential, ProviderPlaybackSession, ProviderTarget, SynologyApiBinding,
+    SynologyAudioTrackMetadata, SynologyLibraryItemKind, SynologyMediaSource,
+    SynologyMediaSourceConfig, SynologyPlaybackMetadata, SynologyPlaybackProfile,
+    SynologyPlaybackResource, SynologyPlaybackSession, SynologyPlaylistSource,
+    SynologyPlaylistSourceConfig, SynologySubtitleMetadata, SynologyTarget, UserId,
+    UserProviderCredential, detect_direct_url_format, normalize_provider_instance_name,
+    normalize_provider_instance_name_owned,
 };
 use crate::repository::{NewProviderPlaybackSession, UserProviderCredentialRepository};
 use synctv_media_providers::synology::{
@@ -625,14 +625,13 @@ impl SynologyProvider {
             apis,
             ..
         } = &credential.credential_data
+            && let Ok(client) = self.client(endpoint)
         {
-            if let Ok(client) = self.client(endpoint) {
-                let apis = load_apis(apis);
-                if let Some(auth_api) = apis.get("SYNO.API.Auth") {
-                    let _ = client.logout(auth_api, file_sid, "FileStation").await;
-                    if let Some(video_sid) = video_sid {
-                        let _ = client.logout(auth_api, video_sid, "VideoStation").await;
-                    }
+            let apis = load_apis(apis);
+            if let Some(auth_api) = apis.get("SYNO.API.Auth") {
+                let _ = client.logout(auth_api, file_sid, "FileStation").await;
+                if let Some(video_sid) = video_sid {
+                    let _ = client.logout(auth_api, video_sid, "VideoStation").await;
                 }
             }
         }
@@ -1063,31 +1062,31 @@ impl MediaProvider for SynologyProvider {
                 .await
             }
         }?;
-        if synology_route_selection(config.proxy_mode).direct {
-            if let SynologyMediaSource::File { path } = &config.source {
-                let direct_url = auth.client.download_url(
-                    required_api(&auth.apis, "SYNO.FileStation.Download")?,
-                    &auth.file_sid,
-                    path,
-                )?;
-                if let Some(info) = result.playback_infos.get("original").cloned() {
-                    let medias = info
-                        .medias
-                        .into_iter()
-                        .map(|mut media| {
-                            media.provider = PlaybackMediaProvider::Synology(
-                                crate::models::PlaybackSynologyMedia::Direct {
-                                    url: direct_url.clone(),
-                                    headers: HashMap::new(),
-                                },
-                            );
-                            media
-                        })
-                        .collect();
-                    result
-                        .playback_infos
-                        .insert("direct".to_string(), PlaybackInfo { medias, ..info });
-                }
+        if synology_route_selection(config.proxy_mode).direct
+            && let SynologyMediaSource::File { path } = &config.source
+        {
+            let direct_url = auth.client.download_url(
+                required_api(&auth.apis, "SYNO.FileStation.Download")?,
+                &auth.file_sid,
+                path,
+            )?;
+            if let Some(info) = result.playback_infos.get("original").cloned() {
+                let medias = info
+                    .medias
+                    .into_iter()
+                    .map(|mut media| {
+                        media.provider = PlaybackMediaProvider::Synology(
+                            crate::models::PlaybackSynologyMedia::Direct {
+                                url: direct_url.clone(),
+                                headers: HashMap::new(),
+                            },
+                        );
+                        media
+                    })
+                    .collect();
+                result
+                    .playback_infos
+                    .insert("direct".to_string(), PlaybackInfo { medias, ..info });
             }
         }
         let cache_identity = serde_json::to_string(config).map_err(ProviderError::JsonError)?;
@@ -1127,8 +1126,8 @@ impl MediaProvider for SynologyProvider {
                     _ => None,
                 })
             });
-            if let Some(resource_version) = resource_version {
-                if let Some((repo, session)) = super::playback_session_registration(
+            if let Some(resource_version) = resource_version
+                && let Some((repo, session)) = super::playback_session_registration(
                     ctx,
                     format!("watch:{resource_version}"),
                     Some(resource_version.clone()),
@@ -1136,11 +1135,11 @@ impl MediaProvider for SynologyProvider {
                         server_id: config.server_id.clone(),
                         file_id: *file_id,
                     }),
-                )? {
-                    repo.upsert(session)
-                        .await
-                        .map_err(|error| ProviderError::Internal(error.to_string()))?;
-                }
+                )?
+            {
+                repo.upsert(session)
+                    .await
+                    .map_err(|error| ProviderError::Internal(error.to_string()))?;
             }
         }
         Ok(result)
@@ -2295,14 +2294,15 @@ fn mark_synology_playback_resources(
             .medias
             .iter()
             .any(|media| !media.requires_provider_url());
-        if selection.direct && direct_available {
-            if let Some(direct_info) = super::build_direct_playback_info_for_client(
+        if selection.direct
+            && direct_available
+            && let Some(direct_info) = super::build_direct_playback_info_for_client(
                 &mode_name,
                 &original_info,
                 client_profile,
-            ) {
-                generated.insert(mode_name.clone(), direct_info);
-            }
+            )
+        {
+            generated.insert(mode_name.clone(), direct_info);
         }
         if !selection.proxy {
             continue;

@@ -8,7 +8,7 @@ use super::types::{
     AuthTokenResponse, DirectoryResponse, SeafileAccount, SeafileFileInfo, SeafileItem,
     SeafileList, SeafileRepository, SeafileServerInfo, SearchResponse, StarredResponse,
 };
-use crate::{check_response, fetch_json, ProviderClientError, PROVIDER_USER_AGENT};
+use crate::{PROVIDER_USER_AGENT, ProviderClientError, check_response, fetch_json};
 
 #[derive(Clone)]
 pub struct SeafileClient {

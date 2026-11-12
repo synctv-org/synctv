@@ -1,4 +1,4 @@
-use super::streaming::{await_grpc_receive_or_response_close, GrpcReceiveOutcome};
+use super::streaming::{GrpcReceiveOutcome, await_grpc_receive_or_response_close};
 use super::*;
 use synctv_core::models::UserId;
 use synctv_proto::client::{ClientMessage, ServerMessage};

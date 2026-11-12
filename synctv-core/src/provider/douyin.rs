@@ -1450,11 +1450,13 @@ mod tests {
             Some("primary"),
         )
         .expect("video playback should map");
-        assert!(video
-            .playback_infos
-            .values()
-            .flat_map(|info| &info.medias)
-            .all(|media| media.p2p_swarm_id.is_some()));
+        assert!(
+            video
+                .playback_infos
+                .values()
+                .flat_map(|info| &info.medias)
+                .all(|media| media.p2p_swarm_id.is_some())
+        );
 
         let mut live_variant = variant(
             "https://cdn.test/live.m3u8",
@@ -1477,9 +1479,10 @@ mod tests {
         .expect("live playback should map");
         let info = &live.playback_infos[&live.default_mode];
         assert!(info.medias.iter().all(|media| media.p2p_swarm_id.is_none()));
-        assert!(info
-            .danmakus
-            .iter()
-            .all(|danmaku| danmaku.p2p_swarm_id.is_none()));
+        assert!(
+            info.danmakus
+                .iter()
+                .all(|danmaku| danmaku.p2p_swarm_id.is_none())
+        );
     }
 }

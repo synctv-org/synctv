@@ -4,12 +4,12 @@
 //! unified registry.
 
 pub use synctv_core::metrics::http::{
-    record_request, start_request, HTTP_REQUESTS_IN_FLIGHT, HTTP_REQUESTS_TOTAL,
-    HTTP_REQUEST_DURATION_SECONDS,
+    HTTP_REQUEST_DURATION_SECONDS, HTTP_REQUESTS_IN_FLIGHT, HTTP_REQUESTS_TOTAL, record_request,
+    start_request,
 };
 pub use synctv_core::metrics::remote_transport::{
-    record as record_remote_transport_request, REMOTE_TRANSPORT_REQUESTS_TOTAL,
-    REMOTE_TRANSPORT_REQUEST_DURATION,
+    REMOTE_TRANSPORT_REQUEST_DURATION, REMOTE_TRANSPORT_REQUESTS_TOTAL,
+    record as record_remote_transport_request,
 };
 
 pub use synctv_core::metrics::livestream::LIVESTREAM_FLV_SLOW_CLIENT_TERMINATIONS_TOTAL;

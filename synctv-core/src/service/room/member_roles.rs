@@ -1,16 +1,16 @@
 use crate::{
-    models::{RoomId, RoomRole, UserId},
     Error, Result,
+    models::{RoomId, RoomRole, UserId},
 };
 
 use super::{
+    RealtimeOutboxPermissionChangedEventFactory, RoomService,
     member_role_policy::{
         validate_admin_override_bits, validate_creator_member_role_update,
         validate_member_permission_override_channel, validate_override_bits_for_role,
         validate_role_can_be_assigned,
     },
     member_update_execution::MemberUpdateExecutionRequest,
-    RealtimeOutboxPermissionChangedEventFactory, RoomService,
 };
 
 #[derive(Debug, Clone, Copy, Default)]

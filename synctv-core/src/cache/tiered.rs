@@ -7,11 +7,11 @@
 //! requests miss L1 and L2 simultaneously, only one request fetches from L2,
 //! and the others wait for its result.
 
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use std::fmt::{Debug, Display};
 use std::hash::Hash;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use dashmap::DashMap;
 
@@ -541,10 +541,13 @@ where
 
         // Check L1 cache first (sequential is optimal for in-memory operations)
         for key in keys {
-            if let Some(value) = self.l1_cache.get(key).await {
-                result.insert(key.clone(), value);
-            } else {
-                missing_keys.push(key.clone());
+            match self.l1_cache.get(key).await {
+                Some(value) => {
+                    result.insert(key.clone(), value);
+                }
+                _ => {
+                    missing_keys.push(key.clone());
+                }
             }
         }
 
@@ -709,15 +712,15 @@ where
         self.l1_cache.invalidate_all();
 
         // Then remove all L2 entries for this cache's key prefix.
-        if self.l2.is_active() {
-            if let Err(e) = self.l2.delete_by_prefix(&self.key_prefix).await {
-                tracing::error!(
-                    cache_type = %self.cache_type,
-                    prefix = %self.key_prefix,
-                    error = %e,
-                    "Failed to delete L2 entries by prefix during cache flush"
-                );
-            }
+        if self.l2.is_active()
+            && let Err(e) = self.l2.delete_by_prefix(&self.key_prefix).await
+        {
+            tracing::error!(
+                cache_type = %self.cache_type,
+                prefix = %self.key_prefix,
+                error = %e,
+                "Failed to delete L2 entries by prefix during cache flush"
+            );
         }
 
         tracing::debug!(cache_type = %self.cache_type, "L1 and L2 caches cleared");
@@ -798,17 +801,17 @@ where
         }
 
         // No active L2: fall back to L1-only check (single-process, no TOCTOU issue)
-        if let Some(existing) = self.l1_cache.get(key).await {
-            if new_ts <= existing.updated_at().timestamp_millis() {
-                tracing::debug!(
-                    key = %key,
-                    existing_ts = %existing.updated_at(),
-                    new_ts = new_ts,
-                    cache_type = %self.cache_type,
-                    "Skipping cache update - L1 data is not newer"
-                );
-                return Ok(false);
-            }
+        if let Some(existing) = self.l1_cache.get(key).await
+            && new_ts <= existing.updated_at().timestamp_millis()
+        {
+            tracing::debug!(
+                key = %key,
+                existing_ts = %existing.updated_at(),
+                new_ts = new_ts,
+                cache_type = %self.cache_type,
+                "Skipping cache update - L1 data is not newer"
+            );
+            return Ok(false);
         }
 
         self.l1_cache.insert(key.clone(), value).await;
@@ -962,28 +965,9 @@ where
                 return Ok(false);
             }
 
-            if let Some(existing) = self.l1_cache.get(key).await {
-                if version < existing.cache_version() {
-                    crate::metrics::cache::CACHE_STALE_WRITE_REJECT_TOTAL
-                        .with_label_values(&[&self.cache_type, "l1"])
-                        .inc();
-                    tracing::debug!(
-                        key = %key,
-                        existing_version = existing.cache_version(),
-                        version,
-                        cache_type = %self.cache_type,
-                        "Skipping L1 cache update after L2 write - L1 data has newer version"
-                    );
-                    return Ok(false);
-                }
-            }
-
-            self.l1_cache.insert(key.clone(), value).await;
-            return Ok(true);
-        }
-
-        if let Some(existing) = self.l1_cache.get(key).await {
-            if version < existing.cache_version() {
+            if let Some(existing) = self.l1_cache.get(key).await
+                && version < existing.cache_version()
+            {
                 crate::metrics::cache::CACHE_STALE_WRITE_REJECT_TOTAL
                     .with_label_values(&[&self.cache_type, "l1"])
                     .inc();
@@ -992,10 +976,29 @@ where
                     existing_version = existing.cache_version(),
                     version,
                     cache_type = %self.cache_type,
-                    "Skipping cache update - L1 data has newer version"
+                    "Skipping L1 cache update after L2 write - L1 data has newer version"
                 );
                 return Ok(false);
             }
+
+            self.l1_cache.insert(key.clone(), value).await;
+            return Ok(true);
+        }
+
+        if let Some(existing) = self.l1_cache.get(key).await
+            && version < existing.cache_version()
+        {
+            crate::metrics::cache::CACHE_STALE_WRITE_REJECT_TOTAL
+                .with_label_values(&[&self.cache_type, "l1"])
+                .inc();
+            tracing::debug!(
+                key = %key,
+                existing_version = existing.cache_version(),
+                version,
+                cache_type = %self.cache_type,
+                "Skipping cache update - L1 data has newer version"
+            );
+            return Ok(false);
         }
 
         self.l1_cache.insert(key.clone(), value).await;
@@ -1213,11 +1216,13 @@ mod tests {
         let value = make_value("alice");
 
         // Cache miss
-        assert!(cache
-            .get(&key)
-            .await
-            .checked("operation should succeed")
-            .is_none());
+        assert!(
+            cache
+                .get(&key)
+                .await
+                .checked("operation should succeed")
+                .is_none()
+        );
 
         // Set and get
         cache
@@ -1236,11 +1241,13 @@ mod tests {
             .invalidate(&key)
             .await
             .checked("operation should succeed");
-        assert!(cache
-            .get(&key)
-            .await
-            .checked("operation should succeed")
-            .is_none());
+        assert!(
+            cache
+                .get(&key)
+                .await
+                .checked("operation should succeed")
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -1316,21 +1323,25 @@ mod tests {
             .set(&key, make_value("alice"))
             .await
             .checked("operation should succeed");
-        assert!(cache
-            .get(&key)
-            .await
-            .checked("operation should succeed")
-            .is_some());
+        assert!(
+            cache
+                .get(&key)
+                .await
+                .checked("operation should succeed")
+                .is_some()
+        );
 
         cache
             .invalidate_by_id("k1")
             .await
             .checked("operation should succeed");
-        assert!(cache
-            .get(&key)
-            .await
-            .checked("operation should succeed")
-            .is_none());
+        assert!(
+            cache
+                .get(&key)
+                .await
+                .checked("operation should succeed")
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -1351,16 +1362,20 @@ mod tests {
 
         cache.clear_l1();
 
-        assert!(cache
-            .get(&k1)
-            .await
-            .checked("operation should succeed")
-            .is_none());
-        assert!(cache
-            .get(&k2)
-            .await
-            .checked("operation should succeed")
-            .is_none());
+        assert!(
+            cache
+                .get(&k1)
+                .await
+                .checked("operation should succeed")
+                .is_none()
+        );
+        assert!(
+            cache
+                .get(&k2)
+                .await
+                .checked("operation should succeed")
+                .is_none()
+        );
     }
 
     #[tokio::test]

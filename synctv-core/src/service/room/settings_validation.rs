@@ -1,6 +1,6 @@
 use crate::{
-    models::{RoomSettings, SettingsValidationContext},
     Result,
+    models::{RoomSettings, SettingsValidationContext},
 };
 
 use super::RoomService;

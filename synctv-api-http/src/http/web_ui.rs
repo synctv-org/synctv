@@ -3,11 +3,11 @@ use std::path::{Component, Path, PathBuf};
 
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::{header, HeaderMap, HeaderValue, StatusCode, Uri};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 
 use synctv_api_common::AppState;
-use synctv_web_ui::{Asset, ASSETS, WEB_UI_AVAILABLE};
+use synctv_web_ui::{ASSETS, Asset, WEB_UI_AVAILABLE};
 
 const PROVIDER_VERIFICATION_PAGE: &str = "provider_verification.html";
 const PROVIDER_VERIFICATION_CSP: &str = "default-src 'none'; \

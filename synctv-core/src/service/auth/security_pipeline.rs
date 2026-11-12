@@ -14,10 +14,10 @@
 use std::sync::Arc;
 
 use crate::{
-    cache::{user_cache::CachedUserSnapshot, KeyBuilder, UserCache},
+    Error, Result,
+    cache::{KeyBuilder, UserCache, user_cache::CachedUserSnapshot},
     models::{UserId, UserStatus},
     service::UserService,
-    Error, Result,
 };
 
 use super::{Claims, TokenBlacklistStore};

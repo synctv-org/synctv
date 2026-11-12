@@ -1,14 +1,14 @@
 use crate::{
+    Error, Result,
     models::{RoomId, RoomMember, RoomPermission, RoomRole, UserId},
     service::PermissionWriteFence,
-    Error, Result,
 };
 
 use super::{
+    RealtimeOutboxPermissionChangedEventFactory, RoomService,
     permission_writes::{
         MemberRolePermissionWriteParams, MemberRoleWriteParams, PermissionWriteParams,
     },
-    RealtimeOutboxPermissionChangedEventFactory, RoomService,
 };
 
 pub(super) struct MemberUpdateExecutionRequest {

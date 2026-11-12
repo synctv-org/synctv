@@ -1,7 +1,7 @@
 use crate::{
+    Result,
     cache::{CacheDomain, ConsistencyCoordinator, VersionFenceReservation},
     models::RoomId,
-    Result,
 };
 
 use super::RoomService;

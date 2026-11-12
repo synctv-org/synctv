@@ -232,15 +232,15 @@ fn collect_proto_bytes_fields(
         let line = raw_line.trim();
         if let Some(message_name) = proto_named_block(line, "message ") {
             messages.push((message_name, depth));
-        } else if let Some(field_name) = proto_bytes_field_name(line) {
-            if !messages.is_empty() {
-                let message_path = messages
-                    .iter()
-                    .map(|(name, _)| name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(".");
-                fields.push(format!(".{package}.{message_path}.{field_name}"));
-            }
+        } else if let Some(field_name) = proto_bytes_field_name(line)
+            && !messages.is_empty()
+        {
+            let message_path = messages
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>()
+                .join(".");
+            fields.push(format!(".{package}.{message_path}.{field_name}"));
         }
 
         depth += match_count_as_i32(raw_line, '{')?;
@@ -307,18 +307,18 @@ fn collect_openapi_oneof_fields(
                     .push(format!(".{package}.{message_path}.{oneof_name}"));
                 oneof = Some((oneof_name, depth));
             }
-        } else if let Some((oneof_name, _)) = oneof.as_ref() {
-            if let Some(field_name) = proto_field_name(line) {
-                let message_path = messages
-                    .iter()
-                    .map(|(name, _)| name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(".");
-                attributes.variants.push((
-                    format!(".{package}.{message_path}.{oneof_name}.{field_name}"),
-                    proto_json_name(field_name),
-                ));
-            }
+        } else if let Some((oneof_name, _)) = oneof.as_ref()
+            && let Some(field_name) = proto_field_name(line)
+        {
+            let message_path = messages
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>()
+                .join(".");
+            attributes.variants.push((
+                format!(".{package}.{message_path}.{oneof_name}.{field_name}"),
+                proto_json_name(field_name),
+            ));
         }
 
         depth += match_count_as_i32(raw_line, '{')?;
@@ -385,29 +385,28 @@ fn collect_openapi_schema_aliases(
             if let Some((type_name, kind)) = proto_type_declaration(line) {
                 current_type = Some((type_name.to_string(), kind, false));
             }
-        } else if proto_type_declaration(line).is_some() {
-            if let Some((_, _, contains_nested_type)) = current_type.as_mut() {
-                *contains_nested_type = true;
-            }
+        } else if proto_type_declaration(line).is_some()
+            && let Some((_, _, contains_nested_type)) = current_type.as_mut()
+        {
+            *contains_nested_type = true;
         }
 
         depth += match_count_as_i32(raw_line, '{')?;
         depth -= match_count_as_i32(raw_line, '}')?;
 
-        if depth == 0 {
-            if let Some((type_name, kind, contains_nested_type)) = current_type.take() {
-                if !contains_nested_type {
-                    let path = format!(".{package}.{type_name}");
-                    let schema_alias = format!("{package_alias}_{type_name}");
-                    aliases.push(OpenApiSchemaAlias {
-                        path,
-                        attribute: format!(
-                            "#[cfg_attr(feature = \"openapi\", schema(as = {schema_alias}))]"
-                        ),
-                        kind,
-                    });
-                }
-            }
+        if depth == 0
+            && let Some((type_name, kind, contains_nested_type)) = current_type.take()
+            && !contains_nested_type
+        {
+            let path = format!(".{package}.{type_name}");
+            let schema_alias = format!("{package_alias}_{type_name}");
+            aliases.push(OpenApiSchemaAlias {
+                path,
+                attribute: format!(
+                    "#[cfg_attr(feature = \"openapi\", schema(as = {schema_alias}))]"
+                ),
+                kind,
+            });
         }
     }
 

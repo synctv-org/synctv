@@ -1,6 +1,6 @@
 use crate::{
-    models::{MediaId, PlaylistId, RoomId, RoomPlaybackState, UserId},
     Result,
+    models::{MediaId, PlaylistId, RoomId, RoomPlaybackState, UserId},
 };
 
 use super::{apply_delete_entries_impact_in_tx, plan_delete_entries_in_room_in_tx};

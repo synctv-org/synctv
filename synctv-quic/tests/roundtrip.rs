@@ -11,8 +11,8 @@ use http::{Request, Response, StatusCode};
 use http_body_util::{BodyExt, Full};
 use synctv_quic::testing::insecure_client_config;
 use synctv_quic::{
-    generate_self_signed_config, read_frame, serve_quic, write_frame, H3RecvBody, QuicServerConfig,
-    WebTransportHandler, WtSessionDriver,
+    H3RecvBody, QuicServerConfig, WebTransportHandler, WtSessionDriver,
+    generate_self_signed_config, read_frame, serve_quic, write_frame,
 };
 use tokio_util::sync::CancellationToken;
 use tower::service_fn;
@@ -47,10 +47,10 @@ impl WebTransportHandler for EchoHandler {
             if write_frame(&mut send, &frame).await.is_err() {
                 break;
             }
-            if let Some(stream) = push_stream.as_mut() {
-                if write_frame(stream, &frame).await.is_err() {
-                    break;
-                }
+            if let Some(stream) = push_stream.as_mut()
+                && write_frame(stream, &frame).await.is_err()
+            {
+                break;
             }
         }
     }

@@ -1,22 +1,22 @@
 use axum::{
+    Json, Router,
     extract::{Query, State},
     routing::{get, post},
-    Json, Router,
 };
 use futures::FutureExt;
 use serde::Deserialize;
 use synctv_proto::providers::common::ProviderInstanceQuery;
 use synctv_proto::providers::synology::{
-    get_image_request, FileImageRequest, GetBindsResponse, GetImageRequest, ListEpisodesRequest,
-    ListFilesRequest, ListHomeVideosRequest, ListLibrariesRequest, ListMoviesRequest,
-    ListTvRecordingsRequest, ListTvShowsRequest, LoginRequest, LogoutRequest, PosterImageRequest,
+    FileImageRequest, GetBindsResponse, GetImageRequest, ListEpisodesRequest, ListFilesRequest,
+    ListHomeVideosRequest, ListLibrariesRequest, ListMoviesRequest, ListTvRecordingsRequest,
+    ListTvShowsRequest, LoginRequest, LogoutRequest, PosterImageRequest, get_image_request,
 };
 
 use super::common::{
     execute_provider_user_endpoint, execute_provider_user_endpoint_with_control,
     provider_instance_name, provider_instance_name_from_request_field, provider_request_metadata,
 };
-use crate::http::{middleware::RequestMetadata, validation::ProtoQuery, AppResult, AppState};
+use crate::http::{AppResult, AppState, middleware::RequestMetadata, validation::ProtoQuery};
 use synctv_api_common::impls::EndpointRateLimitCategory;
 
 #[derive(Debug, Deserialize)]

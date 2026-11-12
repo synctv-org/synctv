@@ -55,12 +55,12 @@ pub(crate) mod user_notification;
 pub(crate) mod ws_ticket;
 
 pub use crate::repository::{
-    realtime_outbox::NewRealtimeOutboxEvent, MediaListItem, PlaylistListItem,
-    RoomResourceEventPayload, RoomResourceKind, WebAuthnCredential,
+    MediaListItem, PlaylistListItem, RoomResourceEventPayload, RoomResourceKind,
+    WebAuthnCredential, realtime_outbox::NewRealtimeOutboxEvent,
 };
 pub use audit::{AuditEventParams, AuditFlushHandle, AuditService, StreamKickAuditRequest};
 pub use audit_partition_manager::{
-    ensure_audit_partitions_on_startup, AuditPartitionManager, PartitionHealth, PartitionStats,
+    AuditPartitionManager, PartitionHealth, PartitionStats, ensure_audit_partitions_on_startup,
 };
 pub use auth::{
     AttemptTracker, AuthErrorCategory, AuthenticatedToken, BruteForceConfig, BruteForceProtection,
@@ -84,34 +84,35 @@ pub use content_report::{
     ContentReportListQuery, ContentReportListScope, ContentReportPage, ContentReportService,
 };
 pub use db_maintenance::{DatabaseMaintenanceOptions, DatabaseMaintenanceService};
-pub use distributed_lock::{with_coordination_lock, CoordinationLock, DistributedLock};
+pub use distributed_lock::{CoordinationLock, DistributedLock, with_coordination_lock};
 pub use email::{
-    mask_email, EmailConfig, EmailConfigProvider, EmailService, SmtpCredentials, SmtpProxyConfig,
+    EmailConfig, EmailConfigProvider, EmailService, SmtpCredentials, SmtpProxyConfig, mask_email,
 };
 pub use email_outbox::{EmailOutboxPayload, EmailOutboxService};
 pub use email_token::{EmailTokenRateLimitConfig, EmailTokenService};
 pub use file_storage::{
-    submitted_file_reference_from_reuse_token, submitted_file_reference_from_session_file,
-    upload_token_from_session_file, DatabaseFileStorageCompressionConfig,
-    DatabaseFileStorageService, DisabledFileStorageService, FileStorageBackendRegistry,
-    FileStorageCleanupOrigin, FileStorageContext, FileStorageService, RoutedFileStorageService,
-    S3CompatibleFileStorageService, S3FileStorageConfig, FILE_UPLOAD_TOKEN_HEADER,
+    DatabaseFileStorageCompressionConfig, DatabaseFileStorageService, DisabledFileStorageService,
+    FILE_UPLOAD_TOKEN_HEADER, FileStorageBackendRegistry, FileStorageCleanupOrigin,
+    FileStorageContext, FileStorageService, RoutedFileStorageService,
+    S3CompatibleFileStorageService, S3FileStorageConfig, submitted_file_reference_from_reuse_token,
+    submitted_file_reference_from_session_file, upload_token_from_session_file,
 };
 pub use file_upload_policies::{
-    chat_attachment_upload_policy, media_cover_upload_policy, media_thumbnail_upload_policy,
-    playlist_cover_upload_policy, room_cover_upload_policy, user_avatar_upload_policy,
     MAX_CHAT_ATTACHMENT_SIZE_BYTES, MAX_MEDIA_COVER_SIZE_BYTES, MAX_MEDIA_THUMBNAIL_SIZE_BYTES,
     MAX_PLAYLIST_COVER_SIZE_BYTES, MAX_ROOM_COVER_SIZE_BYTES, MAX_USER_AVATAR_SIZE_BYTES,
+    chat_attachment_upload_policy, media_cover_upload_policy, media_thumbnail_upload_policy,
+    playlist_cover_upload_policy, room_cover_upload_policy, user_avatar_upload_policy,
 };
 pub use global_settings::{
-    parse_rtmp_advertise_address, AdminDefaultPermissionsSetting, ChatRuntimeSettings,
-    ConfiguredIceServer, CorsAllowedOrigins, CorsAllowedOriginsSetting, CorsRuntimeSettings,
+    AdminDefaultPermissionsSetting, ChatRuntimeSettings, ConfiguredIceServer, CorsAllowedOrigins,
+    CorsAllowedOriginsSetting, CorsRuntimeSettings, DEFAULT_MAX_VOICE_PARTICIPANTS_PER_ROOM,
     DefaultMaxChatMessagesSetting, DefaultMaxMembersSetting, EmailEnabledSetting,
     EmailFromEmailSetting, EmailFromNameSetting, EmailRuntimeSettings, EmailSmtpCredentialsSetting,
     EmailSmtpHostSetting, EmailSmtpPortSetting, EmailSmtpProxySetting, EmailUseTlsSetting,
     EmailWhitelistEnabledSetting, EmailWhitelistSetting, EnableEmailSignupSetting,
     EnableGuestSetting, EnablePasswordSignupSetting, EnableWebauthnSignupSetting,
     ExternalIceServersSetting, GuestDefaultPermissionsSetting, IceServerList,
+    MAX_RUNTIME_SETTINGS_IMPORT_REQUEST_BYTES, MAX_RUNTIME_SETTINGS_SNAPSHOT_BYTES,
     MaxMessagesPerRoomSetting, MaxPinnedMessagesPerRoomSetting, MaxRoomsPerUserSetting,
     MaxVoiceParticipantsPerRoomSetting, MemberDefaultPermissionsSetting,
     MessageRetentionDaysSetting, OAuth2AppleProviderConfig, OAuth2CasdoorProviderConfig,
@@ -126,8 +127,7 @@ pub use global_settings::{
     RoomPasswordPolicy, RtmpAdvertiseAddressSetting, RtmpRuntimeSettings,
     RuntimeEmailConfigProvider, RuntimeSettings, RuntimeSettingsStore, RuntimeSettingsUpdateMask,
     ServerIdentityIdSetting, ServerNameSetting, ServerRuntimeSettings, TsDisguisedAsPngSetting,
-    UserRuntimeSettings, WebRtcRuntimeSettings, DEFAULT_MAX_VOICE_PARTICIPANTS_PER_ROOM,
-    MAX_RUNTIME_SETTINGS_IMPORT_REQUEST_BYTES, MAX_RUNTIME_SETTINGS_SNAPSHOT_BYTES,
+    UserRuntimeSettings, WebRtcRuntimeSettings, parse_rtmp_advertise_address,
 };
 pub use media::{
     AddMediaRequest, BackendPlaybackRequest, CreateMediaCoverUploadSession,
@@ -138,19 +138,19 @@ pub use media::{
 pub use member::{AdminMemberUpdate, MemberService};
 pub use notification::{GuestKickReason, NotificationService, RoomEvent};
 pub use notification_partition_manager::{
-    ensure_notification_partitions_on_startup, NotificationPartitionHealth,
-    NotificationPartitionManager,
+    NotificationPartitionHealth, NotificationPartitionManager,
+    ensure_notification_partitions_on_startup,
 };
 pub use oauth2::{
-    local_oauth_state_store, state_store_from_shared_state_profile, OAuth2AuthorizationRequest,
-    OAuth2LinkResult, OAuth2Operation, OAuth2PendingRegistration, OAuth2Service,
-    OAuth2ServiceRuntime, OAuth2State, OAuth2UserInfo, OAuthStateStore, RedisOAuthStateStore,
+    OAuth2AuthorizationRequest, OAuth2LinkResult, OAuth2Operation, OAuth2PendingRegistration,
+    OAuth2Service, OAuth2ServiceRuntime, OAuth2State, OAuth2UserInfo, OAuthStateStore,
+    RedisOAuthStateStore, local_oauth_state_store, state_store_from_shared_state_profile,
 };
 pub use optimistic_retry::retry_with_optimistic_lock;
 pub use partitioning::acquire_unbounded_ddl_connection;
 pub use passkey::{
-    local_passkey_session_store, passkey_session_store_from_shared_state_profile, PasskeyService,
-    PasskeyServiceOptions, PasskeySessionStore,
+    PasskeyService, PasskeyServiceOptions, PasskeySessionStore, local_passkey_session_store,
+    passkey_session_store_from_shared_state_profile,
 };
 pub(crate) use permission::PermissionWriteFence;
 pub use permission::{
@@ -190,8 +190,8 @@ pub use publish_key::{
 pub use rate_limit::{RateLimitConfig, RateLimitError, RateLimiter, RequestRateLimiterService};
 pub use realtime_outbox::RealtimeOutboxService;
 pub use remote_provider_manager::{
-    empty_provider_instance_manager, ProviderInstanceStore, RemoteProviderManager,
-    RemoteProviderManagerOptions,
+    ProviderInstanceStore, RemoteProviderManager, RemoteProviderManagerOptions,
+    empty_provider_instance_manager,
 };
 pub use review::{
     ReviewPage, ReviewService, RoomCreationReviewListQuery, RoomCreationReviewRecord,
@@ -200,19 +200,12 @@ pub use review::{
 };
 pub(crate) use room::soft_delete_room_and_cleanup_in_tx;
 pub use room::{
-    local_room_opaque_password_login_session_store,
-    local_room_opaque_password_registration_session_store,
-};
-pub use room::{
-    room_opaque_password_login_session_store_from_shared_state_profile,
-    room_opaque_password_registration_session_store_from_shared_state_profile,
-};
-pub use room::{
     AddMemberWithOutboxRequest, AdminAddMemberWithOutboxRequest, AdminRejectJoinRequestWithOutbox,
     AuthorizedAdminActor, ClientResourceAvailability, CreateRoomCoverUploadSession,
     CreateRoomWithTaxonomyRequest, DeleteEntriesPlan, DeleteEntriesRequest,
     KickMemberOutboxOptions, MemberPermissionPatch, MemberResourceCleanupResult,
-    PermissionChangedOutboxSnapshot, RealtimeMembershipAccess,
+    PermissionChangedOutboxSnapshot, ROOM_OPAQUE_LOGIN_SESSION_TTL_SECS,
+    ROOM_OPAQUE_REGISTRATION_SESSION_TTL_SECS, RealtimeMembershipAccess,
     RealtimeOutboxDeleteEntriesEventFactory, RealtimeOutboxMemberResourceCleanupEventFactory,
     RealtimeOutboxOwnedMediaKickEventFactory, RealtimeOutboxPermissionChangedEventFactory,
     RealtimeOutboxRoomEventFactory, RealtimeOutboxSettingsEventFactory,
@@ -221,17 +214,21 @@ pub use room::{
     RoomOpaquePasswordRegistrationSession, RoomOpaquePasswordRegistrationSessionStore,
     RoomOpaqueRegistrationStartChallenge, RoomService, RoomServiceOptions,
     UpdateMemberDisplayTagWithOutboxRequest, UpdateMemberRemarkNameWithOutboxRequest,
-    UpdateMemberWithOutboxRequest, UserLeftOutboxSnapshot, ROOM_OPAQUE_LOGIN_SESSION_TTL_SECS,
-    ROOM_OPAQUE_REGISTRATION_SESSION_TTL_SECS,
+    UpdateMemberWithOutboxRequest, UserLeftOutboxSnapshot,
+};
+pub use room::{
+    local_room_opaque_password_login_session_store,
+    local_room_opaque_password_registration_session_store,
+};
+pub use room::{
+    room_opaque_password_login_session_store_from_shared_state_profile,
+    room_opaque_password_registration_session_store_from_shared_state_profile,
 };
 pub use room_settings::{RoomSettingsRuntime, RoomSettingsService};
 pub use server_state::{
-    check_memory_health, email_health, livestream_snapshot_from_publishers,
-    response_for_server_state_nodes, summarize_server_state, validate_server_state_selection,
-    ws_ticket_backend_is_safe_for_mode, ws_ticket_health, ServerStateCluster,
-    ServerStateClusterNode, ServerStateClusterOptions, ServerStateClusterRuntime,
-    ServerStateClusterStatus, ServerStateClusterTarget, ServerStateCpu, ServerStateCpuStatus,
-    ServerStateDatabase, ServerStateDatabaseOptions, ServerStateDatabasePool,
+    ServerStateCluster, ServerStateClusterNode, ServerStateClusterOptions,
+    ServerStateClusterRuntime, ServerStateClusterStatus, ServerStateClusterTarget, ServerStateCpu,
+    ServerStateCpuStatus, ServerStateDatabase, ServerStateDatabaseOptions, ServerStateDatabasePool,
     ServerStateDatabaseStatus, ServerStateEmail, ServerStateEmailStatus, ServerStateError,
     ServerStateFailure, ServerStateHlsStorageBackend, ServerStateHlsStorageOptions,
     ServerStateLivestream, ServerStateLivestreamOptions, ServerStateLivestreamRuntime,
@@ -243,6 +240,9 @@ pub use server_state::{
     ServerStateService, ServerStateServiceDependencies, ServerStateSliceCache,
     ServerStateSliceCacheRuntime, ServerStateSliceCacheStatus, ServerStateSummary,
     ServerStateWebRtc, ServerStateWebRtcStatus, ServerStateWsTicket, ServerStateWsTicketStatus,
+    check_memory_health, email_health, livestream_snapshot_from_publishers,
+    response_for_server_state_nodes, summarize_server_state, validate_server_state_selection,
+    ws_ticket_backend_is_safe_for_mode, ws_ticket_health,
 };
 pub use service_state::{
     ServiceAdditionalState, ServiceState, ServiceStateService, ServiceStateServiceDependencies,
@@ -250,30 +250,21 @@ pub use service_state::{
 pub use settings::{SettingsService, SettingsServiceRuntime};
 pub use settings_vars::{Setting, SettingsStorage};
 pub use slice_cache_management::{
-    evict_expired_response_from_nodes, purge_response_from_nodes, validate_slice_cache_selection,
     SliceCacheConfigInfo, SliceCacheEvictExpiredNodeResult, SliceCacheEvictExpiredResponse,
     SliceCacheManagementClusterRuntime, SliceCacheManagementError,
     SliceCacheManagementLocalRuntime, SliceCacheManagementRemoteClient, SliceCacheManagementResult,
     SliceCacheManagementService, SliceCacheManagementServiceDependencies, SliceCacheNodeFailure,
     SliceCachePurgeNodeResult, SliceCachePurgeResponse, SliceCachePurgeResult, SliceCacheSelection,
     SliceCacheStats, SliceCacheStatsNode, SliceCacheStatsResponse,
+    evict_expired_response_from_nodes, purge_response_from_nodes, validate_slice_cache_selection,
 };
 pub use stun_server::{
-    validate_external_addr, BuiltinStunRuntimeReason, BuiltinStunRuntimeState, StunServer,
-    StunServerConfig, WebRtcRuntimeMode, WebRtcRuntimeStatus,
+    BuiltinStunRuntimeReason, BuiltinStunRuntimeState, StunServer, StunServerConfig,
+    WebRtcRuntimeMode, WebRtcRuntimeStatus, validate_external_addr,
 };
 pub use system_stats::SystemStatsService;
 pub use time_partition_manager::{
-    ensure_time_partitions_on_startup, TimePartitionHealth, TimePartitionManager,
-};
-pub use user::{
-    local_login_session_store, local_mfa_session_store, local_opaque_registration_session_store,
-    local_sensitive_verification_session_store,
-};
-pub use user::{
-    login_session_store_from_shared_state_profile, mfa_session_store_from_shared_state_profile,
-    opaque_registration_session_store_from_shared_state_profile,
-    sensitive_verification_session_store_from_shared_state_profile,
+    TimePartitionHealth, TimePartitionManager, ensure_time_partitions_on_startup,
 };
 pub use user::{
     AccountRegistrationOutcome, AuthFactorMethod, AuthenticatedLogin,
@@ -291,6 +282,15 @@ pub use user::{
 pub use user::{
     InMemoryLoginSessionStore, InMemoryMfaSessionStore, InMemoryOpaqueRegistrationSessionStore,
     InMemorySensitiveVerificationSessionStore,
+};
+pub use user::{
+    local_login_session_store, local_mfa_session_store, local_opaque_registration_session_store,
+    local_sensitive_verification_session_store,
+};
+pub use user::{
+    login_session_store_from_shared_state_profile, mfa_session_store_from_shared_state_profile,
+    opaque_registration_session_store_from_shared_state_profile,
+    sensitive_verification_session_store_from_shared_state_profile,
 };
 pub use user_notification::{NotificationCreatedEvent, UserNotificationService};
 pub use ws_ticket::{

@@ -552,30 +552,30 @@ mod tests {
         // Array 1: VPS (type 32) with 2 NAL units
         hvcc.push(0x20); // array_completeness=0, reserved=0, NAL_type=32 (VPS)
         hvcc.extend_from_slice(&[0x00, 0x02]); // numNalus = 2
-                                               // First VPS NAL unit
+        // First VPS NAL unit
         hvcc.extend_from_slice(&[0x00, 0x02]); // nalUnitLength = 2
         hvcc.extend_from_slice(&[0x40, 0x01]); // VPS data (first VPS)
-                                               // Second VPS NAL unit
+        // Second VPS NAL unit
         hvcc.extend_from_slice(&[0x00, 0x02]); // nalUnitLength = 2
         hvcc.extend_from_slice(&[0x40, 0x02]); // VPS data (second VPS)
 
         // Array 2: SPS (type 33) with 2 NAL units
         hvcc.push(0x21); // array_completeness=0, reserved=0, NAL_type=33 (SPS)
         hvcc.extend_from_slice(&[0x00, 0x02]); // numNalus = 2
-                                               // First SPS NAL unit
+        // First SPS NAL unit
         hvcc.extend_from_slice(&[0x00, 0x02]); // nalUnitLength = 2
         hvcc.extend_from_slice(&[0x42, 0x01]); // SPS data (first SPS)
-                                               // Second SPS NAL unit
+        // Second SPS NAL unit
         hvcc.extend_from_slice(&[0x00, 0x02]); // nalUnitLength = 2
         hvcc.extend_from_slice(&[0x42, 0x02]); // SPS data (second SPS)
 
         // Array 3: PPS (type 34) with 2 NAL units
         hvcc.push(0x22); // array_completeness=0, reserved=0, NAL_type=34 (PPS)
         hvcc.extend_from_slice(&[0x00, 0x02]); // numNalus = 2
-                                               // First PPS NAL unit
+        // First PPS NAL unit
         hvcc.extend_from_slice(&[0x00, 0x02]); // nalUnitLength = 2
         hvcc.extend_from_slice(&[0x44, 0x01]); // PPS data (first PPS)
-                                               // Second PPS NAL unit
+        // Second PPS NAL unit
         hvcc.extend_from_slice(&[0x00, 0x02]); // nalUnitLength = 2
         hvcc.extend_from_slice(&[0x44, 0x02]); // PPS data (second PPS)
 
@@ -839,7 +839,7 @@ mod tests {
         // SPS NAL (type 33)
         data.extend_from_slice(&[0x00, 0x00, 0x00, 0x02]); // size = 2
         data.extend_from_slice(&[0x42, 0x01]); // SPS NAL data
-                                               // IDR NAL (type 19)
+        // IDR NAL (type 19)
         data.extend_from_slice(&[0x00, 0x00, 0x00, 0x02]); // size = 2
         data.extend_from_slice(&[0x26, 0xFF]); // IDR NAL data
 

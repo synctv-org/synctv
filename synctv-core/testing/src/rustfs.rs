@@ -5,22 +5,22 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use synctv_core::service::{S3CompatibleFileStorageService, S3FileStorageConfig};
+use testcontainers::ContainerAsync;
 use testcontainers::core::{ImageExt, IntoContainerPort, ReuseDirective, WaitFor};
 use testcontainers::runners::AsyncRunner;
-use testcontainers::ContainerAsync;
 use testcontainers_modules::rustfs::RustFS;
 use tokio::sync::{OnceCell, Semaphore};
 
 use crate::docker::{
-    acquire_docker_slot, acquire_run_lock, candidate_endpoints_for_host,
-    cleanup_error_indicates_missing_container, cleanup_orphaned_run_lock_files,
-    cleanup_orphaned_testcontainers, current_process_id as docker_current_process_id,
+    DockerSlotGuard, ProcessLock, TEST_RUN_LABEL, acquire_docker_slot, acquire_run_lock,
+    candidate_endpoints_for_host, cleanup_error_indicates_missing_container,
+    cleanup_orphaned_run_lock_files, cleanup_orphaned_testcontainers,
+    current_process_id as docker_current_process_id,
     current_test_run_id as docker_current_test_run_id,
     current_test_run_id_from as docker_current_test_run_id_from,
     docker_named_container_belongs_to_current_run, docker_port_candidates, docker_rm_force,
     ensure_docker_image, host_address_family, sanitize_container_name,
-    startup_error_is_named_container_conflict, startup_error_is_retriable, DockerSlotGuard,
-    ProcessLock, TEST_RUN_LABEL,
+    startup_error_is_named_container_conflict, startup_error_is_retriable,
 };
 use crate::postgres::{docker_startup_parallelism, docker_startup_timeout};
 
@@ -369,11 +369,13 @@ async fn init_shared_rustfs_server() -> SharedRustfsServer {
     cleanup_orphaned_run_lock_files("synctv-rustfs-run-");
 
     let lock_name = format!("rustfs-run-{run_id}");
-    let _startup_lock = tokio::task::spawn_blocking(move || loop {
-        if let Some(lock) = ProcessLock::try_acquire(&lock_name) {
-            return lock;
+    let _startup_lock = tokio::task::spawn_blocking(move || {
+        loop {
+            if let Some(lock) = ProcessLock::try_acquire(&lock_name) {
+                return lock;
+            }
+            std::thread::sleep(Duration::from_millis(100));
         }
-        std::thread::sleep(Duration::from_millis(100));
     })
     .await
     .expect("RustFS startup lock task should not panic");
@@ -404,12 +406,11 @@ async fn init_shared_rustfs_server() -> SharedRustfsServer {
                     }
                     Ok(Err(error)) => {
                         let error = format!("{error}");
-                        if startup_error_is_named_container_conflict(&error) {
-                            if let Some((host, port)) =
+                        if startup_error_is_named_container_conflict(&error)
+                            && let Some((host, port)) =
                                 resolve_existing_named_rustfs_endpoint(&container_name).await
-                            {
-                                break (None, host, port);
-                            }
+                        {
+                            break (None, host, port);
                         }
                         if startup_error_is_retriable(&error) {
                             last_start_error = error;

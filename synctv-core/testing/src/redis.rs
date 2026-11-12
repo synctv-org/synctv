@@ -4,21 +4,22 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use redis::AsyncCommands;
+use testcontainers::ContainerAsync;
 use testcontainers::core::{ImageExt, IntoContainerPort, ReuseDirective, WaitFor};
 use testcontainers::runners::AsyncRunner;
-use testcontainers::ContainerAsync;
 use testcontainers_modules::redis::Redis;
 use tokio::sync::{OnceCell, RwLock, Semaphore};
 
 use crate::docker::{
-    acquire_docker_slot, acquire_run_lock, candidate_endpoints_for_host,
-    cleanup_error_indicates_missing_container, cleanup_orphaned_run_lock_files,
-    cleanup_orphaned_testcontainers, current_process_id as docker_current_process_id,
+    DockerSlotGuard, ProcessLock, TEST_RUN_LABEL, acquire_docker_slot, acquire_run_lock,
+    candidate_endpoints_for_host, cleanup_error_indicates_missing_container,
+    cleanup_orphaned_run_lock_files, cleanup_orphaned_testcontainers,
+    current_process_id as docker_current_process_id,
     current_test_run_id as docker_current_test_run_id,
     current_test_run_id_from as docker_current_test_run_id_from,
     docker_named_container_belongs_to_current_run, docker_port_candidates, docker_rm_force,
     ensure_docker_image, host_address_family, startup_error_is_named_container_conflict,
-    startup_error_is_retriable, DockerSlotGuard, ProcessLock, TEST_RUN_LABEL,
+    startup_error_is_retriable,
 };
 use crate::postgres::{docker_startup_parallelism, docker_startup_timeout};
 
@@ -462,11 +463,13 @@ async fn init_shared_redis_server() -> SharedRedisServer {
     cleanup_orphaned_run_lock_files("synctv-redis-run-");
 
     let lock_name = format!("redis-run-{run_id}");
-    let _startup_lock = tokio::task::spawn_blocking(move || loop {
-        if let Some(lock) = ProcessLock::try_acquire(&lock_name) {
-            return lock;
+    let _startup_lock = tokio::task::spawn_blocking(move || {
+        loop {
+            if let Some(lock) = ProcessLock::try_acquire(&lock_name) {
+                return lock;
+            }
+            std::thread::sleep(Duration::from_millis(100));
         }
-        std::thread::sleep(Duration::from_millis(100));
     })
     .await
     .expect("redis startup lock task should not panic");
@@ -503,12 +506,11 @@ async fn init_shared_redis_server() -> SharedRedisServer {
                     }
                     Ok(Err(e)) => {
                         let err_str = format!("{e}");
-                        if startup_error_is_named_container_conflict(&err_str) {
-                            if let Some((host, port)) =
+                        if startup_error_is_named_container_conflict(&err_str)
+                            && let Some((host, port)) =
                                 resolve_existing_named_redis_endpoint(&container_name).await
-                            {
-                                break (None, host, port);
-                            }
+                        {
+                            break (None, host, port);
                         }
                         // Retry known Docker container lifecycle races while a named
                         // shared container is being cleaned up or recreated.
@@ -584,8 +586,8 @@ pub async fn start_redis_client_manager_with_label(
     (container, client, manager)
 }
 
-pub async fn start_redis_client_manager(
-) -> (RedisContainer, redis::Client, redis::aio::ConnectionManager) {
+pub async fn start_redis_client_manager()
+-> (RedisContainer, redis::Client, redis::aio::ConnectionManager) {
     start_redis_client_manager_with_label("client-manager").await
 }
 

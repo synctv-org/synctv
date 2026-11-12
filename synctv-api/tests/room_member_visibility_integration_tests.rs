@@ -10,8 +10,8 @@ use chrono::Utc;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     models::{
-        room_settings::RequireApproval, RoomMemberPermissionBits, RoomRole, RoomSettings,
-        SignupMethod, User, UserId, UserRole, UserStatus,
+        RoomMemberPermissionBits, RoomRole, RoomSettings, SignupMethod, User, UserId, UserRole,
+        UserStatus, room_settings::RequireApproval,
     },
     repository::UserRepository,
     service::{

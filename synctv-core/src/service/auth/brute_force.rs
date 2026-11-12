@@ -55,7 +55,7 @@ use std::sync::Arc;
 use synctv_common::ExecutionControl;
 
 use crate::{
-    cache::KeyBuilder, Error, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
+    Error, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile, cache::KeyBuilder,
 };
 
 mod tracker;

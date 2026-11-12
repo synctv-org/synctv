@@ -1,5 +1,5 @@
 use super::{
-    run_distributed_lock_client_op, run_distributed_lock_redis_op, DistributedLock, Error,
+    DistributedLock, Error, run_distributed_lock_client_op, run_distributed_lock_redis_op,
 };
 use crate::test_helpers::failing_redis_runtime;
 use std::sync::Arc;

@@ -116,6 +116,9 @@ pub mod validation;
 
 pub use audit::{AuditAction, AuditDetails, AuditTargetType, AuditUpdatedFields};
 pub use chat::{
+    CHAT_ATTACHMENT_FILENAME_MAX_CHARS, CHAT_ATTACHMENT_ID_MAX_CHARS,
+    CHAT_CLIENT_MESSAGE_ID_MAX_CHARS, CHAT_CLIENT_OPERATION_ID_MAX_CHARS, CHAT_EVENT_ID_MAX_CHARS,
+    CHAT_EVENT_TYPE_MAX_CHARS, CHAT_PIN_NOTE_MAX_CHARS, CHAT_REACTION_KEY_MAX_CHARS,
     ChatAttachment, ChatAttachmentKind, ChatEventKind, ChatHistoryCursor, ChatHistoryPage,
     ChatMemberJoinedMetadata, ChatMention, ChatMentionInput, ChatMessage, ChatMessageContext,
     ChatMessageEvent, ChatMessageEventLog, ChatMessageOperationKind, ChatMessagePin,
@@ -128,9 +131,6 @@ pub use chat::{
     ChatSearchMessagesQuery, ChatUserMetadata, CreateChatAttachmentUploadSession,
     DeleteChatMessage, EditChatMessage, EventCursor, MarkChatRead, PinChatMessage,
     PlaybackChangeReason, SendChatMessage, SetChatReaction, UnpinChatMessage,
-    CHAT_ATTACHMENT_FILENAME_MAX_CHARS, CHAT_ATTACHMENT_ID_MAX_CHARS,
-    CHAT_CLIENT_MESSAGE_ID_MAX_CHARS, CHAT_CLIENT_OPERATION_ID_MAX_CHARS, CHAT_EVENT_ID_MAX_CHARS,
-    CHAT_EVENT_TYPE_MAX_CHARS, CHAT_PIN_NOTE_MAX_CHARS, CHAT_REACTION_KEY_MAX_CHARS,
 };
 pub use content_report::{
     ContentReport, ContentReportAdminRow, ContentReportMetadata, ContentReportStatus,
@@ -139,28 +139,27 @@ pub use content_report::{
 pub use email_token::EmailTokenType;
 pub use file_storage::{
     CompleteFileUploadPart, CompleteFileUploadSession, CompleteFileUploadSessionResult,
-    CreateFileUploadSession, FileAudioMetadata, FileBlob, FileBlobCompression, FileBlobPart,
-    FileByteRange, FileCleanupJob, FileCleanupMetadata, FileMetadata, FileObject, FileObjectAccess,
-    FileObjectDownload, FileObjectGroup, FileObjectKind, FileObjectMetadata, FileObjectVariant,
-    FileOwnershipProofRange, FileRangeRequest, FileReferenceMetadata, FileReferenceTarget,
-    FileUploadManifestPart, FileUploadOwnershipProofMetadata, FileUploadPartUrl, FileUploadPlan,
-    FileUploadPlanPart, FileUploadPolicy, FileUploadRange, FileUploadSession,
-    FileUploadSessionCreateResult, FileUploadSessionKind, FileUploadSessionMetadata,
-    FileUploadSessionPart, FileUploadSessionRecord, FileVariantMetadata, GetFileObject,
-    NewStoredFile, StoreFileUpload, StoreFileUploadResult, StoredFileReference,
-    SubmittedFileReference, SubmittedFileReferenceKind, FILE_CLEANUP_ORIGIN_MAX_CHARS,
-    FILE_ID_MAX_CHARS, FILE_OBJECT_KEY_MAX_CHARS, FILE_REFERENCE_ID_MAX_CHARS,
-    FILE_REFERENCE_KIND_MAX_CHARS, FILE_SHA256_HEX_CHARS, FILE_STORAGE_BACKEND_MAX_CHARS,
+    CreateFileUploadSession, FILE_CLEANUP_ORIGIN_MAX_CHARS, FILE_ID_MAX_CHARS,
+    FILE_OBJECT_KEY_MAX_CHARS, FILE_REFERENCE_ID_MAX_CHARS, FILE_REFERENCE_KIND_MAX_CHARS,
+    FILE_SHA256_HEX_CHARS, FILE_STORAGE_BACKEND_MAX_CHARS, FileAudioMetadata, FileBlob,
+    FileBlobCompression, FileBlobPart, FileByteRange, FileCleanupJob, FileCleanupMetadata,
+    FileMetadata, FileObject, FileObjectAccess, FileObjectDownload, FileObjectGroup,
+    FileObjectKind, FileObjectMetadata, FileObjectVariant, FileOwnershipProofRange,
+    FileRangeRequest, FileReferenceMetadata, FileReferenceTarget, FileUploadManifestPart,
+    FileUploadOwnershipProofMetadata, FileUploadPartUrl, FileUploadPlan, FileUploadPlanPart,
+    FileUploadPolicy, FileUploadRange, FileUploadSession, FileUploadSessionCreateResult,
+    FileUploadSessionKind, FileUploadSessionMetadata, FileUploadSessionPart,
+    FileUploadSessionRecord, FileVariantMetadata, GetFileObject, NewStoredFile, StoreFileUpload,
+    StoreFileUploadResult, StoredFileReference, SubmittedFileReference, SubmittedFileReferenceKind,
 };
 pub use id::{
-    generate_id, BanRecordId, ContentReportId, EmailRegistrationTokenId, MediaId, PlaylistId,
-    ReviewRequestId, RoomCategoryId, RoomId, RoomLabelId, TypedId, UserId,
-    LOCAL_MANAGEMENT_ACTOR_USER_ID,
+    BanRecordId, ContentReportId, EmailRegistrationTokenId, LOCAL_MANAGEMENT_ACTOR_USER_ID,
+    MediaId, PlaylistId, ReviewRequestId, RoomCategoryId, RoomId, RoomLabelId, TypedId, UserId,
+    generate_id,
 };
 pub use lifecycle::DeletionSource;
 pub use media::{
-    provider_type_code_from_name, provider_type_name_from_code, AcFunPlaybackFormat,
-    AcFunPlaybackMetadata, AcFunPlaybackResourceKind, AlistPlaybackMetadata,
+    AcFunPlaybackFormat, AcFunPlaybackMetadata, AcFunPlaybackResourceKind, AlistPlaybackMetadata,
     AlistTranscodingTaskMetadata, AlistVideoPreviewMetadata, BilibiliDashAudioStream,
     BilibiliDashManifest, BilibiliDashSegmentBase, BilibiliDashVideoStream, BilibiliPlaybackKind,
     BilibiliPlaybackMetadata, CctvChapterMetadata, CctvPlaybackMetadata, CctvPlaybackStreamKind,
@@ -188,30 +187,31 @@ pub use media::{
     SynologyPlaybackProfile, SynologyPlaybackResource, SynologySubtitleMetadata,
     TikTokPlaybackKind, TikTokPlaybackMetadata, TikTokPlaybackResource, TrueNasPlaybackMetadata,
     TwitchChapterMetadata, TwitchPlaybackMetadata, TwitchPlaybackResourceKind,
-    YoutubePlaybackMetadata, YoutubePlaybackResource,
+    YoutubePlaybackMetadata, YoutubePlaybackResource, provider_type_code_from_name,
+    provider_type_name_from_code,
 };
 pub use notification::{
     CreateNotificationRequest, MarkAllAsReadRequest, MarkAsReadRequest, Notification,
     NotificationData, NotificationListQuery, NotificationListSortBy, NotificationType,
 };
 pub use oauth2_client::{
-    oauth2_provider_type_code_from_name, oauth2_provider_type_name_from_code, OAuth2Provider,
-    OAuth2UserInfo, UserOAuthProviderMapping,
+    OAuth2Provider, OAuth2UserInfo, UserOAuthProviderMapping, oauth2_provider_type_code_from_name,
+    oauth2_provider_type_name_from_code,
 };
 pub use opaque_password::{
-    OpaquePasswordRecord, OPAQUE_CIPHERSUITE_RISTRETTO255_SHA512_ARGON2ID,
-    OPAQUE_SERVER_SETUP_VERSION,
+    OPAQUE_CIPHERSUITE_RISTRETTO255_SHA512_ARGON2ID, OPAQUE_SERVER_SETUP_VERSION,
+    OpaquePasswordRecord,
 };
-pub use pagination::{Page, PageParams, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE};
+pub use pagination::{DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page, PageParams};
 pub use permission::{
     Role as RoomRole, RoomAdminPermissionBits, RoomGuestPermissionBits, RoomMemberPermissionBits,
     RoomPermission, RoomPermissionSet,
 };
 pub use playback::{
-    hash_empty_playback_target, try_hash_playback_target, ClaimedPlaybackDurationProbe,
-    PlaybackDurationSource, PlaybackDurationStatus, PlaybackHistoryEntry, PlaybackHistoryPage,
-    PlaybackKind, PlaybackSourceIdentity, PlaybackSourceMetadata, RoomPlaybackProgress,
-    RoomPlaybackState,
+    ClaimedPlaybackDurationProbe, PlaybackDurationSource, PlaybackDurationStatus,
+    PlaybackHistoryEntry, PlaybackHistoryPage, PlaybackKind, PlaybackSourceIdentity,
+    PlaybackSourceMetadata, RoomPlaybackProgress, RoomPlaybackState, hash_empty_playback_target,
+    try_hash_playback_target,
 };
 pub use playback_session::{
     EmbyPlaybackSession, FnosPlaybackSession, ProviderPlaybackSession,
@@ -223,18 +223,17 @@ pub use playlist::{
     PlaylistListSortBy, PlaylistWithCount,
 };
 pub use provider_instance::{
-    is_valid_provider_instance_name, normalize_provider_instance_name,
-    normalize_provider_instance_name_owned, resolve_provider_instance_binding,
-    validate_provider_instance_name, CredentialProviderInstanceName, NewProviderInstance,
-    ProviderCredential, ProviderInstance, ProviderInstanceBindingMismatch,
-    ProviderInstanceListQuery, ProviderInstanceListSortBy, SynologyApiBinding,
-    UserProviderCredential,
+    CredentialProviderInstanceName, NewProviderInstance, ProviderCredential, ProviderInstance,
+    ProviderInstanceBindingMismatch, ProviderInstanceListQuery, ProviderInstanceListSortBy,
+    SynologyApiBinding, UserProviderCredential, is_valid_provider_instance_name,
+    normalize_provider_instance_name, normalize_provider_instance_name_owned,
+    resolve_provider_instance_binding, validate_provider_instance_name,
 };
 pub use provider_target::{
-    hash_empty_provider_target, hash_optional_provider_target, AlistTarget, BilibiliTarget,
-    CloudreveTarget, EmbyTarget, FnosTarget, FnosTargetKind, NextcloudTarget, ProviderTarget,
-    QnapTarget, SeafileTarget, SynologyTarget, TikTokTarget, TrueNasTarget, TwitchTarget,
-    TwitchTargetKind, YoutubeTarget,
+    AlistTarget, BilibiliTarget, CloudreveTarget, EmbyTarget, FnosTarget, FnosTargetKind,
+    NextcloudTarget, ProviderTarget, QnapTarget, SeafileTarget, SynologyTarget, TikTokTarget,
+    TrueNasTarget, TwitchTarget, TwitchTargetKind, YoutubeTarget, hash_empty_provider_target,
+    hash_optional_provider_target,
 };
 pub use query::SortDirection;
 pub use realtime_actor::RealtimeActor;
@@ -253,26 +252,26 @@ pub use room_member::{
 pub use room_settings::RoomSettings;
 pub use settings::RuntimeSetting;
 pub use source_config::{
-    detect_direct_url_format, AcFunMediaSourceConfig, AlistMediaSourceConfig,
-    AlistPlaylistSourceConfig, BilibiliHistoryType, BilibiliLiveSourceConfig,
-    BilibiliMediaSourceConfig, BilibiliPgcSourceConfig, BilibiliPgcTimelineType,
-    BilibiliPlaylistSource, BilibiliPlaylistSourceConfig, BilibiliVideoSourceConfig,
-    CctvMediaSourceConfig, CloudreveMediaSourceConfig, CloudrevePlaylistSourceConfig,
-    DirectUrlDanmakuSourceConfig, DirectUrlMediaResourceConfig, DirectUrlMediaSourceConfig,
-    DirectUrlSubtitleSourceConfig, DouyinMediaSourceConfig, DouyinPlaylistSourceConfig,
-    DouyuMediaSourceConfig, EmbyMediaSourceConfig, EmbyPlaylistSource, EmbyPlaylistSourceConfig,
-    ExternalLiveSourceConfig, FnosMediaSource, FnosMediaSourceConfig, FnosPlaylistSource,
-    FnosPlaylistSourceConfig, HuyaMediaSourceConfig, LiveProxyMediaSourceConfig, MediaSourceConfig,
-    NextcloudMediaSourceConfig, NextcloudPlaylistSource, NextcloudPlaylistSourceConfig,
-    PlaybackProxyMode, PlaylistSourceConfig, QnapMediaSourceConfig, QnapPlaylistSourceConfig,
-    RtmpMediaSourceConfig, RtmpStreamMode, RtspTrackSelection, RtspTransport,
-    SeafileMediaSourceConfig, SeafilePlaylistSource, SeafilePlaylistSourceConfig,
-    SynologyLibraryItemKind, SynologyMediaSource, SynologyMediaSourceConfig,
-    SynologyPlaylistSource, SynologyPlaylistSourceConfig, TikTokMediaSourceConfig,
-    TikTokPlaylistSourceConfig, TrueNasMediaSourceConfig, TrueNasPlaylistSource,
-    TrueNasPlaylistSourceConfig, TwitchMediaSourceConfig, TwitchPlaylistContent,
-    TwitchPlaylistSourceConfig, YoutubeChannelContent, YoutubeMediaSourceConfig,
-    YoutubePlaylistSourceConfig,
+    AcFunMediaSourceConfig, AlistMediaSourceConfig, AlistPlaylistSourceConfig, BilibiliHistoryType,
+    BilibiliLiveSourceConfig, BilibiliMediaSourceConfig, BilibiliPgcSourceConfig,
+    BilibiliPgcTimelineType, BilibiliPlaylistSource, BilibiliPlaylistSourceConfig,
+    BilibiliVideoSourceConfig, CctvMediaSourceConfig, CloudreveMediaSourceConfig,
+    CloudrevePlaylistSourceConfig, DirectUrlDanmakuSourceConfig, DirectUrlMediaResourceConfig,
+    DirectUrlMediaSourceConfig, DirectUrlSubtitleSourceConfig, DouyinMediaSourceConfig,
+    DouyinPlaylistSourceConfig, DouyuMediaSourceConfig, EmbyMediaSourceConfig, EmbyPlaylistSource,
+    EmbyPlaylistSourceConfig, ExternalLiveSourceConfig, FnosMediaSource, FnosMediaSourceConfig,
+    FnosPlaylistSource, FnosPlaylistSourceConfig, HuyaMediaSourceConfig,
+    LiveProxyMediaSourceConfig, MediaSourceConfig, NextcloudMediaSourceConfig,
+    NextcloudPlaylistSource, NextcloudPlaylistSourceConfig, PlaybackProxyMode,
+    PlaylistSourceConfig, QnapMediaSourceConfig, QnapPlaylistSourceConfig, RtmpMediaSourceConfig,
+    RtmpStreamMode, RtspTrackSelection, RtspTransport, SeafileMediaSourceConfig,
+    SeafilePlaylistSource, SeafilePlaylistSourceConfig, SynologyLibraryItemKind,
+    SynologyMediaSource, SynologyMediaSourceConfig, SynologyPlaylistSource,
+    SynologyPlaylistSourceConfig, TikTokMediaSourceConfig, TikTokPlaylistSourceConfig,
+    TrueNasMediaSourceConfig, TrueNasPlaylistSource, TrueNasPlaylistSourceConfig,
+    TwitchMediaSourceConfig, TwitchPlaylistContent, TwitchPlaylistSourceConfig,
+    YoutubeChannelContent, YoutubeMediaSourceConfig, YoutubePlaylistSourceConfig,
+    detect_direct_url_format,
 };
 pub use user::{
     BlockedUser, SignupMethod, User, UserLifecycleMetadata, UserListQuery, UserListSortBy,
@@ -299,7 +298,7 @@ mod tests {
     }
 
     macro_rules! assert_sort_field {
-        ($ty:ty, $variant:expr, $display:literal, $sql:literal) => {
+        ($ty:ty, $variant:expr_2021, $display:literal, $sql:literal) => {
             assert_eq!($variant.as_str(), $display);
             assert_eq!($variant.to_string(), $display);
             assert_eq!($variant.as_sql(), $sql);

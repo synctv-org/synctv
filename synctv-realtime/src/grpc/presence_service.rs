@@ -4,9 +4,9 @@ use synctv_core::models::{RoomId, UserId};
 use tonic::{Request, Response, Status};
 
 use super::proto::{
-    realtime_presence_service_server, room_connection, GetRoomConnectionsRequest,
-    GetRoomConnectionsResponse, GetUserOnlineStatusRequest, GetUserOnlineStatusResponse,
-    RoomConnection, UserOnlineStatus,
+    GetRoomConnectionsRequest, GetRoomConnectionsResponse, GetUserOnlineStatusRequest,
+    GetUserOnlineStatusResponse, RoomConnection, UserOnlineStatus,
+    realtime_presence_service_server, room_connection,
 };
 use crate::sync::ConnectionRuntime;
 

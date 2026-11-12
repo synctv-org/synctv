@@ -40,9 +40,11 @@ async fn insert_test_provider_instance(pool: &PgPool, name: &str, provider: &str
         timeout: "10s".to_string(),
         tls: false,
         insecure_tls: false,
-        providers: vec![provider
-            .parse::<SourceProvider>()
-            .checked("test provider should be known")],
+        providers: vec![
+            provider
+                .parse::<SourceProvider>()
+                .checked("test provider should be known"),
+        ],
         enabled: true,
         created_at: now,
         updated_at: now,
@@ -90,10 +92,12 @@ fn test_push_media_scope_filters_treats_empty_provider_instance_as_default() {
         .checked("operation should succeed");
 
     let built = builder.build();
-    assert!(built
-        .sql()
-        .as_str()
-        .contains("NULLIF(m.provider_instance_name, '') IS NULL"));
+    assert!(
+        built
+            .sql()
+            .as_str()
+            .contains("NULLIF(m.provider_instance_name, '') IS NULL")
+    );
 }
 
 fn media_order_by_sql(query: &MediaListQuery) -> String {

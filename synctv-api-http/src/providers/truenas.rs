@@ -1,7 +1,7 @@
 use axum::{
+    Json, Router,
     extract::State,
     routing::{get, post},
-    Json, Router,
 };
 use futures::FutureExt;
 use synctv_proto::providers::common::ProviderInstanceQuery;
@@ -13,7 +13,7 @@ use super::common::{
     execute_provider_user_endpoint, execute_provider_user_endpoint_with_control,
     provider_instance_name, provider_instance_name_from_request_field,
 };
-use crate::http::{middleware::RequestMetadata, validation::ProtoQuery, AppResult, AppState};
+use crate::http::{AppResult, AppState, middleware::RequestMetadata, validation::ProtoQuery};
 use synctv_api_common::impls::EndpointRateLimitCategory;
 
 pub(crate) fn truenas_auth_routes() -> Router<AppState> {
@@ -29,7 +29,7 @@ pub(crate) fn truenas_read_routes() -> Router<AppState> {
 }
 
 macro_rules! user_post {
-    ($name:ident, $path:literal, $req:ty, $resp:ty, $category:expr, $method:ident) => {
+    ($name:ident, $path:literal, $req:ty, $resp:ty, $category:expr_2021, $method:ident) => {
         #[cfg_attr(feature = "openapi", utoipa::path(post, path = $path, tag = "Provider", request_body = $req, responses((status = 200, body = $resp)), security(("bearer_auth" = []))))]
         pub(crate) async fn $name(request_meta: RequestMetadata, State(state): State<AppState>, Json(req): Json<$req>) -> AppResult<Json<$resp>> {
             let instance = provider_instance_name_from_request_field(&req.instance_name)?;

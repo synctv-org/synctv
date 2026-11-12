@@ -9,7 +9,7 @@ use axum::{
 };
 
 use crate::http::middleware::RequestMetadata;
-use crate::http::{error::map_api_error, AppResult, AppState};
+use crate::http::{AppResult, AppState, error::map_api_error};
 use synctv_api_common::impls::{EndpointRateLimitCategory, EndpointRateLimitScope};
 
 // Proto types already derive serde::Serialize/Deserialize.

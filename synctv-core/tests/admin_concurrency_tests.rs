@@ -13,13 +13,13 @@ use std::sync::Arc;
 use chrono::Utc;
 use sqlx::PgPool;
 use synctv_core::{
+    Error,
     models::{
         AddMemberOptions, Room, RoomId, RoomRole, RoomSettings, RoomStatus, User, UserId, UserRole,
         UserStatus,
     },
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository, UserRepository},
     service::{MemberService, NotificationService, PermissionService},
-    Error,
 };
 use synctv_core_testing::{create_test_pool, ok, some};
 use tokio::sync::Barrier;

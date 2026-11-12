@@ -642,11 +642,13 @@ mod tests {
         .expect("playback should map");
         assert_eq!(result.default_mode, "al");
         assert_eq!(result.playback_infos["al"].medias.len(), 2);
-        assert!(result
-            .playback_infos
-            .values()
-            .flat_map(|info| &info.medias)
-            .all(|media| media.p2p_swarm_id.is_none()));
+        assert!(
+            result
+                .playback_infos
+                .values()
+                .flat_map(|info| &info.medias)
+                .all(|media| media.p2p_swarm_id.is_none())
+        );
         assert!(matches!(
             result.playback_infos["al"].medias[0].provider,
             PlaybackMediaProvider::Huya(PlaybackHuyaMedia::Refresh {
@@ -655,8 +657,10 @@ mod tests {
             })
         ));
         assert_eq!(result.playback_infos["al"].danmakus.len(), 1);
-        assert!(result.playback_infos["al"].danmakus[0]
-            .p2p_swarm_id
-            .is_none());
+        assert!(
+            result.playback_infos["al"].danmakus[0]
+                .p2p_swarm_id
+                .is_none()
+        );
     }
 }

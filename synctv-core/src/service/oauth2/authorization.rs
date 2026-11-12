@@ -5,12 +5,12 @@ use synctv_common::ExecutionControl;
 use tracing::debug;
 
 use crate::{
+    Error, InternalExt, Result,
     models::UserId,
     service::oauth2::{
         OAuth2AuthorizationRequest, OAuth2Operation, OAuth2Service, OAuth2State,
         PreparedOAuth2Authorization,
     },
-    Error, InternalExt, Result,
 };
 
 impl OAuth2Service {

@@ -1,8 +1,8 @@
 use {
     super::{
+        ChunkBasicHeader, ChunkHeader, ChunkInfo, ChunkMessageHeader, ExtendTimestampType,
         define::CHUNK_SIZE,
         errors::{PackError, PackErrorValue},
-        ChunkBasicHeader, ChunkHeader, ChunkInfo, ChunkMessageHeader, ExtendTimestampType,
     },
     crate::bytesio::{bytes_writer::AsyncBytesWriter, net_io::TNetIO},
     byteorder::{BigEndian, LittleEndian},

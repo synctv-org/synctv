@@ -222,7 +222,9 @@ fn read_runtime_settings_snapshot(path: &Path) -> Result<String> {
             )
         })?;
     if json.len() as u64 > MAX_RUNTIME_SETTINGS_SNAPSHOT_BYTES {
-        bail!("runtime settings snapshot exceeds the {MAX_RUNTIME_SETTINGS_SNAPSHOT_BYTES} byte limit");
+        bail!(
+            "runtime settings snapshot exceeds the {MAX_RUNTIME_SETTINGS_SNAPSHOT_BYTES} byte limit"
+        );
     }
     Ok(json)
 }

@@ -4,8 +4,8 @@ use governor::{DefaultKeyedRateLimiter, Quota, RateLimiter as GovernorRateLimite
 use moka::sync::Cache as MokaCache;
 use nonzero_ext::nonzero;
 use std::num::NonZeroU32;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::Result;

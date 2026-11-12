@@ -15,7 +15,7 @@ use synctv_proto::providers::alist::{
     SearchResponse,
 };
 use synctv_proto::source_config::{
-    media_source_config, playlist_source_config, AlistMediaSourceConfig, AlistPlaylistSourceConfig,
+    AlistMediaSourceConfig, AlistPlaylistSourceConfig, media_source_config, playlist_source_config,
 };
 use synctv_realtime::fanout::RealtimeEventService;
 

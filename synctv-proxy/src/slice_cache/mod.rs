@@ -67,7 +67,7 @@ pub use head::{
     head_content_length_with_control_and_timeout,
 };
 pub use lifecycle::CacheLifecycleManager;
-pub use range::{parse_content_range, ContentRange};
+pub use range::{ContentRange, parse_content_range};
 pub use status::CacheStatus;
 pub use store::SliceCache;
 pub use types::{SliceCachePurgeResult, SliceCacheStats};

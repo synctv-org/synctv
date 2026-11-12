@@ -1,7 +1,7 @@
 use crate::api_runtime::{MetricsAuthMode, MetricsRuntimeSettings};
 use axum::http::HeaderMap;
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use subtle::ConstantTimeEq;
 
 #[cfg(feature = "k8s")]
@@ -420,8 +420,8 @@ fn hash_token(token: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::header::AUTHORIZATION;
     use axum::http::HeaderValue;
+    use axum::http::header::AUTHORIZATION;
 
     fn bearer_metrics_config(token: &str) -> MetricsRuntimeSettings {
         MetricsRuntimeSettings {

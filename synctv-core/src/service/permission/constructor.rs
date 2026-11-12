@@ -2,9 +2,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::{
+    Result,
     cache::{ConsistencyCoordinator, MemberPermissionCache, RoomSettingsCache},
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository},
-    Result,
 };
 
 use super::{

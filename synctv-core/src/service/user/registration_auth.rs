@@ -3,19 +3,19 @@ use std::{net::IpAddr, time::Duration};
 use synctv_common::ExecutionControl;
 
 use crate::{
+    Error, Result,
     models::{OpaquePasswordRecord, SignupMethod, User},
     repository::PasswordCredentialMaterial,
     service::UserService,
-    Error, Result,
 };
 
 use super::{
+    AccountRegistrationOutcome, PendingAccountRegistration, RegistrationMode, RegistrationPolicy,
     identity_policy::password_binding,
     session_types::{
-        OpaqueRegistrationPurpose, OpaqueRegistrationSession, OpaqueRegistrationStartChallenge,
-        OPAQUE_REGISTRATION_SESSION_TTL_SECS,
+        OPAQUE_REGISTRATION_SESSION_TTL_SECS, OpaqueRegistrationPurpose, OpaqueRegistrationSession,
+        OpaqueRegistrationStartChallenge,
     },
-    AccountRegistrationOutcome, PendingAccountRegistration, RegistrationMode, RegistrationPolicy,
 };
 
 mod admin_create;
@@ -150,10 +150,10 @@ impl UserService {
     }
 
     pub(crate) fn registration_policy(&self, mode: RegistrationMode) -> Result<RegistrationPolicy> {
-        if let RegistrationMode::Password = mode {
-            if let Some(policy) = self.password_registration_policy_override {
-                return Ok(policy);
-            }
+        if let RegistrationMode::Password = mode
+            && let Some(policy) = self.password_registration_policy_override
+        {
+            return Ok(policy);
         }
 
         let Some(registry) = self.runtime_settings_store.as_ref() else {

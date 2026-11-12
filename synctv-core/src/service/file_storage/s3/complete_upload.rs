@@ -1,5 +1,6 @@
 use super::S3CompatibleFileStorageService;
 use crate::{
+    Error, Result,
     models::{
         CompleteFileUploadSession, CompleteFileUploadSessionResult, FileBlob, FileBlobCompression,
     },
@@ -10,9 +11,8 @@ use crate::{
         upload_session_is_multipart, upload_session_is_single_object,
         upload_session_object_metadata, validate_file_upload_token,
     },
-    Error, Result,
 };
-use futures::{stream, StreamExt as _, TryStreamExt as _};
+use futures::{StreamExt as _, TryStreamExt as _, stream};
 
 impl S3CompatibleFileStorageService {
     pub(super) async fn complete_s3_upload_session(

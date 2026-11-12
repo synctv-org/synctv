@@ -5,8 +5,8 @@ use std::net::SocketAddr;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
-use futures_util::{stream, SinkExt, StreamExt};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+use futures_util::{SinkExt, StreamExt, stream};
 use opaque_ke::argon2::Argon2 as OpaqueArgon2Ksf;
 use opaque_ke::ciphersuite::CipherSuite;
 use opaque_ke::rand::rngs::OsRng;
@@ -20,17 +20,17 @@ use serde::Serialize;
 use serde_json::Value;
 use sha2_010::Sha512;
 use synctv::{
-    app_config::{AppConfig as Config, ManagementTransport},
     Application, ApplicationBuildOptions, ApplicationPreboundListeners,
+    app_config::{AppConfig as Config, ManagementTransport},
 };
 use synctv_core_testing::{
-    connect_test_pool_url, create_test_database_url_with_label,
-    postgres_connection_url_with_credentials, start_redis_url_with_label, test_redis_key_prefix,
-    RedisContainer, RtmpPublisher, TestContainer,
+    RedisContainer, RtmpPublisher, TestContainer, connect_test_pool_url,
+    create_test_database_url_with_label, postgres_connection_url_with_credentials,
+    start_redis_url_with_label, test_redis_key_prefix,
 };
 use synctv_management::proto as management_proto;
-use synctv_media_providers::grpc::alist::{alist_server::AlistServer, MeResp as AlistMeResp};
-use synctv_proto::client::{server_message, ServerMessage};
+use synctv_media_providers::grpc::alist::{MeResp as AlistMeResp, alist_server::AlistServer};
+use synctv_proto::client::{ServerMessage, server_message};
 use synctv_xiu::bytesio::bytesio_errors::BytesIOErrorValue;
 use synctv_xiu::bytesio::net_io::{TNetIO, TcpIO};
 use synctv_xiu::flv::amf0::define::Amf0ValueType;
@@ -45,9 +45,9 @@ use synctv_xiu::rtmp::protocol_control_messages::writer::ProtocolControlMessages
 use tokio_tungstenite::tungstenite;
 use tonic::metadata::MetadataValue;
 use tonic::transport::Server;
+use tonic_health::pb::HealthCheckRequest;
 use tonic_health::pb::health_check_response::ServingStatus;
 use tonic_health::pb::health_client::HealthClient;
-use tonic_health::pb::HealthCheckRequest;
 
 const PROVIDER_PROBE_HOST: &str = "provider-test.example.com";
 const PROVIDER_PROBE_SECRET: &str = "provider-remote-e2e-secret";
@@ -138,7 +138,7 @@ fn optional_event_sequence(sequence: impl Into<String>) -> Option<i64> {
 
 fn observe_playback_message(observe_id: &str) -> synctv_proto::client::ClientMessage {
     use synctv_proto::client::{
-        client_message, observe_resource, ObservePlayback, ObserveResource, ResourceDeliveryMode,
+        ObservePlayback, ObserveResource, ResourceDeliveryMode, client_message, observe_resource,
     };
 
     synctv_proto::client::ClientMessage {
@@ -154,8 +154,8 @@ fn observe_playback_message(observe_id: &str) -> synctv_proto::client::ClientMes
 
 fn observe_playback_state_message(observe_id: &str) -> synctv_proto::client::ClientMessage {
     use synctv_proto::client::{
-        client_message, observe_resource, ObservePlaybackState, ObserveResource,
-        ResourceDeliveryMode,
+        ObservePlaybackState, ObserveResource, ResourceDeliveryMode, client_message,
+        observe_resource,
     };
 
     synctv_proto::client::ClientMessage {
@@ -176,8 +176,8 @@ fn observe_room_settings_message(
     after_event_sequence: impl Into<String>,
 ) -> synctv_proto::client::ClientMessage {
     use synctv_proto::client::{
-        client_message, observe_resource, ObserveResource, ObserveRoomSettings,
-        ResourceDeliveryMode,
+        ObserveResource, ObserveRoomSettings, ResourceDeliveryMode, client_message,
+        observe_resource,
     };
 
     synctv_proto::client::ClientMessage {
@@ -199,8 +199,8 @@ fn observe_playlist_items_message(
     request: synctv_proto::client::ListPlaylistItemsRequest,
 ) -> synctv_proto::client::ClientMessage {
     use synctv_proto::client::{
-        client_message, observe_resource, ObservePlaylistItems, ObserveResource,
-        ResourceDeliveryMode,
+        ObservePlaylistItems, ObserveResource, ResourceDeliveryMode, client_message,
+        observe_resource,
     };
 
     synctv_proto::client::ClientMessage {
@@ -223,8 +223,8 @@ fn observe_room_members_message(
     _request: synctv_proto::client::GetRoomMembersRequest,
 ) -> synctv_proto::client::ClientMessage {
     use synctv_proto::client::{
-        client_message, observe_resource, ObserveResource, ObserveRoomMemberEvents,
-        ResourceDeliveryMode,
+        ObserveResource, ObserveRoomMemberEvents, ResourceDeliveryMode, client_message,
+        observe_resource,
     };
 
     synctv_proto::client::ClientMessage {
@@ -1382,7 +1382,7 @@ async fn opaque_grpc_login(
     password: &str,
 ) -> synctv_proto::client::LoginResponse {
     use synctv_proto::client::{
-        start_login_request, FinishOpaqueLoginRequest, StartLoginRequest, StartOpaqueLoginRequest,
+        FinishOpaqueLoginRequest, StartLoginRequest, StartOpaqueLoginRequest, start_login_request,
     };
 
     let login_session = auth_client
@@ -1652,8 +1652,8 @@ async fn opaque_http_login_token(
     password: &str,
 ) -> Result<String, String> {
     use synctv_proto::client::{
-        start_login_request::Identifier, FinishOpaqueLoginRequest, StartLoginRequest,
-        StartOpaqueLoginRequest,
+        FinishOpaqueLoginRequest, StartLoginRequest, StartOpaqueLoginRequest,
+        start_login_request::Identifier,
     };
 
     let client = test_http_client();
@@ -2050,9 +2050,9 @@ async fn run_idle_rtmp_publisher(
                                     }
                                     Some("_error") => {
                                         return Err(format!(
-                                        "RTMP server returned an error during publish setup: {:?}",
-                                        command.others
-                                    ));
+                                            "RTMP server returned an error during publish setup: {:?}",
+                                            command.others
+                                        ));
                                     }
                                     _ => {}
                                 }
@@ -2301,7 +2301,7 @@ async fn send_client_message(
 
 fn observe_chat_events_message(observe_id: &str) -> synctv_proto::client::ClientMessage {
     use synctv_proto::client::{
-        client_message, observe_resource, ObserveChatEvents, ObserveResource, ResourceDeliveryMode,
+        ObserveChatEvents, ObserveResource, ResourceDeliveryMode, client_message, observe_resource,
     };
 
     synctv_proto::client::ClientMessage {
@@ -2523,8 +2523,8 @@ async fn full_stack_health_endpoints_report_live_and_ready() {
 #[ignore = "Requires Docker (testcontainers)"]
 async fn full_stack_management_exposes_only_remote_admin_surface() {
     use synctv_api::{AdminServiceImpl, ClientServiceImpl};
-    use synctv_management::proto::management_service_server::ManagementServiceServer;
     use synctv_management::ManagementServiceImpl;
+    use synctv_management::proto::management_service_server::ManagementServiceServer;
     use synctv_proto::admin::admin_service_server::AdminServiceServer;
     use synctv_proto::client::{
         auth_service_server::AuthServiceServer, public_service_server::PublicServiceServer,
@@ -2797,9 +2797,9 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn full_stack_cli_user_and_room_commands_use_remote_management_endpoint() {
+    use synctv_proto::client::CreateRoomRequest;
     use synctv_proto::client::auth_service_client::AuthServiceClient;
     use synctv_proto::client::user_service_client::UserServiceClient;
-    use synctv_proto::client::CreateRoomRequest;
 
     let server = start_test_server().await;
     let suffix = unique_test_suffix();
@@ -2898,9 +2898,9 @@ async fn full_stack_cli_user_and_room_commands_use_remote_management_endpoint() 
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn full_stack_cli_room_ban_and_unban_commands_manage_room_lifecycle() {
+    use synctv_proto::client::CreateRoomRequest;
     use synctv_proto::client::auth_service_client::AuthServiceClient;
     use synctv_proto::client::user_service_client::UserServiceClient;
-    use synctv_proto::client::CreateRoomRequest;
 
     let server = start_test_server().await;
     let suffix = unique_test_suffix();
@@ -2984,9 +2984,9 @@ async fn full_stack_cli_room_ban_and_unban_commands_manage_room_lifecycle() {
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn full_stack_cli_room_settings_commands_manage_room_settings_lifecycle() {
+    use synctv_proto::client::CreateRoomRequest;
     use synctv_proto::client::auth_service_client::AuthServiceClient;
     use synctv_proto::client::user_service_client::UserServiceClient;
-    use synctv_proto::client::CreateRoomRequest;
 
     let server = start_test_server().await;
     let suffix = unique_test_suffix();
@@ -3395,9 +3395,11 @@ async fn full_stack_cli_user_batch_and_settings_commands_cover_remaining_managem
     let default_users = default_user_list["users"]
         .as_array()
         .expect("default user list should return users array");
-    assert!(default_users
-        .iter()
-        .all(|user| { user["id"] != batch_user_b_id && user["id"] != batch_user_c_id }));
+    assert!(
+        default_users
+            .iter()
+            .all(|user| { user["id"] != batch_user_b_id && user["id"] != batch_user_c_id })
+    );
 
     let deleted_user_list = run_synctv_remote_cli_json(
         &server,
@@ -3511,9 +3513,11 @@ async fn full_stack_cli_user_batch_and_settings_commands_cover_remaining_managem
         "get room settings after full update",
     )
     .await;
-    assert!(!fetched_updated_room_settings["settings"]["chatEnabled"]
-        .as_bool()
-        .unwrap_or(false));
+    assert!(
+        !fetched_updated_room_settings["settings"]["chatEnabled"]
+            .as_bool()
+            .unwrap_or(false)
+    );
     assert_eq!(
         fetched_updated_room_settings["settings"]["allowGuestJoin"],
         true
@@ -3537,9 +3541,11 @@ async fn full_stack_cli_user_batch_and_settings_commands_cover_remaining_managem
     )
     .await;
     assert_eq!(fetched_room_settings["settings"]["chatEnabled"], true);
-    assert!(!fetched_room_settings["settings"]["allowGuestJoin"]
-        .as_bool()
-        .unwrap_or(false));
+    assert!(
+        !fetched_room_settings["settings"]["allowGuestJoin"]
+            .as_bool()
+            .unwrap_or(false)
+    );
 }
 
 #[tokio::test]
@@ -4059,8 +4065,8 @@ async fn full_stack_account_closure_requires_sensitive_verification() {
 
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
-async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissions_playback_and_batches(
-) {
+async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissions_playback_and_batches()
+ {
     let server = start_test_server().await;
     let suffix = unique_test_suffix();
 
@@ -4625,9 +4631,11 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
         "get room playback after stop",
     )
     .await;
-    assert!(!playback_after_stop["playbackState"]["isPlaying"]
-        .as_bool()
-        .unwrap_or(false));
+    assert!(
+        !playback_after_stop["playbackState"]["isPlaying"]
+            .as_bool()
+            .unwrap_or(false)
+    );
 
     let deleted_media = run_synctv_remote_cli_json(
         &server,
@@ -4962,9 +4970,11 @@ async fn full_stack_cli_stream_commands_cover_publish_list_get_and_kick_with_rea
         "get rtmp stream info after kick",
     )
     .await;
-    assert!(!room_stream_info_after_kick["active"]
-        .as_bool()
-        .unwrap_or(false));
+    assert!(
+        !room_stream_info_after_kick["active"]
+            .as_bool()
+            .unwrap_or(false)
+    );
 }
 
 fn absolute_playback_url(api_base_url: &str, raw_url: &str) -> String {
@@ -6100,9 +6110,11 @@ async fn full_stack_cli_provider_commands_manage_remote_provider_lifecycle() {
     );
     let provider_disable_body: Value = serde_json::from_slice(&provider_disable.stdout)
         .expect("CLI remote provider disable output should be JSON");
-    assert!(!provider_disable_body["instance"]["enabled"]
-        .as_bool()
-        .unwrap_or(false));
+    assert!(
+        !provider_disable_body["instance"]["enabled"]
+            .as_bool()
+            .unwrap_or(false)
+    );
 
     let provider_enable =
         run_synctv_remote_cli(&server, &["provider-instance", "enable", &provider_name]).await;
@@ -7416,10 +7428,12 @@ async fn full_stack_http_auth_room_and_ticket_flow_enforces_membership() {
             .len()
             > 10
     );
-    assert!(member_ticket_body["usage"]
-        .as_str()
-        .expect("usage string")
-        .contains(&format!("/ws/rooms/{room_id}?ticket=")));
+    assert!(
+        member_ticket_body["usage"]
+            .as_str()
+            .expect("usage string")
+            .contains(&format!("/ws/rooms/{room_id}?ticket="))
+    );
 
     // per-test isolated server
 }
@@ -7427,7 +7441,7 @@ async fn full_stack_http_auth_room_and_ticket_flow_enforces_membership() {
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn full_stack_http_ticket_upgrades_websocket_once_and_then_expires() {
-    use synctv_proto::client::{client_message, HeartbeatMessage};
+    use synctv_proto::client::{HeartbeatMessage, client_message};
 
     let server = start_test_server().await;
     let client = test_http_client();
@@ -7536,9 +7550,9 @@ async fn full_stack_http_ticket_upgrades_websocket_once_and_then_expires() {
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn full_stack_grpc_auth_register_login_and_get_profile() {
+    use synctv_proto::client::GetProfileRequest;
     use synctv_proto::client::auth_service_client::AuthServiceClient;
     use synctv_proto::client::user_service_client::UserServiceClient;
-    use synctv_proto::client::GetProfileRequest;
 
     let server = start_test_server().await;
 
@@ -7591,9 +7605,9 @@ async fn full_stack_grpc_auth_register_login_and_get_profile() {
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn full_stack_grpc_create_room_requires_auth_and_returns_created_room() {
+    use synctv_proto::client::CreateRoomRequest;
     use synctv_proto::client::auth_service_client::AuthServiceClient;
     use synctv_proto::client::user_service_client::UserServiceClient;
-    use synctv_proto::client::CreateRoomRequest;
 
     let server = start_test_server().await;
 
@@ -8160,8 +8174,8 @@ async fn full_stack_grpc_message_stream_watch_room_settings_receives_initial_and
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn full_stack_grpc_message_stream_watch_playlist_items_receives_initial_and_future_updates() {
-    use synctv_proto::client::room_service_client::RoomServiceClient;
     use synctv_proto::client::ListPlaylistItemsRequest;
+    use synctv_proto::client::room_service_client::RoomServiceClient;
     use tokio_stream::wrappers::ReceiverStream;
 
     let fixture = start_room_realtime_fixture("grpc-watch-playlist-items").await;
@@ -8304,8 +8318,8 @@ async fn full_stack_grpc_message_stream_watch_playlist_items_receives_initial_an
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn full_stack_grpc_message_stream_watch_room_members_receives_initial_and_future_updates() {
-    use synctv_proto::client::room_service_client::RoomServiceClient;
     use synctv_proto::client::GetRoomMembersRequest;
+    use synctv_proto::client::room_service_client::RoomServiceClient;
     use tokio_stream::wrappers::ReceiverStream;
 
     let fixture = start_room_realtime_fixture("grpc-watch-room-members").await;
@@ -8443,9 +8457,9 @@ async fn full_stack_grpc_message_stream_watch_room_members_receives_initial_and_
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn full_stack_grpc_message_stream_requires_join_room_first() {
+    use synctv_proto::client::ClientMessage;
     use synctv_proto::client::auth_service_client::AuthServiceClient;
     use synctv_proto::client::room_service_client::RoomServiceClient;
-    use synctv_proto::client::ClientMessage;
 
     let server = start_test_server().await;
 
@@ -9459,8 +9473,8 @@ async fn full_stack_websocket_watch_room_settings_receives_initial_and_future_up
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn full_stack_websocket_watch_playlist_items_receives_initial_and_future_updates() {
-    use synctv_proto::client::room_service_client::RoomServiceClient;
     use synctv_proto::client::ListPlaylistItemsRequest;
+    use synctv_proto::client::room_service_client::RoomServiceClient;
 
     let fixture = start_room_realtime_fixture("ws-watch-playlist-items").await;
     let RoomRealtimeFixture {
@@ -9879,7 +9893,7 @@ async fn local_cert_hash_base64(cert_path: &str) -> String {
 #[ignore = "Requires Docker"]
 async fn full_stack_quic_serves_http3_and_webtransport_realtime() {
     use prost::Message as _;
-    use synctv_proto::client::{client_message, server_message, HeartbeatMessage};
+    use synctv_proto::client::{HeartbeatMessage, client_message, server_message};
     use tokio::io::AsyncWriteExt as _;
 
     let temp_dir = std::env::temp_dir().join(format!("synctv-quic-{}", unique_test_suffix()));
@@ -10128,10 +10142,10 @@ async fn full_stack_quic_serves_http3_and_webtransport_realtime() {
                 .expect("server message decodes");
             match &message.message {
                 Some(server_message::Message::ResourceObserved(observed)) => {
-                    return observed.observe_id.clone()
+                    return observed.observe_id.clone();
                 }
                 Some(server_message::Message::ResourceEvent(event)) => {
-                    return event.observe_id.clone()
+                    return event.observe_id.clone();
                 }
                 Some(server_message::Message::ResourceObserveError(error)) => {
                     panic!("observe rejected: {:?}", error.error)

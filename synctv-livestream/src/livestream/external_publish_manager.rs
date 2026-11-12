@@ -16,8 +16,8 @@ use crate::{
     },
 };
 use futures::StreamExt as _;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use synctv_common::ssrf::SsrfGuard;
 use synctv_xiu::streamhub::define::StreamHubEventSender;
@@ -439,7 +439,9 @@ impl ExternalPublishManager {
                 }
             }
             Err(e) => {
-                error!("Failed to register external publisher in Redis after stream start, stopping stream: {e}");
+                error!(
+                    "Failed to register external publisher in Redis after stream start, stopping stream: {e}"
+                );
                 Self::stop_unregistered_stream(&stream, room_id, media_id).await;
                 return Err(e);
             }
@@ -1182,10 +1184,10 @@ mod tests {
                         None,
                         None,
                     )));
-                } else if matches!(event, StreamHubEvent::UnPublish { .. }) {
-                    if let Some(sender) = unpublish_tx.take() {
-                        let _ = sender.send(());
-                    }
+                } else if matches!(event, StreamHubEvent::UnPublish { .. })
+                    && let Some(sender) = unpublish_tx.take()
+                {
+                    let _ = sender.send(());
                 }
             }
         });
@@ -1217,10 +1219,12 @@ mod tests {
             .await
             .map_err(|_| test_error("failed external startup must unpublish local stream"))??;
         assert!(manager.pool.streams.is_empty());
-        assert!(registry
-            .get_active_generation("room-startup-failure", "media-startup-failure")
-            .await?
-            .is_none());
+        assert!(
+            registry
+                .get_active_generation("room-startup-failure", "media-startup-failure")
+                .await?
+                .is_none()
+        );
 
         source_task.await?;
         event_task.abort();
@@ -1229,8 +1233,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_external_publish_manager_shared_http_client_disables_inherited_read_timeout(
-    ) -> TestResult {
+    async fn test_external_publish_manager_shared_http_client_disables_inherited_read_timeout()
+    -> TestResult {
         let registry = Arc::new(TestStreamRegistry::new()) as Arc<dyn StreamRegistryTrait>;
         let (sender, _) = tokio::sync::mpsc::channel(64);
 
@@ -1260,8 +1264,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_clear_stale_local_external_registration_only_clears_system_owned_local_entry(
-    ) -> TestResult {
+    async fn test_clear_stale_local_external_registration_only_clears_system_owned_local_entry()
+    -> TestResult {
         let registry = Arc::new(TestStreamRegistry::new());
         registry
             .try_activate_generation(
@@ -1561,10 +1565,12 @@ mod tests {
 
         manager.stop_all().await;
 
-        assert!(registry
-            .get_active_generation("room1", "media1")
-            .await?
-            .is_none());
+        assert!(
+            registry
+                .get_active_generation("room1", "media1")
+                .await?
+                .is_none()
+        );
         let ended = registry
             .get_generation("room1", "media1", &generation_id.to_string())
             .await?
@@ -1610,9 +1616,11 @@ mod tests {
             )
             .into());
         };
-        assert!(error
-            .to_string()
-            .contains("Another publisher already registered"));
+        assert!(
+            error
+                .to_string()
+                .contains("Another publisher already registered")
+        );
         assert_eq!(stream.lifecycle().subscriber_count(), 0);
         Ok(())
     }

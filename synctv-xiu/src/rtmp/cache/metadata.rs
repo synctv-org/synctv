@@ -1,6 +1,6 @@
 use {
     crate::bytesio::bytes_reader::BytesReader,
-    crate::flv::amf0::{amf0_reader::Amf0Reader, Amf0ValueType},
+    crate::flv::amf0::{Amf0ValueType, amf0_reader::Amf0Reader},
     bytes::{Bytes, BytesMut},
 };
 #[derive(Clone)]

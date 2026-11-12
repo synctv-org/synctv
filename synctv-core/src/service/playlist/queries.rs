@@ -1,6 +1,6 @@
 use crate::{
-    models::{Playlist, PlaylistId, RoomId},
     Error, Result,
+    models::{Playlist, PlaylistId, RoomId},
 };
 
 use super::PlaylistService;

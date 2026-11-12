@@ -58,7 +58,7 @@ fn expect_publish_event(
 
 #[test]
 fn test_u8_2_avc_codec_id() {
-    use synctv_xiu::flv::define::{u8_2_avc_codec_id, AvcCodecId};
+    use synctv_xiu::flv::define::{AvcCodecId, u8_2_avc_codec_id};
     assert!(matches!(u8_2_avc_codec_id(7), AvcCodecId::H264));
     assert!(matches!(u8_2_avc_codec_id(12), AvcCodecId::HEVC));
     assert!(matches!(u8_2_avc_codec_id(0), AvcCodecId::UNKNOWN));
@@ -67,7 +67,7 @@ fn test_u8_2_avc_codec_id() {
 
 #[test]
 fn test_u8_2_aac_profile() {
-    use synctv_xiu::flv::define::{u8_2_aac_profile, AacProfile};
+    use synctv_xiu::flv::define::{AacProfile, u8_2_aac_profile};
     assert!(matches!(u8_2_aac_profile(2), AacProfile::LC));
     assert!(matches!(u8_2_aac_profile(3), AacProfile::SSR));
     assert!(matches!(u8_2_aac_profile(5), AacProfile::HE));
@@ -78,7 +78,7 @@ fn test_u8_2_aac_profile() {
 
 #[test]
 fn test_u8_2_avc_profile() {
-    use synctv_xiu::flv::define::{u8_2_avc_profile, AvcProfile};
+    use synctv_xiu::flv::define::{AvcProfile, u8_2_avc_profile};
     assert!(matches!(u8_2_avc_profile(66), AvcProfile::Baseline));
     assert!(matches!(u8_2_avc_profile(77), AvcProfile::Main));
     assert!(matches!(u8_2_avc_profile(88), AvcProfile::Extended));
@@ -88,7 +88,7 @@ fn test_u8_2_avc_profile() {
 
 #[test]
 fn test_u8_2_avc_level() {
-    use synctv_xiu::flv::define::{u8_2_avc_level, AvcLevel};
+    use synctv_xiu::flv::define::{AvcLevel, u8_2_avc_level};
     assert!(matches!(u8_2_avc_level(10), AvcLevel::Level1));
     assert!(matches!(u8_2_avc_level(31), AvcLevel::Level31));
     assert!(matches!(u8_2_avc_level(41), AvcLevel::Level41));
@@ -107,9 +107,9 @@ fn test_mpegts_stream_types() {
 
 #[tokio::test]
 async fn test_streams_hub_publish_and_subscribe() {
+    use synctv_xiu::streamhub::StreamsHub;
     use synctv_xiu::streamhub::define::*;
     use synctv_xiu::streamhub::stream::StreamIdentifier;
-    use synctv_xiu::streamhub::StreamsHub;
 
     let (event_sender, event_receiver) = tokio::sync::mpsc::channel(100);
     let mut hub = StreamsHub::new(event_sender, event_receiver);
@@ -156,10 +156,10 @@ async fn test_streams_hub_publish_and_subscribe() {
 
 #[tokio::test]
 async fn test_streams_hub_subscribe_no_stream() {
+    use synctv_xiu::streamhub::StreamsHub;
     use synctv_xiu::streamhub::define::*;
     use synctv_xiu::streamhub::stream::StreamIdentifier;
     use synctv_xiu::streamhub::utils::Uuid;
-    use synctv_xiu::streamhub::StreamsHub;
 
     let (event_sender, event_receiver) = tokio::sync::mpsc::channel(100);
     let mut hub = StreamsHub::new(event_sender, event_receiver);
@@ -194,10 +194,10 @@ async fn test_streams_hub_subscribe_no_stream() {
 
 #[tokio::test]
 async fn test_streams_hub_unsubscribe_no_stream() {
+    use synctv_xiu::streamhub::StreamsHub;
     use synctv_xiu::streamhub::define::*;
     use synctv_xiu::streamhub::stream::StreamIdentifier;
     use synctv_xiu::streamhub::utils::Uuid;
-    use synctv_xiu::streamhub::StreamsHub;
 
     let (event_sender, event_receiver) = tokio::sync::mpsc::channel(100);
     let mut hub = StreamsHub::new(event_sender, event_receiver);
@@ -223,9 +223,9 @@ async fn test_streams_hub_unsubscribe_no_stream() {
 
 #[tokio::test]
 async fn test_streams_hub_broadcast_event() {
+    use synctv_xiu::streamhub::StreamsHub;
     use synctv_xiu::streamhub::define::*;
     use synctv_xiu::streamhub::stream::StreamIdentifier;
-    use synctv_xiu::streamhub::StreamsHub;
 
     let (event_sender, event_receiver) = tokio::sync::mpsc::channel(100);
     let mut hub = StreamsHub::new(event_sender, event_receiver);

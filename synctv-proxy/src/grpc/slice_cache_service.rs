@@ -4,9 +4,9 @@ use subtle::ConstantTimeEq;
 use tonic::{Request, Response, Status};
 
 use super::proto::{
-    proxy_slice_cache_service_server, EvictExpiredSliceCacheRequest,
-    EvictExpiredSliceCacheResponse, GetSliceCacheStatsRequest, PurgeSliceCacheRequest,
-    PurgeSliceCacheResponse, SliceCacheConfigInfo, SliceCacheStatsResponse,
+    EvictExpiredSliceCacheRequest, EvictExpiredSliceCacheResponse, GetSliceCacheStatsRequest,
+    PurgeSliceCacheRequest, PurgeSliceCacheResponse, SliceCacheConfigInfo, SliceCacheStatsResponse,
+    proxy_slice_cache_service_server,
 };
 use crate::slice_cache::SliceCache;
 

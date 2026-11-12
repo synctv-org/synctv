@@ -3,7 +3,7 @@
 //! This module provides the shared token validation primitives used by
 //! request entrypoints.
 
-use super::{jwt::JwtService, Claims};
+use super::{Claims, jwt::JwtService};
 use crate::{Error, Result};
 use std::sync::Arc;
 

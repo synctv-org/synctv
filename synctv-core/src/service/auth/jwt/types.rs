@@ -1,9 +1,9 @@
 use base64::Engine as _;
-use serde::{de::Error as _, Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
 use crate::{
-    models::{RoomId, UserId},
     Error, Result,
+    models::{RoomId, UserId},
 };
 
 /// JWT token type

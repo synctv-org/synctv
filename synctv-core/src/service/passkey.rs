@@ -1,6 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{Postgres, Transaction};
@@ -13,13 +13,13 @@ use webauthn_rs::prelude::{
 use webauthn_rs_proto::AllowCredentials;
 
 use crate::{
+    Error, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
     models::{SignupMethod, User, UserId},
     repository::{WebAuthnCredential, WebAuthnCredentialRepository},
     service::{
-        session_store::RedisJsonSessionStore, AccountRegistrationOutcome,
-        PendingAccountRegistration, RegistrationMode,
+        AccountRegistrationOutcome, PendingAccountRegistration, RegistrationMode,
+        session_store::RedisJsonSessionStore,
     },
-    Error, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
 };
 
 const PASSKEY_SESSION_TTL_SECS: u64 = 300;

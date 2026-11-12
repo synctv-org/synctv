@@ -3,7 +3,7 @@ use synctv_core::models::{MediaId, RealtimeEvent, RoomId, UserId};
 use synctv_core::repository::realtime_outbox::{
     NewRealtimeOutboxEvent, RealtimeOutboxRepository, RealtimeOutboxStatus,
 };
-use synctv_core_testing::{create_test_pool, TestResultExt};
+use synctv_core_testing::{TestResultExt, create_test_pool};
 
 fn media_added_outbox_event(
     id: &str,

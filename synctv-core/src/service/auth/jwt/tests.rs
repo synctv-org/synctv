@@ -496,9 +496,11 @@ fn test_guest_claims_sub_format() {
         serde_json::to_value(claims),
         "guest claims should serialize",
     );
-    assert!(serialized["sub"]
-        .as_str()
-        .is_some_and(|subject| subject.starts_with(&format!("guest:{room_id}:"))));
+    assert!(
+        serialized["sub"]
+            .as_str()
+            .is_some_and(|subject| subject.starts_with(&format!("guest:{room_id}:")))
+    );
 }
 
 #[test]
@@ -689,9 +691,10 @@ fn test_custom_token_requires_expiration_by_default() {
     );
 
     assert!(jwt.verify_custom::<NonExpiringClaims>(&token).is_err());
-    assert!(jwt
-        .verify_custom_with_optional_exp::<NonExpiringClaims>(&token)
-        .is_ok());
+    assert!(
+        jwt.verify_custom_with_optional_exp::<NonExpiringClaims>(&token)
+            .is_ok()
+    );
 }
 
 #[test]

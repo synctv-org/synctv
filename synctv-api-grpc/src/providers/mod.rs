@@ -55,16 +55,13 @@ pub(crate) async fn execute_provider_resource_stream(
     state: Arc<playback_provider::PlaybackProviderGrpcState>,
     metadata: synctv_api_common::impls::RequestMetadata,
     operation: impl FnOnce(
-            synctv_core::provider::ExecutionControl,
-            synctv_core::service::AuthenticatedToken,
-        ) -> futures::future::BoxFuture<
-            'static,
-            Result<
-                synctv_core::provider::PlaybackTransportAction,
-                synctv_api_common::impls::ApiError,
-            >,
-        > + Send
-        + 'static,
+        synctv_core::provider::ExecutionControl,
+        synctv_core::service::AuthenticatedToken,
+    ) -> futures::future::BoxFuture<
+        'static,
+        Result<synctv_core::provider::PlaybackTransportAction, synctv_api_common::impls::ApiError>,
+    > + Send
+    + 'static,
 ) -> Result<Response<ProviderResourceResponseStream>, Status> {
     let operation_state = state.clone();
     let stream = state

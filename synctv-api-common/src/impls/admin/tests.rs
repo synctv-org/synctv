@@ -1,7 +1,7 @@
 use super::*;
+use crate::ApiRuntimeSettings;
 use crate::impls::admin::response::active_room_stream_media_ids_for_infra;
 use crate::impls::admin::rooms::username_from_loaded_user;
-use crate::ApiRuntimeSettings;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -1486,7 +1486,7 @@ async fn test_force_disconnect_user_publishes_cluster_kick_event() -> TestResult
         other => {
             return Err(test_error(format!(
                 "expected KickUser event, got {other:?}"
-            )))
+            )));
         }
     }
     Ok(())
@@ -2588,10 +2588,12 @@ fn test_runtime_settings_field_mask_maps_repeated_fields_directly() -> TestResul
     )
     .map_err(|error| test_error(format!("{error:?}")))?;
 
-    assert!(patch
-        .oauth2
-        .and_then(|section| section.providers)
-        .is_some_and(|providers| providers.0.is_empty()));
+    assert!(
+        patch
+            .oauth2
+            .and_then(|section| section.providers)
+            .is_some_and(|providers| providers.0.is_empty())
+    );
     assert_eq!(
         patch.email.and_then(|section| section.whitelist_domains),
         Some(vec!["example.com".to_string()])
@@ -3149,8 +3151,8 @@ async fn test_runtime_settings_export_import_round_trip_and_dry_run() -> TestRes
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_runtime_settings_import_rolls_back_and_releases_fences_on_database_failure(
-) -> TestResult {
+async fn test_runtime_settings_import_rolls_back_and_releases_fences_on_database_failure()
+-> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let snapshot = api_ok(
@@ -3253,8 +3255,8 @@ async fn test_get_settings_ignores_hidden_registered_settings_without_warning_pa
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_update_settings_maps_admin_settings_to_flat_keys_and_upserts_missing_rows(
-) -> TestResult {
+async fn test_update_settings_maps_admin_settings_to_flat_keys_and_upserts_missing_rows()
+-> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool).await;
 
@@ -3524,7 +3526,7 @@ async fn test_delete_user_publishes_kick_user_realtime_event() -> TestResult {
         other => {
             return Err(test_error(format!(
                 "expected KickUser event, got {other:?}"
-            )))
+            )));
         }
     }
     Ok(())
@@ -4549,8 +4551,8 @@ fn test_parse_batch_user_ids_trims_and_preserves_order() -> TestResult {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_update_member_permissions_bypasses_room_creator_constraint_for_global_admin(
-) -> TestResult {
+async fn test_update_member_permissions_bypasses_room_creator_constraint_for_global_admin()
+-> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
@@ -5043,8 +5045,8 @@ fn build_room_stream_list_response_applies_search_sort_and_pagination() -> TestR
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_create_publish_key_bypasses_room_membership_requirement_for_global_admin(
-) -> TestResult {
+async fn test_create_publish_key_bypasses_room_membership_requirement_for_global_admin()
+-> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _infra, _registry, _redis_publish_rx) =
         make_admin_api_with_livestream_for_test(pool.clone()).await;
@@ -5440,8 +5442,8 @@ async fn test_get_playback_reloads_state_after_creator_ban_on_another_instance()
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_start_playback_returns_error_for_invalid_provider_config_for_global_admin(
-) -> TestResult {
+async fn test_start_playback_returns_error_for_invalid_provider_config_for_global_admin()
+-> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
@@ -5712,8 +5714,8 @@ async fn test_get_playback_for_provider_media_signs_proxy_urls_for_global_admin(
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_get_playback_for_provider_media_signs_proxy_urls_for_local_management_actor(
-) -> TestResult {
+async fn test_get_playback_for_provider_media_signs_proxy_urls_for_local_management_actor()
+-> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
@@ -6087,8 +6089,8 @@ async fn test_delete_playlist_bypasses_room_membership_requirement_for_global_ad
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_delete_playlist_publishes_cascaded_playlist_and_media_events_for_global_admin(
-) -> TestResult {
+async fn test_delete_playlist_publishes_cascaded_playlist_and_media_events_for_global_admin()
+-> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, mut redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool.clone());
@@ -6214,7 +6216,7 @@ async fn test_delete_playlist_publishes_cascaded_playlist_and_media_events_for_g
             other => {
                 return Err(test_error(format!(
                     "unexpected admin delete_playlist cascade event: {other:?}"
-                )))
+                )));
             }
         }
     }
@@ -6557,7 +6559,7 @@ async fn test_edit_media_bypasses_room_membership_requirement_for_global_admin()
         other => {
             return Err(test_error(format!(
                 "expected MediaUpdated event, got {other:?}"
-            )))
+            )));
         }
     }
     Ok(())
@@ -6820,7 +6822,7 @@ async fn test_ban_room_publishes_room_banned_realtime_event() -> TestResult {
         other => {
             return Err(test_error(format!(
                 "expected RoomBanned event, got {other:?}"
-            )))
+            )));
         }
     }
     Ok(())

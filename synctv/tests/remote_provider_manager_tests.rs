@@ -12,22 +12,22 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use synctv_core::{
+    Error,
     cache::{CacheInvalidationRuntime, CacheInvalidationService, InvalidationMessage},
     credential_encryption::CredentialEncryption,
     models::{ProviderInstance, SourceProvider},
     repository::ProviderInstanceRepository,
     service::RemoteProviderManager,
-    Error,
 };
 use synctv_core_testing::{
-    create_test_pool_with_options_and_label, redis_connection_manager, start_redis_with_client,
-    TestOptionExt, TestResultExt,
+    TestOptionExt, TestResultExt, create_test_pool_with_options_and_label,
+    redis_connection_manager, start_redis_with_client,
 };
 use synctv_media_providers::grpc::{
-    alist::alist_server::AlistServer, emby::emby_server::EmbyServer,
     AlistService as AlistRemoteService, EmbyService as EmbyRemoteService,
+    alist::alist_server::AlistServer, emby::emby_server::EmbyServer,
 };
-use tokio::sync::{broadcast, Barrier};
+use tokio::sync::{Barrier, broadcast};
 use tonic::metadata::MetadataMap;
 use tonic::service::interceptor::InterceptedService;
 use tonic::transport::Server;
@@ -1249,8 +1249,8 @@ async fn scenario_health_check_ignores_authenticated_provider_handler_failure() 
     abort_test_task(health_handle).await;
 }
 
-async fn scenario_add_alist_instance_does_not_require_external_upstream_auth_for_management_validation(
-) {
+async fn scenario_add_alist_instance_does_not_require_external_upstream_auth_for_management_validation()
+ {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
     let (health_addr, health_handle) =
@@ -1325,8 +1325,8 @@ async fn scenario_health_check_ignores_emby_authenticated_provider_handler_failu
     abort_test_task(health_handle).await;
 }
 
-async fn scenario_add_emby_instance_does_not_require_authenticated_handler_success_for_management_validation(
-) {
+async fn scenario_add_emby_instance_does_not_require_authenticated_handler_success_for_management_validation()
+ {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
     let (health_addr, health_handle) =
@@ -3098,8 +3098,8 @@ async fn test_add_alist_instance_does_not_require_external_upstream_auth_for_man
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "Requires Docker"]
-async fn test_add_emby_instance_does_not_require_authenticated_handler_success_for_management_validation(
-) {
+async fn test_add_emby_instance_does_not_require_authenticated_handler_success_for_management_validation()
+ {
     install_rustls_provider_once();
     scenario_add_emby_instance_does_not_require_authenticated_handler_success_for_management_validation()
         .await;

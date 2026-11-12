@@ -451,10 +451,12 @@ async fn test_credential_logout_pattern() {
         .await
         .unwrap();
 
-    assert!(storage
-        .exists("user123", ProviderType::Bilibili, &bilibili_server_id())
-        .await
-        .unwrap());
+    assert!(
+        storage
+            .exists("user123", ProviderType::Bilibili, &bilibili_server_id())
+            .await
+            .unwrap()
+    );
 
     // User logs out - delete credentials
     let deleted = storage
@@ -464,10 +466,12 @@ async fn test_credential_logout_pattern() {
     assert!(deleted);
 
     // Verify credential is gone
-    assert!(!storage
-        .exists("user123", ProviderType::Bilibili, &bilibili_server_id())
-        .await
-        .unwrap());
+    assert!(
+        !storage
+            .exists("user123", ProviderType::Bilibili, &bilibili_server_id())
+            .await
+            .unwrap()
+    );
 }
 
 /// Test listing credentials for UI display (e.g., "My Connected Accounts").

@@ -164,7 +164,7 @@ mod permissions {
     use synctv_api::{
         ApiError, ClientApiImpl, EndpointRateLimitCategory, RequestMetadata, TransportProtocol,
     };
-    use synctv_core::cache::{l2_backend::RedisCacheL2, KeyBuilder, UsernameCache};
+    use synctv_core::cache::{KeyBuilder, UsernameCache, l2_backend::RedisCacheL2};
     use synctv_core::models::room_settings::{AllowGuestJoin, GuestAddedPermissions};
     use synctv_core::repository::SettingsRepository;
     use synctv_core::service::JwtService;
@@ -175,8 +175,8 @@ mod permissions {
     };
     use synctv_core::service::{ConfiguredIceServer, IceServerList};
     use synctv_core_testing::{
-        create_test_pool_with_db_and_label, opaque_register_user, redis_connection_manager,
-        start_redis_url_with_label, test_redis_key_prefix, RedisContainer, TestContainer,
+        RedisContainer, TestContainer, create_test_pool_with_db_and_label, opaque_register_user,
+        redis_connection_manager, start_redis_url_with_label, test_redis_key_prefix,
     };
     use synctv_realtime::sync::{ConnectionLimits, ConnectionManager};
     use tokio_util::sync::CancellationToken;
@@ -329,11 +329,13 @@ mod permissions {
 
         persist_external_ice_servers(
             &fixture,
-            IceServerList(vec![ConfiguredIceServer::new(vec![
-                "turn:turn.example.com:3478?transport=udp".to_string(),
-                "turns:turn.example.com:5349".to_string(),
-            ])
-            .with_auth("turn-user", "turn-password")]),
+            IceServerList(vec![
+                ConfiguredIceServer::new(vec![
+                    "turn:turn.example.com:3478?transport=udp".to_string(),
+                    "turns:turn.example.com:5349".to_string(),
+                ])
+                .with_auth("turn-user", "turn-password"),
+            ]),
         )
         .await;
 
@@ -399,10 +401,12 @@ mod permissions {
 
         persist_external_ice_servers(
             &fixture,
-            IceServerList(vec![ConfiguredIceServer::new(vec![
-                "turn:guest-turn.example.com:3478?transport=udp".to_string(),
-            ])
-            .with_auth("guest-turn-user", "guest-turn-password")]),
+            IceServerList(vec![
+                ConfiguredIceServer::new(vec![
+                    "turn:guest-turn.example.com:3478?transport=udp".to_string(),
+                ])
+                .with_auth("guest-turn-user", "guest-turn-password"),
+            ]),
         )
         .await;
 

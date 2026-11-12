@@ -1,8 +1,8 @@
 use super::S3CompatibleFileStorageService;
 use crate::{
+    Error, Result,
     models::{FileReferenceTarget, FileUploadSessionRecord},
     service::file_storage::FileStorageCleanupOrigin,
-    Error, Result,
 };
 
 impl S3CompatibleFileStorageService {
@@ -104,18 +104,17 @@ impl S3CompatibleFileStorageService {
             return Ok(false);
         }
         let repository = self.repository()?;
-        if let Some(upload_id) = session.upload_id.as_deref() {
-            if let Err(error) = self
+        if let Some(upload_id) = session.upload_id.as_deref()
+            && let Err(error) = self
                 .abort_s3_multipart_upload(&session.object_key, upload_id)
                 .await
-            {
-                tracing::warn!(
-                    error = %error,
-                    object_key = %session.object_key,
-                    upload_id,
-                    "failed to abort expired S3 multipart upload"
-                );
-            }
+        {
+            tracing::warn!(
+                error = %error,
+                object_key = %session.object_key,
+                upload_id,
+                "failed to abort expired S3 multipart upload"
+            );
         }
         if let Err(error) = self.operator.delete(&session.object_key).await {
             tracing::debug!(

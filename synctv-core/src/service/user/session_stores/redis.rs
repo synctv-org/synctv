@@ -1,8 +1,8 @@
 use std::{marker::PhantomData, sync::Arc, time::Duration};
 
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 
-use crate::{service::session_store::RedisJsonSessionStore, RedisConnectionRuntime, Result};
+use crate::{RedisConnectionRuntime, Result, service::session_store::RedisJsonSessionStore};
 
 use super::{
     LoginSession, LoginSessionStore, MfaSession, MfaSessionStore, OpaqueRegistrationSession,

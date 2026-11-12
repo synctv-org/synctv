@@ -1,11 +1,11 @@
 use axum::{
+    Json, Router,
     extract::State,
     routing::{get, post},
-    Json, Router,
 };
 use futures::FutureExt;
 
-use crate::http::{middleware::RequestMetadata, validation::ProtoQuery, AppResult, AppState};
+use crate::http::{AppResult, AppState, middleware::RequestMetadata, validation::ProtoQuery};
 use synctv_api_common::impls::EndpointRateLimitCategory;
 use synctv_proto::providers::common::ProviderInstanceQuery;
 use synctv_proto::providers::douyin::{

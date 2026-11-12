@@ -1,13 +1,13 @@
-use crate::{models::RoomRole, service::AdminMemberUpdate, Error, Result};
+use crate::{Error, Result, models::RoomRole, service::AdminMemberUpdate};
 
 use super::{
+    RealtimeOutboxPermissionChangedEventFactory, RoomService,
     member_role_policy::{
         validate_admin_member_role_update, validate_admin_override_bits,
         validate_member_permission_override_channel, validate_override_bits_for_role,
         validate_role_can_be_assigned,
     },
     member_update_execution::MemberUpdateExecutionRequest,
-    RealtimeOutboxPermissionChangedEventFactory, RoomService,
 };
 
 impl RoomService {

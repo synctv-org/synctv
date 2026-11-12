@@ -1,14 +1,14 @@
 // Provider Instance Repository
 // Database access layer for provider instance configuration management.
 
+use crate::Result;
 use crate::credential_encryption::CredentialEncryption;
 use crate::models::{
-    normalize_provider_instance_name, provider_type_code_from_name, provider_type_name_from_code,
     ProviderCredential, ProviderInstance, ProviderInstanceListQuery, ProviderInstanceListSortBy,
-    SourceProvider, UserId, UserProviderCredential,
+    SourceProvider, UserId, UserProviderCredential, normalize_provider_instance_name,
+    provider_type_code_from_name, provider_type_name_from_code,
 };
 use crate::repository::pools::RepoPools;
-use crate::Result;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 

@@ -1,16 +1,16 @@
 use futures::StreamExt;
 use tonic::{Request, Response, Status};
 
-use super::{map_api_error, ClientServiceImpl};
+use super::{ClientServiceImpl, map_api_error};
 use synctv_api_common::impls::EndpointRateLimitCategory;
 use synctv_proto::client::{
-    user_service_server::UserService, BlockUserRequest, BlockUserResponse, CloseAccountRequest,
-    CloseAccountResponse, CompleteUserAvatarUploadSessionRequest,
-    CompleteUserAvatarUploadSessionResponse, ConfirmEmailBindRequest, CreateRoomRequest,
-    CreateUserAvatarUploadSessionRequest, CreateUserAvatarUploadSessionResponse,
-    DeletePasskeyRequest, DeletePasskeyResponse, DeleteTotpRequest, DeleteTotpResponse,
-    DiscoverRoomsRequest, DiscoverRoomsResponse, FavoriteRoomRequest, FavoriteRoomResponse,
-    FinishOpaquePasswordUpdateRequest, FinishPasskeyBindRequest, FinishRoomPasswordLoginRequest,
+    BlockUserRequest, BlockUserResponse, CloseAccountRequest, CloseAccountResponse,
+    CompleteUserAvatarUploadSessionRequest, CompleteUserAvatarUploadSessionResponse,
+    ConfirmEmailBindRequest, CreateRoomRequest, CreateUserAvatarUploadSessionRequest,
+    CreateUserAvatarUploadSessionResponse, DeletePasskeyRequest, DeletePasskeyResponse,
+    DeleteTotpRequest, DeleteTotpResponse, DiscoverRoomsRequest, DiscoverRoomsResponse,
+    FavoriteRoomRequest, FavoriteRoomResponse, FinishOpaquePasswordUpdateRequest,
+    FinishPasskeyBindRequest, FinishRoomPasswordLoginRequest,
     FinishSensitiveOperationVerificationRequest, FinishTotpSetupRequest, GetProfileRequest,
     GetRoomDiscoveryRequest, GetRoomRequest, GetRoomResponse, GetUserAvatarObjectRequest,
     GetUserPreferencesRequest, GetUserPreferencesResponse, JoinRoomRequest, JoinRoomResponse,
@@ -29,6 +29,7 @@ use synctv_proto::client::{
     UnfavoriteRoomRequest, UnfavoriteRoomResponse, UpdateUserAvatarRequest,
     UpdateUserPreferencesRequest, UpdateUserPreferencesResponse, UploadUserAvatarObjectRequest,
     UploadUserAvatarObjectResponse, User, UserAvatarObjectResponse,
+    user_service_server::UserService,
 };
 
 type UserAvatarObjectStream = super::GrpcStatusStream<UserAvatarObjectResponse>;

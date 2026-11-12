@@ -6,18 +6,19 @@ use synctv_core::{
     service::{ContentReportListQuery, ContentReportListScope},
 };
 use synctv_proto::client::{
-    report_content_request, ContentReport, ContentReportStatus as ClientContentReportStatus,
+    ContentReport, ContentReportStatus as ClientContentReportStatus,
     ContentReportTargetType as ClientContentReportTargetType, GetRoomContentReportRequest,
     ListRoomContentReportsRequest, ListRoomContentReportsResponse, ReportChatMessageTarget,
     ReportContentRequest, ReportContentResponse, ReportRoomMemberTarget, ReportRoomTarget,
     ReportUserTarget, UpdateRoomContentReportStatusRequest, UpdateRoomContentReportStatusResponse,
+    report_content_request,
 };
 
 use super::{ClientApiImpl, RoomActor};
+use crate::impls::ApiError;
 use crate::impls::client::convert::{
     content_report_metadata_from_proto, content_report_metadata_to_proto,
 };
-use crate::impls::ApiError;
 
 impl ClientApiImpl {
     pub async fn report_content_for_actor(

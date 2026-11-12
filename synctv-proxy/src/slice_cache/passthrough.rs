@@ -55,10 +55,10 @@ pub(super) fn stream_existing_response_with_status(
         .header("X-Cache-Status", cache_status.as_str());
 
     for name in PASSTHROUGH_RESPONSE_HEADERS {
-        if let Some(val) = resp.headers().get(*name) {
-            if let Ok(v) = val.to_str() {
-                builder = builder.header(*name, v);
-            }
+        if let Some(val) = resp.headers().get(*name)
+            && let Ok(v) = val.to_str()
+        {
+            builder = builder.header(*name, v);
         }
     }
 

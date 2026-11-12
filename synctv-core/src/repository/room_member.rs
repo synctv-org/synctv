@@ -1,20 +1,20 @@
 use sqlx::PgPool;
 
 use crate::{
+    Error, Result,
     models::{
         AddMemberOptions, MyRoomListQuery, MyRoomListSortBy, MyRoomRelation, PageParams,
         RoomCategoryId, RoomId, RoomMember, RoomMemberListQuery, RoomMemberListSortBy,
         RoomMemberWithUser, RoomRole, RoomStatus, UserId,
     },
     repository::query_builder::trusted_dynamic_sql,
-    Error, Result,
 };
 
 use super::{
     pools::RepoPools,
-    query_builder::{ilike_contains_pattern, WhereClauseBuilder},
+    query_builder::{WhereClauseBuilder, ilike_contains_pattern},
     required_count,
-    room_taxonomy::{optional_room_category_from_parts, OptionalRoomCategoryRowParts},
+    room_taxonomy::{OptionalRoomCategoryRowParts, optional_room_category_from_parts},
 };
 
 pub struct KickCooldownInsert<'a> {

@@ -1,9 +1,9 @@
 use crate::{
+    Result,
     models::{
         ChatMessage, Media, MediaId, PageParams, RoomId, RoomPermission, RoomPlaybackState, UserId,
     },
     service::RoomService,
-    Result,
 };
 
 impl RoomService {

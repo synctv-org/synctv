@@ -2,6 +2,7 @@ use sqlx::PgPool;
 use std::sync::Arc;
 
 use crate::{
+    Error, Result,
     models::{
         EventCursor, PageParams, Room, RoomId, RoomListQuery, RoomPermission, RoomRole,
         RoomSettings, StoredFileReference, UserId,
@@ -10,10 +11,9 @@ use crate::{
         FileStorageRepository, RoomResourceEventLog, RoomResourceEventRepository, RoomResourceKind,
     },
     service::{
-        room::RoomService, room_settings::RoomSettingsService, user::UserService,
-        PermissionService, PlaylistService,
+        PermissionService, PlaylistService, room::RoomService, room_settings::RoomSettingsService,
+        user::UserService,
     },
-    Error, Result,
 };
 
 impl RoomService {

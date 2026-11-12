@@ -1,10 +1,10 @@
 use sqlx::{Postgres, Transaction};
 
 use crate::{
+    Error, Result,
     models::{ReviewStatus, RoomId, UserId},
     repository::RoomRepository,
-    service::{room::RoomService, RoomPasswordPolicy},
-    Error, Result,
+    service::{RoomPasswordPolicy, room::RoomService},
 };
 
 #[derive(Debug, Clone, Copy)]

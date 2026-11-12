@@ -1,19 +1,19 @@
 use axum::{
+    Json,
     extract::{Path, Query, State},
     response::sse::{Event, Sse},
-    Json,
 };
 use std::convert::Infallible;
 
 use super::execute::{execute_room_actor_endpoint_with_control, execute_user_endpoint};
 use super::query::{
-    build_get_playback_request, build_playback_client_profile_from_watch_query,
-    parse_watch_delivery_mode, GetPlaybackQuery, WatchPlaybackQuery, WatchPlaybackStateQuery,
+    GetPlaybackQuery, WatchPlaybackQuery, WatchPlaybackStateQuery, build_get_playback_request,
+    build_playback_client_profile_from_watch_query, parse_watch_delivery_mode,
 };
 use super::watch::open_resource_watch_sse;
 use crate::http::validation::ProtoQuery;
 use crate::http::websocket::RealtimeTransportFormat;
-use crate::http::{middleware::RequestMetadata, AppResult, AppState};
+use crate::http::{AppResult, AppState, middleware::RequestMetadata};
 use synctv_api_common::impls::{EndpointRateLimitCategory, EndpointRateLimitScope};
 use synctv_proto::client::{
     ClearPlaybackHistoryRequest, ClearPlaybackHistoryResponse, DeletePlaybackHistoryEntryRequest,

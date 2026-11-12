@@ -2,16 +2,16 @@ use chrono::Duration;
 use sqlx::{Postgres, Transaction};
 
 use crate::{
+    Error, Result,
     models::{RoomId, UserId},
     repository::realtime_outbox::NewRealtimeOutboxEvent,
     repository::room_member::KickCooldownInsert,
     service::PermissionWriteFence,
-    Error, Result,
 };
 
 use super::{
-    cleanup_member_resources_in_tx, RealtimeOutboxMemberResourceCleanupEventFactory,
-    RealtimeOutboxPermissionChangedEventFactory, RoomService,
+    RealtimeOutboxMemberResourceCleanupEventFactory, RealtimeOutboxPermissionChangedEventFactory,
+    RoomService, cleanup_member_resources_in_tx,
 };
 
 #[derive(Default)]

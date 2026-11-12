@@ -20,11 +20,11 @@
 //!
 //! ```
 
-use crate::models::{room_settings::MaxMembers, SettingsValidationContext};
+use crate::models::{SettingsValidationContext, room_settings::MaxMembers};
 use crate::service::email::{EmailConfig, EmailConfigProvider, SmtpCredentials, SmtpProxyConfig};
 use crate::service::{
-    settings_vars::{Setting, SettingChangeReceiver, SettingsStorage},
     SettingsService,
+    settings_vars::{Setting, SettingChangeReceiver, SettingsStorage},
 };
 use crate::setting;
 use std::fmt;
@@ -34,17 +34,17 @@ use tracing::warn;
 
 mod types;
 pub use types::{
-    parse_rtmp_advertise_address, ChatRuntimeSettings, ConfiguredIceServer, CorsAllowedOrigins,
-    CorsRuntimeSettings, EmailRuntimeSettings, IceServerList, OAuth2AllowedRedirectUrls,
-    OAuth2AppleProviderConfig, OAuth2CasdoorProviderConfig, OAuth2DiscordProviderConfig,
-    OAuth2FeishuProviderConfig, OAuth2GiteeProviderConfig, OAuth2GithubProviderConfig,
-    OAuth2GoogleProviderConfig, OAuth2LogtoProviderConfig, OAuth2MicrosoftProviderConfig,
-    OAuth2OidcProviderConfig, OAuth2ProviderConfig, OAuth2ProviderConfigs,
-    OAuth2ProviderPrivateConfig, OAuth2QqProviderConfig, OAuth2RuntimeSettings, OAuth2SignupPolicy,
-    OptionalRuntimeConfig, PermissionRuntimeSettings, PermissionSet,
-    PlaybackHistoryRuntimeSettings, PublicSettings, RoomCreationRuntimeSettings,
-    RoomDefaultsRuntimeSettings, RoomPasswordPolicy, RtmpRuntimeSettings, RuntimeSettings,
-    RuntimeSettingsUpdateMask, ServerRuntimeSettings, UserRuntimeSettings, WebRtcRuntimeSettings,
+    ChatRuntimeSettings, ConfiguredIceServer, CorsAllowedOrigins, CorsRuntimeSettings,
+    EmailRuntimeSettings, IceServerList, OAuth2AllowedRedirectUrls, OAuth2AppleProviderConfig,
+    OAuth2CasdoorProviderConfig, OAuth2DiscordProviderConfig, OAuth2FeishuProviderConfig,
+    OAuth2GiteeProviderConfig, OAuth2GithubProviderConfig, OAuth2GoogleProviderConfig,
+    OAuth2LogtoProviderConfig, OAuth2MicrosoftProviderConfig, OAuth2OidcProviderConfig,
+    OAuth2ProviderConfig, OAuth2ProviderConfigs, OAuth2ProviderPrivateConfig,
+    OAuth2QqProviderConfig, OAuth2RuntimeSettings, OAuth2SignupPolicy, OptionalRuntimeConfig,
+    PermissionRuntimeSettings, PermissionSet, PlaybackHistoryRuntimeSettings, PublicSettings,
+    RoomCreationRuntimeSettings, RoomDefaultsRuntimeSettings, RoomPasswordPolicy,
+    RtmpRuntimeSettings, RuntimeSettings, RuntimeSettingsUpdateMask, ServerRuntimeSettings,
+    UserRuntimeSettings, WebRtcRuntimeSettings, parse_rtmp_advertise_address,
 };
 
 /// Maximum allowed value for `default_max_chat_messages` setting (0 = unlimited)
@@ -1549,9 +1549,11 @@ mod tests {
             "guest-safe permission set should parse",
         );
         assert!(allowed.validate_guest_default().is_ok());
-        assert!(allowed
-            .bits()
-            .has(crate::models::RoomPermission::USE_P2P_MEDIA));
+        assert!(
+            allowed
+                .bits()
+                .has(crate::models::RoomPermission::USE_P2P_MEDIA)
+        );
 
         let empty: PermissionSet = ok("[]".parse(), "empty permission set should parse");
         assert!(empty.validate_guest_default().is_ok());
@@ -1576,9 +1578,11 @@ mod tests {
             r#"["send_chat_messages"]"#.parse(),
             "send_chat_messages permission set should parse",
         );
-        assert!(parsed
-            .bits()
-            .has(crate::models::RoomPermission::SEND_CHAT_MESSAGES));
+        assert!(
+            parsed
+                .bits()
+                .has(crate::models::RoomPermission::SEND_CHAT_MESSAGES)
+        );
         assert_eq!(parsed.to_string(), r#"["send_chat_messages"]"#);
     }
 

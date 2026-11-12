@@ -1404,15 +1404,15 @@ pub fn validate_dynamic_playlist_query_support(
     playlist: &Playlist,
     req: &synctv_proto::client::ListPlaylistItemsRequest,
 ) -> Result<bool, ApiError> {
-    if let Some(source_provider) = optional_proto_source_provider_to_core(req.source_provider)? {
-        if playlist.source_provider != Some(source_provider) {
-            return Ok(false);
-        }
+    if let Some(source_provider) = optional_proto_source_provider_to_core(req.source_provider)?
+        && playlist.source_provider != Some(source_provider)
+    {
+        return Ok(false);
     }
-    if let Some(provider_instance_name) = normalize_non_empty_filter(&req.provider_instance_name) {
-        if playlist.provider_instance_name.as_deref() != Some(provider_instance_name.as_str()) {
-            return Ok(false);
-        }
+    if let Some(provider_instance_name) = normalize_non_empty_filter(&req.provider_instance_name)
+        && playlist.provider_instance_name.as_deref() != Some(provider_instance_name.as_str())
+    {
+        return Ok(false);
     }
 
     let sort_by = synctv_proto::client::MediaListSortBy::try_from(req.sort_by)
@@ -3012,8 +3012,8 @@ mod tests {
     }
 
     #[test]
-    fn test_playlist_items_response_version_changes_when_only_thumbnail_url_changes(
-    ) -> Result<(), crate::impls::ApiError> {
+    fn test_playlist_items_response_version_changes_when_only_thumbnail_url_changes()
+    -> Result<(), crate::impls::ApiError> {
         let make_response = |thumbnail: &str| synctv_proto::client::ListPlaylistItemsResponse {
             playlists: Vec::new(),
             media: Vec::new(),
@@ -3058,8 +3058,8 @@ mod tests {
     }
 
     #[test]
-    fn test_playlist_items_response_version_changes_with_provider_metadata(
-    ) -> Result<(), crate::impls::ApiError> {
+    fn test_playlist_items_response_version_changes_with_provider_metadata()
+    -> Result<(), crate::impls::ApiError> {
         let make_response =
             |is_currently_live: bool| synctv_proto::client::ListPlaylistItemsResponse {
                 playlists: Vec::new(),
@@ -3522,10 +3522,12 @@ mod tests {
             fields.upload_url.as_deref(),
             Some("/api/media/cover-objects/encoded-upload")
         );
-        assert!(!fields
-            .upload_url
-            .as_deref()
-            .is_some_and(|url| url.contains("token=")));
+        assert!(
+            !fields
+                .upload_url
+                .as_deref()
+                .is_some_and(|url| url.contains("token="))
+        );
         Ok(())
     }
 

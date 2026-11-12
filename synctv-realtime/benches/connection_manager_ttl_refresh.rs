@@ -4,15 +4,15 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 #[path = "../tests/integration_test_helpers.rs"]
 mod integration_test_helpers;
 
 use integration_test_helpers::TestRedis;
+use synctv_core::SharedStateProfile;
 use synctv_core::models::id::{RoomId, UserId};
 use synctv_core::service::OnlinePresenceService;
-use synctv_core::SharedStateProfile;
-use synctv_realtime::sync::{build_connection_manager, ConnectionLimits};
+use synctv_realtime::sync::{ConnectionLimits, build_connection_manager};
 
 fn uid(s: &str) -> UserId {
     s.parse().expect("valid numeric user id")

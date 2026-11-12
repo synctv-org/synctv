@@ -11,8 +11,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 use std::sync::Arc;
-use synctv_core::cache::{CacheKey, CacheL2Backend, TieredCache, Timestamped, Versioned};
 use synctv_core::Result;
+use synctv_core::cache::{CacheKey, CacheL2Backend, TieredCache, Timestamped, Versioned};
 use synctv_core_testing::{ok, some, timestamped_l2_envelope};
 
 // Test types

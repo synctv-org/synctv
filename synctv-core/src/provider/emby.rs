@@ -3,25 +3,25 @@
 //! Adapter that calls `EmbyClient` to implement `MediaProvider` trait
 
 use super::{
-    access::EmbyAccess,
-    provider_client::{create_remote_emby_client, EmbyClientArc, ProviderClientManager},
-    traits::dynamic_page_has_more,
     DynamicBrowsePathSegment, DynamicListQuery, DynamicListResult, DynamicPagination,
     DynamicPlaylistItem, DynamicPlaylistItemSourceConfig, DynamicPlaylistItemThumbnail,
     DynamicPlaylistProvider, ItemType, MediaProvider, NextPlayItem, PlaybackClientProfile,
     PlaybackInfo, PlaybackProxyAutoPolicy, PlaybackProxyAutoReason, PlaybackProxyPolicy,
     PlaybackResult, PreparedSourceConfig, ProviderContext, ProviderCredentialDependency,
     ProviderError, ProviderPlaybackSessionLifecycle, SourceConfig, SourceCover,
+    access::EmbyAccess,
+    provider_client::{EmbyClientArc, ProviderClientManager, create_remote_emby_client},
+    traits::dynamic_page_has_more,
 };
 use crate::models::media::{
     EmbyPlaybackKind, EmbyPlaybackMetadata, PlaybackEmbyMedia, PlaybackEmbySubtitle, PlaybackMedia,
     PlaybackMediaProvider, PlaybackMetadata, PlaybackSubtitle, PlaybackSubtitleProvider,
 };
 use crate::models::{
-    normalize_provider_instance_name, validate_provider_instance_name, EmbyMediaSourceConfig,
-    EmbyPlaybackSession, EmbyPlaylistSource, EmbyPlaylistSourceConfig, EmbyTarget,
-    MediaSourceConfig, PlaylistSourceConfig, ProviderCredential, ProviderPlaybackSession, RoomId,
-    UserId, UserProviderCredential,
+    EmbyMediaSourceConfig, EmbyPlaybackSession, EmbyPlaylistSource, EmbyPlaylistSourceConfig,
+    EmbyTarget, MediaSourceConfig, PlaylistSourceConfig, ProviderCredential,
+    ProviderPlaybackSession, RoomId, UserId, UserProviderCredential,
+    normalize_provider_instance_name, validate_provider_instance_name,
 };
 use crate::repository::UserProviderCredentialRepository;
 use crate::service::RemoteProviderManager;
@@ -178,14 +178,14 @@ fn mark_emby_playback_resources(
         if mode_name == original_default_mode {
             default_selection = selection;
         }
-        if selection.direct {
-            if let Some(direct_info) = super::build_direct_playback_info_for_client(
+        if selection.direct
+            && let Some(direct_info) = super::build_direct_playback_info_for_client(
                 &mode_name,
                 &original_info,
                 client_profile,
-            ) {
-                generated.insert(mode_name.clone(), direct_info);
-            }
+            )
+        {
+            generated.insert(mode_name.clone(), direct_info);
         }
         if !selection.proxy {
             continue;
@@ -1614,21 +1614,23 @@ impl EmbyProvider {
                 mode_name.clone(),
                 PlaybackInfo {
                     thumbnail: None,
-                    medias: vec![playback_media(
-                        source.name.clone(),
-                        format,
-                        None,
-                        PlaybackMediaProvider::Emby(PlaybackEmbyMedia::Direct {
-                            url: direct_url,
-                            headers: emby_auth_headers.clone(),
-                        }),
-                    )
-                    .with_p2p_swarm_id(super::provider_p2p_swarm_id(
-                        Self::NAME,
-                        config.provider_instance_name.as_deref(),
-                        "media",
-                        &format!("item:{}:source:{}:direct", config.item_id, source.id),
-                    ))],
+                    medias: vec![
+                        playback_media(
+                            source.name.clone(),
+                            format,
+                            None,
+                            PlaybackMediaProvider::Emby(PlaybackEmbyMedia::Direct {
+                                url: direct_url,
+                                headers: emby_auth_headers.clone(),
+                            }),
+                        )
+                        .with_p2p_swarm_id(super::provider_p2p_swarm_id(
+                            Self::NAME,
+                            config.provider_instance_name.as_deref(),
+                            "media",
+                            &format!("item:{}:source:{}:direct", config.item_id, source.id),
+                        )),
+                    ],
                     default_media_index: Some(0),
                     subtitles,
                     default_subtitle_index: None,

@@ -7,8 +7,8 @@
 //! designed for the credential storage layer.
 
 use aes_gcm::{
-    aead::{Aead, AeadCore, Generate, KeyInit},
     Aes256Gcm, Key, Nonce,
+    aead::{Aead, AeadCore, Generate, KeyInit},
 };
 use std::sync::Arc;
 

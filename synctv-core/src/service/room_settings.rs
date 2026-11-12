@@ -22,6 +22,7 @@
 use std::sync::Arc;
 
 use crate::{
+    Error, Result,
     cache::{
         CacheDomain, CacheInvalidationRuntime, CloneableError, ConsistencyCoordinator,
         FenceReadResult, NoopCacheL2, RoomSettingsCache, RoomSettingsSnapshot, SingleFlight,
@@ -30,7 +31,6 @@ use crate::{
     models::{RoomId, RoomSettings},
     repository::RoomSettingsRepository,
     service::notification::NotificationService,
-    Error, Result,
 };
 
 mod invalidation;
@@ -233,13 +233,13 @@ impl RoomSettingsService {
             }
         };
 
-        if let Some(snapshot) = self.cache.get_l1(room_id).await {
-            if snapshot.version >= fence_version {
-                crate::metrics::cache::CACHE_HITS
-                    .with_label_values(&["room_settings", "l1"])
-                    .inc();
-                return Ok(snapshot);
-            }
+        if let Some(snapshot) = self.cache.get_l1(room_id).await
+            && snapshot.version >= fence_version
+        {
+            crate::metrics::cache::CACHE_HITS
+                .with_label_values(&["room_settings", "l1"])
+                .inc();
+            return Ok(snapshot);
         }
 
         match self.cache.get_l2(room_id).await {
@@ -602,10 +602,10 @@ impl RoomSettingsService {
 
     /// Publish invalidation to other replicas and notify connected clients.
     async fn publish_and_notify(&self, room_id: &RoomId, settings: &RoomSettings, version: i64) {
-        if let Some(ref inv_service) = self.invalidation_service {
-            if let Err(e) = inv_service.invalidate_room_settings(room_id).await {
-                tracing::error!("Failed to publish settings invalidation: {}", e);
-            }
+        if let Some(ref inv_service) = self.invalidation_service
+            && let Err(e) = inv_service.invalidate_room_settings(room_id).await
+        {
+            tracing::error!("Failed to publish settings invalidation: {}", e);
         }
 
         self.notify_settings_changed(room_id, settings, version);

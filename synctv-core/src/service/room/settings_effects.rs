@@ -1,6 +1,6 @@
 use crate::{
-    models::{RoomId, RoomSettings, UserId},
     Result,
+    models::{RoomId, RoomSettings, UserId},
 };
 
 use super::RoomService;
@@ -56,14 +56,14 @@ impl RoomService {
                 None
             };
 
-        if let Some(reason) = guest_kick_reason {
-            if let Err(e) = self.revoke_all_guest_access(room_id, reason).await {
-                tracing::warn!(
-                    room_id = %room_id,
-                    error = %e,
-                    "Failed to revoke guest access after settings change"
-                );
-            }
+        if let Some(reason) = guest_kick_reason
+            && let Err(e) = self.revoke_all_guest_access(room_id, reason).await
+        {
+            tracing::warn!(
+                room_id = %room_id,
+                error = %e,
+                "Failed to revoke guest access after settings change"
+            );
         }
     }
 }

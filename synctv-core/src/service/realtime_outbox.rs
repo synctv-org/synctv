@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use crate::{
-    repository::realtime_outbox::{NewRealtimeOutboxEvent, RealtimeOutboxRepository},
     Result,
+    repository::realtime_outbox::{NewRealtimeOutboxEvent, RealtimeOutboxRepository},
 };
 
 #[derive(Clone)]

@@ -17,8 +17,8 @@ use synctv_xiu::bytesio::bytesio_errors::BytesIOError;
 use synctv_xiu::bytesio::net_io::{NetType, TNetIO};
 use synctv_xiu::rtmp::handshake::{
     define::{
-        ClientHandshakeState, ServerHandshakeState, RTMP_CLIENT_KEY_FIRST_HALF, RTMP_DIGEST_LENGTH,
-        RTMP_HANDSHAKE_SIZE, RTMP_SERVER_KEY_FIRST_HALF, RTMP_VERSION,
+        ClientHandshakeState, RTMP_CLIENT_KEY_FIRST_HALF, RTMP_DIGEST_LENGTH, RTMP_HANDSHAKE_SIZE,
+        RTMP_SERVER_KEY_FIRST_HALF, RTMP_VERSION, ServerHandshakeState,
     },
     digest::DigestProcessor,
     errors::{HandshakeError, HandshakeErrorValue},
@@ -96,7 +96,7 @@ fn build_c0c1() -> Vec<u8> {
     let timestamp: u32 = 12345;
     data.extend_from_slice(&timestamp.to_be_bytes());
     data.extend_from_slice(&[0u8; 4]); // version zeros
-                                       // Fill remaining 1528 bytes with pattern
+    // Fill remaining 1528 bytes with pattern
     data.extend((0u8..=u8::MAX).cycle().take(RTMP_HANDSHAKE_SIZE - 8));
     data
 }
@@ -110,7 +110,7 @@ fn build_s0s1s2(c1_echo: &[u8]) -> Vec<u8> {
     data.extend_from_slice(&[0, 0, 0, 0]); // time
     data.extend_from_slice(&[0, 0, 0, 0]); // zero
     data.extend_from_slice(&[0u8; RTMP_HANDSHAKE_SIZE - 8]); // random
-                                                             // S2: echo C1 back
+    // S2: echo C1 back
     data.extend_from_slice(c1_echo);
     data
 }

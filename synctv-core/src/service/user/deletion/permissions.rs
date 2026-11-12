@@ -3,10 +3,10 @@ use std::collections::HashMap;
 use sqlx::{Postgres, Transaction};
 
 use crate::{
+    Result,
     models::{RoomId, UserId},
     repository::RoomMemberRepository,
     service::{PermissionService, PermissionWriteFence},
-    Result,
 };
 
 use super::UserService;

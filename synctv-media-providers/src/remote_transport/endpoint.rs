@@ -32,20 +32,20 @@ pub fn validate_endpoint_ssrf(
         )));
     }
 
-    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-        if guard.is_ip_blocked(&ip) {
-            return Err(ProviderClientError::InvalidConfig(format!(
-                "SSRF validation: IP '{ip}' is blocked (internal/private)"
-            )));
-        }
+    if let Ok(ip) = host.parse::<std::net::IpAddr>()
+        && guard.is_ip_blocked(&ip)
+    {
+        return Err(ProviderClientError::InvalidConfig(format!(
+            "SSRF validation: IP '{ip}' is blocked (internal/private)"
+        )));
     }
 
-    if let Some(port) = url.port() {
-        if port == 0 {
-            return Err(ProviderClientError::InvalidConfig(
-                "SSRF validation: port 0 is not valid".to_string(),
-            ));
-        }
+    if let Some(port) = url.port()
+        && port == 0
+    {
+        return Err(ProviderClientError::InvalidConfig(
+            "SSRF validation: port 0 is not valid".to_string(),
+        ));
     }
 
     Ok(())

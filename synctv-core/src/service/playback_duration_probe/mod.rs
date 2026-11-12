@@ -7,14 +7,14 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
-use super::{media::BackendPlaybackRequest, ActivePlaybackRoomSource, PlaybackService};
+use super::{ActivePlaybackRoomSource, PlaybackService, media::BackendPlaybackRequest};
 use crate::{
+    Error, Result,
     models::{PlaybackDurationStatus, PlaybackSourceIdentity, RoomId, RoomPlaybackState},
     provider::PlaybackResult,
-    Error, Result,
 };
 
-use transport::{is_http_url, probe_duration, ProbeTarget};
+use transport::{ProbeTarget, is_http_url, probe_duration};
 
 #[derive(Clone)]
 pub struct PlaybackDurationProbeService {

@@ -3,14 +3,14 @@ use std::{net::IpAddr, time::Duration};
 use synctv_common::ExecutionControl;
 
 use crate::{
-    models::{User, UserAuthFactors, UserId},
-    service::{user::UserService, TokenAuthContext, TokenCredentialBinding},
     Error, Result,
+    models::{User, UserAuthFactors, UserId},
+    service::{TokenAuthContext, TokenCredentialBinding, user::UserService},
 };
 
 use super::session_types::{
-    AuthFactorMethod, AuthenticatedLogin, MfaChallenge, MfaSession, TokenIssueContext,
-    MFA_SESSION_TTL_SECS, MFA_SESSION_TTL_SECS_I64, TWO_FACTOR_REQUIRED_MESSAGE,
+    AuthFactorMethod, AuthenticatedLogin, MFA_SESSION_TTL_SECS, MFA_SESSION_TTL_SECS_I64,
+    MfaChallenge, MfaSession, TWO_FACTOR_REQUIRED_MESSAGE, TokenIssueContext,
 };
 
 mod sensitive;
@@ -195,10 +195,10 @@ impl UserService {
         {
             tracing::warn!(error = %error, "Failed to reset brute-force counter after successful login");
         }
-        if let Some(ip) = client_ip {
-            if let Err(error) = self.brute_force.reset_ip_with_control(&ip, control).await {
-                tracing::warn!(error = %error, "Failed to reset IP brute-force counter after successful login");
-            }
+        if let Some(ip) = client_ip
+            && let Err(error) = self.brute_force.reset_ip_with_control(&ip, control).await
+        {
+            tracing::warn!(error = %error, "Failed to reset IP brute-force counter after successful login");
         }
 
         let session_id = synctv_common::snanoid!(32);

@@ -4,10 +4,10 @@ use sha2_010::{Digest, Sha256};
 use sqlx::PgPool;
 
 use crate::{
+    Error, Result,
     credential_encryption::CredentialEncryption,
     models::{EmailTokenType, UserId},
     repository::{EmailOutboxJob, EmailOutboxKind, EmailOutboxRepository, NewEmailOutboxJob},
-    Error, Result,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

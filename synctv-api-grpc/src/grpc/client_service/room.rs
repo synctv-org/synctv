@@ -1,6 +1,6 @@
 use tonic::{Request, Response, Status};
 
-use super::{map_api_error, ClientServiceImpl};
+use super::{ClientServiceImpl, map_api_error};
 use synctv_api_common::impls::EndpointRateLimitCategory;
 use synctv_proto::client::room_service_server::RoomService;
 use synctv_proto::client::*;

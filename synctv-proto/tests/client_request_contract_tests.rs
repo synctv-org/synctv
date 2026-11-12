@@ -145,9 +145,11 @@ fn two_factor_changes_use_the_verified_security_request() {
         .get_message_by_name("synctv.client.SetTwoFactorEnabledRequest")
         .expect("SetTwoFactorEnabledRequest descriptor should exist");
     assert!(security_update.get_field_by_name("enabled").is_some());
-    assert!(security_update
-        .get_field_by_name("verification_id")
-        .is_some());
+    assert!(
+        security_update
+            .get_field_by_name("verification_id")
+            .is_some()
+    );
 }
 
 #[test]

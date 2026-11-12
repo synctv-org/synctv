@@ -5,15 +5,15 @@
 //! re-exports the stable facade used by provider adapters.
 
 use super::{
-    apply_provider_client_compression, build_remote_request, execute_remote_call,
-    RemoteProviderConnection,
+    RemoteProviderConnection, apply_provider_client_compression, build_remote_request,
+    execute_remote_call,
 };
+use crate::ProviderClientError;
 use crate::alist::AlistInterface;
 use crate::bilibili::BilibiliInterface;
 use crate::emby::EmbyInterface;
 use crate::grpc::map_remote_status;
 use crate::transport_dto::alist::{FsGetResp, FsListResp, FsOtherResp};
-use crate::ProviderClientError;
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use std::sync::Arc;

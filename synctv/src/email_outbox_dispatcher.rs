@@ -8,7 +8,7 @@ use synctv_core::{
     },
     models::EmailTokenType,
     repository::{
-        email_outbox::EMAIL_OUTBOX_CHANNEL, EmailOutboxJob, EmailOutboxKind, EmailOutboxStatus,
+        EmailOutboxJob, EmailOutboxKind, EmailOutboxStatus, email_outbox::EMAIL_OUTBOX_CHANNEL,
     },
     service::{
         EmailOutboxPayload, EmailOutboxService, EmailService, EmailTokenService, UserService,
@@ -715,7 +715,7 @@ fn record_completion(kind: &str, status: &str, started: Instant) {
 #[cfg(test)]
 mod tests {
     use super::{
-        next_reconnect_delay, should_run_maintenance, wait_until_lease_lost, FailureOutcome,
+        FailureOutcome, next_reconnect_delay, should_run_maintenance, wait_until_lease_lost,
     };
     use chrono::{Duration as ChronoDuration, Utc};
     use std::time::Duration;

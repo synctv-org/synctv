@@ -341,8 +341,8 @@ async fn test_admin_event_channel_multiple_subscribers() -> TestResult {
 }
 
 #[tokio::test]
-async fn test_outbox_side_effect_broadcast_does_not_poison_dedup_or_replay_subscribers(
-) -> TestResult {
+async fn test_outbox_side_effect_broadcast_does_not_poison_dedup_or_replay_subscribers()
+-> TestResult {
     let config = RealtimeConfig {
         distributed_transport_factory: None,
         message_runtime: Arc::new(RoomMessageHub::new()),
@@ -758,8 +758,8 @@ async fn test_shutdown_waits_for_tracked_critical_retry_tasks() -> TestResult {
 }
 
 #[tokio::test]
-async fn test_shutdown_stops_accepting_new_critical_redis_work_before_waiting_for_retries(
-) -> TestResult {
+async fn test_shutdown_stops_accepting_new_critical_redis_work_before_waiting_for_retries()
+-> TestResult {
     let config = RealtimeConfig {
         distributed_transport_factory: None,
         message_runtime: Arc::new(RoomMessageHub::new()),

@@ -24,10 +24,12 @@ fn test_api_runtime_address_uses_server_bind_address() {
     };
 
     assert_eq!(runtime_settings.api_address(), "127.0.0.1:18080");
-    assert!(runtime_settings
-        .api_address()
-        .parse::<std::net::SocketAddr>()
-        .is_ok());
+    assert!(
+        runtime_settings
+            .api_address()
+            .parse::<std::net::SocketAddr>()
+            .is_ok()
+    );
 }
 
 #[test]

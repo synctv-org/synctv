@@ -1,9 +1,9 @@
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 
+use crate::Result;
 use crate::models::{BanRecordId, RoomId, UserId};
 use crate::repository::pools::RepoPools;
-use crate::Result;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BanRecordTargetType {

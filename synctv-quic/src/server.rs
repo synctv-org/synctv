@@ -10,8 +10,8 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 use tower::Service;
 
-use crate::bridge::{serve_request, H3RecvBody};
-use crate::webtransport::{is_webtransport_connect, SharedWebTransportHandler};
+use crate::bridge::{H3RecvBody, serve_request};
+use crate::webtransport::{SharedWebTransportHandler, is_webtransport_connect};
 
 /// Bound on the unauthenticated establishment phase: after the WebTransport
 /// handshake the client must open its control stream (which spawns
@@ -206,71 +206,71 @@ async fn drive_connection<S, ReqBody, ResBody, F>(
         normalize_authority_host(&mut request);
         request.extensions_mut().insert(peer);
 
-        if let Some(handler) = &webtransport {
-            if is_webtransport_connect(&request) {
-                // Admission first: a rejected CONNECT answers with the
-                // handler's status and the connection keeps serving.
-                if let Err(status) = handler.accept(&request).await {
-                    tracing::info!(status = %status, "WebTransport session rejected");
-                    let mut stream = stream;
-                    let response = http::Response::builder()
-                        .status(status)
-                        .body(())
-                        .expect("status-only response builds");
-                    if let Err(error) = stream.send_response(response).await {
-                        tracing::debug!(error = %error, "WebTransport reject response failed");
-                    }
-                    if let Err(error) = stream.finish().await {
-                        tracing::debug!(error = %error, "WebTransport reject finish failed");
-                    }
-                    continue;
+        if let Some(handler) = &webtransport
+            && is_webtransport_connect(&request)
+        {
+            // Admission first: a rejected CONNECT answers with the
+            // handler's status and the connection keeps serving.
+            if let Err(status) = handler.accept(&request).await {
+                tracing::info!(status = %status, "WebTransport session rejected");
+                let mut stream = stream;
+                let response = http::Response::builder()
+                    .status(status)
+                    .body(())
+                    .expect("status-only response builds");
+                if let Err(error) = stream.send_response(response).await {
+                    tracing::debug!(error = %error, "WebTransport reject response failed");
                 }
-                // Listener-wide admission: the per-connection h3 setting
-                // cannot bound the sum across connections. Reject with 503
-                // instead of queueing — clients retry transport negotiation.
-                let Ok(permit) = Arc::clone(&wt_session_slots).try_acquire_owned() else {
-                    tracing::warn!(
-                        "WebTransport session rejected: listener at max_webtransport_sessions"
-                    );
-                    let mut stream = stream;
-                    let response = http::Response::builder()
-                        .status(http::StatusCode::SERVICE_UNAVAILABLE)
-                        .body(())
-                        .expect("status-only response builds");
-                    if let Err(error) = stream.send_response(response).await {
-                        tracing::debug!(error = %error, "WebTransport overload response failed");
-                    }
-                    if let Err(error) = stream.finish().await {
-                        tracing::debug!(error = %error, "WebTransport overload finish failed");
-                    }
-                    continue;
-                };
-                let request_for_session = request;
-                match h3_webtransport::server::WebTransportSession::accept(
-                    request_for_session.clone(),
-                    stream,
-                    h3_conn,
-                )
-                .await
-                {
-                    Ok(session) => {
-                        // The session consumed the h3 connection.
-                        drive_webtransport_session(
-                            session,
-                            request_for_session,
-                            service,
-                            make_body,
-                            Arc::clone(handler),
-                            permit,
-                            peer,
-                        )
-                        .await;
-                        return;
-                    }
-                    Err(error) => {
-                        tracing::debug!(error = ?error, "WebTransport handshake failed");
-                        return;
-                    }
+                if let Err(error) = stream.finish().await {
+                    tracing::debug!(error = %error, "WebTransport reject finish failed");
+                }
+                continue;
+            }
+            // Listener-wide admission: the per-connection h3 setting
+            // cannot bound the sum across connections. Reject with 503
+            // instead of queueing — clients retry transport negotiation.
+            let Ok(permit) = Arc::clone(&wt_session_slots).try_acquire_owned() else {
+                tracing::warn!(
+                    "WebTransport session rejected: listener at max_webtransport_sessions"
+                );
+                let mut stream = stream;
+                let response = http::Response::builder()
+                    .status(http::StatusCode::SERVICE_UNAVAILABLE)
+                    .body(())
+                    .expect("status-only response builds");
+                if let Err(error) = stream.send_response(response).await {
+                    tracing::debug!(error = %error, "WebTransport overload response failed");
+                }
+                if let Err(error) = stream.finish().await {
+                    tracing::debug!(error = %error, "WebTransport overload finish failed");
+                }
+                continue;
+            };
+            let request_for_session = request;
+            match h3_webtransport::server::WebTransportSession::accept(
+                request_for_session.clone(),
+                stream,
+                h3_conn,
+            )
+            .await
+            {
+                Ok(session) => {
+                    // The session consumed the h3 connection.
+                    drive_webtransport_session(
+                        session,
+                        request_for_session,
+                        service,
+                        make_body,
+                        Arc::clone(handler),
+                        permit,
+                        peer,
+                    )
+                    .await;
+                    return;
+                }
+                Err(error) => {
+                    tracing::debug!(error = ?error, "WebTransport handshake failed");
+                    return;
                 }
             }
         }

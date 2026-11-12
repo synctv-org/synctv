@@ -1,7 +1,7 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use futures::{stream, Stream, StreamExt as _, TryStreamExt as _};
+use futures::{Stream, StreamExt as _, TryStreamExt as _, stream};
 use tonic::{Request, Response, Status};
 
 const MANAGEMENT_ROOM_LOAD_CONCURRENCY: usize = 16;
@@ -52,8 +52,7 @@ use crate::mapping::{
     validate_client_actor_user,
 };
 use crate::proto::{
-    list_media_request, management_service_server::ManagementService, AddAdminRequest,
-    AddAlistMediaRequest, AddBilibiliLiveMediaRequest, AddBilibiliPgcMediaRequest,
+    AddAdminRequest, AddAlistMediaRequest, AddBilibiliLiveMediaRequest, AddBilibiliPgcMediaRequest,
     AddBilibiliVideoMediaRequest, AddDirectUrlMediaRequest, AddEmbyMediaRequest, AddMediaRequest,
     AddMemberRequest, AlistGetBindsRequest, AlistGetMeRequest, AlistListRequest, AlistLoginRequest,
     AlistLogoutRequest, AlistSearchRequest, ApproveRoomCreationReviewRequest,
@@ -85,6 +84,7 @@ use crate::proto::{
     UpdateMemberPermissionsRequest, UpdateMemberRemarkNameRequest, UpdatePlaybackStateRequest,
     UpdatePlaylistRequest, UpdateRoomPasswordRequest, UpdateRoomVisibilityRequest,
     UpdateUserPreferencesRequest, UpdateUserRoleRequest, UpdateUserUsernameRequest, UserRef,
+    list_media_request, management_service_server::ManagementService,
 };
 use crate::proto::{
     TikTokBindRequest, TikTokGetBindsRequest, TikTokGetUserRequest, TikTokListUserPostsRequest,
@@ -112,9 +112,9 @@ use crate::source_config::{
 };
 use synctv_adapter::PublicIdCodec;
 use synctv_core::models::{
-    ChatMessageWithAttachments, Media, PageParams, Playlist, ProviderInstanceListQuery,
-    RealtimeEvent, Room, RoomPermission, UserId, UserRole as CoreUserRole,
-    LOCAL_MANAGEMENT_ACTOR_USER_ID,
+    ChatMessageWithAttachments, LOCAL_MANAGEMENT_ACTOR_USER_ID, Media, PageParams, Playlist,
+    ProviderInstanceListQuery, RealtimeEvent, Room, RoomPermission, UserId,
+    UserRole as CoreUserRole,
 };
 use synctv_core::service::{ChatService, RoomService, UserService};
 use synctv_proto::{

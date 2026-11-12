@@ -1,4 +1,4 @@
-use super::super::{map_classified_result, ManagementServiceImpl};
+use super::super::{ManagementServiceImpl, map_classified_result};
 use tonic::{Request, Response, Status};
 
 impl ManagementServiceImpl {

@@ -1,9 +1,9 @@
 use sqlx::{Postgres, Transaction};
 
 use crate::{
+    Error, Result,
     models::{User, UserAuthFactors, UserId, UserPreferences},
     service::UserService,
-    Error, Result,
 };
 
 impl UserService {

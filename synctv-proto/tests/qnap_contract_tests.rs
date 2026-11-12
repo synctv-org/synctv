@@ -7,17 +7,21 @@ fn qnap_services_are_registered_in_descriptor_pools() {
         .get_service_by_name("synctv.provider.qnap.QnapProviderService")
         .expect("QNAP provider service descriptor");
     assert_eq!(provider.methods().count(), 6);
-    assert!(provider
-        .methods()
-        .any(|method| method.name() == "GetThumbnail" && method.is_server_streaming()));
+    assert!(
+        provider
+            .methods()
+            .any(|method| method.name() == "GetThumbnail" && method.is_server_streaming())
+    );
 
     let playback = synctv_proto::PLAYBACK_PROVIDER_DESCRIPTOR_POOL
         .get_service_by_name("synctv.playback_provider.qnap.QnapPlaybackProviderService")
         .expect("QNAP playback provider service descriptor");
     assert_eq!(playback.methods().count(), 6);
-    assert!(playback
-        .methods()
-        .any(|method| method.name() == "GetThumbnailResource"));
+    assert!(
+        playback
+            .methods()
+            .any(|method| method.name() == "GetThumbnailResource")
+    );
 }
 
 #[test]
@@ -67,10 +71,11 @@ fn qnap_source_and_provider_contracts_keep_native_types() {
     let item = synctv_proto::PROVIDERS_DESCRIPTOR_POOL
         .get_message_by_name("synctv.provider.qnap.FileItem")
         .expect("QNAP file item descriptor");
-    assert!(item
-        .get_field_by_name("pre_transcoded_heights")
-        .expect("pre_transcoded_heights")
-        .is_list());
+    assert!(
+        item.get_field_by_name("pre_transcoded_heights")
+            .expect("pre_transcoded_heights")
+            .is_list()
+    );
 
     let resource = synctv_proto::PLAYBACK_PROVIDER_DESCRIPTOR_POOL
         .get_message_by_name("synctv.playback_provider.qnap.GetQnapResourceRequest")

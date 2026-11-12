@@ -5,9 +5,9 @@
 //! Bilibili playback-provider transport.
 
 use axum::{
+    Json, Router,
     extract::State,
     routing::{get, post},
-    Json, Router,
 };
 use futures::FutureExt;
 
@@ -15,7 +15,7 @@ use super::common::{
     execute_provider_user_endpoint, execute_provider_user_endpoint_with_control,
     provider_instance_name, provider_instance_name_from_request_field,
 };
-use crate::http::{middleware::RequestMetadata, validation::ProtoQuery, AppResult, AppState};
+use crate::http::{AppResult, AppState, middleware::RequestMetadata, validation::ProtoQuery};
 use synctv_api_common::impls::EndpointRateLimitCategory;
 use synctv_proto::providers::bilibili::{
     CheckQrRequest, GetBindsResponse, ListFavoriteFoldersRequest, ListFollowedPgcRequest,

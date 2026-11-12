@@ -1,6 +1,6 @@
 use std::{collections::HashMap, net::ToSocketAddrs as _, time::Duration};
 
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_LENGTH, CONTENT_RANGE, RANGE};
+use reqwest::header::{CONTENT_LENGTH, CONTENT_RANGE, HeaderMap, HeaderName, HeaderValue, RANGE};
 use tracing::debug;
 use url::Url;
 
@@ -187,12 +187,12 @@ async fn fetch_text(
             response.status()
         )));
     }
-    if let Some(len) = response.content_length() {
-        if len > MANIFEST_MAX_BYTES {
-            return Err(Error::InvalidInput(
-                "manifest is too large to probe".to_string(),
-            ));
-        }
+    if let Some(len) = response.content_length()
+        && len > MANIFEST_MAX_BYTES
+    {
+        return Err(Error::InvalidInput(
+            "manifest is too large to probe".to_string(),
+        ));
     }
     let bytes = response.bytes().await.map_err(|error| {
         Error::ServiceUnavailable(format!("duration probe body failed: {error}"))

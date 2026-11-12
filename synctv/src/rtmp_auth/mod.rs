@@ -14,8 +14,8 @@
 //! `PublisherManager`, then removes authentication tracking state.
 
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 
 use async_trait::async_trait;
@@ -23,13 +23,13 @@ use dashmap::DashMap;
 use percent_encoding::percent_decode_str;
 use synctv_adapter::PublicIdCodec;
 use synctv_core::{
+    Error as CoreError, RedisConnectionRuntime, SharedStateMode, SharedStateProfile,
     models::{MediaId, Room, RoomId, RoomStatus, UserId, UserStatus},
     service::{RoomService, StreamingPublishKeyService, UserService},
-    Error as CoreError, RedisConnectionRuntime, SharedStateMode, SharedStateProfile,
 };
 use synctv_livestream::{
-    PublisherControlHandle, PublisherStopOutcome, PublisherStopRequest, StreamRegistryTrait,
-    StreamTracker, PUBLISHER_TTL_SECS,
+    PUBLISHER_TTL_SECS, PublisherControlHandle, PublisherStopOutcome, PublisherStopRequest,
+    StreamRegistryTrait, StreamTracker,
 };
 // TTL for the per-user rtmp:user_stream:{user_id} Redis key, matching the publisher TTL.
 use synctv_xiu::rtmp::auth::{
@@ -1049,12 +1049,12 @@ impl SyncTvRtmpAuth {
 mod tests {
     use super::*;
     use std::sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicUsize, Ordering},
     };
     use synctv_livestream::{
-        local_stream_registry, ActiveStreamGeneration, LeaseRefreshOutcome, StreamGeneration,
-        StreamRegistryTrait,
+        ActiveStreamGeneration, LeaseRefreshOutcome, StreamGeneration, StreamRegistryTrait,
+        local_stream_registry,
     };
 
     #[test]
@@ -1379,17 +1379,21 @@ mod tests {
             .cleanup_on_unpublish(generation_id, "101", "201")
             .await;
 
-        assert!(!registry
-            .is_stream_active("101", "201")
-            .await
-            .expect("publisher activity lookup should succeed"));
+        assert!(
+            !registry
+                .is_stream_active("101", "201")
+                .await
+                .expect("publisher activity lookup should succeed")
+        );
         assert_eq!(
             runtime.user_stream_tracker.get_stream_user("101", "201"),
             None
         );
-        assert!(!runtime
-            .pending_publish_cleanups
-            .contains_key(&generation_id));
+        assert!(
+            !runtime
+                .pending_publish_cleanups
+                .contains_key(&generation_id)
+        );
     }
 
     #[tokio::test]
@@ -1517,9 +1521,11 @@ mod tests {
             runtime.user_stream_tracker.get_stream_user("104", "204"),
             Some("305".to_string())
         );
-        assert!(runtime
-            .pending_publish_cleanups
-            .contains_key(&new_generation_id));
+        assert!(
+            runtime
+                .pending_publish_cleanups
+                .contains_key(&new_generation_id)
+        );
     }
 
     #[tokio::test]
@@ -1563,9 +1569,11 @@ mod tests {
             .expect("publisher lookup should succeed")
             .expect("replacement publisher should remain");
         assert_eq!(current.generation_id, new_generation_id.to_string());
-        assert!(runtime
-            .pending_publish_cleanups
-            .contains_key(&new_generation_id));
+        assert!(
+            runtime
+                .pending_publish_cleanups
+                .contains_key(&new_generation_id)
+        );
     }
 
     #[tokio::test]
@@ -1583,24 +1591,32 @@ mod tests {
         runtime
             .cleanup_on_publish_rollback(generation_id, "106", "206")
             .await;
-        assert!(registry
-            .is_stream_active("106", "206")
-            .await
-            .expect("publisher activity lookup should succeed"));
-        assert!(runtime
-            .pending_publish_cleanups
-            .contains_key(&generation_id));
+        assert!(
+            registry
+                .is_stream_active("106", "206")
+                .await
+                .expect("publisher activity lookup should succeed")
+        );
+        assert!(
+            runtime
+                .pending_publish_cleanups
+                .contains_key(&generation_id)
+        );
 
         runtime
             .cleanup_on_publish_rollback(generation_id, "106", "206")
             .await;
-        assert!(!registry
-            .is_stream_active("106", "206")
-            .await
-            .expect("publisher activity lookup should succeed"));
-        assert!(!runtime
-            .pending_publish_cleanups
-            .contains_key(&generation_id));
+        assert!(
+            !registry
+                .is_stream_active("106", "206")
+                .await
+                .expect("publisher activity lookup should succeed")
+        );
+        assert!(
+            !runtime
+                .pending_publish_cleanups
+                .contains_key(&generation_id)
+        );
     }
 
     #[tokio::test]
@@ -1631,9 +1647,11 @@ mod tests {
             runtime.user_stream_tracker.get_stream_user("107", "207"),
             Some("309".to_string())
         );
-        assert!(runtime
-            .pending_publish_cleanups
-            .contains_key(&generation_id));
+        assert!(
+            runtime
+                .pending_publish_cleanups
+                .contains_key(&generation_id)
+        );
     }
 
     fn validated_publish(room_id: &str, media_id: &str, user_id: &str) -> ValidatedPublish {
@@ -1757,10 +1775,12 @@ mod tests {
         auth.publisher_cleanup
             .cleanup_on_publish_rollback(generation_id, &room.id.to_string(), &media.id.to_string())
             .await;
-        assert!(!registry
-            .is_stream_active(&room.id.to_string(), &media.id.to_string())
-            .await
-            .expect("publisher activity lookup should succeed"));
+        assert!(
+            !registry
+                .is_stream_active(&room.id.to_string(), &media.id.to_string())
+                .await
+                .expect("publisher activity lookup should succeed")
+        );
     }
 
     #[test]

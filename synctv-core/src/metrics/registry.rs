@@ -4,8 +4,8 @@ use std::{
 };
 
 use prometheus::{
-    core::Collector, Encoder, GaugeVec, HistogramOpts, HistogramVec, IntCounter, IntCounterVec,
-    IntGauge, Opts, Registry, TextEncoder,
+    Encoder, GaugeVec, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGauge, Opts,
+    Registry, TextEncoder, core::Collector,
 };
 
 static REGISTRY: LazyLock<MetricsRegistry> = LazyLock::new(MetricsRegistry::new);

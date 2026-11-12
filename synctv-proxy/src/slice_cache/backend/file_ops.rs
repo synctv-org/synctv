@@ -7,8 +7,8 @@ use tokio::fs;
 use tokio::io::AsyncWriteExt;
 
 use super::file_format::{
-    cache_entry_deadline_millis, encode_header, millis_since_epoch, system_time_to_millis,
-    FileEntryHeader, CACHE_FILE_MAGIC,
+    CACHE_FILE_MAGIC, FileEntryHeader, cache_entry_deadline_millis, encode_header,
+    millis_since_epoch, system_time_to_millis,
 };
 use super::file_index::FileIndex;
 use crate::slice_cache::etag::StoredEntry;

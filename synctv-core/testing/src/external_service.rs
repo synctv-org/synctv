@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{collections::BTreeMap, iter};
 
 use testcontainers::core::{CmdWaitFor, ExecCommand, ImageExt, IntoContainerPort, WaitFor};
@@ -8,9 +8,9 @@ use testcontainers::{ContainerAsync, GenericImage};
 use tokio::sync::Semaphore;
 
 use crate::docker::{
-    acquire_docker_slot, acquire_run_lock, cleanup_orphaned_run_lock_files,
+    TEST_RUN_LABEL, acquire_docker_slot, acquire_run_lock, cleanup_orphaned_run_lock_files,
     cleanup_orphaned_testcontainers, current_test_run_id as docker_current_test_run_id,
-    ensure_docker_image, sanitize_container_name, TEST_RUN_LABEL,
+    ensure_docker_image, sanitize_container_name,
 };
 use crate::postgres::{docker_startup_parallelism, docker_startup_timeout};
 

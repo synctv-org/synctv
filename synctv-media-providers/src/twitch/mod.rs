@@ -4,7 +4,7 @@ mod chat;
 mod client;
 mod types;
 
-pub use chat::{watch_chat, TwitchChatStream};
+pub use chat::{TwitchChatStream, watch_chat};
 pub use client::{TwitchClient, TwitchEndpoints};
 pub use types::{
     TwitchAccessToken, TwitchBrowseItem, TwitchBrowseKind, TwitchBrowsePage, TwitchCategory,

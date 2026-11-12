@@ -1,20 +1,20 @@
 use tonic::{Request, Response, Status};
 
-use super::{map_api_error, ClientServiceImpl};
+use super::{ClientServiceImpl, map_api_error};
 use synctv_api_common::impls::EndpointRateLimitCategory;
 use synctv_proto::client::{
-    auth_service_server::AuthService, ConfirmEmailLoginRequest, ConfirmEmailRegistrationRequest,
-    CreateGuestTokenRequest, CreateGuestTokenResponse, FinishMfaPasskeyRequest,
-    FinishOpaqueLoginRequest, FinishOpaqueRegistrationRequest, FinishPasskeyLoginRequest,
-    FinishPasskeyRegistrationRequest, LoginResponse, LoginWithDirectPasswordRequest,
-    RefreshTokenRequest, RefreshTokenResponse, RegisterResponse, RegisterWithDirectPasswordRequest,
-    RequestEmailLoginRequest, RequestEmailLoginResponse, RequestEmailRegistrationRequest,
-    RequestEmailRegistrationResponse, RequestMfaEmailCodeRequest, RequestMfaEmailCodeResponse,
-    StartLoginRequest, StartLoginResponse, StartMfaPasskeyRequest, StartMfaPasskeyResponse,
-    StartOpaqueLoginRequest, StartOpaqueLoginResponse, StartOpaqueRegistrationRequest,
-    StartOpaqueRegistrationResponse, StartPasskeyLoginRequest, StartPasskeyLoginResponse,
-    StartPasskeyRegistrationRequest, StartPasskeyRegistrationResponse, VerifyMfaEmailCodeRequest,
-    VerifyMfaRecoveryCodeRequest, VerifyMfaTotpRequest,
+    ConfirmEmailLoginRequest, ConfirmEmailRegistrationRequest, CreateGuestTokenRequest,
+    CreateGuestTokenResponse, FinishMfaPasskeyRequest, FinishOpaqueLoginRequest,
+    FinishOpaqueRegistrationRequest, FinishPasskeyLoginRequest, FinishPasskeyRegistrationRequest,
+    LoginResponse, LoginWithDirectPasswordRequest, RefreshTokenRequest, RefreshTokenResponse,
+    RegisterResponse, RegisterWithDirectPasswordRequest, RequestEmailLoginRequest,
+    RequestEmailLoginResponse, RequestEmailRegistrationRequest, RequestEmailRegistrationResponse,
+    RequestMfaEmailCodeRequest, RequestMfaEmailCodeResponse, StartLoginRequest, StartLoginResponse,
+    StartMfaPasskeyRequest, StartMfaPasskeyResponse, StartOpaqueLoginRequest,
+    StartOpaqueLoginResponse, StartOpaqueRegistrationRequest, StartOpaqueRegistrationResponse,
+    StartPasskeyLoginRequest, StartPasskeyLoginResponse, StartPasskeyRegistrationRequest,
+    StartPasskeyRegistrationResponse, VerifyMfaEmailCodeRequest, VerifyMfaRecoveryCodeRequest,
+    VerifyMfaTotpRequest, auth_service_server::AuthService,
 };
 
 #[tonic::async_trait]

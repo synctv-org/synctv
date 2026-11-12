@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::models::{RoomId, RoomPermissionSet, UserId};
 use crate::{Error, Result};
 
-use super::{now_unix_seconds, AUTHENTICATION_FAILED_MESSAGE};
+use super::{AUTHENTICATION_FAILED_MESSAGE, now_unix_seconds};
 
 /// User validation result returned by `UserValidator` callback
 #[derive(Debug, Clone)]

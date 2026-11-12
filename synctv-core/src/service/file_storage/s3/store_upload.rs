@@ -2,6 +2,7 @@ use sha2::{Digest, Sha256};
 
 use super::S3CompatibleFileStorageService;
 use crate::{
+    Error, Result,
     models::{StoreFileUpload, StoreFileUploadResult},
     repository::UpsertFileUploadSessionPart,
     service::file_storage::{
@@ -10,7 +11,6 @@ use crate::{
         upload_session_is_single_object, upload_session_parts_progress, validate_file_upload_token,
         validate_upload_range,
     },
-    Error, Result,
 };
 
 impl S3CompatibleFileStorageService {
@@ -57,12 +57,12 @@ impl S3CompatibleFileStorageService {
                 "file upload token does not match upload session".to_string(),
             ));
         }
-        if let Some(content_type) = content_type.as_deref() {
-            if upload_media_type(content_type)? != mime_type {
-                return Err(Error::InvalidInput(
-                    "file content-type does not match upload session".to_string(),
-                ));
-            }
+        if let Some(content_type) = content_type.as_deref()
+            && upload_media_type(content_type)? != mime_type
+        {
+            return Err(Error::InvalidInput(
+                "file content-type does not match upload session".to_string(),
+            ));
         }
         let expected_size = payload
             .size_bytes

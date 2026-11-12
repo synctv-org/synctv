@@ -9,13 +9,13 @@ use std::sync::Arc;
 use chrono::Utc;
 use sqlx::PgPool;
 use synctv_core::{
+    Error,
     cache::{KeyBuilder, UsernameCache},
     models::{Media, MediaId, SourceProvider, User, UserId, UserRole, UserStatus},
     repository::{MediaRepository, RoomPlaybackStateRepository, UserRepository},
     service::{
         BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, RoomService, UserService,
     },
-    Error,
 };
 use synctv_core_testing::create_test_pool;
 use synctv_core_testing::{TestOptionExt, TestResultExt};

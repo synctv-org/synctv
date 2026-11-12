@@ -674,9 +674,11 @@ mod tests {
                 .expect("first global subscriber should install");
             let error = init_logging(&LoggingOptions::default())
                 .expect_err("second global subscriber should return an error");
-            assert!(error
-                .to_string()
-                .contains("failed to install global logging subscriber"));
+            assert!(
+                error
+                    .to_string()
+                    .contains("failed to install global logging subscriber")
+            );
             return;
         }
 

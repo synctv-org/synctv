@@ -222,16 +222,20 @@ async fn test_deletions_not_synchronized_across_instances() {
         .unwrap();
 
     // Both have the credential
-    assert!(replica_a
-        .get("user1", ProviderType::Bilibili, &bilibili_server_id())
-        .await
-        .unwrap()
-        .is_some());
-    assert!(replica_b
-        .get("user1", ProviderType::Bilibili, &bilibili_server_id())
-        .await
-        .unwrap()
-        .is_some());
+    assert!(
+        replica_a
+            .get("user1", ProviderType::Bilibili, &bilibili_server_id())
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        replica_b
+            .get("user1", ProviderType::Bilibili, &bilibili_server_id())
+            .await
+            .unwrap()
+            .is_some()
+    );
 
     // Delete on replica B only
     let deleted = replica_b
@@ -241,11 +245,13 @@ async fn test_deletions_not_synchronized_across_instances() {
     assert!(deleted, "Delete on replica B should succeed");
 
     // Replica B no longer has it
-    assert!(replica_b
-        .get("user1", ProviderType::Bilibili, &bilibili_server_id())
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        replica_b
+            .get("user1", ProviderType::Bilibili, &bilibili_server_id())
+            .await
+            .unwrap()
+            .is_none()
+    );
 
     // But replica A still has it! (inconsistent state)
     assert!(
@@ -301,10 +307,12 @@ async fn test_documented_use_case_testing() {
         .unwrap();
 
     // Works perfectly for isolated tests
-    assert!(storage
-        .exists("test_user", ProviderType::Bilibili, &bilibili_server_id())
-        .await
-        .unwrap());
+    assert!(
+        storage
+            .exists("test_user", ProviderType::Bilibili, &bilibili_server_id())
+            .await
+            .unwrap()
+    );
 }
 
 /// Documents that InMemoryCredentialStorage supports encryption

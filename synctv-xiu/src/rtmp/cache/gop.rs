@@ -234,20 +234,21 @@ impl Gops {
         if self.entries.len() <= 1 {
             return 0;
         }
-        if let Some(evicted) = self.entries.pop_front() {
-            let evicted_bytes = evicted.memory_bytes();
-            self.current_total_bytes = self.current_total_bytes.saturating_sub(evicted_bytes);
-            tracing::warn!(
-                evicted_bytes,
-                remaining_gops = self.entries.len(),
-                stream_bytes = self.current_total_bytes,
-                max_total_bytes = self.max_total_bytes,
-                reason,
-                "GOP evicted"
-            );
-            evicted_bytes
-        } else {
-            0
+        match self.entries.pop_front() {
+            Some(evicted) => {
+                let evicted_bytes = evicted.memory_bytes();
+                self.current_total_bytes = self.current_total_bytes.saturating_sub(evicted_bytes);
+                tracing::warn!(
+                    evicted_bytes,
+                    remaining_gops = self.entries.len(),
+                    stream_bytes = self.current_total_bytes,
+                    max_total_bytes = self.max_total_bytes,
+                    reason,
+                    "GOP evicted"
+                );
+                evicted_bytes
+            }
+            _ => 0,
         }
     }
 

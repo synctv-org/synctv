@@ -2,8 +2,8 @@ use axum::{
     extract::{Path, Query, RawQuery, State},
     http::{HeaderMap, Method},
     response::{
-        sse::{KeepAlive, Sse},
         IntoResponse, Response,
+        sse::{KeepAlive, Sse},
     },
 };
 use base64::Engine as _;
@@ -19,12 +19,12 @@ use synctv_proto::playback_provider::bilibili::{
 };
 
 use crate::http::{
-    middleware::RequestMetadata, room::execute::execute_room_actor_endpoint_with_control,
-    AppResult, AppState,
+    AppResult, AppState, middleware::RequestMetadata,
+    room::execute::execute_room_actor_endpoint_with_control,
 };
 use crate::providers::playback_provider::transport::{
-    bilibili_danmaku_sse_event, query, range_header, signed_query_fields, stream_http_response,
-    target_url, unsigned_query_field, PlaybackProviderHttpResponse,
+    PlaybackProviderHttpResponse, bilibili_danmaku_sse_event, query, range_header,
+    signed_query_fields, stream_http_response, target_url, unsigned_query_field,
 };
 use synctv_api_common::impls::{EndpointRateLimitCategory, EndpointRateLimitScope};
 

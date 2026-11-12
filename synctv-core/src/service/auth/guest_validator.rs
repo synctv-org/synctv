@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use crate::{cache::KeyBuilder, service::TokenBlacklistStore, Error, Result};
+use crate::{Error, Result, cache::KeyBuilder, service::TokenBlacklistStore};
 
 use super::jwt::{GuestClaims, JwtService};
 

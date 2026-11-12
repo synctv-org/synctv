@@ -11,7 +11,7 @@ use super::types::{
     SynologySubtitle, SynologyTvRecordingList, SynologyTvShowList, SynologyVideoItemKind,
     SynologyVideoMetadata,
 };
-use crate::{fetch_json, ProviderClientError, PROVIDER_USER_AGENT};
+use crate::{PROVIDER_USER_AGENT, ProviderClientError, fetch_json};
 
 const FILE_ADDITIONAL: &str = r#"["real_path","size","owner","time","type","mount_point_type"]"#;
 const VIDEO_ADDITIONAL: &str = r#"["summary","actor","file","extra","genre","writer","director","collection","poster_mtime","watched_ratio","conversion_produced","backdrop_mtime","parental_control"]"#;

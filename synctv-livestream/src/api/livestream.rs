@@ -6,8 +6,8 @@ use crate::{
     error::StreamError,
     grpc::{HlsProxyClient, StreamRelayServiceImpl, WebRtcSessionRouter},
     livestream::{
-        external_publish_manager::ExternalPublishManager, managed_stream::ManagedStream,
-        pull_manager::PullStreamManager, SegmentManager,
+        SegmentManager, external_publish_manager::ExternalPublishManager,
+        managed_stream::ManagedStream, pull_manager::PullStreamManager,
     },
     relay::{ActiveStreamGeneration, StreamGeneration, StreamRegistryTrait, WebRtcSessionKind},
 };
@@ -533,17 +533,16 @@ impl LiveStreamingInfrastructure {
             .registry
             .get_active_generation(room_id, media_id)
             .await?
+            && !self.is_local_publisher_node(&publisher.node_id)
         {
-            if !self.is_local_publisher_node(&publisher.node_id) {
-                warn!(
-                    room_id = %room_id,
-                    media_id = %media_id,
-                    publisher_node_id = %publisher.node_id,
-                    local_node_id = %self.local_node_id,
-                    "Skipping non-local publisher kick on this replica"
-                );
-                return Ok(());
-            }
+            warn!(
+                room_id = %room_id,
+                media_id = %media_id,
+                publisher_node_id = %publisher.node_id,
+                local_node_id = %self.local_node_id,
+                "Skipping non-local publisher kick on this replica"
+            );
+            return Ok(());
         }
 
         // Send UnPublish to StreamHub
@@ -935,18 +934,16 @@ impl LiveStreamingInfrastructure {
     /// suffix only counts when transcode is enabled and the suffix names a
     /// configured preset; anything else addresses a plain stream.
     pub(crate) fn route_stream_key(&self, media_id: &str) -> RoutedStreamKey {
-        if let Some(manager) = &self.transcode {
-            if let Some((base, rung)) =
+        if let Some(manager) = &self.transcode
+            && let Some((base, rung)) =
                 crate::livestream::transcode::split_rung_stream_name(media_id)
-            {
-                if manager.presets().iter().any(|preset| preset.name == rung) {
-                    return RoutedStreamKey {
-                        base_media_id: base.to_string(),
-                        rung: Some(rung.to_string()),
-                        stream_media_id: media_id.to_string(),
-                    };
-                }
-            }
+            && manager.presets().iter().any(|preset| preset.name == rung)
+        {
+            return RoutedStreamKey {
+                base_media_id: base.to_string(),
+                rung: Some(rung.to_string()),
+                stream_media_id: media_id.to_string(),
+            };
         }
         RoutedStreamKey {
             base_media_id: media_id.to_string(),
@@ -1090,35 +1087,33 @@ impl HlsStreamingApi {
         let is_local = infrastructure.is_local_publisher_node(&generation.node_id);
         let wait_for_ready = generation.ended_at.is_none();
 
-        if !is_local {
-            if let Some(hls_proxy) = &infrastructure.hls_proxy {
-                let cluster_address = generation.validate_cluster_address().map_err(|e| {
-                    anyhow::anyhow!("Cannot proxy HLS for {room_id}/{media_id}: {e}")
-                })?;
+        if !is_local && let Some(hls_proxy) = &infrastructure.hls_proxy {
+            let cluster_address = generation
+                .validate_cluster_address()
+                .map_err(|e| anyhow::anyhow!("Cannot proxy HLS for {room_id}/{media_id}: {e}"))?;
 
-                let sample_url = url_generator("__PLACEHOLDER__");
-                let (segment_url_base, segment_url_suffix) =
-                    sample_url.rsplit_once("__PLACEHOLDER__").map_or_else(
-                        || (String::new(), String::new()),
-                        |(base, suffix)| (base.to_string(), suffix.to_string()),
-                    );
+            let sample_url = url_generator("__PLACEHOLDER__");
+            let (segment_url_base, segment_url_suffix) =
+                sample_url.rsplit_once("__PLACEHOLDER__").map_or_else(
+                    || (String::new(), String::new()),
+                    |(base, suffix)| (base.to_string(), suffix.to_string()),
+                );
 
-                let playlist = hls_proxy
-                    .get_playlist(
-                        crate::grpc::HlsRelayRoute::new(
-                            cluster_address,
-                            room_id,
-                            media_id,
-                            generation_id,
-                            generation.lease_epoch,
-                        ),
-                        &segment_url_base,
-                        &segment_url_suffix,
-                    )
-                    .await?;
+            let playlist = hls_proxy
+                .get_playlist(
+                    crate::grpc::HlsRelayRoute::new(
+                        cluster_address,
+                        room_id,
+                        media_id,
+                        generation_id,
+                        generation.lease_epoch,
+                    ),
+                    &segment_url_base,
+                    &segment_url_suffix,
+                )
+                .await?;
 
-                return Ok(playlist);
-            }
+            return Ok(playlist);
         }
 
         Ok(Self::generate_playlist_local(
@@ -1208,32 +1203,31 @@ impl HlsStreamingApi {
             && !infrastructure
                 .hls_storage_backend
                 .supports_cross_node_read()
+            && let Some(hls_proxy) = &infrastructure.hls_proxy
         {
-            if let Some(hls_proxy) = &infrastructure.hls_proxy {
-                let cluster_address = publisher_info.validate_cluster_address().map_err(|e| {
-                    anyhow::anyhow!("Cannot proxy HLS segment for {room_id}/{media_id}: {e}")
-                })?;
+            let cluster_address = publisher_info.validate_cluster_address().map_err(|e| {
+                anyhow::anyhow!("Cannot proxy HLS segment for {room_id}/{media_id}: {e}")
+            })?;
 
-                let segment = hls_proxy
-                    .get_segment(
-                        crate::grpc::HlsRelayRoute::new(
-                            cluster_address,
-                            room_id,
-                            media_id,
-                            generation_id,
-                            publisher_info.lease_epoch,
-                        ),
-                        segment_name,
-                    )
-                    .await?;
+            let segment = hls_proxy
+                .get_segment(
+                    crate::grpc::HlsRelayRoute::new(
+                        cluster_address,
+                        room_id,
+                        media_id,
+                        generation_id,
+                        publisher_info.lease_epoch,
+                    ),
+                    segment_name,
+                )
+                .await?;
 
-                return segment.ok_or_else(|| {
-                    StreamError::StreamNotFound(format!(
-                        "segment {segment_name} for {room_id}/{media_id} on publisher node"
-                    ))
-                    .into()
-                });
-            }
+            return segment.ok_or_else(|| {
+                StreamError::StreamNotFound(format!(
+                    "segment {segment_name} for {room_id}/{media_id} on publisher node"
+                ))
+                .into()
+            });
         }
 
         Self::get_segment_local(infrastructure, room_id, media_id, segment_name).await
@@ -1269,7 +1263,7 @@ impl HlsStreamingApi {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::relay::{test_registry::TestStreamRegistry, StreamGeneration};
+    use crate::relay::{StreamGeneration, test_registry::TestStreamRegistry};
     use crate::util::TEST_GENERATION_ID;
     use synctv_xiu::storage::HlsStorage as _;
     use synctv_xiu::streamhub::define::StreamHubEvent;
@@ -1728,15 +1722,17 @@ mod tests {
             "media-grace",
             &generation_id_string,
         ));
-        assert!(HlsStreamingApi::generate_playlist_simple(
-            &infrastructure,
-            "room-grace",
-            "media-grace",
-            &generation_id_string,
-            "/segments/",
-        )
-        .await?
-        .is_none());
+        assert!(
+            HlsStreamingApi::generate_playlist_simple(
+                &infrastructure,
+                "room-grace",
+                "media-grace",
+                &generation_id_string,
+                "/segments/",
+            )
+            .await?
+            .is_none()
+        );
         assert_eq!(
             HlsStreamingApi::get_segment(
                 &infrastructure,
@@ -2190,8 +2186,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_kick_user_publishers_keep_registry_and_tracker_until_unpublish_processing(
-    ) -> TestResult {
+    async fn test_kick_user_publishers_keep_registry_and_tracker_until_unpublish_processing()
+    -> TestResult {
         let registry = Arc::new(TestStreamRegistry::with_publishers(
             std::collections::HashMap::from([
                 (

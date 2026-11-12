@@ -2,12 +2,12 @@ use sqlx::PgPool;
 
 use crate::repository::{pools::RepoPools, query_builder::ilike_contains_pattern};
 use crate::{
+    Error, Result,
     models::{
         ContentReport, ContentReportAdminRow, ContentReportId, ContentReportMetadata,
         ContentReportStatus, ContentReportTarget, ContentReportTargetType, CreateContentReport,
         RoomId, UserId,
     },
-    Error, Result,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

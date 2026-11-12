@@ -3,9 +3,9 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use redis::AsyncCommands;
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 
-use crate::{cache::KeyBuilder, Error, InternalExt, RedisConnectionRuntime, Result};
+use crate::{Error, InternalExt, RedisConnectionRuntime, Result, cache::KeyBuilder};
 
 static CONSUME_REDIS_VALUE_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
     redis::Script::new(

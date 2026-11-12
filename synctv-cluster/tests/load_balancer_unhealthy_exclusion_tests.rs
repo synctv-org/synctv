@@ -8,10 +8,10 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use synctv_cluster::NodeHealth;
 use synctv_cluster::discovery::health_monitor::HealthMonitor;
 use synctv_cluster::discovery::load_balancer::{LoadBalancer, LoadBalancingStrategy};
 use synctv_cluster::discovery::node_registry::{NodeInfo, NodeRegistry};
-use synctv_cluster::NodeHealth;
 
 /// Helper: create a local-only `NodeRegistry` and populate it with nodes.
 async fn setup_registry(node_ids: &[&str]) -> Arc<NodeRegistry> {

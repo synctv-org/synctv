@@ -1,6 +1,6 @@
 use std::sync::Arc;
-use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
 use synctv_api_common::impls::messaging::{

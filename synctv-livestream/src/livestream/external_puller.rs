@@ -45,7 +45,7 @@ use synctv_xiu::streamhub::{
     stream::StreamIdentifier,
     utils::Uuid,
 };
-use synctv_xiu::webrtc::{create_whep_client_session, WebRtcConfig};
+use synctv_xiu::webrtc::{WebRtcConfig, create_whep_client_session};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
@@ -318,11 +318,7 @@ impl ExternalStreamPuller {
             ExternalSourceType::Rtmp => 1935,
             ExternalSourceType::Rtsp => 554,
             ExternalSourceType::HttpFlv | ExternalSourceType::Whep => {
-                if parsed.scheme() == "https" {
-                    443
-                } else {
-                    80
-                }
+                if parsed.scheme() == "https" { 443 } else { 80 }
             }
         };
         let mut resolved_addr = None;
@@ -1405,7 +1401,7 @@ mod tests {
     use synctv_xiu::{
         httpflv::HttpFlvSession,
         rtmp::server::RtmpServer,
-        streamhub::{define::BroadcastEvent, StreamsHub},
+        streamhub::{StreamsHub, define::BroadcastEvent},
     };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -3149,8 +3145,8 @@ mod tests {
     }
 
     #[test]
-    fn test_build_http_flv_client_disables_inherited_reqwest_timeouts_for_live_streams(
-    ) -> TestResult {
+    fn test_build_http_flv_client_disables_inherited_reqwest_timeouts_for_live_streams()
+    -> TestResult {
         let client = build_http_flv_client(
             "http://example.com:8080/stream.flv",
             std::net::SocketAddr::from(([203, 0, 113, 10], 8080)),
@@ -3202,8 +3198,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_external_puller_async_creation_allows_private_addresses_when_ssrf_is_explicitly_disabled(
-    ) {
+    async fn test_external_puller_async_creation_allows_private_addresses_when_ssrf_is_explicitly_disabled()
+     {
         let (sender, _) = tokio::sync::mpsc::channel(64);
 
         // Localhost is allowed when the injected SSRF policy is disabled.

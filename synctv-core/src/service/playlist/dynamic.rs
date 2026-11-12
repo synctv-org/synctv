@@ -1,17 +1,17 @@
 use std::sync::Arc;
 
 use crate::{
+    Error, Result,
     models::{
-        normalize_provider_instance_name_owned, PlaylistSourceConfig, RoomId, SourceProvider,
-        UserId,
+        PlaylistSourceConfig, RoomId, SourceProvider, UserId,
+        normalize_provider_instance_name_owned,
     },
-    provider::{provider_requires_credential_repo, ProviderContext, SourceConfig},
+    provider::{ProviderContext, SourceConfig, provider_requires_credential_repo},
     repository::UserProviderCredentialRepository,
     service::{
-        provider_binding::resolve_credential_provider_instance_binding,
-        source_config::validate_source_config_size, ProvidersManager,
+        ProvidersManager, provider_binding::resolve_credential_provider_instance_binding,
+        source_config::validate_source_config_size,
     },
-    Error, Result,
 };
 
 use super::PlaylistService;

@@ -1,6 +1,6 @@
 use super::*;
 use crate::manifest::{make_absolute, rewrite_uri_attribute_with_count};
-use crate::redirect::{send_with_redirect_validation, REDIRECT_PRESERVE_HEADERS};
+use crate::redirect::{REDIRECT_PRESERVE_HEADERS, send_with_redirect_validation};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -27,8 +27,8 @@ fn require_proxy_err<T>(
     }
 }
 
-async fn start_request_close_listener(
-) -> std::io::Result<(std::net::SocketAddr, tokio::task::JoinHandle<()>)> {
+async fn start_request_close_listener()
+-> std::io::Result<(std::net::SocketAddr, tokio::task::JoinHandle<()>)> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let task = tokio::spawn(async move {
@@ -345,8 +345,8 @@ async fn test_send_with_redirect_validation_dns_rebind_error_is_typed_ssrf() -> 
 }
 
 #[tokio::test]
-async fn test_send_with_redirect_validation_redirect_to_connection_close_fails_with_disabled_ssrf(
-) -> TestResult {
+async fn test_send_with_redirect_validation_redirect_to_connection_close_fails_with_disabled_ssrf()
+-> TestResult {
     let server = wiremock::MockServer::start().await;
     let (close_address, close_task) = start_request_close_listener().await?;
 
@@ -380,8 +380,8 @@ async fn test_send_with_redirect_validation_redirect_to_connection_close_fails_w
 }
 
 #[tokio::test]
-async fn test_send_with_redirect_validation_initial_loopback_fails_by_connection_with_disabled_ssrf(
-) -> TestResult {
+async fn test_send_with_redirect_validation_initial_loopback_fails_by_connection_with_disabled_ssrf()
+-> TestResult {
     let client = test_proxy_client()?;
     let (close_address, close_task) = start_request_close_listener().await?;
     let request = client.get(format!("http://{close_address}/private"));
@@ -404,8 +404,8 @@ async fn test_send_with_redirect_validation_initial_loopback_fails_by_connection
 }
 
 #[tokio::test]
-async fn test_send_with_redirect_validation_closed_connection_with_private_path_is_typed_connection(
-) -> TestResult {
+async fn test_send_with_redirect_validation_closed_connection_with_private_path_is_typed_connection()
+-> TestResult {
     use tokio::io::AsyncReadExt;
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -433,8 +433,8 @@ async fn test_send_with_redirect_validation_closed_connection_with_private_path_
 }
 
 #[tokio::test]
-async fn test_send_with_redirect_validation_malformed_response_is_typed_bad_gateway_error(
-) -> TestResult {
+async fn test_send_with_redirect_validation_malformed_response_is_typed_bad_gateway_error()
+-> TestResult {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -468,8 +468,8 @@ async fn test_send_with_redirect_validation_malformed_response_is_typed_bad_gate
 }
 
 #[tokio::test]
-async fn test_proxy_m3u8_and_rewrite_closed_connection_is_typed_connection_with_disabled_ssrf(
-) -> TestResult {
+async fn test_proxy_m3u8_and_rewrite_closed_connection_is_typed_connection_with_disabled_ssrf()
+-> TestResult {
     let client = test_proxy_client()?;
     let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
     let (close_address, close_task) = start_request_close_listener().await?;

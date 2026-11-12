@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use redis::aio::ConnectionManager as RedisConnectionManager;
@@ -9,8 +9,8 @@ use synctv_xiu::hls::DEFAULT_HLS_GENERATION_RETENTION;
 use tracing::{debug, info};
 
 use super::registry_trait::{
-    ActiveStreamGeneration, LeaseRefreshOutcome, LeaseRefreshRequest, StreamGenerationRegistration,
-    PUBLISHER_REFRESH_BATCH_SIZE,
+    ActiveStreamGeneration, LeaseRefreshOutcome, LeaseRefreshRequest, PUBLISHER_REFRESH_BATCH_SIZE,
+    StreamGenerationRegistration,
 };
 use crate::util::{
     validate_publisher_cluster_address, validate_stream_generation_id,
@@ -1362,7 +1362,7 @@ mod tests {
     use super::*;
     use crate::util::TEST_GENERATION_ID;
     use synctv_core_testing::{
-        start_redis_client_manager_with_label, test_redis_key_prefix, RedisContainer,
+        RedisContainer, start_redis_client_manager_with_label, test_redis_key_prefix,
     };
     use tokio::sync::RwLock;
 
@@ -1889,10 +1889,12 @@ mod tests {
                 .unregister_webrtc_session(TEST_GENERATION_ID, "node1")
                 .await?
         );
-        assert!(registry
-            .get_webrtc_session_owner(TEST_GENERATION_ID)
-            .await?
-            .is_none());
+        assert!(
+            registry
+                .get_webrtc_session_owner(TEST_GENERATION_ID)
+                .await?
+                .is_none()
+        );
         Ok(())
     }
 
@@ -1957,10 +1959,12 @@ mod tests {
                 first.lease_epoch,
             )
             .await?;
-        assert!(registry
-            .get_active_generation("room-route", "media-route")
-            .await?
-            .is_none());
+        assert!(
+            registry
+                .get_active_generation("room-route", "media-route")
+                .await?
+                .is_none()
+        );
         let retained_generation = require_publisher(
             registry
                 .get_generation("room-route", "media-route", TEST_GENERATION_ID)

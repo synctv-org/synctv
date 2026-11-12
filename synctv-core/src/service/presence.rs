@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use futures::{stream, StreamExt, TryStreamExt};
+use futures::{StreamExt, TryStreamExt, stream};
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -10,8 +10,8 @@ use tracing::{debug, warn};
 
 use crate::models::{RealtimeActor, RoomId, UserId};
 use crate::{
-    redis_runtime_snapshot, Error, RedisConnectionRuntime, Result, SharedStateMode,
-    SharedStateProfile,
+    Error, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
+    redis_runtime_snapshot,
 };
 
 const PRESENCE_METADATA_TTL_SECONDS: i64 = 120;
@@ -276,17 +276,16 @@ impl OnlinePresenceService {
                             state.room_connections.remove(&previous_room_id);
                         }
                     }
-                    if let Some(user_id) = user_id {
-                        if let Some(connections) = state
+                    if let Some(user_id) = user_id
+                        && let Some(connections) = state
                             .user_room_connections
                             .get_mut(&(user_id, previous_room_id))
-                        {
-                            connections.remove(connection_id);
-                            if connections.is_empty() {
-                                state
-                                    .user_room_connections
-                                    .remove(&(user_id, previous_room_id));
-                            }
+                    {
+                        connections.remove(connection_id);
+                        if connections.is_empty() {
+                            state
+                                .user_room_connections
+                                .remove(&(user_id, previous_room_id));
                         }
                     }
                 }
@@ -359,12 +358,12 @@ impl OnlinePresenceService {
                     state.actor_connections.remove(&actor_key);
                 }
             }
-            if let Some(user_id) = connection.actor.user_id() {
-                if let Some(connections) = state.user_connections.get_mut(&user_id) {
-                    connections.remove(connection_id);
-                    if connections.is_empty() {
-                        state.user_connections.remove(&user_id);
-                    }
+            if let Some(user_id) = connection.actor.user_id()
+                && let Some(connections) = state.user_connections.get_mut(&user_id)
+            {
+                connections.remove(connection_id);
+                if connections.is_empty() {
+                    state.user_connections.remove(&user_id);
                 }
             }
             if let Some(connections) = state.node_connections.get_mut(&connection.node_id) {
@@ -380,14 +379,13 @@ impl OnlinePresenceService {
                         state.room_connections.remove(&room_id);
                     }
                 }
-                if let Some(user_id) = connection.actor.user_id() {
-                    if let Some(connections) =
+                if let Some(user_id) = connection.actor.user_id()
+                    && let Some(connections) =
                         state.user_room_connections.get_mut(&(user_id, room_id))
-                    {
-                        connections.remove(connection_id);
-                        if connections.is_empty() {
-                            state.user_room_connections.remove(&(user_id, room_id));
-                        }
+                {
+                    connections.remove(connection_id);
+                    if connections.is_empty() {
+                        state.user_room_connections.remove(&(user_id, room_id));
                     }
                 }
             }

@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    models::{DeletionSource, MediaId, PlaylistId, RoomId, RoomPlaybackState},
     Error, Result,
+    models::{DeletionSource, MediaId, PlaylistId, RoomId, RoomPlaybackState},
 };
 
 use super::{DeleteEntriesResult, EntryDeletionImpact};

@@ -8,15 +8,15 @@ use std::{
 use axum::{
     body::{Body, Bytes, HttpBody},
     extract::{ConnectInfo, MatchedPath, Request},
-    http::{header::ToStrError, HeaderMap, HeaderName, HeaderValue, Method, StatusCode},
+    http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header::ToStrError},
     middleware::Next,
     response::Response,
 };
 use hyper::body::{Frame, SizeHint};
 
 use crate::{
-    observability::metrics, request_context::CURRENT_REQUEST_ID, AccessLogSettings,
-    ApiServerSettings,
+    AccessLogSettings, ApiServerSettings, observability::metrics,
+    request_context::CURRENT_REQUEST_ID,
 };
 
 const ACCESS_LOG_TARGET: &str = "synctv::access";
@@ -599,7 +599,7 @@ mod tests {
     use super::*;
     use std::{convert::Infallible, io::Write, sync::Arc};
 
-    use axum::{routing::get, Router};
+    use axum::{Router, routing::get};
     use futures::stream;
     use http_body_util::{BodyExt, StreamBody};
     use tower::ServiceExt;

@@ -7,17 +7,21 @@ fn synology_services_are_registered_in_descriptor_pools() {
         .get_service_by_name("synctv.provider.synology.SynologyProviderService")
         .expect("Synology provider service descriptor");
     assert_eq!(provider.methods().count(), 11);
-    assert!(provider
-        .methods()
-        .any(|method| method.name() == "GetImage" && method.is_server_streaming()));
+    assert!(
+        provider
+            .methods()
+            .any(|method| method.name() == "GetImage" && method.is_server_streaming())
+    );
 
     let playback = synctv_proto::PLAYBACK_PROVIDER_DESCRIPTOR_POOL
         .get_service_by_name("synctv.playback_provider.synology.SynologyPlaybackProviderService")
         .expect("Synology playback provider service descriptor");
     assert_eq!(playback.methods().count(), 4);
-    assert!(playback
-        .methods()
-        .any(|method| method.name() == "GetImageResource"));
+    assert!(
+        playback
+            .methods()
+            .any(|method| method.name() == "GetImageResource")
+    );
 }
 
 #[test]
@@ -82,9 +86,11 @@ fn synology_contract_separates_browse_and_playable_item_kinds() {
     let browse_kind = synctv_proto::PROVIDERS_DESCRIPTOR_POOL
         .get_enum_by_name("synctv.provider.synology.SynologyVideoEntryKind")
         .expect("Synology browse kind descriptor");
-    assert!(browse_kind
-        .get_value_by_name("SYNOLOGY_VIDEO_ENTRY_KIND_TV_SHOW")
-        .is_some());
+    assert!(
+        browse_kind
+            .get_value_by_name("SYNOLOGY_VIDEO_ENTRY_KIND_TV_SHOW")
+            .is_some()
+    );
 
     let video_item = synctv_proto::PROVIDERS_DESCRIPTOR_POOL
         .get_message_by_name("synctv.provider.synology.VideoItem")
@@ -136,9 +142,11 @@ fn synology_contract_separates_browse_and_playable_item_kinds() {
     let playable_kind = synctv_proto::DESCRIPTOR_POOL
         .get_enum_by_name("synctv.source_config.SynologyLibraryItemKind")
         .expect("Synology playable kind descriptor");
-    assert!(playable_kind
-        .get_value_by_name("SYNOLOGY_LIBRARY_ITEM_KIND_TV_SHOW")
-        .is_none());
+    assert!(
+        playable_kind
+            .get_value_by_name("SYNOLOGY_LIBRARY_ITEM_KIND_TV_SHOW")
+            .is_none()
+    );
 
     let segment = synctv_proto::PLAYBACK_PROVIDER_DESCRIPTOR_POOL
         .get_message_by_name("synctv.playback_provider.synology.GetSynologySegmentRequest")

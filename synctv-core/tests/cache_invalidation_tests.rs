@@ -11,11 +11,11 @@ use synctv_core::{
     models::{RoomId, RoomMember, UserId},
     repository::RoomMemberRepository,
 };
+use synctv_core_testing::{TestOptionExt, TestResultExt};
 use synctv_core_testing::{
     create_test_pool_with_options_and_label, redis_connection_manager,
     start_redis_url as start_test_redis_url,
 };
-use synctv_core_testing::{TestOptionExt, TestResultExt};
 use tokio::sync::RwLock;
 
 async fn start_redis() -> (synctv_core_testing::RedisContainer, String) {

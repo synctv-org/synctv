@@ -38,13 +38,13 @@ use async_trait::async_trait;
 use futures::StreamExt as _;
 use tokio::fs;
 
+use super::SliceCacheBackend;
 use super::file_format::{
     millis_since_epoch, read_cache_file, system_time_from_millis, update_file_last_accessed,
 };
 use super::file_index::{FileIndex, FileIndexEntry, LoadResult};
 use super::file_loader;
 use super::file_ops;
-use super::SliceCacheBackend;
 use crate::slice_cache::etag::StoredEntry;
 
 // FileBackend
@@ -180,12 +180,12 @@ impl FileBackend {
                         return;
                     }
 
-                    if let Some(entry) = self.index.entries.get(&key) {
-                        if entry.path == path {
-                            entry
-                                .persisted_last_accessed
-                                .fetch_max(current_accessed, Ordering::Relaxed);
-                        }
+                    if let Some(entry) = self.index.entries.get(&key)
+                        && entry.path == path
+                    {
+                        entry
+                            .persisted_last_accessed
+                            .fetch_max(current_accessed, Ordering::Relaxed);
                     }
                 },
             )
@@ -196,15 +196,15 @@ impl FileBackend {
 
     /// Remove a cached entry by key (both index and disk).
     async fn remove_entry(&self, key: &str) {
-        if let Some((_k, entry)) = self.index.remove(key) {
-            if let Err(e) = fs::remove_file(&entry.path).await {
-                // File might already be gone -- that's fine.
-                tracing::debug!(
-                    key,
-                    path = %entry.path.display(),
-                    "Failed to remove cache file (may already be deleted): {e}"
-                );
-            }
+        if let Some((_k, entry)) = self.index.remove(key)
+            && let Err(e) = fs::remove_file(&entry.path).await
+        {
+            // File might already be gone -- that's fine.
+            tracing::debug!(
+                key,
+                path = %entry.path.display(),
+                "Failed to remove cache file (may already be deleted): {e}"
+            );
         }
     }
 }

@@ -7,15 +7,15 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use synctv_core::models::id::{MediaId, RoomId, UserId};
 use synctv_core::models::RoomRole;
+use synctv_core::models::id::{MediaId, RoomId, UserId};
 use synctv_core::{DirectRedisConnectionRuntime, RedisConnectionRuntime, SharedStateProfile};
-use synctv_core_testing::{redis_connection_manager, start_redis_client_manager, RedisContainer};
-use synctv_realtime::sync::{
-    build_room_message_runtime, ConnectionId, DedupKey, MessageDeduplicator, RealtimeConfig,
-    RealtimeManager, RoomMessageHub,
-};
+use synctv_core_testing::{RedisContainer, redis_connection_manager, start_redis_client_manager};
 use synctv_realtime::sync::{CacheTarget, NotificationLevel, RealtimeEvent};
+use synctv_realtime::sync::{
+    ConnectionId, DedupKey, MessageDeduplicator, RealtimeConfig, RealtimeManager, RoomMessageHub,
+    build_room_message_runtime,
+};
 mod integration_test_helpers;
 use integration_test_helpers::{
     broadcast_until_admin_event, broadcast_until_room_event, user_actor,
@@ -513,96 +513,112 @@ async fn test_event_type_routing() {
 #[tokio::test]
 async fn test_critical_event_classification() {
     // Critical events
-    assert!(RealtimeEvent::KickPublisher {
-        event_id: synctv_common::snanoid!(16),
-        room_id: rid("r1"),
-        media_id: mid("m1"),
-        reason: "test".to_string(),
-        timestamp: chrono::Utc::now(),
-    }
-    .is_critical());
+    assert!(
+        RealtimeEvent::KickPublisher {
+            event_id: synctv_common::snanoid!(16),
+            room_id: rid("r1"),
+            media_id: mid("m1"),
+            reason: "test".to_string(),
+            timestamp: chrono::Utc::now(),
+        }
+        .is_critical()
+    );
 
-    assert!(RealtimeEvent::KickUser {
-        event_id: synctv_common::snanoid!(16),
-        user_id: uid("u1"),
-        reason: "test".to_string(),
-        timestamp: chrono::Utc::now(),
-    }
-    .is_critical());
+    assert!(
+        RealtimeEvent::KickUser {
+            event_id: synctv_common::snanoid!(16),
+            user_id: uid("u1"),
+            reason: "test".to_string(),
+            timestamp: chrono::Utc::now(),
+        }
+        .is_critical()
+    );
 
-    assert!(RealtimeEvent::KickUserFromRoom {
-        event_id: synctv_common::snanoid!(16),
-        room_id: rid("r1"),
-        user_id: uid("u1"),
-        reason: "test".to_string(),
-        timestamp: chrono::Utc::now(),
-    }
-    .is_critical());
+    assert!(
+        RealtimeEvent::KickUserFromRoom {
+            event_id: synctv_common::snanoid!(16),
+            room_id: rid("r1"),
+            user_id: uid("u1"),
+            reason: "test".to_string(),
+            timestamp: chrono::Utc::now(),
+        }
+        .is_critical()
+    );
 
-    assert!(RealtimeEvent::PermissionChanged {
-        event_id: synctv_common::snanoid!(16),
-        room_id: rid("r1"),
-        target_user_id: uid("u1"),
-        target_username: "test".to_string(),
-        target_remark_name: String::new(),
-        target_display_tag: String::new(),
-        changed_by: uid("u2"),
-        changed_by_username: "admin".to_string(),
-        role_changed: false,
-        new_permissions: synctv_core::models::RoomPermissionSet(0),
-        role: RoomRole::Member,
-        added_permissions: synctv_core::models::RoomPermissionSet(0),
-        removed_permissions: synctv_core::models::RoomPermissionSet(0),
-        admin_added_permissions: synctv_core::models::RoomPermissionSet(0),
-        admin_removed_permissions: synctv_core::models::RoomPermissionSet(0),
-        target_is_online: true,
-        target_connection_count: 1,
-        timestamp: chrono::Utc::now(),
-    }
-    .is_critical());
+    assert!(
+        RealtimeEvent::PermissionChanged {
+            event_id: synctv_common::snanoid!(16),
+            room_id: rid("r1"),
+            target_user_id: uid("u1"),
+            target_username: "test".to_string(),
+            target_remark_name: String::new(),
+            target_display_tag: String::new(),
+            changed_by: uid("u2"),
+            changed_by_username: "admin".to_string(),
+            role_changed: false,
+            new_permissions: synctv_core::models::RoomPermissionSet(0),
+            role: RoomRole::Member,
+            added_permissions: synctv_core::models::RoomPermissionSet(0),
+            removed_permissions: synctv_core::models::RoomPermissionSet(0),
+            admin_added_permissions: synctv_core::models::RoomPermissionSet(0),
+            admin_removed_permissions: synctv_core::models::RoomPermissionSet(0),
+            target_is_online: true,
+            target_connection_count: 1,
+            timestamp: chrono::Utc::now(),
+        }
+        .is_critical()
+    );
 
-    assert!(RealtimeEvent::RoomDeleted {
-        event_id: synctv_common::snanoid!(16),
-        room_id: rid("r1"),
-        deleted_by: uid("u1"),
-        timestamp: chrono::Utc::now(),
-    }
-    .is_critical());
+    assert!(
+        RealtimeEvent::RoomDeleted {
+            event_id: synctv_common::snanoid!(16),
+            room_id: rid("r1"),
+            deleted_by: uid("u1"),
+            timestamp: chrono::Utc::now(),
+        }
+        .is_critical()
+    );
 
-    assert!(RealtimeEvent::UserLeft {
-        event_id: synctv_common::snanoid!(16),
-        room_id: rid("r1"),
-        user_id: uid("u1"),
-        username: "test".to_string(),
-        remark_name: String::new(),
-        display_tag: String::new(),
-        role: RoomRole::Member,
-        timestamp: chrono::Utc::now(),
-    }
-    .is_critical());
+    assert!(
+        RealtimeEvent::UserLeft {
+            event_id: synctv_common::snanoid!(16),
+            room_id: rid("r1"),
+            user_id: uid("u1"),
+            username: "test".to_string(),
+            remark_name: String::new(),
+            display_tag: String::new(),
+            role: RoomRole::Member,
+            timestamp: chrono::Utc::now(),
+        }
+        .is_critical()
+    );
 
     // Non-critical events
-    assert!(!RealtimeEvent::ChatMessage {
-        event_id: synctv_common::snanoid!(16),
-        room_id: rid("r1"),
-        user_id: uid("u1"),
-        username: "test".to_string(),
-        message: "hello".to_string(),
-        timestamp: chrono::Utc::now(),
-        display_position: None,
-        display_color: None,
-    }
-    .is_critical());
+    assert!(
+        !RealtimeEvent::ChatMessage {
+            event_id: synctv_common::snanoid!(16),
+            room_id: rid("r1"),
+            user_id: uid("u1"),
+            username: "test".to_string(),
+            message: "hello".to_string(),
+            timestamp: chrono::Utc::now(),
+            display_position: None,
+            display_color: None,
+        }
+        .is_critical()
+    );
 
-    assert!(!RealtimeEvent::WebRTCVoicePeerJoined {
-        event_id: synctv_common::snanoid!(16),
-        room_id: rid("r1"),
-        actor_id: "usr_u1".to_string(),
-        conn_id: "c1".to_string(),
-        username: "test".to_string(),
-        timestamp: chrono::Utc::now(),
-    }
-    .is_critical());
+    assert!(
+        !RealtimeEvent::WebRTCVoicePeerJoined {
+            event_id: synctv_common::snanoid!(16),
+            room_id: rid("r1"),
+            actor_id: "usr_u1".to_string(),
+            conn_id: "c1".to_string(),
+            username: "test".to_string(),
+            timestamp: chrono::Utc::now(),
+        }
+        .is_critical()
+    );
 }
 
 // Test 7: Broadcast result tracking

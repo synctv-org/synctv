@@ -222,10 +222,10 @@ pub(crate) fn make_absolute(raw: &str, base: Option<&url::Url>) -> String {
     if raw.starts_with("http://") || raw.starts_with("https://") {
         return raw.to_string();
     }
-    if let Some(base) = base {
-        if let Ok(joined) = base.join(raw) {
-            return joined.to_string();
-        }
+    if let Some(base) = base
+        && let Ok(joined) = base.join(raw)
+    {
+        return joined.to_string();
     }
     raw.to_string()
 }
@@ -424,10 +424,15 @@ mod typed_resource_tests {
         )
         .expect("HLS playlist should rewrite");
 
-        assert!(rewritten
-            .contains("URI=\"/Manifest?target=https://cdn.example.com/master/audio/playlist\""));
-        assert!(rewritten
-            .contains("URI=\"/Manifest?target=https://cdn.example.com/master/iframe/playlist\""));
+        assert!(
+            rewritten
+                .contains("URI=\"/Manifest?target=https://cdn.example.com/master/audio/playlist\"")
+        );
+        assert!(
+            rewritten.contains(
+                "URI=\"/Manifest?target=https://cdn.example.com/master/iframe/playlist\""
+            )
+        );
         assert!(rewritten.contains("URI=\"/Manifest?target=https://cdn.example.com/alternate\""));
         assert!(rewritten.contains("/Manifest?target=https://cdn.example.com/master/video/high"));
         assert!(
@@ -439,8 +444,10 @@ mod typed_resource_tests {
         assert!(
             rewritten.contains("URI=\"/Part?target=https://cdn.example.com/master/parts/100.1\"")
         );
-        assert!(rewritten
-            .contains("URI=\"/Part?target=https://cdn.example.com/master/parts/next,variant\""));
+        assert!(
+            rewritten
+                .contains("URI=\"/Part?target=https://cdn.example.com/master/parts/next,variant\"")
+        );
         assert!(
             rewritten.contains("URI=\"/Init?target=https://cdn.example.com/master/init/next.mp4\"")
         );
@@ -468,8 +475,12 @@ mod typed_resource_tests {
         )
         .expect("HLS playlist should rewrite");
 
-        assert!(rewritten.contains("URI=\"/Key?target=https://cdn.example.com/live/keys/session\""));
-        assert!(rewritten.contains("URI=\"/Key?target=https://cdn.example.com/live/keys/current\""));
+        assert!(
+            rewritten.contains("URI=\"/Key?target=https://cdn.example.com/live/keys/session\"")
+        );
+        assert!(
+            rewritten.contains("URI=\"/Key?target=https://cdn.example.com/live/keys/current\"")
+        );
         assert!(rewritten.contains("/Segment?target=https://cdn.example.com/live/segments/100.ts"));
     }
 

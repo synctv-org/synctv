@@ -320,16 +320,17 @@ fn test_redirect_url_with_credentials_rejected() {
 #[test]
 fn test_redirect_url_requires_runtime_allowlist_match() {
     let allowed = vec!["https://syncs.tv/oauth2/callback".to_string()];
-    assert!(OAuth2Service::validate_redirect_url_with_allowlist(
-        "https://syncs.tv/oauth2/callback",
-        &allowed,
-    )
-    .is_ok());
-    assert!(OAuth2Service::validate_redirect_url_with_allowlist(
-        "https://syncs.tv/other",
-        &allowed,
-    )
-    .is_err());
+    assert!(
+        OAuth2Service::validate_redirect_url_with_allowlist(
+            "https://syncs.tv/oauth2/callback",
+            &allowed,
+        )
+        .is_ok()
+    );
+    assert!(
+        OAuth2Service::validate_redirect_url_with_allowlist("https://syncs.tv/other", &allowed,)
+            .is_err()
+    );
 }
 
 #[test]
@@ -597,9 +598,11 @@ async fn test_signup_policy_for_missing_provider_returns_error() {
         .signup_policy_for("missing")
         .await
         .expect_err("missing provider should fail");
-    assert!(error
-        .to_string()
-        .contains("OAuth2 provider instance not found: missing"));
+    assert!(
+        error
+            .to_string()
+            .contains("OAuth2 provider instance not found: missing")
+    );
 }
 
 #[tokio::test]
@@ -765,9 +768,11 @@ async fn test_authorization_rejects_mode_not_advertised_by_provider() {
             .await,
         "unsupported provider mode should be rejected",
     );
-    assert!(error
-        .to_string()
-        .contains("does not support Native authorization"));
+    assert!(
+        error
+            .to_string()
+            .contains("does not support Native authorization")
+    );
 }
 
 #[tokio::test]

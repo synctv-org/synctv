@@ -8,8 +8,8 @@ use synctv_proto::providers::cloudreve::{
     LoginRequest, LoginResponse, LogoutRequest, LogoutResponse, SearchRequest, SearchResponse,
 };
 use synctv_proto::source_config::{
-    media_source_config, playlist_source_config, CloudreveMediaSourceConfig,
-    CloudrevePlaylistSourceConfig,
+    CloudreveMediaSourceConfig, CloudrevePlaylistSourceConfig, media_source_config,
+    playlist_source_config,
 };
 use synctv_realtime::fanout::RealtimeEventService;
 

@@ -14,7 +14,7 @@ use super::types::{
     TwitchSchedulePage, TwitchScheduleSegment, TwitchSession, TwitchSessionIdentity,
     TwitchStreamItem, TwitchStreamPage,
 };
-use crate::{fetch_json, text_with_limit, ProviderClientError, PROVIDER_USER_AGENT};
+use crate::{PROVIDER_USER_AGENT, ProviderClientError, fetch_json, text_with_limit};
 
 const TWITCH_WEB_CLIENT_ID: &str = "kimne78kx3ncx6brgo4mv6wki5h1ko";
 const CLIP_QUERY_HASH: &str = "993d9a5131f15a37bd16f32342c44ed1e0b1a9b968c6afdb662d2cddd595f6c5";
@@ -1124,7 +1124,7 @@ fn insert_hls_attribute(values: &mut HashMap<String, String>, raw: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wiremock::{matchers, Mock, MockServer, ResponseTemplate};
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
 
     #[test]
     fn parses_channel_video_and_clip_urls() {

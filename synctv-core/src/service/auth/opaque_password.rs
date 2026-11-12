@@ -14,11 +14,11 @@ use rand_chacha_08::ChaCha20Rng;
 use sha2_010::{Digest, Sha512};
 
 use crate::{
-    models::{
-        OpaquePasswordRecord, OPAQUE_CIPHERSUITE_RISTRETTO255_SHA512_ARGON2ID,
-        OPAQUE_SERVER_SETUP_VERSION,
-    },
     Error, Result,
+    models::{
+        OPAQUE_CIPHERSUITE_RISTRETTO255_SHA512_ARGON2ID, OPAQUE_SERVER_SETUP_VERSION,
+        OpaquePasswordRecord,
+    },
 };
 
 struct SyncTvOpaqueCipherSuite;

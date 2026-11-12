@@ -20,7 +20,7 @@
 use axum::{
     extract::{ConnectInfo, FromRef, FromRequestParts, Path, Query, State, WebSocketUpgrade},
     http::request::Parts,
-    http::{header, HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, header},
     response::IntoResponse,
 };
 use futures::{SinkExt, StreamExt};
@@ -31,7 +31,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::{error, info, warn};
 
-use crate::http::{optional_header_str, AppError, AppState};
+use crate::http::{AppError, AppState, optional_header_str};
 use synctv_api_common::impls::messaging::{
     FairQueueConfig, FairSessionSender, GuestRealtimeIdentity, MessageConcurrencyConfig,
     MessageSender, ProtoCodec, RealtimeJoinError, RealtimePrincipal, StreamMessage,
@@ -475,10 +475,10 @@ pub(crate) fn same_origin_as_host(
         return Ok(false);
     }
 
-    if let Some(request_scheme) = forwarded_proto {
-        if !origin.scheme().eq_ignore_ascii_case(request_scheme) {
-            return Ok(false);
-        }
+    if let Some(request_scheme) = forwarded_proto
+        && !origin.scheme().eq_ignore_ascii_case(request_scheme)
+    {
+        return Ok(false);
     }
 
     Ok(origin.port_or_known_default()

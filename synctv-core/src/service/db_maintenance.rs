@@ -16,12 +16,12 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use super::{
-    cleanup::CleanupConfig, cleanup_ops, FileStorageCleanupOrigin, FileStorageService, LeaderCheck,
-    RuntimeSettingsStore,
+    FileStorageCleanupOrigin, FileStorageService, LeaderCheck, RuntimeSettingsStore,
+    cleanup::CleanupConfig, cleanup_ops,
 };
+use crate::Result as CoreResult;
 use crate::repository::FileStorageRepository;
 use crate::service::partitioning::u32_to_i32;
-use crate::Result as CoreResult;
 
 /// Default chat message retention in days (used when settings are unavailable).
 const DEFAULT_CHAT_MESSAGE_RETENTION_DAYS: i64 = 90;

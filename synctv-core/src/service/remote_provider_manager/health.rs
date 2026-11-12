@@ -6,7 +6,7 @@ use synctv_common::ExecutionControl;
 use super::RemoteProviderManager;
 use crate::models::ProviderInstance;
 use synctv_media_providers::remote_transport::{
-    execute_health_check, validate_auth_secret, RemoteProviderConnection,
+    RemoteProviderConnection, execute_health_check, validate_auth_secret,
 };
 
 const REMOTE_HEALTH_CHECK_CONCURRENCY: usize = 16;

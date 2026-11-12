@@ -1,7 +1,7 @@
 use crate::{
+    Error, Result,
     models::{User, UserId},
     service::TokenCredentialBinding,
-    Error, Result,
 };
 
 use super::UserService;

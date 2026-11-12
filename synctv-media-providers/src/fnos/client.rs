@@ -8,12 +8,12 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use url::Url;
 use uuid::Uuid;
 
-use super::crypto::{sign_request, LoginCipher};
+use super::crypto::{LoginCipher, sign_request};
 use super::types::{FileListResponse, FnosFile, RawFile};
 use super::{
     FnosCredential, FnosFileList, FnosLogin, FnosLoginChallenge, FnosServerInfo, FnosWebDavConfig,
 };
-use crate::{ProviderClientError, MAX_RESPONSE_SIZE};
+use crate::{MAX_RESPONSE_SIZE, ProviderClientError};
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 

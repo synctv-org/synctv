@@ -6,12 +6,12 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
-use super::registry::{StreamGeneration, WebRtcSessionOwner, HLS_GENERATION_RETENTION};
+use super::registry::{HLS_GENERATION_RETENTION, StreamGeneration, WebRtcSessionOwner};
 use super::registry_trait::{
     ActiveStreamGeneration, LeaseRefreshOutcome, StreamGenerationRegistration, StreamRegistryTrait,
 };
@@ -667,10 +667,12 @@ mod tests {
                 .expires_at = Some(Instant::now() - Duration::from_secs(1));
         }
 
-        assert!(registry
-            .get_generation("room1", "media1", TEST_GENERATION_ID)
-            .await?
-            .is_none());
+        assert!(
+            registry
+                .get_generation("room1", "media1", TEST_GENERATION_ID)
+                .await?
+                .is_none()
+        );
         assert!(registry.state.lock().await.generations.is_empty());
         Ok(())
     }
@@ -867,10 +869,12 @@ mod tests {
                 .unregister_webrtc_session(TEST_GENERATION_ID, "node1")
                 .await?
         );
-        assert!(registry
-            .get_webrtc_session_owner(TEST_GENERATION_ID)
-            .await?
-            .is_none());
+        assert!(
+            registry
+                .get_webrtc_session_owner(TEST_GENERATION_ID)
+                .await?
+                .is_none()
+        );
         Ok(())
     }
 

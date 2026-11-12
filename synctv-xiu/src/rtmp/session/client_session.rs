@@ -305,7 +305,7 @@ impl ClientSession {
                     Err(_) => {
                         return Err(SessionError {
                             value: SessionErrorValue::Timeout,
-                        })
+                        });
                     }
                 };
 
@@ -428,7 +428,7 @@ impl ClientSession {
                     _ => {
                         return Err(SessionError {
                             value: SessionErrorValue::InvalidAmf0ValueCount,
-                        })
+                        });
                     }
                 }
             }
@@ -668,7 +668,7 @@ impl ClientSession {
 
 #[cfg(test)]
 mod tests {
-    use super::{should_forward_media, ClientSessionType, RtmpStreamMode};
+    use super::{ClientSessionType, RtmpStreamMode, should_forward_media};
 
     #[test]
     fn pull_mode_filters_only_the_selected_media_type() {

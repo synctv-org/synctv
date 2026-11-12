@@ -7,11 +7,11 @@
 
 #![allow(clippy::unwrap_used)]
 use axum::{
+    Router,
     body::Body,
     http::{Request, StatusCode},
     middleware as axum_middleware,
     routing::get,
-    Router,
 };
 use http_body_util::BodyExt;
 use serde_json::Value;
@@ -286,7 +286,7 @@ mod error_responses {
 
 mod error_classification {
     use axum::http::StatusCode;
-    use synctv_api::{map_api_error, ApiError};
+    use synctv_api::{ApiError, map_api_error};
     use synctv_core::Error as CoreError;
 
     #[test]

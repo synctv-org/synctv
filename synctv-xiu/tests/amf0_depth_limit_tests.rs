@@ -7,9 +7,9 @@
 #![allow(clippy::unwrap_used)]
 use indexmap::IndexMap;
 use synctv_xiu::bytesio::bytes_reader::BytesReader;
+use synctv_xiu::flv::amf0::Amf0ValueType;
 use synctv_xiu::flv::amf0::amf0_reader::Amf0Reader;
 use synctv_xiu::flv::amf0::amf0_writer::Amf0Writer;
-use synctv_xiu::flv::amf0::Amf0ValueType;
 
 /// Creates a deeply nested AMF0 object with the specified depth.
 fn create_nested_object(depth: usize) -> Amf0ValueType {

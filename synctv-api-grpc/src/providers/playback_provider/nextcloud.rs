@@ -1,6 +1,6 @@
 use super::{
-    execute_playback_provider_stream, grpc_request_metadata, GrpcResponseStream,
-    PlaybackProviderGrpcState,
+    GrpcResponseStream, PlaybackProviderGrpcState, execute_playback_provider_stream,
+    grpc_request_metadata,
 };
 use futures::FutureExt;
 use std::sync::Arc;

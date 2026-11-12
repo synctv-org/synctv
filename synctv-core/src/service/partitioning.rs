@@ -1,6 +1,6 @@
 use chrono::{Datelike, NaiveDate};
-use sqlx::pool::PoolConnection;
 use sqlx::Executor as _;
+use sqlx::pool::PoolConnection;
 use sqlx::{PgPool, Postgres};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -182,16 +182,16 @@ fn centi_units(size_bytes: i64, unit_bytes: i64) -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     use chrono::NaiveDate;
     use tokio_util::sync::CancellationToken;
 
     use super::super::LeaderCheck;
     use super::{
-        add_months, start_of_month, wait_for_initial_leader, INITIAL_LEADER_RETRY_INTERVAL_SECS,
-        STARTUP_RUNS_RETENTION_CLEANUP,
+        INITIAL_LEADER_RETRY_INTERVAL_SECS, STARTUP_RUNS_RETENTION_CLEANUP, add_months,
+        start_of_month, wait_for_initial_leader,
     };
 
     const _: () = assert!(

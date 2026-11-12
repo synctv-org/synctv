@@ -14,8 +14,8 @@ use crate::service::{
 };
 use async_trait::async_trait;
 use sqlx::PgPool;
-use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
 fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
     match result {
@@ -435,38 +435,48 @@ fn test_position_update_requires_current_playback_source() {
 
 #[test]
 fn test_switch_target_source_shape_matches_progress_schema() {
-    assert!(validate_switch_target(&SwitchPlaybackTarget {
-        media_id: Some(MediaId::expect_positive(30_010)),
-        playlist_id: None,
-        target: None,
-    })
-    .is_ok());
-    assert!(validate_switch_target(&SwitchPlaybackTarget {
-        media_id: Some(MediaId::expect_positive(30_012)),
-        playlist_id: Some(PlaylistId::expect_positive(40_012)),
-        target: None,
-    })
-    .is_ok());
-    assert!(validate_switch_target(&SwitchPlaybackTarget {
-        media_id: None,
-        playlist_id: Some(PlaylistId::expect_positive(40_010)),
-        target: Some(ProviderTarget::alist("dynamic-target".to_string())),
-    })
-    .is_ok());
-    assert!(validate_switch_target(&SwitchPlaybackTarget {
-        media_id: Some(MediaId::expect_positive(30_011)),
-        playlist_id: None,
-        target: Some(ProviderTarget::alist(
-            "static-media-must-have-no-target".to_string(),
-        )),
-    })
-    .is_err());
-    assert!(validate_switch_target(&SwitchPlaybackTarget {
-        media_id: None,
-        playlist_id: Some(PlaylistId::expect_positive(40_011)),
-        target: None,
-    })
-    .is_err());
+    assert!(
+        validate_switch_target(&SwitchPlaybackTarget {
+            media_id: Some(MediaId::expect_positive(30_010)),
+            playlist_id: None,
+            target: None,
+        })
+        .is_ok()
+    );
+    assert!(
+        validate_switch_target(&SwitchPlaybackTarget {
+            media_id: Some(MediaId::expect_positive(30_012)),
+            playlist_id: Some(PlaylistId::expect_positive(40_012)),
+            target: None,
+        })
+        .is_ok()
+    );
+    assert!(
+        validate_switch_target(&SwitchPlaybackTarget {
+            media_id: None,
+            playlist_id: Some(PlaylistId::expect_positive(40_010)),
+            target: Some(ProviderTarget::alist("dynamic-target".to_string())),
+        })
+        .is_ok()
+    );
+    assert!(
+        validate_switch_target(&SwitchPlaybackTarget {
+            media_id: Some(MediaId::expect_positive(30_011)),
+            playlist_id: None,
+            target: Some(ProviderTarget::alist(
+                "static-media-must-have-no-target".to_string(),
+            )),
+        })
+        .is_err()
+    );
+    assert!(
+        validate_switch_target(&SwitchPlaybackTarget {
+            media_id: None,
+            playlist_id: Some(PlaylistId::expect_positive(40_011)),
+            target: None,
+        })
+        .is_err()
+    );
 }
 
 #[tokio::test]
@@ -957,10 +967,10 @@ mod cas_version_pre_check_tests {
     /// Replicates the CAS pre-check from `update_multiple_with_version`:
     /// when `expected_version` is provided, the current DB version must match.
     fn check_cas_version(current_version: i64, expected_version: Option<i64>) -> crate::Result<()> {
-        if let Some(expected) = expected_version {
-            if current_version != expected {
-                return Err(Error::OptimisticLockConflict);
-            }
+        if let Some(expected) = expected_version
+            && current_version != expected
+        {
+            return Err(Error::OptimisticLockConflict);
         }
         Ok(())
     }

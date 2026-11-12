@@ -3,8 +3,8 @@ use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::http::{
-    admin, auth, email, livestream_webrtc, notifications, oauth2, public, room, room_extra, ticket,
-    user, webrtc, websocket, AppState,
+    AppState, admin, auth, email, livestream_webrtc, notifications, oauth2, public, room,
+    room_extra, ticket, user, webrtc, websocket,
 };
 use crate::providers::{
     acfun, alist, bilibili, cctv, cloudreve, common, douyin, douyu, emby, fnos, huya, nextcloud,
@@ -1227,7 +1227,10 @@ mod tests {
                 "/api/playback-providers/{roomId}/youtube/{version}/resources/{modeName}/{mediaIndex}",
                 "get",
             ),
-            ("/api/playback-providers/{roomId}/youtube/{version}/segments", "get"),
+            (
+                "/api/playback-providers/{roomId}/youtube/{version}/segments",
+                "get",
+            ),
             (
                 "/api/playback-providers/{roomId}/youtube/{version}/subtitles/{modeName}/{subtitleIndex}",
                 "get",
@@ -1429,7 +1432,10 @@ mod tests {
                 "/api/playback-providers/{roomId}/twitch/{version}/resources/{modeName}/{mediaIndex}",
                 "get",
             ),
-            ("/api/playback-providers/{roomId}/twitch/{version}/segments", "get"),
+            (
+                "/api/playback-providers/{roomId}/twitch/{version}/segments",
+                "get",
+            ),
             (
                 "/api/playback-providers/{roomId}/twitch/{version}/chats/{modeName}/{mediaIndex}",
                 "get",
@@ -1458,8 +1464,7 @@ mod tests {
             );
         }
 
-        let chat_response = &doc["paths"]
-            ["/api/playback-providers/{roomId}/twitch/{version}/chats/{modeName}/{mediaIndex}"]
+        let chat_response = &doc["paths"]["/api/playback-providers/{roomId}/twitch/{version}/chats/{modeName}/{mediaIndex}"]
             ["get"]["responses"]["200"]["content"]["text/event-stream"];
         assert!(
             chat_response["schema"].is_object(),
@@ -1592,7 +1597,10 @@ mod tests {
                 "/api/playback-providers/{roomId}/qnap/{version}/subtitles/{modeName}/{subtitleIndex}",
                 "get",
             ),
-            ("/api/playback-providers/{roomId}/qnap/{version}/thumbnail", "get"),
+            (
+                "/api/playback-providers/{roomId}/qnap/{version}/thumbnail",
+                "get",
+            ),
         ] {
             let operation = &doc["paths"][path][method];
             assert!(
@@ -1646,7 +1654,10 @@ mod tests {
                 "/api/playback-providers/{roomId}/synology/{version}/resources/{modeName}/{mediaIndex}",
                 "get",
             ),
-            ("/api/playback-providers/{roomId}/synology/{version}/segments", "get"),
+            (
+                "/api/playback-providers/{roomId}/synology/{version}/segments",
+                "get",
+            ),
             (
                 "/api/playback-providers/{roomId}/synology/{version}/subtitles/{modeName}/{subtitleIndex}",
                 "get",
@@ -1838,8 +1849,7 @@ mod tests {
                 "GET {path} should be documented"
             );
         }
-        let danmaku = &doc["paths"]
-            ["/api/playback-providers/{roomId}/huya/{version}/danmakus/{modeName}/{mediaIndex}"]
+        let danmaku = &doc["paths"]["/api/playback-providers/{roomId}/huya/{version}/danmakus/{modeName}/{mediaIndex}"]
             ["get"]["responses"]["200"]["content"]["text/event-stream"];
         assert!(
             danmaku["schema"].is_object(),
@@ -1868,8 +1878,7 @@ mod tests {
                 "GET {path} should be documented"
             );
         }
-        let danmaku = &doc["paths"]
-            ["/api/playback-providers/{roomId}/douyu/{version}/danmakus/{modeName}/{mediaIndex}"]
+        let danmaku = &doc["paths"]["/api/playback-providers/{roomId}/douyu/{version}/danmakus/{modeName}/{mediaIndex}"]
             ["get"]["responses"]["200"]["content"]["text/event-stream"];
         assert!(
             danmaku["schema"].is_object(),
@@ -1899,8 +1908,7 @@ mod tests {
                 "GET {path} should be documented"
             );
         }
-        let danmaku = &doc["paths"]
-            ["/api/playback-providers/{roomId}/acfun/{version}/danmakus/{modeName}/{mediaIndex}"]
+        let danmaku = &doc["paths"]["/api/playback-providers/{roomId}/acfun/{version}/danmakus/{modeName}/{mediaIndex}"]
             ["get"]["responses"]["200"]["content"]["text/event-stream"];
         assert!(
             danmaku["schema"].is_object(),
@@ -1999,8 +2007,8 @@ mod tests {
     fn openapi_marks_publish_key_body_required() -> TestResult {
         let doc = openapi_json()?;
 
-        let request_body = &doc["paths"]
-            ["/api/playback-providers/{roomId}/rtmp/{mediaId}/publish-key"]["post"]["requestBody"];
+        let request_body = &doc["paths"]["/api/playback-providers/{roomId}/rtmp/{mediaId}/publish-key"]
+            ["post"]["requestBody"];
         assert!(
             request_body.is_object(),
             "publish-key creation should document its request body schema"

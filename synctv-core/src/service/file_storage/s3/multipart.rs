@@ -1,7 +1,7 @@
 use crate::{
+    Error, Result,
     models::{CompleteFileUploadPart, FileUploadSessionPart},
     service::file_storage::file_part_manifest_digest,
-    Error, Result,
 };
 
 pub(super) fn completion_parts_from_session_parts(

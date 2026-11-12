@@ -10,8 +10,8 @@
 
 #![allow(clippy::unwrap_used)]
 use std::sync::Arc;
-use synctv_cluster::discovery::node_registry::{NodeInfo, NodeRegistry};
 use synctv_cluster::ClusterMode;
+use synctv_cluster::discovery::node_registry::{NodeInfo, NodeRegistry};
 
 /// Helper: create a `NodeRegistry` with a dummy Redis client (no server needed).
 /// Connection attempts will fail fast.

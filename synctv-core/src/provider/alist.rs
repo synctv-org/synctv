@@ -5,15 +5,15 @@
 
 use super::upstream_transport::alist as alist_upstream;
 use super::{
-    access::{AlistAccess, AlistBinding},
-    provider_client::{create_remote_alist_client, AlistClientArc, ProviderClientManager},
-    traits::dynamic_page_has_more,
     DynamicBrowsePathSegment, DynamicListQuery, DynamicListResult, DynamicPagination,
     DynamicPlaylistItem, DynamicPlaylistProvider, ItemType, MediaProvider, NextPlayItem,
     PlaybackClientProfile, PlaybackInfo, PlaybackProxyAutoPolicy, PlaybackProxyAutoReason,
     PlaybackProxyPolicy, PlaybackResult, PlaybackStreamPreference, PlaybackSubtitlePreference,
     PreparedSourceConfig, ProviderContext, ProviderCredentialDependency, ProviderError,
     SourceConfig, SourceCover,
+    access::{AlistAccess, AlistBinding},
+    provider_client::{AlistClientArc, ProviderClientManager, create_remote_alist_client},
+    traits::dynamic_page_has_more,
 };
 use crate::cache::{SingleFlight, SingleFlightError};
 use crate::models::media::{
@@ -23,9 +23,9 @@ use crate::models::media::{
     PlaybackMetadata, PlaybackSubtitle, PlaybackSubtitleProvider,
 };
 use crate::models::{
-    normalize_provider_instance_name, validate_provider_instance_name, AlistMediaSourceConfig,
-    AlistPlaylistSourceConfig, MediaSourceConfig, ProviderCredential, UserId,
-    UserProviderCredential,
+    AlistMediaSourceConfig, AlistPlaylistSourceConfig, MediaSourceConfig, ProviderCredential,
+    UserId, UserProviderCredential, normalize_provider_instance_name,
+    validate_provider_instance_name,
 };
 use crate::repository::UserProviderCredentialRepository;
 use crate::service::RemoteProviderManager;
@@ -588,14 +588,14 @@ fn mark_alist_playback_resources(
         if mode_name == original_default_mode {
             default_selection = selection;
         }
-        if selection.direct {
-            if let Some(direct_info) = super::build_direct_playback_info_for_client(
+        if selection.direct
+            && let Some(direct_info) = super::build_direct_playback_info_for_client(
                 &mode_name,
                 &original_info,
                 client_profile,
-            ) {
-                generated.insert(mode_name.clone(), direct_info);
-            }
+            )
+        {
+            generated.insert(mode_name.clone(), direct_info);
         }
         if !selection.proxy {
             continue;
@@ -1067,10 +1067,10 @@ impl AlistProvider {
         self.playback_resource_resolver
             .singleflight
             .do_work(key.clone(), async {
-                if let Some(target) = self.playback_resource_resolver.cache.get(&key).await {
-                    if target.is_fresh() {
-                        return Ok(target);
-                    }
+                if let Some(target) = self.playback_resource_resolver.cache.get(&key).await
+                    && target.is_fresh()
+                {
+                    return Ok(target);
                 }
                 let target = self
                     .resolve_media_target_uncached(
@@ -1115,10 +1115,10 @@ impl AlistProvider {
         self.playback_resource_resolver
             .singleflight
             .do_work(key.clone(), async {
-                if let Some(target) = self.playback_resource_resolver.cache.get(&key).await {
-                    if target.is_fresh() {
-                        return Ok(target);
-                    }
+                if let Some(target) = self.playback_resource_resolver.cache.get(&key).await
+                    && target.is_fresh()
+                {
+                    return Ok(target);
                 }
                 let target = self
                     .resolve_subtitle_target_uncached(
@@ -1662,14 +1662,14 @@ impl AlistProvider {
             .get_client_with_context(instance_name, request_context)
             .await?;
         let provider_req = alist_search_request(&req);
-        let resp = match client.fs_search(provider_req.clone()).await {
+
+        match client.fs_search(provider_req.clone()).await {
             Ok(resp) => Ok(Self::alist_search_response_from_provider(resp)),
             Err(error) if is_alist_search_unavailable(&error) => {
                 Self::fs_search_fallback_to_listing(client, req).await
             }
             Err(error) => Err(error.into()),
-        };
-        resp
+        }
     }
 
     async fn fs_search_fallback_to_listing(
@@ -3333,8 +3333,8 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use synctv_media_providers::alist::{AlistError, AlistInterface};
     use synctv_media_providers::transport_dto::alist::{
-        fs_other_resp, FsGetReq, FsGetResp, FsListReq, FsListResp, FsOtherReq, FsOtherResp,
-        FsSearchReq, FsSearchResp, LoginReq, MeReq, MeResp,
+        FsGetReq, FsGetResp, FsListReq, FsListResp, FsOtherReq, FsOtherResp, FsSearchReq,
+        FsSearchResp, LoginReq, MeReq, MeResp, fs_other_resp,
     };
 
     type TestResult<T = ()> = anyhow::Result<T>;

@@ -94,9 +94,9 @@ pub fn default_membership_event_fanout_service(
 mod tests {
     use super::*;
     use crate::realtime_fanout::disabled_realtime_fanout_service;
-    use crate::test_support::{channel_realtime_fanout_service, RecordingRealtimeEventService};
-    use std::sync::atomic::Ordering;
+    use crate::test_support::{RecordingRealtimeEventService, channel_realtime_fanout_service};
     use std::sync::Arc;
+    use std::sync::atomic::Ordering;
     use synctv_core::models::{RoomId, UserId};
     use synctv_core::service::{PermissionChangedOutboxSnapshot, UserLeftOutboxSnapshot};
     use synctv_realtime::sync::RealtimeEvent;

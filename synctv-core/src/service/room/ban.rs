@@ -1,8 +1,8 @@
 use crate::{
+    Error, Result,
     models::{AuditAction, AuditDetails, AuditTargetType, Room, RoomId, UserId},
     repository::realtime_outbox::NewRealtimeOutboxEvent,
     service::RoomService,
-    Error, Result,
 };
 
 impl RoomService {

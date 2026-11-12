@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use opendal::{services::S3, Operator};
+use opendal::{Operator, services::S3};
 
 use super::S3FileStorageConfig;
 use crate::{Error, Result};

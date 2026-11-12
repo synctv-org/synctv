@@ -1,10 +1,10 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
+    Error, Result,
     models::{Media, Playlist, PlaylistId, Room, RoomId, UserId},
     repository::{media::MediaListItem, playlist::PlaylistListItem},
     service::RoomService,
-    Error, Result,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

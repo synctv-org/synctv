@@ -13,9 +13,9 @@ use tracing::{error, info, warn};
 use super::LeaderCheck;
 use crate::repository::query_builder::trusted_dynamic_sql;
 use crate::service::partitioning::{
+    PartitionNameRow, PartitionSizeRow, STARTUP_RUNS_RETENTION_CLEANUP,
     acquire_unbounded_ddl_connection, current_database_date, len_to_i32, len_to_i64, quote_ident,
-    size_centi_mib, table_exists, wait_for_initial_leader, PartitionNameRow, PartitionSizeRow,
-    STARTUP_RUNS_RETENTION_CLEANUP,
+    size_centi_mib, table_exists, wait_for_initial_leader,
 };
 use crate::{Error, Result};
 
@@ -360,8 +360,10 @@ async fn initialize_time_partitions_on_startup(
             .await?;
     }
 
-    info!("Time partition initialization completed (daily granularity, {} days ahead, {} days minimum empty-partition age)",
-        DEFAULT_PARTITION_DAYS_AHEAD, EMPTY_PARTITION_MIN_AGE_DAYS);
+    info!(
+        "Time partition initialization completed (daily granularity, {} days ahead, {} days minimum empty-partition age)",
+        DEFAULT_PARTITION_DAYS_AHEAD, EMPTY_PARTITION_MIN_AGE_DAYS
+    );
 
     Ok(())
 }

@@ -1,6 +1,6 @@
 use synctv_core::service::BanRecordListQuery;
 
-use super::{ban_row_to_proto, i64_to_i32_api, AdminApiImpl, ApiError};
+use super::{AdminApiImpl, ApiError, ban_row_to_proto, i64_to_i32_api};
 
 fn ban_records_query(
     api: &AdminApiImpl,

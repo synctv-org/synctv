@@ -7,9 +7,9 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::{
+    Error, Result,
     cache::{CacheInvalidationRuntime, InvalidationMessage, MemberPermissionKey},
     models::{RoomId, UserId},
-    Error, Result,
 };
 
 use super::PermissionService;

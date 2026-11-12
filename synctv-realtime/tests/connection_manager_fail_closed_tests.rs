@@ -13,7 +13,7 @@ use synctv_core::models::id::{RoomId, UserId};
 use synctv_core::service::OnlinePresenceService;
 use synctv_core::{RedisConnectionRuntime, SharedStateProfile};
 use synctv_core_testing::test_redis_key_prefix;
-use synctv_realtime::sync::{build_connection_manager, ConnectionLimits, ConnectionManager};
+use synctv_realtime::sync::{ConnectionLimits, ConnectionManager, build_connection_manager};
 
 fn uid(s: &str) -> UserId {
     UserId::expect_positive(stable_id(s))

@@ -18,8 +18,8 @@ pub use clients::{
 };
 pub(crate) use compression::apply_provider_client_compression;
 pub use connection::{
-    create_remote_connection, RemoteProviderConnection, RemoteProviderConnectionOptions,
-    RemoteProviderTransportConfig,
+    RemoteProviderConnection, RemoteProviderConnectionOptions, RemoteProviderTransportConfig,
+    create_remote_connection,
 };
 pub use endpoint::{normalized_transport_endpoint, required_auth_secret, validate_endpoint_ssrf};
 pub(crate) use execution::execute_remote_call;

@@ -1,16 +1,15 @@
 use super::{
-    build_get_playback_request, sse_event_from_server_message, sse_event_id_from_resource_event,
-    watch_after_event_sequence, CancelOnDropStream, ChatAttachmentObjectQuery, GetPlaybackQuery,
-    MediaCoverObjectQuery, MediaThumbnailObjectQuery, PlaylistCoverObjectQuery,
-    RoomCoverObjectQuery, WatchPlaybackQuery, WatchPlaybackStateQuery, WatchPlaylistItemsQuery,
-    WatchQuery,
+    CancelOnDropStream, ChatAttachmentObjectQuery, GetPlaybackQuery, MediaCoverObjectQuery,
+    MediaThumbnailObjectQuery, PlaylistCoverObjectQuery, RoomCoverObjectQuery, WatchPlaybackQuery,
+    WatchPlaybackStateQuery, WatchPlaylistItemsQuery, WatchQuery, build_get_playback_request,
+    sse_event_from_server_message, sse_event_id_from_resource_event, watch_after_event_sequence,
 };
 use axum::{
-    body::{to_bytes, Body},
+    Router,
+    body::{Body, to_bytes},
     http::{HeaderMap, HeaderValue, Request, StatusCode},
     response::IntoResponse,
     routing::get,
-    Router,
 };
 use synctv_proto::client::{
     AddMediaBatchRequest, CreatePlaylistRequest, DeleteEntriesRequest, DeleteMediaQuery,
@@ -246,10 +245,12 @@ fn test_path_scoped_room_requests_override_path_owned_fields() -> TestResult {
         Some(synctv_proto::client::move_playlist_request::Anchor::BeforePlaylistId(id))
             if id == "pl_anchor"
     ));
-    assert!(serde_json::from_str::<MovePlaylistRequest>(
-        r#"{"beforePlaylistId":"pl_before","afterPlaylistId":"pl_after"}"#
-    )
-    .is_err());
+    assert!(
+        serde_json::from_str::<MovePlaylistRequest>(
+            r#"{"beforePlaylistId":"pl_before","afterPlaylistId":"pl_after"}"#
+        )
+        .is_err()
+    );
     Ok(())
 }
 

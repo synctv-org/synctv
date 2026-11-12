@@ -54,9 +54,9 @@ use crate::impls::playback::PlaybackService;
 use crate::impls::playlist_items_snapshot::PlaylistItemsSnapshotService;
 use crate::impls::room_members_snapshot::RoomMembersSnapshotService;
 use crate::impls::room_settings_snapshot::RoomSettingsSnapshotService;
+use crate::playback_fanout::PlaybackFanoutService;
 #[cfg(test)]
 use crate::playback_fanout::default_playback_fanout_service;
-use crate::playback_fanout::PlaybackFanoutService;
 #[cfg(test)]
 use crate::resource_change::ResourceInvalidation;
 use synctv_proto::client::{ClientMessage, RealtimeTerminationCode, ServerMessage};
@@ -71,18 +71,18 @@ pub use concurrency::MessageConcurrencyConfig;
 mod heartbeat;
 pub use heartbeat::HeartbeatSchedule;
 mod observed_playback;
-pub use observed_playback::{
-    spawn_observed_playback_lifecycle_event_source, PlaybackAutoAdvanceSubscriber,
-    ProviderPlaybackProgressSubscriber,
-};
 #[cfg(test)]
 pub use observed_playback::{ObservedPlaybackLifecycleEvent, ObservedPlaybackLifecycleSubscriber};
+pub use observed_playback::{
+    PlaybackAutoAdvanceSubscriber, ProviderPlaybackProgressSubscriber,
+    spawn_observed_playback_lifecycle_event_source,
+};
 mod playback;
 mod resource_watch;
 pub use resource_watch::{
-    watch_chat_events_observe, watch_chat_pin_events_observe, watch_playback_observe,
-    watch_playback_state_observe, watch_playlist_items_observe, watch_room_member_events_observe,
-    watch_room_settings_observe, ResourceWatchSession, ResourceWatchSessionConfig,
+    ResourceWatchSession, ResourceWatchSessionConfig, watch_chat_events_observe,
+    watch_chat_pin_events_observe, watch_playback_observe, watch_playback_state_observe,
+    watch_playlist_items_observe, watch_room_member_events_observe, watch_room_settings_observe,
 };
 mod webrtc;
 
@@ -109,8 +109,8 @@ pub use event_policy::{
 pub use event_policy::{watch_admin_event_matches, watch_disconnect_signal_matches};
 mod identity;
 pub use identity::{
-    guest_display_name, guest_public_id, GuestRealtimeIdentity, RealtimeJoinError,
-    RealtimePrincipal,
+    GuestRealtimeIdentity, RealtimeJoinError, RealtimePrincipal, guest_display_name,
+    guest_public_id,
 };
 mod membership;
 #[cfg(test)]
@@ -145,7 +145,7 @@ pub use transport::{MessageSender, StreamMessage};
 
 mod fair_session_sender;
 pub use fair_session_sender::{
-    classify_message_lane, FairQueueConfig, FairSessionSender, MessageLane,
+    FairQueueConfig, FairSessionSender, MessageLane, classify_message_lane,
 };
 
 mod media_swarm_tracker;
@@ -746,11 +746,11 @@ impl StreamMessageHandler {
             role,
             ..
         } = event
+            && self.principal.user_id() == Some(*target_user_id)
+            && *role_changed
         {
-            if self.principal.user_id() == Some(*target_user_id) && *role_changed {
-                self.current_room_role
-                    .store(i32::from(*role), std::sync::atomic::Ordering::Relaxed);
-            }
+            self.current_room_role
+                .store(i32::from(*role), std::sync::atomic::Ordering::Relaxed);
         }
     }
 
@@ -1341,8 +1341,8 @@ impl StreamMessageHandler {
                             RealtimeEvent::ChatMessageEvent { .. }
                         ) || self.resource_observer.has_chat_events_observation().await;
 
-                        if should_refresh_observed_resources {
-                            if let Err(error) = self
+                        if should_refresh_observed_resources
+                            && let Err(error) = self
                                 .resource_observer
                                 .room_hub
                                 .refresh_for_room_event(&event, Some(self.connection_id.as_str()))
@@ -1354,7 +1354,6 @@ impl StreamMessageHandler {
                                 );
                                 break;
                             }
-                        }
                     } else {
                         tracing::error!("Realtime event channel closed");
                         break;
@@ -2169,17 +2168,17 @@ impl StreamMessageHandler {
             None
         };
 
-        if let Some(outcome) = result {
-            if outcome.distributed_delivery_missed() {
-                tracing::warn!(
-                    user = %self.username,
-                    room = %room_id,
-                    connection = %self.connection_id,
-                    local_delivered = outcome.local_delivered(),
-                    distributed_available = outcome.distributed_available(),
-                    "UserLeft distributed publish missed during cleanup"
-                );
-            }
+        if let Some(outcome) = result
+            && outcome.distributed_delivery_missed()
+        {
+            tracing::warn!(
+                user = %self.username,
+                room = %room_id,
+                connection = %self.connection_id,
+                local_delivered = outcome.local_delivered(),
+                distributed_available = outcome.distributed_available(),
+                "UserLeft distributed publish missed during cleanup"
+            );
         }
 
         // Now unregister from connection manager after broadcast has been sent
@@ -2579,16 +2578,14 @@ impl StreamMessageHandler {
                                     }
                                 }
                             } else if should_disconnect {
-                                if let Ok(signal) = &signal {
-                                    if disconnect_signal_requires_skip_cleanup(signal, user_id, &room_id, &connection_id) {
+                                if let Ok(signal) = &signal
+                                    && disconnect_signal_requires_skip_cleanup(signal, user_id, &room_id, &connection_id) {
                                         skip_cleanup_user_left.store(true, std::sync::atomic::Ordering::Relaxed);
                                     }
-                                }
-                                if let Some(termination) = termination {
-                                    if let Err(error) = admin_handler.send_server_message(termination) {
+                                if let Some(termination) = termination
+                                    && let Err(error) = admin_handler.send_server_message(termination) {
                                         tracing::debug!(error = %error, "Failed to send realtime termination before disconnect cancellation");
                                     }
-                                }
                                 tracing::info!(
                                     connection_id = %connection_id,
                                     "Disconnect signal received in start(), cancelling"
@@ -2719,16 +2716,14 @@ impl StreamMessageHandler {
                                     }
                                 }
                             } else if should_disconnect {
-                                if let Ok(event) = &admin_event {
-                                    if admin_event_requires_skip_cleanup(event, user_id, &room_id) {
+                                if let Ok(event) = &admin_event
+                                    && admin_event_requires_skip_cleanup(event, user_id, &room_id) {
                                         skip_cleanup_user_left.store(true, std::sync::atomic::Ordering::Relaxed);
                                     }
-                                }
-                                if let Some(termination) = termination {
-                                    if let Err(error) = admin_handler.send_server_message(termination) {
+                                if let Some(termination) = termination
+                                    && let Err(error) = admin_handler.send_server_message(termination) {
                                         tracing::debug!(error = %error, "Failed to send realtime termination before admin disconnect cancellation");
                                     }
-                                }
                                 tracing::info!(
                                     connection_id = %connection_id,
                                     "Admin event triggered disconnect in start(), cancelling"
@@ -2994,8 +2989,8 @@ impl StreamMessageHandler {
 
     /// Send heartbeat acknowledgment to client
     fn send_heartbeat_ack(&self) -> Result<(), String> {
-        use synctv_proto::client::server_message::Message;
         use synctv_proto::client::HeartbeatAck;
+        use synctv_proto::client::server_message::Message;
 
         let msg = ServerMessage {
             message: Some(Message::HeartbeatAck(HeartbeatAck {

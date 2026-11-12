@@ -491,14 +491,16 @@ mod tests {
             ]
         );
 
-        assert!(resource_invalidations_for_cache_targets(
-            &[CacheTarget::Room {
-                room_id: RoomId::expect_positive(999)
-            }],
-            room_id(),
-            Some(user_id()),
-        )
-        .is_empty());
+        assert!(
+            resource_invalidations_for_cache_targets(
+                &[CacheTarget::Room {
+                    room_id: RoomId::expect_positive(999)
+                }],
+                room_id(),
+                Some(user_id()),
+            )
+            .is_empty()
+        );
     }
 
     #[test]

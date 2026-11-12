@@ -10,11 +10,11 @@ use synctv_common::ExecutionControl;
 use tokio::sync::RwLock;
 
 use crate::{
-    models::{oauth2_client::OAuth2Provider, UserId},
+    Result,
+    models::{UserId, oauth2_client::OAuth2Provider},
     oauth2::Provider as OAuth2ProviderTrait,
     repository::UserOAuthProviderRepository,
     service::{OAuth2SignupPolicy, RuntimeSettingsStore, UserService},
-    Result,
 };
 
 mod authorization;
@@ -25,7 +25,7 @@ mod mappings;
 mod providers;
 mod state_store;
 pub use state_store::state_store_from_shared_state_profile;
-pub use state_store::{local_oauth_state_store, OAuthStateStore, RedisOAuthStateStore};
+pub use state_store::{OAuthStateStore, RedisOAuthStateStore, local_oauth_state_store};
 
 /// Default TTL for `OAuth2` states (5 minutes)
 const OAUTH2_STATE_TTL_SECONDS: u64 = 300;

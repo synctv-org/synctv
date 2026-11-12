@@ -2,9 +2,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use md5::{Digest, Md5};
 use rand::RngExt;
-use reqwest::{header, Client, Method, RequestBuilder};
-use serde::de::DeserializeOwned;
+use reqwest::{Client, Method, RequestBuilder, header};
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use url::Url;
 
 use super::media_types::{
@@ -12,7 +12,7 @@ use super::media_types::{
     FnosMediaListRequest, FnosMediaLogin, FnosPlayInfo, FnosPlayInfoRequest, FnosPlayRecordRequest,
     FnosPlayRequest, FnosPlayResponse, FnosStream, FnosStreamRequest, MediaResponse,
 };
-use crate::{fetch_json, ProviderClientError, PROVIDER_USER_AGENT};
+use crate::{PROVIDER_USER_AGENT, ProviderClientError, fetch_json};
 
 const API_KEY: &str = "NDzZTVxnRKP8Z0jXg1VAMonaG8akvh";
 const API_SECRET: &str = "16CCEB3D-AB42-077D-36A1-F355324E4237";
@@ -674,14 +674,18 @@ mod tests {
 
         let client = FnosMediaClient::with_http_client(&server.uri(), Client::new())
             .expect("test operation should succeed");
-        assert!(client
-            .set_favorite("media-token", "item", true)
-            .await
-            .expect("test operation should succeed"));
-        assert!(client
-            .set_watched("media-token", "item", false)
-            .await
-            .expect("test operation should succeed"));
+        assert!(
+            client
+                .set_favorite("media-token", "item", true)
+                .await
+                .expect("test operation should succeed")
+        );
+        assert!(
+            client
+                .set_watched("media-token", "item", false)
+                .await
+                .expect("test operation should succeed")
+        );
     }
 
     #[tokio::test]
@@ -788,10 +792,12 @@ mod tests {
 
         let client = FnosMediaClient::with_http_client(&server.uri(), Client::new())
             .expect("test operation should succeed");
-        assert!(client
-            .record_playback("media-token", &request)
-            .await
-            .expect("test operation should succeed"));
+        assert!(
+            client
+                .record_playback("media-token", &request)
+                .await
+                .expect("test operation should succeed")
+        );
     }
 
     #[tokio::test]

@@ -1,8 +1,8 @@
 use sqlx::{Postgres, Transaction};
 
 use crate::{
-    models::{AddMemberOptions, RoomId, User, UserId},
     Error, Result,
+    models::{AddMemberOptions, RoomId, User, UserId},
 };
 
 use super::RoomService;

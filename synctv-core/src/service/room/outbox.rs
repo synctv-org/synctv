@@ -3,16 +3,16 @@ use std::sync::Arc;
 use sqlx::{Postgres, Transaction};
 
 use crate::{
+    Error, Result,
     models::{
-        AuditAction, AuditDetails, AuditTargetType, MediaId, Room, RoomId, RoomMember,
-        RoomPermissionSet, RoomRole, RoomSettings, UserId, LOCAL_MANAGEMENT_ACTOR_USER_ID,
+        AuditAction, AuditDetails, AuditTargetType, LOCAL_MANAGEMENT_ACTOR_USER_ID, MediaId, Room,
+        RoomId, RoomMember, RoomPermissionSet, RoomRole, RoomSettings, UserId,
     },
     repository::realtime_outbox::NewRealtimeOutboxEvent,
     service::{
         audit::AuditEventParams,
         room::{MemberResourceCleanupResult, RoomService},
     },
-    Error, Result,
 };
 
 pub type RealtimeOutboxSettingsEventFactory =
@@ -105,8 +105,8 @@ impl RoomService {
         target_id: Option<String>,
         details: AuditDetails,
     ) {
-        if let Some(ref audit) = self.audit_service {
-            if let Err(error) = audit
+        if let Some(ref audit) = self.audit_service
+            && let Err(error) = audit
                 .log(AuditEventParams {
                     actor_id: actor_id.to_string(),
                     actor_username: actor_username.to_string(),
@@ -118,9 +118,8 @@ impl RoomService {
                     user_agent: None,
                 })
                 .await
-            {
-                tracing::warn!(error = %error, "Failed to write audit log from RoomService");
-            }
+        {
+            tracing::warn!(error = %error, "Failed to write audit log from RoomService");
         }
     }
 
@@ -279,10 +278,9 @@ impl RoomService {
         if let Some(event) = outbox_event_factory
             .map(|factory| factory(snapshot))
             .transpose()?
+            && let Some(outbox) = &self.realtime_outbox
         {
-            if let Some(outbox) = &self.realtime_outbox {
-                outbox.insert_with_executor(&event, &mut **tx).await?;
-            }
+            outbox.insert_with_executor(&event, &mut **tx).await?;
         }
         Ok(())
     }
@@ -396,10 +394,9 @@ impl RoomService {
         if let Some(event) = outbox_event_factory
             .map(|factory| factory(snapshot))
             .transpose()?
+            && let Some(outbox) = &self.realtime_outbox
         {
-            if let Some(outbox) = &self.realtime_outbox {
-                outbox.insert_with_executor(&event, &mut **tx).await?;
-            }
+            outbox.insert_with_executor(&event, &mut **tx).await?;
         }
         Ok(())
     }

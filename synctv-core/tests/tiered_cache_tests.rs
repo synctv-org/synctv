@@ -6,9 +6,9 @@
 
 use std::sync::Arc;
 use synctv_core::cache::{
+    UserCache,
     l2_backend::RedisCacheL2,
     user_cache::{CachedUser, CachedUserSnapshot},
-    UserCache,
 };
 use synctv_core::models::{UserId, UserRole, UserStatus};
 use synctv_core_testing::{ok, some, start_redis as start_test_redis};
@@ -80,11 +80,13 @@ async fn test_tiered_cache_l2_invalidate_removes_from_redis() {
     );
 
     // Verify it exists
-    assert!(ok(
-        cache.get(&user_id).await,
-        "cached user should be read before invalidation"
-    )
-    .is_some());
+    assert!(
+        ok(
+            cache.get(&user_id).await,
+            "cached user should be read before invalidation"
+        )
+        .is_some()
+    );
 
     // Invalidate removes from both L1 and L2
     ok(
@@ -93,11 +95,13 @@ async fn test_tiered_cache_l2_invalidate_removes_from_redis() {
     );
 
     // Should not be in L1
-    assert!(ok(
-        cache.get(&user_id).await,
-        "cached user should be read after invalidation"
-    )
-    .is_none());
+    assert!(
+        ok(
+            cache.get(&user_id).await,
+            "cached user should be read after invalidation"
+        )
+        .is_none()
+    );
 
     // Clear L1 again and try L2 -- should also be gone
     cache.clear_l1();
@@ -134,29 +138,37 @@ async fn test_tiered_cache_clear_removes_all() {
     );
 
     // Both should exist
-    assert!(ok(
-        cache.get(&user1).await,
-        "first cached user should be read before clear"
-    )
-    .is_some());
-    assert!(ok(
-        cache.get(&user2).await,
-        "second cached user should be read before clear"
-    )
-    .is_some());
+    assert!(
+        ok(
+            cache.get(&user1).await,
+            "first cached user should be read before clear"
+        )
+        .is_some()
+    );
+    assert!(
+        ok(
+            cache.get(&user2).await,
+            "second cached user should be read before clear"
+        )
+        .is_some()
+    );
 
     // Clear all (L1 + L2)
     cache.clear().await;
 
     // Neither should exist even after L1 clear
-    assert!(ok(
-        cache.get(&user1).await,
-        "first cached user should be read after clear"
-    )
-    .is_none());
-    assert!(ok(
-        cache.get(&user2).await,
-        "second cached user should be read after clear"
-    )
-    .is_none());
+    assert!(
+        ok(
+            cache.get(&user1).await,
+            "first cached user should be read after clear"
+        )
+        .is_none()
+    );
+    assert!(
+        ok(
+            cache.get(&user2).await,
+            "second cached user should be read after clear"
+        )
+        .is_none()
+    );
 }

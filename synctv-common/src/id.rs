@@ -18,14 +18,14 @@ macro_rules! snanoid {
     () => {
         $crate::id::generate($crate::id::DEFAULT_LENGTH)
     };
-    ($size:expr) => {
+    ($size:expr_2021) => {
         $crate::id::generate($size)
     };
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{generate, BASE62_ALPHABET, DEFAULT_LENGTH};
+    use super::{BASE62_ALPHABET, DEFAULT_LENGTH, generate};
 
     #[test]
     fn generated_ids_only_use_base62() {

@@ -173,7 +173,9 @@ impl SegmentManager {
             }
 
             if !self.cleanup_authority.should_cleanup() {
-                tracing::trace!("Skipping HLS segment cleanup because this replica is not the cleanup authority");
+                tracing::trace!(
+                    "Skipping HLS segment cleanup because this replica is not the cleanup authority"
+                );
                 continue;
             }
 
@@ -356,7 +358,9 @@ impl SegmentManager {
     /// replicas, so startup/manual cleanup must not remove fresh segments.
     pub async fn cleanup_expired(&self) -> std::io::Result<usize> {
         if !self.cleanup_authority.should_cleanup() {
-            tracing::trace!("Skipping HLS segment startup cleanup because this replica is not the cleanup authority");
+            tracing::trace!(
+                "Skipping HLS segment startup cleanup because this replica is not the cleanup authority"
+            );
             return Ok(0);
         }
         let generation_deleted = self.cleanup_due_generations().await;
@@ -443,10 +447,12 @@ mod tests {
         let deleted = manager.cleanup_expired().await.unwrap();
 
         assert_eq!(deleted, 0);
-        assert!(storage
-            .exists("live", "room_123", "segment_0")
-            .await
-            .unwrap());
+        assert!(
+            storage
+                .exists("live", "room_123", "segment_0")
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
@@ -484,10 +490,12 @@ mod tests {
         let cleanup_task = Arc::clone(&manager).start_cleanup_task(shutdown.clone());
 
         tokio::time::sleep(Duration::from_millis(30)).await;
-        assert!(storage
-            .exists("live", "room_123", "old_generation")
-            .await
-            .unwrap());
+        assert!(
+            storage
+                .exists("live", "room_123", "old_generation")
+                .await
+                .unwrap()
+        );
 
         authority.0.store(true, Ordering::SeqCst);
         let deadline = time::Instant::now() + Duration::from_secs(1);
@@ -534,24 +542,30 @@ mod tests {
 
         tokio::time::advance(Duration::from_secs(40)).await;
         manager.cleanup_due_generations().await;
-        assert!(storage
-            .exists("live", "room_123", "ended_generation")
-            .await
-            .unwrap());
+        assert!(
+            storage
+                .exists("live", "room_123", "ended_generation")
+                .await
+                .unwrap()
+        );
 
         tokio::time::advance(Duration::from_secs(59)).await;
         manager.cleanup_due_generations().await;
-        assert!(storage
-            .exists("live", "room_123", "ended_generation")
-            .await
-            .unwrap());
+        assert!(
+            storage
+                .exists("live", "room_123", "ended_generation")
+                .await
+                .unwrap()
+        );
 
         tokio::time::advance(Duration::from_secs(1)).await;
         manager.cleanup_due_generations().await;
-        assert!(!storage
-            .exists("live", "room_123", "ended_generation")
-            .await
-            .unwrap());
+        assert!(
+            !storage
+                .exists("live", "room_123", "ended_generation")
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -584,10 +598,12 @@ mod tests {
 
         tokio::time::advance(Duration::from_secs(30)).await;
         assert_eq!(manager.cleanup_expired().await.unwrap(), 1);
-        assert!(!storage
-            .exists("live", "room_123", "ended_generation")
-            .await
-            .unwrap());
+        assert!(
+            !storage
+                .exists("live", "room_123", "ended_generation")
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
@@ -618,10 +634,12 @@ mod tests {
             .unwrap();
 
         assert_eq!(deleted, 1);
-        assert!(!storage
-            .exists("live", "room_123", "old_seg_0")
-            .await
-            .unwrap());
+        assert!(
+            !storage
+                .exists("live", "room_123", "old_seg_0")
+                .await
+                .unwrap()
+        );
     }
 
     /// Test that max_segments_per_stream config enforces count bounds.

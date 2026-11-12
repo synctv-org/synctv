@@ -1,6 +1,7 @@
 use sqlx::{Postgres, Transaction};
 
 use crate::{
+    Error, Result,
     models::{
         CompleteFileUploadSession, CompleteFileUploadSessionResult, CreateFileUploadSession,
         FileObjectDownload, FileRangeRequest, FileUploadRange, FileUploadSessionCreateResult,
@@ -12,7 +13,6 @@ use crate::{
         user::UserService,
         user_avatar_upload_policy,
     },
-    Error, Result,
 };
 
 use super::CreateUserAvatarUploadSession;
@@ -175,17 +175,16 @@ impl UserService {
             .await?;
         tx.commit().await?;
 
-        if let Some(old_reference) = old_reference {
-            if old_reference.storage_backend != file.storage_backend
-                || old_reference.object_key != file.object_key
-            {
-                storage
-                    .schedule_delete_files(
-                        FileStorageCleanupOrigin::ReferenceReleased,
-                        &[old_reference],
-                    )
-                    .await?;
-            }
+        if let Some(old_reference) = old_reference
+            && (old_reference.storage_backend != file.storage_backend
+                || old_reference.object_key != file.object_key)
+        {
+            storage
+                .schedule_delete_files(
+                    FileStorageCleanupOrigin::ReferenceReleased,
+                    &[old_reference],
+                )
+                .await?;
         }
         self.notify_user_invalidation(user_id).await;
 

@@ -101,11 +101,11 @@ pub use clock::{
 };
 pub use error::{Error, InternalExt, Result};
 pub use redis_runtime::{
-    coordination_runtime_from_client,
+    DirectRedisConnectionRuntime, ManagedRedisRuntime, OnDemandRedisRuntime,
+    RedisConnectionRuntime, RedisCoordinationRuntime, RedisDeploymentMode,
+    SharedRedisConnectionRuntime, coordination_runtime_from_client,
     coordination_runtime_from_client_with_connection_options_and_operation_timeout, direct_runtime,
     redis_connection_manager_options, redis_runtime_snapshot, shared_runtime,
-    shared_runtime_from_conn, DirectRedisConnectionRuntime, ManagedRedisRuntime,
-    OnDemandRedisRuntime, RedisConnectionRuntime, RedisCoordinationRuntime, RedisDeploymentMode,
-    SharedRedisConnectionRuntime,
+    shared_runtime_from_conn,
 };
 pub use shared_state::{SharedStateMode, SharedStateProfile};

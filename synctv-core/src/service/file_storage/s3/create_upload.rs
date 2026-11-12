@@ -1,23 +1,22 @@
 use std::collections::BTreeMap;
 
-use super::{multipart_presign::s3_upload_part_urls, S3CompatibleFileStorageService};
+use super::{S3CompatibleFileStorageService, multipart_presign::s3_upload_part_urls};
 use crate::{
+    Error, Result,
     models::{
         CreateFileUploadSession, FileUploadOwnershipProofMetadata, FileUploadSession,
         FileUploadSessionCreateResult, FileUploadSessionKind, NewStoredFile,
     },
     repository::{UpsertFileObject, UpsertFileUploadSession},
     service::file_storage::{
-        attach_file_ownership_proof_token, encode_file_object_key, file_object_access,
-        file_object_key, file_storage_object_base_path, new_file_id,
-        optional_file_storage_public_url, register_upload_session_reference,
+        FILE_UPLOAD_EXPIRES_SECONDS, UploadSessionMetadataInput, attach_file_ownership_proof_token,
+        encode_file_object_key, file_object_access, file_object_key, file_storage_object_base_path,
+        new_file_id, optional_file_storage_public_url, register_upload_session_reference,
         upload_manifest_is_single_object, upload_session_file_id, upload_session_metadata,
         upload_session_metadata_with_manifest, upload_session_progress,
         validate_create_file_upload_session, validate_file_mime_type,
-        validate_session_file_for_storage, validated_upload_manifest, UploadSessionMetadataInput,
-        FILE_UPLOAD_EXPIRES_SECONDS,
+        validate_session_file_for_storage, validated_upload_manifest,
     },
-    Error, Result,
 };
 
 impl S3CompatibleFileStorageService {
@@ -72,67 +71,66 @@ impl S3CompatibleFileStorageService {
                 request.size_bytes,
             )
             .await?
+            && self.operator.stat(&existing.object_key).await.is_ok()
         {
-            if self.operator.stat(&existing.object_key).await.is_ok() {
-                validate_file_mime_type(&request.policy, &existing.mime_type)?;
-                let mut file = NewStoredFile {
-                    id: file_id,
-                    filename: request.filename.clone(),
-                    storage_backend: self.config.storage_backend.clone(),
-                    object_key: existing.object_key.clone(),
-                    object_access: None,
-                    url: None,
-                    mime_type: Some(existing.mime_type),
-                    size_bytes: Some(existing.size_bytes),
-                    width: request.width,
-                    height: request.height,
-                    metadata: request.metadata,
-                };
-                let (nonce, ranges) = attach_file_ownership_proof_token(
-                    &mut file,
-                    request.user_id,
-                    &request.storage_scope,
-                    expires_at,
-                    &self.config.upload_token_secret,
-                    &content_manifest_sha256,
-                    request.size_bytes,
-                )?;
-                validate_session_file_for_storage(&file)?;
-                let mut reference_metadata = session_metadata.clone();
-                reference_metadata.ownership_proof = Some(FileUploadOwnershipProofMetadata {
-                    nonce: nonce.clone(),
-                    ranges: ranges.clone(),
-                });
-                register_upload_session_reference(
-                    repository,
-                    &self.config.storage_backend,
-                    &file.object_key,
-                    &file.id,
-                    expires_at,
-                    &reference_metadata,
-                )
-                .await?;
-                return Ok(FileUploadSessionCreateResult::Session(FileUploadSession {
-                    file,
-                    encoded_object_key: encode_file_object_key(&existing.object_key),
-                    upload_required: false,
-                    ownership_proof_required: true,
-                    ownership_proof_nonce: Some(nonce),
-                    ownership_proof_ranges: ranges,
-                    upload_object_access: None,
-                    upload_url: None,
-                    upload_method: None,
-                    upload_headers: Default::default(),
-                    expires_at: Some(expires_at),
-                    max_size_bytes: request.policy.max_size_bytes,
-                    resumable: true,
-                    part_size_bytes: plan.part_size_bytes,
-                    uploaded_size_bytes: 0,
-                    uploaded_parts: Vec::new(),
-                    upload_id: None,
-                    part_urls: Vec::new(),
-                }));
-            }
+            validate_file_mime_type(&request.policy, &existing.mime_type)?;
+            let mut file = NewStoredFile {
+                id: file_id,
+                filename: request.filename.clone(),
+                storage_backend: self.config.storage_backend.clone(),
+                object_key: existing.object_key.clone(),
+                object_access: None,
+                url: None,
+                mime_type: Some(existing.mime_type),
+                size_bytes: Some(existing.size_bytes),
+                width: request.width,
+                height: request.height,
+                metadata: request.metadata,
+            };
+            let (nonce, ranges) = attach_file_ownership_proof_token(
+                &mut file,
+                request.user_id,
+                &request.storage_scope,
+                expires_at,
+                &self.config.upload_token_secret,
+                &content_manifest_sha256,
+                request.size_bytes,
+            )?;
+            validate_session_file_for_storage(&file)?;
+            let mut reference_metadata = session_metadata.clone();
+            reference_metadata.ownership_proof = Some(FileUploadOwnershipProofMetadata {
+                nonce: nonce.clone(),
+                ranges: ranges.clone(),
+            });
+            register_upload_session_reference(
+                repository,
+                &self.config.storage_backend,
+                &file.object_key,
+                &file.id,
+                expires_at,
+                &reference_metadata,
+            )
+            .await?;
+            return Ok(FileUploadSessionCreateResult::Session(FileUploadSession {
+                file,
+                encoded_object_key: encode_file_object_key(&existing.object_key),
+                upload_required: false,
+                ownership_proof_required: true,
+                ownership_proof_nonce: Some(nonce),
+                ownership_proof_ranges: ranges,
+                upload_object_access: None,
+                upload_url: None,
+                upload_method: None,
+                upload_headers: Default::default(),
+                expires_at: Some(expires_at),
+                max_size_bytes: request.policy.max_size_bytes,
+                resumable: true,
+                part_size_bytes: plan.part_size_bytes,
+                uploaded_size_bytes: 0,
+                uploaded_parts: Vec::new(),
+                upload_id: None,
+                part_urls: Vec::new(),
+            }));
         }
         let existing_session = repository
             .get_pending_upload_session_by_manifest(
@@ -232,18 +230,17 @@ impl S3CompatibleFileStorageService {
             })
             .await;
         if let Err(error) = session_result {
-            if let Some(upload_id) = created_upload_id.as_deref() {
-                if let Err(abort_error) =
+            if let Some(upload_id) = created_upload_id.as_deref()
+                && let Err(abort_error) =
                     self.abort_s3_multipart_upload(&object_key, upload_id).await
-                {
-                    tracing::warn!(
-                        error = %abort_error,
-                        storage_backend = %self.config.storage_backend,
-                        object_key,
-                        upload_id,
-                        "Failed to abort S3 multipart upload after session commit failure"
-                    );
-                }
+            {
+                tracing::warn!(
+                    error = %abort_error,
+                    storage_backend = %self.config.storage_backend,
+                    object_key,
+                    upload_id,
+                    "Failed to abort S3 multipart upload after session commit failure"
+                );
             }
             return Err(error);
         }

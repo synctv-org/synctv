@@ -1,7 +1,7 @@
 use crate::{
+    Error, Result,
     models::{DeletionSource, MediaId, PlaylistId, RoomId, UserId},
     repository::room_member::RemovedRoomMember,
-    Error, Result,
 };
 
 use super::{

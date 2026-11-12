@@ -24,8 +24,8 @@ use crate::models::{
 };
 use crate::repository::UserProviderCredentialRepository;
 use synctv_media_providers::youtube::{
-    normalize_video_id, YoutubeChannelTab, YoutubeClient, YoutubeFormat, YoutubeListItem,
-    YoutubeListPage, YoutubePlayerResponse,
+    YoutubeChannelTab, YoutubeClient, YoutubeFormat, YoutubeListItem, YoutubeListPage,
+    YoutubePlayerResponse, normalize_video_id,
 };
 
 const DYNAMIC_PAGE_SIZE: usize = 50;
@@ -1553,14 +1553,18 @@ mod tests {
             Some("https://img.example/maxres.jpg")
         );
         assert_eq!(progressive.subtitles.len(), 4);
-        assert!(progressive
-            .medias
-            .iter()
-            .all(|media| media.p2p_swarm_id.is_some()));
-        assert!(progressive
-            .subtitles
-            .iter()
-            .all(|subtitle| subtitle.p2p_swarm_id.is_some()));
+        assert!(
+            progressive
+                .medias
+                .iter()
+                .all(|media| media.p2p_swarm_id.is_some())
+        );
+        assert!(
+            progressive
+                .subtitles
+                .iter()
+                .all(|subtitle| subtitle.p2p_swarm_id.is_some())
+        );
         assert!(progressive.subtitles.iter().any(|subtitle| {
             subtitle.language == "zh-Hans"
                 && matches!(
@@ -1629,10 +1633,11 @@ mod tests {
 
         for (mode_name, info) in &result.playback_infos {
             assert!(info.medias.iter().all(|media| media.p2p_swarm_id.is_none()));
-            assert!(info
-                .subtitles
-                .iter()
-                .all(|subtitle| subtitle.p2p_swarm_id.is_none()));
+            assert!(
+                info.subtitles
+                    .iter()
+                    .all(|subtitle| subtitle.p2p_swarm_id.is_none())
+            );
             assert!(matches!(
                 &info.medias[0].provider,
                 PlaybackMediaProvider::Youtube(PlaybackYoutubeMedia::Proxy {

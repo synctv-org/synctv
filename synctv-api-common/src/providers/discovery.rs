@@ -1,7 +1,7 @@
 use synctv_proto::{
-    providers::common::{discovered_source, DiscoveredSource},
+    providers::common::{DiscoveredSource, discovered_source},
     source_config::{
-        media_source_config, playlist_source_config, MediaSourceConfig, PlaylistSourceConfig,
+        MediaSourceConfig, PlaylistSourceConfig, media_source_config, playlist_source_config,
     },
 };
 

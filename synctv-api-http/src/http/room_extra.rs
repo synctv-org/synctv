@@ -1,12 +1,12 @@
 //! Room member management API endpoints (room-scoped, requires room-level permissions)
 
 use axum::{
-    extract::{Path, State},
     Json,
+    extract::{Path, State},
 };
 
 use crate::http::validation::ProtoQuery;
-use crate::http::{middleware::RequestMetadata, AppResult, AppState};
+use crate::http::{AppResult, AppState, middleware::RequestMetadata};
 use synctv_api_common::impls::EndpointRateLimitCategory;
 
 /// Add a member to a room.

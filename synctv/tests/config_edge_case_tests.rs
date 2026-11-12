@@ -107,9 +107,11 @@ fn test_config_validate_rejects_zero_range_fetch_concurrency() {
         .validate()
         .expect_err("zero concurrency must be rejected");
 
-    assert!(errors
-        .iter()
-        .any(|e| e.contains("proxy_slice_cache.range_fetch_concurrency")));
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("proxy_slice_cache.range_fetch_concurrency"))
+    );
 }
 
 #[test]
@@ -119,7 +121,9 @@ fn test_config_validate_rejects_empty_root_password_when_creating_root() {
 
     let errors = config.bootstrap.validate_root_password_for_creation();
 
-    assert!(errors
-        .iter()
-        .any(|e| e.to_lowercase().contains("root password")));
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.to_lowercase().contains("root password"))
+    );
 }

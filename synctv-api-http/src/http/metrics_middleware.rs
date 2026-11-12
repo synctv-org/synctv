@@ -30,10 +30,10 @@ pub async fn metrics_layer(request: Request, next: Next) -> Response {
 #[cfg(test)]
 mod tests {
     use axum::{
+        Router,
         body::Body,
         http::{Request, StatusCode},
         routing::get,
-        Router,
     };
     use tower::ServiceExt;
 

@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use sqlx::{PgExecutor, PgPool};
 
+use crate::Result;
 use crate::models::{
     OAuth2Provider, ReviewRequestId, ReviewStatus, RoomCategory, RoomCategoryId, RoomId, RoomLabel,
     RoomLabelId, RoomRole, SignupMethod, UserId,
@@ -9,9 +10,8 @@ use crate::repository::pools::RepoPools;
 use crate::repository::query_builder::ilike_contains_pattern;
 use crate::repository::required_count;
 use crate::repository::room_taxonomy::{
-    optional_room_category_from_parts, OptionalRoomCategoryRowParts,
+    OptionalRoomCategoryRowParts, optional_room_category_from_parts,
 };
-use crate::Result;
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct UserRegistrationReviewRecord {

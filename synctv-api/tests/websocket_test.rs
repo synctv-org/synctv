@@ -62,7 +62,7 @@ mod ws_query {
 mod proto_codec {
     use prost::Message;
     use synctv_api::ProtoCodec;
-    use synctv_proto::client::{server_message, HeartbeatAck, ServerMessage};
+    use synctv_proto::client::{HeartbeatAck, ServerMessage, server_message};
 
     #[test]
     fn test_encode_server_message() {
@@ -426,10 +426,12 @@ mod health_types {
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["status"], "unhealthy");
         assert_eq!(json["details"]["database"], "unhealthy");
-        assert!(json["details"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("Database"));
+        assert!(
+            json["details"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("Database")
+        );
     }
 }
 
@@ -482,27 +484,28 @@ mod websocket_e2e {
     use tokio::task::JoinHandle;
     use tokio_tungstenite::tungstenite;
 
-    use synctv_api::websocket_handler;
     use synctv_api::ProtoCodec;
+    use synctv_api::websocket_handler;
     use synctv_core::cache::UsernameCache;
     use synctv_core::models::id::{RoomId, UserId};
     use synctv_core::service::JwtService;
     use synctv_core::service::RateLimiter;
     use synctv_core::service::UserServiceRuntimeOptions;
     // Security checks (password version, user status) handled by SecurityPipeline
-    use synctv_core::service::{RoomService, UserService};
     use synctv_core::SharedStateProfile;
+    use synctv_core::service::{RoomService, UserService};
     use synctv_core_testing::{
-        create_test_pool_with_options_and_label, opaque_register_user, redis_connection_manager,
-        start_redis_url_with_label, test_redis_key_prefix, RedisContainer, TestContainer,
+        RedisContainer, TestContainer, create_test_pool_with_options_and_label,
+        opaque_register_user, redis_connection_manager, start_redis_url_with_label,
+        test_redis_key_prefix,
     };
     use synctv_proto::client::{
-        client_message, server_message, ClientMessage, HeartbeatMessage, ServerMessage,
-        WebRtcCommand, WebRtcVoiceJoinCommand,
+        ClientMessage, HeartbeatMessage, ServerMessage, WebRtcCommand, WebRtcVoiceJoinCommand,
+        client_message, server_message,
     };
     use synctv_realtime::sync::{
-        build_connection_manager, ConnectionLimits, ConnectionManager, RealtimeConfig,
-        RealtimeManager,
+        ConnectionLimits, ConnectionManager, RealtimeConfig, RealtimeManager,
+        build_connection_manager,
     };
 
     use sqlx::PgPool;
@@ -568,10 +571,10 @@ mod websocket_e2e {
 
     impl E2EServer {
         pub(super) async fn shutdown(&mut self) {
-            if let Some(shutdown_tx) = self.server_shutdown_tx.take() {
-                if let Some(server_handle) = self.server_handle.take() {
-                    super::await_server_shutdown(shutdown_tx, server_handle).await;
-                }
+            if let Some(shutdown_tx) = self.server_shutdown_tx.take()
+                && let Some(server_handle) = self.server_handle.take()
+            {
+                super::await_server_shutdown(shutdown_tx, server_handle).await;
             }
 
             self.connection_manager.shutdown().await;
@@ -2067,12 +2070,11 @@ mod websocket_e2e {
         let user2_join_event = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
                 let msg = recv_server_message(&mut ws1).await.expect("stream ended");
-                if let Some(joined) = resource_room_member_joined(&msg) {
-                    if joined.member.as_ref().map(|m| m.user_id.as_str())
+                if let Some(joined) = resource_room_member_joined(&msg)
+                    && joined.member.as_ref().map(|m| m.user_id.as_str())
                         == Some(encode_test_user_id(&user2_id).as_str())
-                    {
-                        return msg;
-                    }
+                {
+                    return msg;
                 }
             }
         })
@@ -2839,12 +2841,11 @@ mod websocket_e2e {
                 let msg = recv_server_message(&mut ws_owner)
                     .await
                     .expect("stream ended");
-                if let Some(joined) = resource_room_member_joined(&msg) {
-                    if joined.member.as_ref().map(|m| m.user_id.as_str())
+                if let Some(joined) = resource_room_member_joined(&msg)
+                    && joined.member.as_ref().map(|m| m.user_id.as_str())
                         == Some(encode_test_user_id(&user2_id).as_str())
-                    {
-                        return msg;
-                    }
+                {
+                    return msg;
                 }
             }
         })
@@ -3975,12 +3976,11 @@ mod websocket_e2e {
                 let msg = recv_server_message(&mut ws_owner)
                     .await
                     .expect("stream ended");
-                if let Some(joined) = resource_room_member_joined(&msg) {
-                    if joined.member.as_ref().map(|m| m.user_id.as_str())
+                if let Some(joined) = resource_room_member_joined(&msg)
+                    && joined.member.as_ref().map(|m| m.user_id.as_str())
                         == Some(encode_test_user_id(&user2_id).as_str())
-                    {
-                        return msg;
-                    }
+                {
+                    return msg;
                 }
             }
         })
@@ -4678,12 +4678,12 @@ mod websocket_e2e {
                 match ws.next().await {
                     Some(Ok(tungstenite::Message::Binary(bytes))) => {
                         // Decode and check if it is an error response
-                        if let Ok(msg) = ProtoCodec::decode_server_message(&bytes) {
-                            if matches!(msg.message, Some(server_message::Message::Error(_))) {
-                                return "error_message";
-                            }
-                            // Other message types (e.g. buffered events) keep draining
+                        if let Ok(msg) = ProtoCodec::decode_server_message(&bytes)
+                            && matches!(msg.message, Some(server_message::Message::Error(_)))
+                        {
+                            return "error_message";
                         }
+                        // Other message types (e.g. buffered events) keep draining
                     }
                     Some(Ok(tungstenite::Message::Close(_))) | None => {
                         return "connection_closed";
@@ -4737,8 +4737,8 @@ mod websocket_connection_limit_timing {
     use synctv_realtime::sync::ConnectionLimits;
 
     use super::websocket_e2e::{
-        create_test_room, decode_test_room_id, register_test_user,
-        setup_e2e_server_with_connection_limits, TestInfra,
+        TestInfra, create_test_room, decode_test_room_id, register_test_user,
+        setup_e2e_server_with_connection_limits,
     };
 
     fn single_connection_per_user_limits() -> ConnectionLimits {

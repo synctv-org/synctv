@@ -11,14 +11,15 @@ use image::ImageEncoder;
 use sha2::Digest;
 use sqlx::PgPool;
 use synctv_core::{
+    Error,
     cache::{KeyBuilder, UsernameCache},
     models::{
-        room_settings::ChatEnabled, AuditAction, AuditTargetType, ChatEventKind,
-        ChatMemberJoinedMetadata, ChatMessage, ChatMessageSelection, ChatMessageStatus,
-        ChatMessageType, ChatMetadata, DeleteChatMessage, EditChatMessage, FileBlobCompression,
-        FileReferenceTarget, FileUploadManifestPart, FileUploadSessionCreateResult, NewStoredFile,
-        RoomAdminPermissionBits, RoomId, RoomMemberPermissionBits, RoomRole, RoomSettings,
-        SendChatMessage, SubmittedFileReference, User, UserId, UserRole, UserStatus,
+        AuditAction, AuditTargetType, ChatEventKind, ChatMemberJoinedMetadata, ChatMessage,
+        ChatMessageSelection, ChatMessageStatus, ChatMessageType, ChatMetadata, DeleteChatMessage,
+        EditChatMessage, FileBlobCompression, FileReferenceTarget, FileUploadManifestPart,
+        FileUploadSessionCreateResult, NewStoredFile, RoomAdminPermissionBits, RoomId,
+        RoomMemberPermissionBits, RoomRole, RoomSettings, SendChatMessage, SubmittedFileReference,
+        User, UserId, UserRole, UserStatus, room_settings::ChatEnabled,
     },
     repository::{
         ChatModerationJobRepository, ChatModerationProgress, ChatRepository, FileStorageRepository,
@@ -32,9 +33,8 @@ use synctv_core::{
         PermissionService, RateLimitConfig, RateLimiter, RequestRateLimiterService, RoomService,
         RoomSettingsService, UserService,
     },
-    Error,
 };
-use synctv_core_testing::{create_test_pool, TestOptionExt, TestResultExt};
+use synctv_core_testing::{TestOptionExt, TestResultExt, create_test_pool};
 
 trait ChatServiceTestExt {
     async fn send_message(
@@ -2745,14 +2745,18 @@ async fn test_reused_chat_attachment_object_keeps_storage_until_last_reference_i
         .await
         .checked("test operation should succeed");
 
-    assert!(file_repo
-        .blob_exists("database", object_key)
-        .await
-        .checked("test operation should succeed"));
-    assert!(file_repo
-        .object_exists("database", object_key)
-        .await
-        .checked("test operation should succeed"));
+    assert!(
+        file_repo
+            .blob_exists("database", object_key)
+            .await
+            .checked("test operation should succeed")
+    );
+    assert!(
+        file_repo
+            .object_exists("database", object_key)
+            .await
+            .checked("test operation should succeed")
+    );
     assert_eq!(
         file_repo
             .object_reference_count("database", object_key)

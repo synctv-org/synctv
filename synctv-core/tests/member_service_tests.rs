@@ -9,16 +9,16 @@ use std::sync::Arc;
 use chrono::Utc;
 use sqlx::PgPool;
 use synctv_core::{
+    Error,
     cache::{KeyBuilder, UsernameCache},
     models::{
-        room_settings::MaxMembers, RoomId, RoomMemberPermissionBits, RoomPermission, RoomRole,
-        User, UserId, UserRole, UserStatus,
+        RoomId, RoomMemberPermissionBits, RoomPermission, RoomRole, User, UserId, UserRole,
+        UserStatus, room_settings::MaxMembers,
     },
     repository::{RoomMemberRepository, UserRepository},
     service::{
         BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, RoomService, UserService,
     },
-    Error,
 };
 use synctv_core_testing::create_test_pool;
 use synctv_core_testing::{TestOptionExt, TestResultExt};
@@ -230,10 +230,12 @@ async fn test_kick_member_creator_can_kick_admin() {
     assert!(result.is_ok(), "Creator should be able to kick admin");
 
     // Admin should no longer be a member
-    assert!(!member_repo
-        .is_member(&room.id, &admin.id)
-        .await
-        .checked("test operation should succeed"));
+    assert!(
+        !member_repo
+            .is_member(&room.id, &admin.id)
+            .await
+            .checked("test operation should succeed")
+    );
 }
 
 #[tokio::test]
@@ -704,8 +706,8 @@ async fn test_delete_active_membership_idempotent_not_found_after_deletion() {
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_delete_active_membership_concurrent_no_race() {
-    use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());

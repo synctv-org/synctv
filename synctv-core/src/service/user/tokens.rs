@@ -1,10 +1,10 @@
 use synctv_common::ExecutionControl;
 
 use crate::{
+    Error, Result,
     models::UserId,
     repository::{UserOAuthProviderRepository, WebAuthnCredentialRepository},
-    service::{user::UserService, TokenCredentialBinding},
-    Error, Result,
+    service::{TokenCredentialBinding, user::UserService},
 };
 
 use super::session_types::TWO_FACTOR_REQUIRED_MESSAGE;
@@ -89,17 +89,17 @@ impl UserService {
                 .token_blacklist
                 .get_family_revoked_at_checked(&family_key)
                 .await;
-            if let Some(revoked_at) = family_revoked_at? {
-                if claims.iat <= revoked_at {
-                    tracing::warn!(
-                        user_id = %user_id,
-                        jti = old_jti,
-                        revoked_at = revoked_at,
-                        token_iat = claims.iat,
-                        "Refresh token rejected: token family revoked (possible token theft)"
-                    );
-                    return Err(Error::Authentication("Authentication failed".to_string()));
-                }
+            if let Some(revoked_at) = family_revoked_at?
+                && claims.iat <= revoked_at
+            {
+                tracing::warn!(
+                    user_id = %user_id,
+                    jti = old_jti,
+                    revoked_at = revoked_at,
+                    token_iat = claims.iat,
+                    "Refresh token rejected: token family revoked (possible token theft)"
+                );
+                return Err(Error::Authentication("Authentication failed".to_string()));
             }
 
             let blacklist_key = self.key_builder.refresh_token_blacklist(old_jti);

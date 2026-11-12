@@ -6,7 +6,7 @@ mod sign;
 mod tars;
 mod types;
 
-pub use chat::{watch_danmaku, HuyaDanmakuStream};
+pub use chat::{HuyaDanmakuStream, watch_danmaku};
 pub use client::{HuyaClient, HuyaEndpoints};
 pub use types::{
     HuyaChatIdentity, HuyaDanmakuEvent, HuyaMedia, HuyaMetadata, HuyaPlayback, HuyaQuality,

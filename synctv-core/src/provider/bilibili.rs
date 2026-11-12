@@ -3,21 +3,21 @@
 //! Adapter that calls `BilibiliClient` to implement `MediaProvider` trait
 
 use super::{
-    access::BilibiliAccess,
-    provider_client::{create_remote_bilibili_client, BilibiliClientArc, ProviderClientManager},
     DynamicListQuery, DynamicListResult, DynamicPagination, DynamicPlaylistItem,
     DynamicPlaylistItemSourceConfig, DynamicPlaylistItemThumbnail, DynamicPlaylistProvider,
     ItemType, MediaProvider, NextPlayItem, PlaybackInfo, PlaybackProxyAutoPolicy,
     PlaybackProxyAutoReason, PlaybackProxyPolicy, PlaybackResult, PreparedSourceConfig,
     ProviderContext, ProviderCredentialDependency, ProviderCredentialPolicy, ProviderError,
     SourceConfig, SourceCover,
+    access::BilibiliAccess,
+    provider_client::{BilibiliClientArc, ProviderClientManager, create_remote_bilibili_client},
 };
 use aes_gcm::{
-    aead::{Aead, AeadCore, Generate, KeyInit as AeadKeyInit},
     Aes256Gcm, Key, Nonce,
+    aead::{Aead, AeadCore, Generate, KeyInit as AeadKeyInit},
 };
 use async_trait::async_trait;
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures::StreamExt;
 use hmac::{Hmac, Mac};
 use rand::prelude::IndexedRandom;
@@ -36,11 +36,11 @@ use crate::models::media::{
     PlaybackSubtitle, PlaybackSubtitleProvider,
 };
 use crate::models::{
-    normalize_provider_instance_name, validate_provider_instance_name, BilibiliHistoryType,
-    BilibiliMediaSourceConfig as BilibiliSourceConfig, BilibiliPgcTimelineType,
-    BilibiliPlaylistSource, BilibiliPlaylistSourceConfig, BilibiliTarget, MediaSourceConfig,
-    PlayMode, Playlist, PlaylistId, PlaylistSourceConfig, ProviderCredential, ProviderTarget,
-    RoomId, SourceProvider, UserId, UserProviderCredential,
+    BilibiliHistoryType, BilibiliMediaSourceConfig as BilibiliSourceConfig,
+    BilibiliPgcTimelineType, BilibiliPlaylistSource, BilibiliPlaylistSourceConfig, BilibiliTarget,
+    MediaSourceConfig, PlayMode, Playlist, PlaylistId, PlaylistSourceConfig, ProviderCredential,
+    ProviderTarget, RoomId, SourceProvider, UserId, UserProviderCredential,
+    normalize_provider_instance_name, validate_provider_instance_name,
 };
 use crate::repository::UserProviderCredentialRepository;
 use crate::service::RemoteProviderManager;
@@ -2516,22 +2516,21 @@ fn mark_bilibili_playback_resources(
                 )
             {
                 let mut proxy_info = original_info.clone();
-                if let Some(media) = proxy_info.medias.first_mut() {
-                    if let PlaybackMediaProvider::Bilibili(
+                if let Some(media) = proxy_info.medias.first_mut()
+                    && let PlaybackMediaProvider::Bilibili(
                         PlaybackBilibiliMedia::DirectDurlManifest {
                             segments, headers, ..
                         },
                     ) = &media.provider
-                    {
-                        media.provider =
-                            PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::DurlManifest {
-                                version: version.to_string(),
-                                expires_at,
-                                mode_name: mode_name.clone(),
-                                segments: segments.clone(),
-                                headers: headers.clone(),
-                            });
-                    }
+                {
+                    media.provider =
+                        PlaybackMediaProvider::Bilibili(PlaybackBilibiliMedia::DurlManifest {
+                            version: version.to_string(),
+                            expires_at,
+                            mode_name: mode_name.clone(),
+                            segments: segments.clone(),
+                            headers: headers.clone(),
+                        });
                 }
                 if !proxy_info.medias.is_empty() {
                     populate_bilibili_proxy_attachments(
@@ -2601,14 +2600,14 @@ fn mark_bilibili_playback_resources(
                     generated.insert(mode_name.clone(), direct_info);
                 }
             }
-        } else if selection.direct {
-            if let Some(direct_info) = super::build_direct_playback_info_for_client(
+        } else if selection.direct
+            && let Some(direct_info) = super::build_direct_playback_info_for_client(
                 &mode_name,
                 &direct_info,
                 client_profile,
-            ) {
-                generated.insert(mode_name.clone(), direct_info);
-            }
+            )
+        {
+            generated.insert(mode_name.clone(), direct_info);
         }
 
         if selection.proxy {
@@ -3426,11 +3425,12 @@ impl BilibiliProvider {
                 None => Ok(None),
             };
         }
-        if found_current && play_mode == PlayMode::RepeatAll {
-            if let Some((name, room_id)) = first {
-                return Self::next_play_item(config, name, ProviderTarget::bilibili_live(room_id))
-                    .map(Some);
-            }
+        if found_current
+            && play_mode == PlayMode::RepeatAll
+            && let Some((name, room_id)) = first
+        {
+            return Self::next_play_item(config, name, ProviderTarget::bilibili_live(room_id))
+                .map(Some);
         }
         Ok(None)
     }
@@ -4349,12 +4349,13 @@ impl DynamicPlaylistProvider for BilibiliProvider {
                     None => Ok(None),
                 };
             }
-            if found_current && play_mode == PlayMode::RepeatAll {
-                if let Some(first) = first {
-                    return self
-                        .first_playable_for_target(ctx, config, first.name, first.target)
-                        .await;
-                }
+            if found_current
+                && play_mode == PlayMode::RepeatAll
+                && let Some(first) = first
+            {
+                return self
+                    .first_playable_for_target(ctx, config, first.name, first.target)
+                    .await;
             }
             return Ok(None);
         }
@@ -4410,12 +4411,13 @@ impl DynamicPlaylistProvider for BilibiliProvider {
                     None => Ok(None),
                 };
             }
-            if found_current && play_mode == PlayMode::RepeatAll {
-                if let Some(first) = first {
-                    return self
-                        .first_playable_for_target(ctx, config, first.name, first.target)
-                        .await;
-                }
+            if found_current
+                && play_mode == PlayMode::RepeatAll
+                && let Some(first) = first
+            {
+                return self
+                    .first_playable_for_target(ctx, config, first.name, first.target)
+                    .await;
             }
             return Ok(None);
         }
@@ -4543,12 +4545,13 @@ impl DynamicPlaylistProvider for BilibiliProvider {
             page = page.saturating_add(1);
         }
 
-        if found_current && play_mode == PlayMode::RepeatAll {
-            if let Some((name, first_target)) = first {
-                return self
-                    .first_playable_for_target(ctx, config, name, first_target)
-                    .await;
-            }
+        if found_current
+            && play_mode == PlayMode::RepeatAll
+            && let Some((name, first_target)) = first
+        {
+            return self
+                .first_playable_for_target(ctx, config, name, first_target)
+                .await;
         }
         Ok(None)
     }
@@ -5396,10 +5399,10 @@ impl BilibiliProvider {
                     .as_ref()
                     .and_then(|resp| resp.dash.as_ref())
                     .map(|dash| dash.duration);
-                if let Some(dash) = dash_resp.as_ref().and_then(|resp| resp.dash.as_ref()) {
-                    if let Some(metadata) = metadata.as_bilibili_mut() {
-                        metadata.min_buffer_time = Some(dash.min_buffer_time);
-                    }
+                if let Some(dash) = dash_resp.as_ref().and_then(|resp| resp.dash.as_ref())
+                    && let Some(metadata) = metadata.as_bilibili_mut()
+                {
+                    metadata.min_buffer_time = Some(dash.min_buffer_time);
                 }
 
                 let mut playback_infos = HashMap::new();
@@ -5548,10 +5551,10 @@ impl BilibiliProvider {
                     .as_ref()
                     .and_then(|resp| resp.dash.as_ref())
                     .map(|dash| dash.duration);
-                if let Some(dash) = dash_resp.as_ref().and_then(|resp| resp.dash.as_ref()) {
-                    if let Some(metadata) = metadata.as_bilibili_mut() {
-                        metadata.min_buffer_time = Some(dash.min_buffer_time);
-                    }
+                if let Some(dash) = dash_resp.as_ref().and_then(|resp| resp.dash.as_ref())
+                    && let Some(metadata) = metadata.as_bilibili_mut()
+                {
+                    metadata.min_buffer_time = Some(dash.min_buffer_time);
                 }
 
                 let mut playback_infos = HashMap::new();
@@ -5811,14 +5814,14 @@ fn default_bilibili_live_mode(playback_infos: &HashMap<String, PlaybackInfo>) ->
 #[cfg(test)]
 mod tests {
     use super::{
-        bilibili_dash_manifest_swarm_id, bilibili_dash_playback_infos,
+        BilibiliDashPlaybackOptions, BilibiliProvider, BilibiliSmsLoginSession,
+        BilibiliSmsLoginTokenCodec, bilibili_dash_manifest_swarm_id, bilibili_dash_playback_infos,
         bilibili_dash_resource_candidates, bilibili_dash_video_codec, bilibili_durl_media,
         bilibili_durl_resource_candidates, bilibili_live_danmaku_track,
         bilibili_live_playback_infos, bilibili_subtitle_track, bilibili_upstream,
         bilibili_vod_danmaku_track, build_bilibili_durl_manifest, build_bilibili_mpd_manifest,
         default_bilibili_live_mode, filter_bilibili_dash_manifest,
-        mark_bilibili_playback_resources, BilibiliDashPlaybackOptions, BilibiliProvider,
-        BilibiliSmsLoginSession, BilibiliSmsLoginTokenCodec,
+        mark_bilibili_playback_resources,
     };
     use crate::models::media::{
         BilibiliDashAudioStream, BilibiliDashManifest, BilibiliDashVideoStream,
@@ -5828,11 +5831,11 @@ mod tests {
     };
     use crate::models::{BilibiliTarget, PlaylistId, ProviderTarget, RoomId};
     use crate::provider::{
-        InMemoryProviderStore, PlaybackAudioCodec, PlaybackClientEnvironment,
-        PlaybackClientProfile, PlaybackInfo, PlaybackMediaCapability, PlaybackMediaPipeline,
-        PlaybackMediaTransport, PlaybackResult, PlaybackTransportAction, PlaybackVideoCodec,
-        ProviderActor, ProviderContext, ProviderStore, ProviderStoreExt, SourceConfig,
-        VersionedPlayback, CURRENT_PLAYBACK_CLIENT_PROFILE_VERSION,
+        CURRENT_PLAYBACK_CLIENT_PROFILE_VERSION, InMemoryProviderStore, PlaybackAudioCodec,
+        PlaybackClientEnvironment, PlaybackClientProfile, PlaybackInfo, PlaybackMediaCapability,
+        PlaybackMediaPipeline, PlaybackMediaTransport, PlaybackResult, PlaybackTransportAction,
+        PlaybackVideoCodec, ProviderActor, ProviderContext, ProviderStore, ProviderStoreExt,
+        SourceConfig, VersionedPlayback,
     };
     use std::collections::HashMap;
     use std::sync::Arc;

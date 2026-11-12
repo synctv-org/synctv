@@ -5,9 +5,9 @@
 //! gRPC wire concerns stay grouped behind this facade.
 
 use super::ProviderError;
+use std::sync::Arc;
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
-use std::sync::Arc;
 use synctv_media_providers::alist::AlistInterface;
 use synctv_media_providers::bilibili::BilibiliInterface;
 use synctv_media_providers::emby::EmbyInterface;

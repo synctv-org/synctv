@@ -5,9 +5,9 @@
 
 use chrono::Utc;
 use synctv_core::{
+    Error,
     models::{OpaquePasswordRecord, User, UserId, UserRole, UserStatus},
     repository::{PasswordCredentialMaterial, UserPasswordRepository, UserRepository},
-    Error,
 };
 use synctv_core_testing::{create_test_pool, err, ok};
 fn make_user(username: &str) -> User {

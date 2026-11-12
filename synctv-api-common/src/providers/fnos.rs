@@ -3,18 +3,19 @@ use std::sync::Arc;
 use synctv_core::models::UserId;
 use synctv_core::provider::{FnosLoginResult, FnosProvider, ProviderError};
 use synctv_proto::providers::fnos::{
-    login_response, Authenticated, BindInfo, FileItem, GetBindsResponse, GetServerInfoRequest,
+    Authenticated, BindInfo, FileItem, GetBindsResponse, GetServerInfoRequest,
     GetServerInfoResponse, GetThumbnailRequest, ListMediaItemsRequest, ListMediaItemsResponse,
     ListMediaLibrariesRequest, ListMediaLibrariesResponse, ListRequest, ListResponse, LoginRequest,
     LoginResponse, LogoutRequest, LogoutResponse, MediaCollection, MediaItem, MediaLibrary,
     SetFavoriteRequest, SetFavoriteResponse, SetWatchedRequest, SetWatchedResponse,
-    TwoFactorRequired,
+    TwoFactorRequired, login_response,
 };
 use synctv_proto::source_config::{
-    fnos_media_source_config, fnos_playlist_source_config, media_source_config,
-    playlist_source_config, FnosFavoritesPlaylistSourceConfig, FnosFileSourceConfig,
-    FnosFilesPlaylistSourceConfig, FnosHistoryPlaylistSourceConfig, FnosLibraryItemSourceConfig,
+    FnosFavoritesPlaylistSourceConfig, FnosFileSourceConfig, FnosFilesPlaylistSourceConfig,
+    FnosHistoryPlaylistSourceConfig, FnosLibraryItemSourceConfig,
     FnosMediaLibraryPlaylistSourceConfig, FnosMediaSourceConfig, FnosPlaylistSourceConfig,
+    fnos_media_source_config, fnos_playlist_source_config, media_source_config,
+    playlist_source_config,
 };
 use synctv_realtime::fanout::RealtimeEventService;
 

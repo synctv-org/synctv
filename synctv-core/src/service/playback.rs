@@ -7,6 +7,7 @@ use std::time::Duration;
 use std::{collections::HashSet, sync::Arc};
 
 use crate::{
+    Clock, Error, Result, SystemClock,
     cache::{
         CacheDomain, CacheInvalidationRuntime, CloneableError, ConsistencyCoordinator,
         PlaybackStateCache, SingleFlight, VersionFenceReservation, VersionFenceStore,
@@ -19,16 +20,15 @@ use crate::{
         RoomPlaybackState, RoomSettings, SortDirection, SourceProvider, TwitchTargetKind, UserId,
     },
     repository::{
-        chat::InsertChatMessageEvent,
-        realtime_outbox::{NewRealtimeOutboxEvent, RealtimeOutboxRepository},
         AppendPlaybackHistoryEntry, ChatRepository, PlaybackHistoryDirection,
         PlaybackHistoryRepository, PlaybackSourceMetadataRepository, RoomPlaybackStateRepository,
+        chat::InsertChatMessageEvent,
+        realtime_outbox::{NewRealtimeOutboxEvent, RealtimeOutboxRepository},
     },
     service::{
-        media::BackendPlaybackRequest, media::MediaService, NotificationService, PermissionService,
-        UserService,
+        NotificationService, PermissionService, UserService, media::BackendPlaybackRequest,
+        media::MediaService,
     },
-    Clock, Error, Result, SystemClock,
 };
 use rand::prelude::IteratorRandom;
 
@@ -39,8 +39,8 @@ use invalidation::PlaybackInvalidationRuntime;
 #[cfg(test)]
 use types::MAX_PLAYBACK_POSITION_SECONDS;
 use types::{
-    previous_progress_position_for_source_transition, validate_playback_speed_value,
-    validate_position_update_source, validate_seek_position, validate_switch_target, NextTarget,
+    NextTarget, previous_progress_position_for_source_transition, validate_playback_speed_value,
+    validate_position_update_source, validate_seek_position, validate_switch_target,
 };
 pub use types::{
     PlaybackSourceExpectation, PlaybackStatePatch, PlaybackStateUpdateRequest,
@@ -350,10 +350,9 @@ impl PlaybackService {
         if let Some(event) = outbox_event_factory
             .map(|factory| factory(state))
             .transpose()?
+            && let Some(outbox) = &self.realtime_outbox
         {
-            if let Some(outbox) = &self.realtime_outbox {
-                outbox.insert_with_executor(&event, &mut **tx).await?;
-            }
+            outbox.insert_with_executor(&event, &mut **tx).await?;
         }
         Ok(())
     }
@@ -1613,8 +1612,8 @@ impl PlaybackService {
                 };
 
                 let history_cursor_entry = self.history_repo.cursor_entry(room_id).await?;
-                if let Some(cursor_entry) = &history_cursor_entry {
-                    if let Some(next) = self
+                if let Some(cursor_entry) = &history_cursor_entry
+                    && let Some(next) = self
                         .history_repo
                         .adjacent_entry(
                             room_id,
@@ -1652,7 +1651,6 @@ impl PlaybackService {
                             .await;
                         return Ok(Some(saved));
                     }
-                }
 
                 let selection_state = if state.playing_media_id.is_none()
                     && state.playing_playlist_id.is_none()

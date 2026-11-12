@@ -4,12 +4,12 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use indexmap::IndexMap;
-use synctv_xiu::flv::amf0::{amf0_reader::Amf0Reader, amf0_writer::Amf0Writer, Amf0ValueType};
+use synctv_xiu::flv::amf0::{Amf0ValueType, amf0_reader::Amf0Reader, amf0_writer::Amf0Writer};
 use synctv_xiu::streamhub::utils::Uuid;
 
 use super::{
-    parse_metadata_resolution, pick_most_demanded, rung_stream_name, split_rung_stream_name,
-    RungState, SourceState, TranscodePreset,
+    RungState, SourceState, TranscodePreset, parse_metadata_resolution, pick_most_demanded,
+    rung_stream_name, split_rung_stream_name,
 };
 
 fn preset(name: &str, height: u32) -> TranscodePreset {

@@ -85,10 +85,10 @@ pub async fn watch_chat(
                     }
                     continue;
                 }
-                if let Some(event) = parse_privmsg(line) {
-                    if sender.send(Ok(event)).await.is_err() {
-                        return;
-                    }
+                if let Some(event) = parse_privmsg(line)
+                    && sender.send(Ok(event)).await.is_err()
+                {
+                    return;
                 }
             }
         }

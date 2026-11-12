@@ -847,9 +847,11 @@ mod tests {
             Role::Admin,
         );
         member.admin_added_permissions = RoomAdminPermissionBits::VIEW_PLAYBACK_HISTORY;
-        assert!(member
-            .effective_permissions(RoomPermissionSet::empty())
-            .has(crate::models::RoomPermission::VIEW_PLAYBACK_HISTORY));
+        assert!(
+            member
+                .effective_permissions(RoomPermissionSet::empty())
+                .has(crate::models::RoomPermission::VIEW_PLAYBACK_HISTORY)
+        );
     }
 
     #[test]

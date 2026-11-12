@@ -3,8 +3,8 @@
 //! Extracted from the original moka-backed `SliceCache` to serve as the
 //! default in-memory backend behind the [`SliceCacheBackend`] trait.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;

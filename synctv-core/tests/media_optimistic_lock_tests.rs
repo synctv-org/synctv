@@ -12,7 +12,7 @@ use synctv_core::{
     },
     repository::{MediaRepository, PlaylistRepository, RoomRepository, UserRepository},
 };
-use synctv_core_testing::{create_test_pool, ok, some, TestContainer};
+use synctv_core_testing::{TestContainer, create_test_pool, ok, some};
 
 fn direct_url_first_media_url(source_config: &MediaSourceConfig) -> &str {
     let MediaSourceConfig::DirectUrl(config) = source_config else {

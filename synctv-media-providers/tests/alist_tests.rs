@@ -7,16 +7,16 @@ use std::collections::HashMap;
 
 use serde_json::json;
 use synctv_core_testing::{
-    start_external_service, ExternalServiceContainer, ExternalServiceRequest,
+    ExternalServiceContainer, ExternalServiceRequest, start_external_service,
 };
-use synctv_media_providers::alist::{AlistInterface, AlistService};
-use synctv_media_providers::grpc::alist::{
-    alist_client::AlistClient as GrpcAlistClient, alist_server::AlistServer, login_req, FsGetReq,
-    FsListReq, FsOtherReq, FsSearchReq, LoginReq, MeReq,
-};
-use synctv_media_providers::grpc::AlistService as GrpcAlistService;
 use synctv_media_providers::AlistClient;
 use synctv_media_providers::PROVIDER_USER_AGENT;
+use synctv_media_providers::alist::{AlistInterface, AlistService};
+use synctv_media_providers::grpc::AlistService as GrpcAlistService;
+use synctv_media_providers::grpc::alist::{
+    FsGetReq, FsListReq, FsOtherReq, FsSearchReq, LoginReq, MeReq,
+    alist_client::AlistClient as GrpcAlistClient, alist_server::AlistServer, login_req,
+};
 use tonic::transport::Server;
 use wiremock::matchers::{body_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};

@@ -7,15 +7,15 @@ use std::sync::LazyLock;
 use std::time::Duration;
 
 use reqwest::{
-    header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE},
     Client,
+    header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue},
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::OnceCell;
 
 use super::types::{
-    device_profile_from_playback_client_profile, AuthResponse, FsListResponse, Item, ItemsResponse,
-    PathInfo, PlaybackInfoResponse, SystemInfo, UserInfo,
+    AuthResponse, FsListResponse, Item, ItemsResponse, PathInfo, PlaybackInfoResponse, SystemInfo,
+    UserInfo, device_profile_from_playback_client_profile,
 };
 
 #[derive(Debug, Clone)]
@@ -52,7 +52,7 @@ fn append_item_types(url: &mut String, item_types: &[String]) {
     }
 }
 use crate::error::with_retry;
-use crate::error::{check_response, json_with_limit, ProviderClientError as EmbyError};
+use crate::error::{ProviderClientError as EmbyError, check_response, json_with_limit};
 
 /// URL-encode a string for safe use in query parameters
 fn url_encode(s: &str) -> String {

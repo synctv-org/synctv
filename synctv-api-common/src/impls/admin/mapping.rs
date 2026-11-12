@@ -7,7 +7,7 @@ use synctv_core::service::{
     UserRegistrationReviewRecord,
 };
 
-use super::{user_status_to_proto, ApiError};
+use super::{ApiError, user_status_to_proto};
 use crate::impls::client::convert::{
     content_report_metadata_to_proto, room_category_to_proto, room_label_to_proto,
     room_settings_to_proto,

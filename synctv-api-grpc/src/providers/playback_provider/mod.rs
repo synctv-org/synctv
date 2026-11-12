@@ -73,10 +73,10 @@ pub(crate) async fn execute_playback_provider_stream<T, S>(
     state: Arc<PlaybackProviderGrpcState>,
     metadata: synctv_api_common::impls::RequestMetadata,
     operation: impl FnOnce(
-            synctv_core::provider::ExecutionControl,
-        ) -> futures::future::BoxFuture<'static, Result<S, ApiError>>
-        + Send
-        + 'static,
+        synctv_core::provider::ExecutionControl,
+    ) -> futures::future::BoxFuture<'static, Result<S, ApiError>>
+    + Send
+    + 'static,
 ) -> Result<Response<GrpcResponseStream<T>>, Status>
 where
     T: Send + 'static,

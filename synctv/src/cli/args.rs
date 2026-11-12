@@ -1,17 +1,17 @@
 use std::path::PathBuf;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use clap::{ArgAction, ArgGroup, Args, Parser, Subcommand, ValueEnum};
 use synctv_core::models::{RoomAdminPermissionBits, RoomMemberPermissionBits};
 use synctv_management::proto as management_proto;
 
 use crate::admin_client::AdminConnectionOptions;
-use crate::config_loader::{public_id_config_extensions, LoadConfigOptions};
+use crate::config_loader::{LoadConfigOptions, public_id_config_extensions};
 
 use super::commands::*;
 use super::completion::CompletionArgs;
 use super::human_output::ToHuman;
-use super::output::{print_humanized_structured_output, print_json, RemoteOutputFormat};
+use super::output::{RemoteOutputFormat, print_humanized_structured_output, print_json};
 
 pub(in crate::cli) const CLI_NAMED_PERMISSIONS: &[(&str, u64)] = &[
     (

@@ -33,11 +33,11 @@
 //! explicitly so HTTP and gRPC reuse the same validation pipeline.
 
 use synctv_proto::client::{
-    o_auth2_service_server::OAuth2Service, ExchangeAuthorizationCodeRequest,
-    ExchangeAuthorizationCodeResponse, GetAuthorizationUrlForBindRequest,
-    GetAuthorizationUrlForBindResponse, GetAuthorizationUrlRequest, GetAuthorizationUrlResponse,
-    GetLinkedProvidersRequest, GetLinkedProvidersResponse, ListAvailableProvidersRequest,
-    ListAvailableProvidersResponse, UnlinkProviderRequest, UnlinkProviderResponse,
+    ExchangeAuthorizationCodeRequest, ExchangeAuthorizationCodeResponse,
+    GetAuthorizationUrlForBindRequest, GetAuthorizationUrlForBindResponse,
+    GetAuthorizationUrlRequest, GetAuthorizationUrlResponse, GetLinkedProvidersRequest,
+    GetLinkedProvidersResponse, ListAvailableProvidersRequest, ListAvailableProvidersResponse,
+    UnlinkProviderRequest, UnlinkProviderResponse, o_auth2_service_server::OAuth2Service,
 };
 use tonic::{Request, Response, Status};
 use tracing::{debug, error, info};

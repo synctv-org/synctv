@@ -1,7 +1,7 @@
 use crate::{
+    Error, Result,
     models::{DeletionSource, RoomId, RoomMember, RoomRole, User, UserId},
     repository::RoomMemberRepository,
-    Error, Result,
 };
 
 use super::UserService;

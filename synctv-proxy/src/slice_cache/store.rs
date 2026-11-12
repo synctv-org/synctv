@@ -18,8 +18,8 @@ use synctv_common::ExecutionControl;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use crate::{
-    apply_provider_headers, run_with_proxy_cancellation,
-    send_with_redirect_validation_with_control_and_timeout, ProviderHeaders,
+    ProviderHeaders, apply_provider_headers, run_with_proxy_cancellation,
+    send_with_redirect_validation_with_control_and_timeout,
 };
 
 use super::backend::{CacheBackend, SliceCacheBackend};
@@ -29,7 +29,7 @@ use super::head::HeadFetchContext;
 use super::keys::{
     full_response_cache_key, full_response_meta_key, resource_meta_key, slice_cache_key,
 };
-use super::maintenance::{ratio_u64, MetaEvictionCandidate, UpdatingKeyGuard};
+use super::maintenance::{MetaEvictionCandidate, UpdatingKeyGuard, ratio_u64};
 use super::range::{format_request_range, parse_content_range};
 use super::status::CacheStatus;
 use super::types::{
@@ -954,11 +954,12 @@ impl SliceCache {
         provider_headers: &ProviderHeaders,
     ) -> Option<CachedResourceMeta> {
         let mk = Self::meta_key(url, provider_headers);
-        if let Some(mut entry) = self.meta.get_mut(&mk) {
-            entry.last_accessed = std::time::SystemTime::now();
-            Some(entry.clone())
-        } else {
-            None
+        match self.meta.get_mut(&mk) {
+            Some(mut entry) => {
+                entry.last_accessed = std::time::SystemTime::now();
+                Some(entry.clone())
+            }
+            _ => None,
         }
     }
 
@@ -1133,46 +1134,47 @@ impl SliceCache {
 
         // Fast path: check cache without locking.
         if let Some(entry) = self.backend.get(&key).await {
-            if !entry.is_expired() {
-                if let Some(total_size) = effective_total_size {
-                    return Ok(SliceFetchResult::Slice(Self::fetched_slice_from_meta(
-                        total_size,
-                        cached_meta.as_ref(),
-                        entry.data,
-                        CacheStatus::Hit,
-                    )));
-                }
+            if !entry.is_expired()
+                && let Some(total_size) = effective_total_size
+            {
+                return Ok(SliceFetchResult::Slice(Self::fetched_slice_from_meta(
+                    total_size,
+                    cached_meta.as_ref(),
+                    entry.data,
+                    CacheStatus::Hit,
+                )));
             }
             // Check stale window for stale-while-revalidate.
-            if self.config.stale_while_revalidate && entry.is_stale(self.config.stale_max_age) {
-                if let Some(total_size) = effective_total_size {
-                    // Mark as updating so subsequent requests know a refresh
-                    // is expected.  `DashSet::insert` returns true if the key
-                    // was newly inserted (i.e., we are the first stale request).
-                    if self.updating_keys.insert(key.clone()) {
-                        // Newly inserted -- we are the first stale request.
-                        self.spawn_slice_revalidation(
-                            url,
-                            provider_headers,
-                            slice_index,
-                            total_size,
-                            upstream_header_timeout,
-                        );
-                        return Ok(SliceFetchResult::Slice(Self::fetched_slice_from_meta(
-                            total_size,
-                            cached_meta.as_ref(),
-                            entry.data,
-                            CacheStatus::Stale,
-                        )));
-                    }
-                    // Already present -- another request is updating this key.
+            if self.config.stale_while_revalidate
+                && entry.is_stale(self.config.stale_max_age)
+                && let Some(total_size) = effective_total_size
+            {
+                // Mark as updating so subsequent requests know a refresh
+                // is expected.  `DashSet::insert` returns true if the key
+                // was newly inserted (i.e., we are the first stale request).
+                if self.updating_keys.insert(key.clone()) {
+                    // Newly inserted -- we are the first stale request.
+                    self.spawn_slice_revalidation(
+                        url,
+                        provider_headers,
+                        slice_index,
+                        total_size,
+                        upstream_header_timeout,
+                    );
                     return Ok(SliceFetchResult::Slice(Self::fetched_slice_from_meta(
                         total_size,
                         cached_meta.as_ref(),
                         entry.data,
-                        CacheStatus::Updating,
+                        CacheStatus::Stale,
                     )));
                 }
+                // Already present -- another request is updating this key.
+                return Ok(SliceFetchResult::Slice(Self::fetched_slice_from_meta(
+                    total_size,
+                    cached_meta.as_ref(),
+                    entry.data,
+                    CacheStatus::Updating,
+                )));
             }
             // Expired beyond stale window -- fall through to re-fetch
             // under the lock. Do NOT remove the entry here; it may be
@@ -1258,18 +1260,18 @@ impl SliceCache {
             Self::drain_not_modified_body(resp, request_control).await;
 
             // Refresh the entry's TTL by re-inserting it.
-            if let Some(existing) = self.backend.get(&key).await {
-                if let Some(total_size) = effective_total_size {
-                    self.refresh_cached_slice_ttl(&key, existing.data.clone())
-                        .await?;
-                    self.updating_keys.remove(&key);
-                    return Ok(SliceFetchResult::Slice(Self::fetched_slice_from_meta(
-                        total_size,
-                        cached_meta.as_ref(),
-                        existing.data,
-                        CacheStatus::Revalidated,
-                    )));
-                }
+            if let Some(existing) = self.backend.get(&key).await
+                && let Some(total_size) = effective_total_size
+            {
+                self.refresh_cached_slice_ttl(&key, existing.data.clone())
+                    .await?;
+                self.updating_keys.remove(&key);
+                return Ok(SliceFetchResult::Slice(Self::fetched_slice_from_meta(
+                    total_size,
+                    cached_meta.as_ref(),
+                    existing.data,
+                    CacheStatus::Revalidated,
+                )));
             }
             // Entry was evicted between the conditional request and now --
             // fall through to a full re-fetch.  This is an unlikely edge
@@ -1496,14 +1498,14 @@ impl SliceCache {
                     ));
                 }
             }
-        } else if let Some((None, Some(existing_last_modified))) = &existing_validators {
-            if resp_last_modified.as_ref() != Some(existing_last_modified) {
-                self.invalidate_resource(url, provider_headers, total_size)
-                    .await;
-                return Err(anyhow::anyhow!(
-                    "Last-Modified mismatch: resource modified between slice fetches"
-                ));
-            }
+        } else if let Some((None, Some(existing_last_modified))) = &existing_validators
+            && resp_last_modified.as_ref() != Some(existing_last_modified)
+        {
+            self.invalidate_resource(url, provider_headers, total_size)
+                .await;
+            return Err(anyhow::anyhow!(
+                "Last-Modified mismatch: resource modified between slice fetches"
+            ));
         }
 
         let data = read_exact_slice_body(resp, expected_len, request_control).await?;

@@ -71,10 +71,12 @@ async fn test_create_room() {
         .checked("operation should succeed");
     assert_eq!(created.name, "Test Room");
     assert_eq!(created.created_by, owner.id);
-    assert!(room_repo
-        .exists(&created.id)
-        .await
-        .checked("operation should succeed"));
+    assert!(
+        room_repo
+            .exists(&created.id)
+            .await
+            .checked("operation should succeed")
+    );
 }
 
 #[tokio::test]
@@ -888,20 +890,24 @@ async fn test_is_accessible() {
         .checked("operation should succeed");
 
     // Active room is accessible
-    assert!(room_repo
-        .is_accessible(&created.id)
-        .await
-        .checked("operation should succeed"));
+    assert!(
+        room_repo
+            .is_accessible(&created.id)
+            .await
+            .checked("operation should succeed")
+    );
 
     // Ban room
     room_repo
         .update_ban_status(&created.id, true)
         .await
         .checked("operation should succeed");
-    assert!(!room_repo
-        .is_accessible(&created.id)
-        .await
-        .checked("operation should succeed"));
+    assert!(
+        !room_repo
+            .is_accessible(&created.id)
+            .await
+            .checked("operation should succeed")
+    );
 
     // Unban and close
     room_repo
@@ -912,10 +918,12 @@ async fn test_is_accessible() {
         .update_status(&created.id, RoomStatus::Closed)
         .await
         .checked("operation should succeed");
-    assert!(!room_repo
-        .is_accessible(&created.id)
-        .await
-        .checked("operation should succeed"));
+    assert!(
+        !room_repo
+            .is_accessible(&created.id)
+            .await
+            .checked("operation should succeed")
+    );
 }
 
 /// Integration test: `get_join_context`

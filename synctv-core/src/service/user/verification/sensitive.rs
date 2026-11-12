@@ -3,15 +3,15 @@ use std::{net::IpAddr, time::Duration};
 use synctv_common::ExecutionControl;
 
 use crate::{
+    Error, Result,
     models::{User, UserAuthFactors, UserId},
     service::{TokenAuthContext, UserService},
-    Error, Result,
 };
 
 use super::super::session_types::{
-    AuthFactorMethod, SensitiveVerificationChallenge, SensitiveVerificationOutcome,
-    SensitiveVerificationSession, SENSITIVE_VERIFICATION_PASSWORD_BRUTE_FORCE_PREFIX,
+    AuthFactorMethod, SENSITIVE_VERIFICATION_PASSWORD_BRUTE_FORCE_PREFIX,
     SENSITIVE_VERIFICATION_SESSION_TTL_SECS, SENSITIVE_VERIFICATION_SESSION_TTL_SECS_I64,
+    SensitiveVerificationChallenge, SensitiveVerificationOutcome, SensitiveVerificationSession,
 };
 
 impl UserService {

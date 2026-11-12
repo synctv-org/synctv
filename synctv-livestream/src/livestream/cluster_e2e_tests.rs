@@ -15,16 +15,16 @@ use synctv_xiu::rtmp::auth::{AuthCallback, AuthPublishRewrite, RtmpStreamMode};
 use synctv_xiu::storage::{FileStorage, HlsStorage, S3Config, S3Storage};
 use tokio::{
     net::TcpListener,
-    sync::{mpsc, RwLock},
+    sync::{RwLock, mpsc},
 };
 use tokio_stream::wrappers::TcpListenerStream;
 use tokio_util::sync::CancellationToken;
 use tonic::{codec::CompressionEncoding, transport::Server};
 
 use crate::{
-    shared_stream_registry, FlvStreamingApi, HlsS3Options, HlsStorageBackend, HlsStreamingApi,
-    LivestreamConfig, LivestreamServer, RegistryConnectionRuntime, StreamRegistryTrait,
-    StreamRelayServiceServer, StreamTracker,
+    FlvStreamingApi, HlsS3Options, HlsStorageBackend, HlsStreamingApi, LivestreamConfig,
+    LivestreamServer, RegistryConnectionRuntime, StreamRegistryTrait, StreamRelayServiceServer,
+    StreamTracker, shared_stream_registry,
 };
 
 const ROOM: &str = "cluster-room";
@@ -271,10 +271,9 @@ where
             &segment_url_base,
         )
         .await?
+            && ready(&playlist)
         {
-            if ready(&playlist) {
-                return Ok(playlist);
-            }
+            return Ok(playlist);
         }
         anyhow::ensure!(Instant::now() < deadline, "{timeout_message}");
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -984,11 +983,13 @@ async fn exercise_shared_storage_cluster(
         wait_for_remote_playlist(&node_b.infrastructure, MEDIA, &publisher_info.generation_id)
             .await?;
     assert!(playlist.contains("#EXTINF:"));
-    assert!(node_b
-        .infrastructure
-        .hls_stream_registry
-        .as_ref()
-        .is_none_or(|registry| registry.is_empty()));
+    assert!(
+        node_b
+            .infrastructure
+            .hls_stream_registry
+            .as_ref()
+            .is_none_or(|registry| registry.is_empty())
+    );
     let segment_name = playlist_segment_name(&playlist)?.to_string();
 
     neighbor_storage

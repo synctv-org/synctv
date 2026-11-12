@@ -26,12 +26,12 @@ pub fn mask_url_credentials(
 }
 
 fn mask_url_credentials_manually(url: &str, invalid_url_placeholder: &str) -> String {
-    if let Some(at_pos) = url.rfind('@') {
-        if let Some(scheme_end) = url.find("://") {
-            let scheme = &url[..scheme_end + 3];
-            let host_part = &url[at_pos..];
-            return format!("{scheme}***:***{host_part}");
-        }
+    if let Some(at_pos) = url.rfind('@')
+        && let Some(scheme_end) = url.find("://")
+    {
+        let scheme = &url[..scheme_end + 3];
+        let host_part = &url[at_pos..];
+        return format!("{scheme}***:***{host_part}");
     }
 
     invalid_url_placeholder.to_string()

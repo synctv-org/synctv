@@ -17,12 +17,12 @@ use super::{
     ProviderError, SourceConfig, SourceCover,
 };
 use crate::models::{
-    detect_direct_url_format, normalize_provider_instance_name,
-    normalize_provider_instance_name_owned, MediaSourceConfig, NextcloudMediaSourceConfig,
-    NextcloudPlaybackMetadata, NextcloudPlaylistSource, NextcloudPlaylistSourceConfig, PlayMode,
-    PlaybackMedia, PlaybackMediaProvider, PlaybackMetadata, PlaybackNextcloudMedia,
-    PlaybackNextcloudSubtitle, PlaybackSubtitle, PlaybackSubtitleProvider, PlaylistSourceConfig,
-    ProviderCredential, ProviderTarget, UserId, UserProviderCredential,
+    MediaSourceConfig, NextcloudMediaSourceConfig, NextcloudPlaybackMetadata,
+    NextcloudPlaylistSource, NextcloudPlaylistSourceConfig, PlayMode, PlaybackMedia,
+    PlaybackMediaProvider, PlaybackMetadata, PlaybackNextcloudMedia, PlaybackNextcloudSubtitle,
+    PlaybackSubtitle, PlaybackSubtitleProvider, PlaylistSourceConfig, ProviderCredential,
+    ProviderTarget, UserId, UserProviderCredential, detect_direct_url_format,
+    normalize_provider_instance_name, normalize_provider_instance_name_owned,
 };
 use crate::repository::UserProviderCredentialRepository;
 use synctv_media_providers::nextcloud::{
@@ -1217,14 +1217,15 @@ fn mark_playback_resources(
             .medias
             .iter()
             .any(|media| !media.requires_provider_url());
-        if selection.direct && direct_available {
-            if let Some(direct_info) = super::build_direct_playback_info_for_client(
+        if selection.direct
+            && direct_available
+            && let Some(direct_info) = super::build_direct_playback_info_for_client(
                 &mode_name,
                 &original_info,
                 client_profile,
-            ) {
-                generated.insert(mode_name.clone(), direct_info);
-            }
+            )
+        {
+            generated.insert(mode_name.clone(), direct_info);
         }
         if !selection.proxy {
             continue;

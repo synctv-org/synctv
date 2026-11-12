@@ -3,15 +3,15 @@ use std::time::Duration;
 use sqlx::{Postgres, Transaction};
 
 use crate::{
+    Error, Result,
     models::{User, UserId},
     repository::PasswordCredentialMaterial,
     service::UserService,
-    Error, Result,
 };
 
 use super::super::session_types::{
-    OpaquePasswordUpdateVerification, OpaqueRegistrationPurpose, OpaqueRegistrationSession,
-    OpaqueRegistrationStartChallenge, OPAQUE_REGISTRATION_SESSION_TTL_SECS,
+    OPAQUE_REGISTRATION_SESSION_TTL_SECS, OpaquePasswordUpdateVerification,
+    OpaqueRegistrationPurpose, OpaqueRegistrationSession, OpaqueRegistrationStartChallenge,
 };
 
 impl UserService {

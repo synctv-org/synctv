@@ -2322,8 +2322,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn realistic_hls_manifests_apply_route_and_lifetime_matrix_end_to_end(
-    ) -> anyhow::Result<()> {
+    async fn realistic_hls_manifests_apply_route_and_lifetime_matrix_end_to_end()
+    -> anyhow::Result<()> {
         let mock_server = start_mock_server().await;
         let client = mock_proxy_client(&mock_server)?;
         let ssrf_guard = test_ssrf_guard();

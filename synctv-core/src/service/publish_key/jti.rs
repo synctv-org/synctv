@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::{cache::KeyBuilder, Error, RedisConnectionRuntime, Result};
+use crate::{Error, RedisConnectionRuntime, Result, cache::KeyBuilder};
 
 pub(super) async fn run_publish_key_redis_op<T, F>(
     timeout: Duration,

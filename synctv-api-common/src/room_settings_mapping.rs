@@ -19,7 +19,7 @@ pub fn select_room_settings_patch(
     let mut seen = BTreeSet::new();
 
     macro_rules! select_scalar {
-        ($field:ident, $default:expr) => {{
+        ($field:ident, $default:expr_2021) => {{
             selected.$field = Some(source.$field.take().unwrap_or($default));
         }};
     }
@@ -192,11 +192,13 @@ mod tests {
             vec!["auto_play".to_string()],
             vec!["chat_enabled".to_string(), "chat_enabled".to_string()],
         ] {
-            assert!(select_room_settings_patch(
-                synctv_proto::client::RoomSettingsPatch::default(),
-                &paths
-            )
-            .is_err());
+            assert!(
+                select_room_settings_patch(
+                    synctv_proto::client::RoomSettingsPatch::default(),
+                    &paths
+                )
+                .is_err()
+            );
         }
     }
 }

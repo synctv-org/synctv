@@ -5,11 +5,11 @@
 use std::collections::HashSet;
 
 use crate::{
-    models::{
-        oauth2_client::{OAuth2Provider, OAuth2UserInfo, UserOAuthProviderMapping},
-        DeletionSource, UserId,
-    },
     Result,
+    models::{
+        DeletionSource, UserId,
+        oauth2_client::{OAuth2Provider, OAuth2UserInfo, UserOAuthProviderMapping},
+    },
 };
 use sqlx::PgPool;
 

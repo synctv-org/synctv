@@ -1,14 +1,14 @@
 use sqlx::{Postgres, Transaction};
 
 use crate::{
+    Error, Result,
     models::{RoomId, RoomRole, UserId},
     service::PermissionWriteFence,
-    Error, Result,
 };
 
 use super::{
-    cleanup_member_resources_in_tx, RealtimeOutboxMemberResourceCleanupEventFactory,
-    RealtimeOutboxUserLeftEventFactory, RoomService, UserLeftOutboxSnapshot,
+    RealtimeOutboxMemberResourceCleanupEventFactory, RealtimeOutboxUserLeftEventFactory,
+    RoomService, UserLeftOutboxSnapshot, cleanup_member_resources_in_tx,
 };
 
 struct CompleteLeftMemberRemovalRequest<'a> {

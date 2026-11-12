@@ -2,9 +2,9 @@ use super::RemoteProviderConnection;
 use crate::ProviderClientError;
 use std::time::Duration;
 use synctv_common::ExecutionControl;
-use tonic::metadata::MetadataValue as TransportMetadataValue;
 use tonic::Request as TransportRequest;
-use tonic_health::pb::{health_client::HealthClient, HealthCheckRequest};
+use tonic::metadata::MetadataValue as TransportMetadataValue;
+use tonic_health::pb::{HealthCheckRequest, health_client::HealthClient};
 
 pub(crate) fn build_remote_request<T>(
     auth_secret: Option<&str>,

@@ -10,9 +10,9 @@ use synctv_proto::providers::seafile::{
     LogoutResponse, UnlockLibraryRequest, UnlockLibraryResponse,
 };
 use synctv_proto::source_config::{
-    media_source_config, playlist_source_config, seafile_playlist_source_config,
     SeafileFolderPlaylistSourceConfig, SeafileMediaSourceConfig, SeafilePlaylistSourceConfig,
-    SeafileStarredPlaylistSourceConfig,
+    SeafileStarredPlaylistSourceConfig, media_source_config, playlist_source_config,
+    seafile_playlist_source_config,
 };
 use synctv_realtime::fanout::RealtimeEventService;
 

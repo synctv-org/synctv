@@ -41,7 +41,7 @@ pub mod transport_access_log;
 pub mod webrtc_status;
 
 pub use api_runtime::*;
-pub use app_state::{build_app_state, AppState, ProxyCacheLifecycleRuntime, RouterOptions};
+pub use app_state::{AppState, ProxyCacheLifecycleRuntime, RouterOptions, build_app_state};
 pub use http_error::{AppError, AppResult};
 pub use impls::*;
 pub use metrics_auth::{MetricsAccessController, MetricsAccessError};
@@ -50,7 +50,7 @@ pub use realtime_fanout::*;
 pub use runtime::RealtimeAdmissionError;
 pub use runtime_adapters::proxy_slice_cache_options_from_runtime_settings;
 pub use server_settings::{
-    validate_cors_origin, AccessLogSettings, AndroidAppAssociationSettings, ApiServerSettings,
-    DEFAULT_PROJECT_URL,
+    AccessLogSettings, AndroidAppAssociationSettings, ApiServerSettings, DEFAULT_PROJECT_URL,
+    validate_cors_origin,
 };
 pub use synctv_adapter::{PublicIdCodec, PublicIdConfig, PublicIdKind, PublicIdType};

@@ -24,13 +24,13 @@ pub use realtime_manager::{
     BroadcastResult, RealtimeConfig, RealtimeManager, RealtimeManagerRuntime, RealtimeMetrics,
 };
 pub use redis_pubsub::{
-    is_sentinel_failover_error, PublishRequest, RedisPubSub, RedisPubSubConfig,
-    RedisRealtimeMessageTransportFactory,
+    PublishRequest, RedisPubSub, RedisPubSubConfig, RedisRealtimeMessageTransportFactory,
+    is_sentinel_failover_error,
 };
 pub use room_hub::{ConnectionId, RoomLifecycleEvent, RoomMessageHub, Subscriber};
 pub use runtime::{
-    build_connection_manager, build_connection_runtime, build_room_message_runtime,
-    ConnectionRuntime, RoomMessageRuntime,
+    ConnectionRuntime, RoomMessageRuntime, build_connection_manager, build_connection_runtime,
+    build_room_message_runtime,
 };
 pub use synctv_core::models::{
     CacheTarget, NotificationLevel, RealtimeDeliveryRoute, RealtimeEvent, WebRTCSignalKind,

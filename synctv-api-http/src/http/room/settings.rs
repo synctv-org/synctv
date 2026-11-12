@@ -1,10 +1,10 @@
 use axum::{
-    extract::{Path, State},
     Json,
+    extract::{Path, State},
 };
 
 use super::execute::{execute_room_actor_endpoint, execute_user_endpoint};
-use crate::http::{middleware::RequestMetadata, AppResult, AppState};
+use crate::http::{AppResult, AppState, middleware::RequestMetadata};
 use synctv_api_common::impls::{EndpointRateLimitCategory, EndpointRateLimitScope};
 use synctv_proto::client::{
     ClearRoomPasswordRequest, FinishRoomPasswordLoginRequest,

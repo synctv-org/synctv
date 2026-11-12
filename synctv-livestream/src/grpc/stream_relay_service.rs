@@ -13,21 +13,21 @@ use synctv_xiu::streamhub::{
     utils::Uuid,
 };
 use tokio::sync::mpsc;
-use tokio_stream::{wrappers::ReceiverStream, Stream};
+use tokio_stream::{Stream, wrappers::ReceiverStream};
 use tokio_util::sync::CancellationToken;
 use tonic::{Request, Response, Status};
 use tracing::{info, warn};
 
 use super::proto::{
-    stream_relay_service_server, DeleteWebRtcSessionRequest, DeleteWebRtcSessionResponse,
-    FrameType, GetHlsPlaylistRequest, GetHlsPlaylistResponse, GetHlsSegmentRequest,
-    GetHlsSegmentResponse, PullRtmpStreamRequest, RtmpPacket, RtpPacket, RtpPacketType,
-    WebRtcSessionKind as ProtoWebRtcSessionKind,
+    DeleteWebRtcSessionRequest, DeleteWebRtcSessionResponse, FrameType, GetHlsPlaylistRequest,
+    GetHlsPlaylistResponse, GetHlsSegmentRequest, GetHlsSegmentResponse, PullRtmpStreamRequest,
+    RtmpPacket, RtpPacket, RtpPacketType, WebRtcSessionKind as ProtoWebRtcSessionKind,
+    stream_relay_service_server,
 };
 use crate::error::StreamError;
+use crate::livestream::SegmentManager;
 use crate::livestream::external_publish_manager::ExternalPublishManager;
 use crate::livestream::webrtc_session_manager::WebRtcSessionManager;
-use crate::livestream::SegmentManager;
 use crate::relay::StreamRegistryTrait;
 use crate::util::{
     validate_hls_segment_name, validate_hls_segment_url_base, validate_hls_segment_url_suffix,
@@ -967,7 +967,7 @@ mod tests {
     use synctv_xiu::streamhub::define::{DataReceiver, StreamHubEvent};
     use synctv_xiu::streamhub::errors::{StreamHubError, StreamHubErrorValue};
     use synctv_xiu::streamhub::stream::StreamIdentifier;
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     type TestResult = anyhow::Result<()>;
 
@@ -1239,7 +1239,7 @@ mod tests {
             other => {
                 return Err(test_error(format!(
                     "expected unsubscribe event, got {other:?}"
-                )))
+                )));
             }
         }
         Ok(())
@@ -1278,8 +1278,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_pull_rtmp_stream_times_out_when_streamhub_subscription_never_completes(
-    ) -> TestResult {
+    async fn test_pull_rtmp_stream_times_out_when_streamhub_subscription_never_completes()
+    -> TestResult {
         let registry = crate::relay::local_stream_registry();
         let generation_id = register_test_publisher(&registry).await?;
 
@@ -1669,8 +1669,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_hls_playlist_rejects_stale_expected_lease_epoch_before_registry_read(
-    ) -> TestResult {
+    async fn test_hls_playlist_rejects_stale_expected_lease_epoch_before_registry_read()
+    -> TestResult {
         let registry = crate::relay::local_stream_registry();
         let generation_id = register_test_publisher(&registry).await?;
 

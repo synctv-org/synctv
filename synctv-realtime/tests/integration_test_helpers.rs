@@ -11,11 +11,11 @@ use synctv_core::cache::InvalidationMessage;
 use synctv_core::models::{RealtimeActor, UserId};
 use synctv_core::{DirectRedisConnectionRuntime, RedisConnectionRuntime, SharedStateProfile};
 use synctv_core_testing::redis::{
-    redis_connection_manager, redis_multiplexed_connection, RedisContainer,
+    RedisContainer, redis_connection_manager, redis_multiplexed_connection,
 };
 use synctv_core_testing::{start_redis_url_with_label, test_redis_key_prefix};
 use synctv_realtime::sync::{
-    build_room_message_runtime, ConnectionId, RealtimeConfig, RealtimeManager,
+    ConnectionId, RealtimeConfig, RealtimeManager, build_room_message_runtime,
 };
 
 const ROUND_TIMEOUT: Duration = Duration::from_millis(750);

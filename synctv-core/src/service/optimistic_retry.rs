@@ -339,8 +339,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_concurrent_retries_independent() {
-        use std::sync::atomic::AtomicU32;
         use std::sync::Arc;
+        use std::sync::atomic::AtomicU32;
 
         let counter1 = Arc::new(AtomicU32::new(0));
         let counter2 = Arc::new(AtomicU32::new(0));

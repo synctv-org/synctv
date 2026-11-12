@@ -24,21 +24,21 @@ use axum::{body::Body, http::StatusCode, response::Response};
 use reqwest::header::{HeaderName, HeaderValue, USER_AGENT};
 use synctv_common::ExecutionControl;
 
-pub use cors::{handle_cors_preflight, CorsConfig};
+pub use cors::{CorsConfig, handle_cors_preflight};
+pub(crate) use error::{ProxyError, reqwest_error_indicates_connection_failure};
 pub use error::{
-    proxy_error_kind, proxy_error_kind_from_std_error, proxy_range_not_satisfiable_total_size,
-    ProxyErrorKind,
+    ProxyErrorKind, proxy_error_kind, proxy_error_kind_from_std_error,
+    proxy_range_not_satisfiable_total_size,
 };
-pub(crate) use error::{reqwest_error_indicates_connection_failure, ProxyError};
 pub use manifest::{
-    classify_hls_playlist, percent_encode, rewrite_m3u8, rewrite_m3u8_with_typed_url_mapper,
-    rewrite_m3u8_with_url_mapper, HlsPlaylistKind, HlsResourceKind, MAX_M3U8_URLS,
+    HlsPlaylistKind, HlsResourceKind, MAX_M3U8_URLS, classify_hls_playlist, percent_encode,
+    rewrite_m3u8, rewrite_m3u8_with_typed_url_mapper, rewrite_m3u8_with_url_mapper,
 };
-pub use mpd::{rewrite_mpd_with_url_mapper, MpdResourceKind};
+pub use mpd::{MpdResourceKind, rewrite_mpd_with_url_mapper};
+pub use redirect::{ProxyResponse, send_with_redirect_validation_with_control_and_timeout};
 pub(crate) use redirect::{
     send_head_with_redirect_validation_with_control_and_timeout, validate_target_url_against_ssrf,
 };
-pub use redirect::{send_with_redirect_validation_with_control_and_timeout, ProxyResponse};
 
 /// Maximum response body size for M3U8/MPD manifests (10 MB).
 const MAX_MANIFEST_SIZE: usize = 10 * 1024 * 1024;
@@ -233,12 +233,12 @@ where
         ));
     }
 
-    if let Some(cl) = proxy_response.content_length() {
-        if usize::try_from(cl).map_or(true, |s| s > MAX_MANIFEST_SIZE) {
-            return Err(anyhow::anyhow!(
-                "M3U8 too large ({cl} bytes, max {MAX_MANIFEST_SIZE})"
-            ));
-        }
+    if let Some(cl) = proxy_response.content_length()
+        && usize::try_from(cl).map_or(true, |s| s > MAX_MANIFEST_SIZE)
+    {
+        return Err(anyhow::anyhow!(
+            "M3U8 too large ({cl} bytes, max {MAX_MANIFEST_SIZE})"
+        ));
     }
 
     let m3u8_bytes = run_with_proxy_cancellation(

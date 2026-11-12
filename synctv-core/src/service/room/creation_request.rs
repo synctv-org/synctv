@@ -1,12 +1,12 @@
 use sqlx::{Postgres, Transaction};
 
 use crate::{
+    Error, Result,
     models::{
         OpaquePasswordRecord, ReviewStatus, Room, RoomCategoryId, RoomId, RoomLabelId,
         RoomSettings, UserId,
     },
     service::room::RoomService,
-    Error, Result,
 };
 
 pub(super) struct PendingRoomCreationRequest {

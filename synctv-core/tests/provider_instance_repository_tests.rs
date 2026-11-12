@@ -5,10 +5,10 @@
 
 use chrono::Utc;
 use synctv_core::{
+    Error,
     credential_encryption::CredentialEncryption,
     models::{ProviderInstance, SignupMethod, SourceProvider},
     repository::ProviderInstanceRepository,
-    Error,
 };
 use synctv_core_testing::{create_test_pool, create_test_pool_with_db_and_label, err, ok, some};
 

@@ -20,7 +20,7 @@ pub use synctv::cluster::server_state_service_client::ServerStateServiceClient;
 pub use synctv::cluster::server_state_service_server::ServerStateServiceServer;
 
 use subtle::ConstantTimeEq;
-use tonic::{metadata::MetadataValue, Request, Status};
+use tonic::{Request, Status, metadata::MetadataValue};
 
 pub const CLUSTER_SECRET_METADATA_KEY: &str = "x-cluster-secret";
 

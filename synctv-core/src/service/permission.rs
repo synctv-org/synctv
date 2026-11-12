@@ -3,11 +3,12 @@
 //! Centralized permission checking and management with Allow/Deny pattern and caching.
 //! Supports multi-replica cache invalidation via Redis Pub/Sub.
 
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use crate::{
+    Error, Result,
     cache::{
         CacheDomain, CacheInvalidationRuntime, CacheL2Backend, CachedMemberPermissionSource,
         ConsistencyCoordinator, FenceReadResult, InvalidationMessage, MemberPermissionCache,
@@ -17,7 +18,6 @@ use crate::{
     models::{RoomId, RoomPermissionSet, UserId},
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository},
     service::RuntimeSettingsStore,
-    Error, Result,
 };
 
 #[derive(Debug, Clone)]
@@ -263,10 +263,10 @@ impl PermissionService {
             }
         }
 
-        if let Some(source) = self.member_permission_cache.get_l1(&cache_key).await {
-            if source.version >= fence_version {
-                return Ok(source);
-            }
+        if let Some(source) = self.member_permission_cache.get_l1(&cache_key).await
+            && source.version >= fence_version
+        {
+            return Ok(source);
         }
 
         match self.member_permission_cache.get_l2(&cache_key).await {
@@ -353,10 +353,10 @@ impl PermissionService {
             }
         }
 
-        if let Some(snapshot) = self.room_settings_cache.get_l1(room_id).await {
-            if snapshot.version >= fence_version {
-                return Ok(snapshot);
-            }
+        if let Some(snapshot) = self.room_settings_cache.get_l1(room_id).await
+            && snapshot.version >= fence_version
+        {
+            return Ok(snapshot);
         }
 
         match self.room_settings_cache.get_l2(room_id).await {
@@ -578,20 +578,19 @@ impl PermissionService {
         // This is important for multi-replica scenarios where other replicas need
         // to invalidate their caches.
         let invalidation_service = self.invalidation_service();
-        if let Some(service) = invalidation_service {
-            if let Err(e) = service
+        if let Some(service) = invalidation_service
+            && let Err(e) = service
                 .invalidate_and_broadcast_user_permission(room_id, user_id)
                 .await
-            {
-                tracing::warn!(
-                    error = %e,
-                    room_id = %room_id,
-                    user_id = %user_id,
-                    "Failed to broadcast permission cache invalidation to other replicas"
-                );
-                // Local cache is already invalidated, so this node is consistent.
-                // Other replicas may have a brief stale window until their TTL expires.
-            }
+        {
+            tracing::warn!(
+                error = %e,
+                room_id = %room_id,
+                user_id = %user_id,
+                "Failed to broadcast permission cache invalidation to other replicas"
+            );
+            // Local cache is already invalidated, so this node is consistent.
+            // Other replicas may have a brief stale window until their TTL expires.
         }
     }
 
@@ -610,17 +609,16 @@ impl PermissionService {
         // Use invalidate_and_broadcast_room_permission which broadcasts both locally
         // AND to Redis for remote replicas.
         let invalidation_service = self.invalidation_service();
-        if let Some(service) = invalidation_service {
-            if let Err(e) = service
+        if let Some(service) = invalidation_service
+            && let Err(e) = service
                 .invalidate_and_broadcast_room_permission(room_id)
                 .await
-            {
-                tracing::warn!(
-                    error = %e,
-                    room_id = %room_id,
-                    "Failed to broadcast room permission cache invalidation to other replicas"
-                );
-            }
+        {
+            tracing::warn!(
+                error = %e,
+                room_id = %room_id,
+                "Failed to broadcast room permission cache invalidation to other replicas"
+            );
         }
     }
 
@@ -634,13 +632,13 @@ impl PermissionService {
         // Broadcast to other replicas (best effort)
         // Use broadcast_all which broadcasts both locally AND to Redis.
         let invalidation_service = self.invalidation_service();
-        if let Some(service) = invalidation_service {
-            if let Err(e) = service.broadcast_all(InvalidationMessage::All).await {
-                tracing::warn!(
-                    error = %e,
-                    "Failed to broadcast full permission cache invalidation to other replicas"
-                );
-            }
+        if let Some(service) = invalidation_service
+            && let Err(e) = service.broadcast_all(InvalidationMessage::All).await
+        {
+            tracing::warn!(
+                error = %e,
+                "Failed to broadcast full permission cache invalidation to other replicas"
+            );
         }
     }
 }

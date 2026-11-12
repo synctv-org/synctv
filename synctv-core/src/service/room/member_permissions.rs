@@ -1,12 +1,12 @@
 use crate::{
+    Error, Result,
     models::{RoomId, RoomRole, UserId},
     service::optimistic_retry,
-    Error, Result,
 };
 
 use super::{
-    member_role_policy::validate_override_bits_for_role, permission_writes::PermissionWriteParams,
     RealtimeOutboxPermissionChangedEventFactory, RoomService,
+    member_role_policy::validate_override_bits_for_role, permission_writes::PermissionWriteParams,
 };
 
 impl RoomService {

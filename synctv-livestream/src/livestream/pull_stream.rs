@@ -4,13 +4,13 @@
 
 use crate::{
     error::StreamResult,
-    grpc::stream_puller::GrpcStreamPuller,
     grpc::GrpcConnectionPool,
+    grpc::stream_puller::GrpcStreamPuller,
     livestream::managed_stream::{ManagedStream, StreamLifecycle},
     relay::registry_trait::StreamRegistryTrait,
 };
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use synctv_xiu::rtmp::session::common::RtmpStreamHandler;
 use synctv_xiu::streamhub::stream::StreamIdentifier;
 use synctv_xiu::streamhub::{
@@ -320,9 +320,7 @@ impl PullStream {
             Ok(false) => {
                 warn!(
                     "Epoch {} is stale for pull stream {}/{}, publisher may have changed. Stopping.",
-                    self.lease_epoch,
-                    self.room_id,
-                    self.media_id
+                    self.lease_epoch, self.room_id, self.media_id
                 );
                 return Err(crate::error::StreamError::StaleEpoch(format!(
                     "{} / {}",
@@ -559,7 +557,11 @@ impl PullStream {
                                 }
                                 warn!(
                                     "Failed to validate lease_epoch on reconnect for {}/{}: {} ({}/{} consecutive failures). Continuing.",
-                                    room_id, media_id, e, consecutive_epoch_failures, retry_policy.max_consecutive_epoch_failures
+                                    room_id,
+                                    media_id,
+                                    e,
+                                    consecutive_epoch_failures,
+                                    retry_policy.max_consecutive_epoch_failures
                                 );
                             }
                         }
@@ -648,26 +650,26 @@ impl Drop for PullStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::grpc::StreamRelayServiceImpl;
     use crate::grpc::proto::{
-        stream_relay_service_server::{StreamRelayService, StreamRelayServiceServer},
         DeleteWebRtcSessionRequest, DeleteWebRtcSessionResponse, FrameType, GetHlsPlaylistRequest,
         GetHlsPlaylistResponse, GetHlsSegmentRequest, GetHlsSegmentResponse, PullRtmpStreamRequest,
         RtmpPacket, RtpPacket,
+        stream_relay_service_server::{StreamRelayService, StreamRelayServiceServer},
     };
-    use crate::grpc::StreamRelayServiceImpl;
     use crate::relay::TestStreamRegistry;
     use crate::util::TEST_GENERATION_ID;
     use bytes::{Bytes, BytesMut};
-    use futures::{stream, Stream, StreamExt as _};
+    use futures::{Stream, StreamExt as _, stream};
     use std::pin::Pin;
     use synctv_xiu::httpflv::HttpFlvSession;
     use synctv_xiu::streamhub::{
-        define::{BroadcastEvent, STREAM_HUB_EVENT_CHANNEL_CAPACITY},
         StreamsHub,
+        define::{BroadcastEvent, STREAM_HUB_EVENT_CHANNEL_CAPACITY},
     };
     use tokio::net::TcpListener;
     use tokio::sync::mpsc;
-    use tokio::time::{timeout, Duration, Instant};
+    use tokio::time::{Duration, Instant, timeout};
     use tokio_stream::wrappers::TcpListenerStream;
     use tonic::{Request, Response, Status};
 
@@ -983,11 +985,11 @@ mod tests {
                 .await
                 .map_err(|_| anyhow::anyhow!("timed out waiting for reconnected HTTP-FLV data"))?
                 .ok_or_else(|| anyhow::anyhow!("HTTP-FLV response closed during reconnect"))??;
-            if let Some((tag_type, timestamp)) = flv_tag_timestamp(&chunk) {
-                if timestamp >= minimum_timestamp {
-                    audio_seen |= tag_type == 8;
-                    video_seen |= tag_type == 9;
-                }
+            if let Some((tag_type, timestamp)) = flv_tag_timestamp(&chunk)
+                && timestamp >= minimum_timestamp
+            {
+                audio_seen |= tag_type == 8;
+                video_seen |= tag_type == 9;
             }
         }
         anyhow::ensure!(audio_seen, "reconnected HTTP-FLV audio tag missing");
@@ -1062,10 +1064,12 @@ mod tests {
 
         let publish_event = next_broadcast(&mut broadcast_rx).await?;
         assert!(matches!(publish_event, BroadcastEvent::Publish { .. }));
-        assert!(!timeout(Duration::from_secs(2), request_rx.recv())
-            .await
-            .map_err(|_| anyhow::anyhow!("timed out waiting for initial relay request"))?
-            .ok_or_else(|| anyhow::anyhow!("initial relay request missing"))?);
+        assert!(
+            !timeout(Duration::from_secs(2), request_rx.recv())
+                .await
+                .map_err(|_| anyhow::anyhow!("timed out waiting for initial relay request"))?
+                .ok_or_else(|| anyhow::anyhow!("initial relay request missing"))?
+        );
 
         let (mut first_flv, first_flv_task) = spawn_flv_session(event_tx.clone());
         let (mut second_flv, second_flv_task) = spawn_flv_session(event_tx.clone());

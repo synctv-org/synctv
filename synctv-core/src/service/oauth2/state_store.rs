@@ -5,8 +5,8 @@ use std::time::Duration;
 use tracing::debug;
 
 use crate::{
-    cache::KeyBuilder, service::oauth2::OAuth2State, Error, InternalExt, RedisConnectionRuntime,
-    Result, SharedStateMode, SharedStateProfile,
+    Error, InternalExt, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
+    cache::KeyBuilder, service::oauth2::OAuth2State,
 };
 
 static CONSUME_OAUTH2_STATE_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {

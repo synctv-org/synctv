@@ -8,8 +8,8 @@
 //! The `PullStreamManager` handles the actual pulling from the external source.
 
 use super::{
-    playback_transport::PlaybackTransportAction, MediaProvider, PlaybackResult, ProviderContext,
-    ProviderError, SourceConfig,
+    MediaProvider, PlaybackResult, ProviderContext, ProviderError, SourceConfig,
+    playback_transport::PlaybackTransportAction,
 };
 use crate::models::media::{
     LiveProxyPlaybackMetadata, PlaybackLiveProxyMedia, PlaybackMediaProvider, PlaybackMetadata,
@@ -164,18 +164,17 @@ impl LiveProxyProvider {
                 matches!(parsed.scheme(), "http" | "https") && parsed.path().ends_with(".flv")
             }
             crate::models::ExternalLiveSourceConfig::Whep { authorization, .. } => {
-                if let Some(authorization) = authorization {
-                    if authorization.trim().is_empty()
+                if let Some(authorization) = authorization
+                    && (authorization.trim().is_empty()
                         || authorization
                             .chars()
                             .any(|character| matches!(character, '\r' | '\n'))
-                        || authorization.len() > 4096
-                    {
-                        return Err(ProviderError::InvalidConfig(
+                        || authorization.len() > 4096)
+                {
+                    return Err(ProviderError::InvalidConfig(
                             "WHEP authorization must be a non-empty HTTP header value of at most 4096 bytes"
                                 .to_string(),
                         ));
-                    }
                 }
                 matches!(parsed.scheme(), "http" | "https")
             }
@@ -575,8 +574,10 @@ mod tests {
         let error = LiveProxyProvider::validate_external_source(&source, &guard)
             .await
             .expect_err("RTSP source with no enabled media must fail validation");
-        assert!(error
-            .to_string()
-            .contains("must enable a video or audio track"));
+        assert!(
+            error
+                .to_string()
+                .contains("must enable a video or audio track")
+        );
     }
 }

@@ -8,6 +8,6 @@ mod media;
 mod peer;
 
 pub use peer::{
-    create_whep_client_session, create_whep_session, create_whip_session, PeerSession,
-    WebRtcConfig, WebRtcError, WebRtcIceServer, WhepClientSession,
+    PeerSession, WebRtcConfig, WebRtcError, WebRtcIceServer, WhepClientSession,
+    create_whep_client_session, create_whep_session, create_whip_session,
 };

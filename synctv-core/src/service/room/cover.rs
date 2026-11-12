@@ -1,4 +1,5 @@
 use crate::{
+    Error, Result,
     models::{
         CompleteFileUploadSession, CompleteFileUploadSessionResult, FileMetadata,
         FileObjectDownload, FileRangeRequest, FileUploadManifestPart, FileUploadRange,
@@ -6,9 +7,8 @@ use crate::{
         StoreFileUploadResult, SubmittedFileReference, UserId,
     },
     service::{
-        file_storage::FileStorageContext, room_cover_upload_policy, FileStorageCleanupOrigin,
+        FileStorageCleanupOrigin, file_storage::FileStorageContext, room_cover_upload_policy,
     },
-    Error, Result,
 };
 
 use super::RoomService;
@@ -198,17 +198,16 @@ impl RoomService {
             .await?;
         tx.commit().await?;
 
-        if let Some(old_reference) = old_reference {
-            if old_reference.storage_backend != file.storage_backend
-                || old_reference.object_key != file.object_key
-            {
-                storage
-                    .schedule_delete_files(
-                        FileStorageCleanupOrigin::ReferenceReleased,
-                        &[old_reference],
-                    )
-                    .await?;
-            }
+        if let Some(old_reference) = old_reference
+            && (old_reference.storage_backend != file.storage_backend
+                || old_reference.object_key != file.object_key)
+        {
+            storage
+                .schedule_delete_files(
+                    FileStorageCleanupOrigin::ReferenceReleased,
+                    &[old_reference],
+                )
+                .await?;
         }
         self.notify_room_invalidation(&room_id).await;
         Ok(updated_room)

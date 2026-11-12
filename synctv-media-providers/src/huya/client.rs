@@ -11,7 +11,7 @@ use super::types::{
     RawLiveInfo, RawMoment, RawStream, WebStreamResponse,
 };
 use crate::{
-    check_response, fetch_json, ProviderClientError, MAX_RESPONSE_SIZE, PROVIDER_USER_AGENT,
+    MAX_RESPONSE_SIZE, PROVIDER_USER_AGENT, ProviderClientError, check_response, fetch_json,
 };
 
 const HUYA_ORIGIN: &str = "https://www.huya.com";
@@ -274,10 +274,10 @@ fn parse_huya_id(id: &str, kind: HuyaResourceKind) -> Result<HuyaResource, Provi
 async fn huya_text_with_limit(
     mut response: reqwest::Response,
 ) -> Result<String, ProviderClientError> {
-    if let Some(size) = response.content_length() {
-        if usize::try_from(size).map_or(true, |size| size > MAX_RESPONSE_SIZE) {
-            return Err(ProviderClientError::ResponseTooLarge { size });
-        }
+    if let Some(size) = response.content_length()
+        && usize::try_from(size).map_or(true, |size| size > MAX_RESPONSE_SIZE)
+    {
+        return Err(ProviderClientError::ResponseTooLarge { size });
     }
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await? {
@@ -611,9 +611,9 @@ fn category(value: &serde_json::Value) -> Option<String> {
 mod tests {
     use std::io::Write;
 
-    use flate2::{write::GzEncoder, Compression};
+    use flate2::{Compression, write::GzEncoder};
     use serde_json::json;
-    use wiremock::{matchers, Mock, MockServer, ResponseTemplate};
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
 
     use super::*;
 

@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    models::{MediaId, PlaylistId, RoomId},
     Error, Result,
+    models::{MediaId, PlaylistId, RoomId},
 };
 
 fn required_playlist_depth(depth: Option<i32>) -> Result<i32> {

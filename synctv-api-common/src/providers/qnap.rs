@@ -8,7 +8,7 @@ use synctv_proto::providers::qnap::{
     LogoutResponse,
 };
 use synctv_proto::source_config::{
-    media_source_config, playlist_source_config, QnapMediaSourceConfig, QnapPlaylistSourceConfig,
+    QnapMediaSourceConfig, QnapPlaylistSourceConfig, media_source_config, playlist_source_config,
 };
 use synctv_realtime::fanout::RealtimeEventService;
 

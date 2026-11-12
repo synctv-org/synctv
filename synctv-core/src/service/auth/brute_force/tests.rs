@@ -173,10 +173,12 @@ async fn in_memory_tracker_operations_succeed() {
     let key = "test:user";
 
     assert!(tracker.get_attempts(key).await.is_ok());
-    assert!(tracker
-        .record_failure(key, crate::SystemClock.now().timestamp(), 900)
-        .await
-        .is_ok());
+    assert!(
+        tracker
+            .record_failure(key, crate::SystemClock.now().timestamp(), 900)
+            .await
+            .is_ok()
+    );
     assert!(tracker.reset(key).await.is_ok());
 }
 

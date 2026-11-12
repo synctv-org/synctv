@@ -6,9 +6,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use synctv_cluster::discovery::{
-    health_monitor::HealthProbeConfig, ClusterHealthRuntime, ClusterNodeDirectory,
-    ClusterNodeDirectoryFactory, HealthMonitor, StaticDiscovery, StaticDiscoveryConfig,
-    StaticPeerConfig,
+    ClusterHealthRuntime, ClusterNodeDirectory, ClusterNodeDirectoryFactory, HealthMonitor,
+    StaticDiscovery, StaticDiscoveryConfig, StaticPeerConfig, health_monitor::HealthProbeConfig,
 };
 #[cfg(feature = "k8s")]
 use synctv_cluster::discovery::{K8sDnsDiscovery, K8sDnsDiscoveryOptions};
@@ -420,15 +419,15 @@ mod tests {
     use crate::bootstrap::cluster::{
         build_cluster_coordination_provider, init_cluster_components, init_cluster_discovery,
     };
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
     use synctv_cluster::discovery::{ClusterNodeDirectory, ClusterNodeDirectoryFactory};
 
     use crate::app_config::AppConfig as Config;
     use synctv_realtime::sync::{
-        build_room_message_runtime, ConnectionLimits, ConnectionManager, RealtimeConfig,
-        RealtimeManager, RealtimeManagerRuntime,
+        ConnectionLimits, ConnectionManager, RealtimeConfig, RealtimeManager,
+        RealtimeManagerRuntime, build_room_message_runtime,
     };
     use tokio::sync::RwLock;
     use tokio_util::sync::CancellationToken;
@@ -530,6 +529,9 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires Docker"]
+    // The only test in this binary that touches the k8s discovery variables;
+    // `set_var`/`remove_var` are `unsafe` under the 2024 edition.
+    #[allow(unsafe_code)]
     async fn test_k8s_dns_env_validation_happens_before_node_registration() {
         let (_redis, client) = synctv_core_testing::start_redis_with_client().await;
         let shared_conn = Arc::new(RwLock::new(
@@ -581,9 +583,9 @@ mod tests {
         let old_service_name = std::env::var_os("HEADLESS_SERVICE_NAME");
         let old_namespace = std::env::var_os("POD_NAMESPACE");
         let old_pod_ip = std::env::var_os("POD_IP");
-        std::env::set_var("HEADLESS_SERVICE_NAME", "synctv-headless");
-        std::env::set_var("POD_NAMESPACE", "default");
-        std::env::remove_var("POD_IP");
+        unsafe { std::env::set_var("HEADLESS_SERVICE_NAME", "synctv-headless") };
+        unsafe { std::env::set_var("POD_NAMESPACE", "default") };
+        unsafe { std::env::remove_var("POD_IP") };
 
         let result = init_cluster_discovery(
             &config,
@@ -595,16 +597,16 @@ mod tests {
         .await;
 
         match old_service_name {
-            Some(value) => std::env::set_var("HEADLESS_SERVICE_NAME", value),
-            None => std::env::remove_var("HEADLESS_SERVICE_NAME"),
+            Some(value) => unsafe { std::env::set_var("HEADLESS_SERVICE_NAME", value) },
+            None => unsafe { std::env::remove_var("HEADLESS_SERVICE_NAME") },
         }
         match old_namespace {
-            Some(value) => std::env::set_var("POD_NAMESPACE", value),
-            None => std::env::remove_var("POD_NAMESPACE"),
+            Some(value) => unsafe { std::env::set_var("POD_NAMESPACE", value) },
+            None => unsafe { std::env::remove_var("POD_NAMESPACE") },
         }
         match old_pod_ip {
-            Some(value) => std::env::set_var("POD_IP", value),
-            None => std::env::remove_var("POD_IP"),
+            Some(value) => unsafe { std::env::set_var("POD_IP", value) },
+            None => unsafe { std::env::remove_var("POD_IP") },
         }
 
         assert!(

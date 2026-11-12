@@ -1,9 +1,9 @@
-use super::{nonnegative_i64_to_u64, UserService};
+use super::{UserService, nonnegative_i64_to_u64};
 use crate::{
+    Error, Result,
     models::{UserAuthFactors, UserId},
     service::{BruteForceProtection, RateLimiter},
     validation::PasswordComplexityOptions,
-    Error, Result,
 };
 use std::{collections::HashSet, sync::Arc};
 
@@ -290,9 +290,11 @@ fn test_email_domain_allowed_by_whitelist_normalizes_domains() {
 fn test_email_domain_allowed_by_whitelist_rejects_missing_domain() {
     let error = UserService::email_domain_allowed_by_whitelist("alice", "example.com")
         .expect_err("email whitelist checks require an email domain");
-    assert!(error
-        .to_string()
-        .contains("Email must include a domain for whitelist validation"));
+    assert!(
+        error
+            .to_string()
+            .contains("Email must include a domain for whitelist validation")
+    );
 }
 
 #[tokio::test]

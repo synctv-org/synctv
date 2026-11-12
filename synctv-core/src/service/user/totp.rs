@@ -8,9 +8,9 @@ use sqlx::{Postgres, Transaction};
 use synctv_common::ExecutionControl;
 
 use crate::{
+    Error, Result,
     models::UserId,
     service::{AuthFactorMethod, AuthenticatedLogin, SensitiveVerificationOutcome, UserService},
-    Error, Result,
 };
 
 const TOTP_PERIOD_SECONDS: i64 = 30;

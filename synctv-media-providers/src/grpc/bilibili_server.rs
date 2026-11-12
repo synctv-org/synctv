@@ -3,17 +3,17 @@
 //! Thin wrapper around `BilibiliService` that implements gRPC server trait.
 
 use super::bilibili::{
-    bilibili_server::Bilibili, Empty, GetDashPgcurlReq, GetDashPgcurlResp, GetDashVideoUrlReq,
-    GetDashVideoUrlResp, GetLiveDanmuInfoReq, GetLiveDanmuInfoResp, GetLiveStreamsReq,
-    GetLiveStreamsResp, GetPgcurlReq, GetSubtitlesReq, GetSubtitlesResp, GetVideoUrlReq,
-    ListFavoriteFoldersReq, ListFavoriteFoldersResp, ListFollowedPgcReq, ListFollowedPgcResp,
-    ListHistoryReq, ListHistoryResp, ListLiveAreasReq, ListLiveAreasResp, ListLiveRoomsReq,
-    ListLiveRoomsResp, ListPgcSeasonsReq, ListPgcSeasonsResp, ListPgcTimelineReq,
-    ListPgcTimelineResp, ListVideoPartsReq, ListVideoPartsResp, ListVideosReq, ListVideosResp,
-    LoginWithQrCodeReq, LoginWithQrCodeResp, LoginWithSmsReq, LoginWithSmsResp, MatchReq,
-    MatchResp, NewCaptchaResp, NewQrCodeResp, NewSmsReq, NewSmsResp, ParseLivePageReq,
-    ParsePgcPageReq, ParseVideoPageReq, UserInfoReq, UserInfoResp, VideoPageInfo, VideoUrl,
-    WatchBilibiliLiveDanmakuReq,
+    Empty, GetDashPgcurlReq, GetDashPgcurlResp, GetDashVideoUrlReq, GetDashVideoUrlResp,
+    GetLiveDanmuInfoReq, GetLiveDanmuInfoResp, GetLiveStreamsReq, GetLiveStreamsResp, GetPgcurlReq,
+    GetSubtitlesReq, GetSubtitlesResp, GetVideoUrlReq, ListFavoriteFoldersReq,
+    ListFavoriteFoldersResp, ListFollowedPgcReq, ListFollowedPgcResp, ListHistoryReq,
+    ListHistoryResp, ListLiveAreasReq, ListLiveAreasResp, ListLiveRoomsReq, ListLiveRoomsResp,
+    ListPgcSeasonsReq, ListPgcSeasonsResp, ListPgcTimelineReq, ListPgcTimelineResp,
+    ListVideoPartsReq, ListVideoPartsResp, ListVideosReq, ListVideosResp, LoginWithQrCodeReq,
+    LoginWithQrCodeResp, LoginWithSmsReq, LoginWithSmsResp, MatchReq, MatchResp, NewCaptchaResp,
+    NewQrCodeResp, NewSmsReq, NewSmsResp, ParseLivePageReq, ParsePgcPageReq, ParseVideoPageReq,
+    UserInfoReq, UserInfoResp, VideoPageInfo, VideoUrl, WatchBilibiliLiveDanmakuReq,
+    bilibili_server::Bilibili,
 };
 use super::error_mapper::map_provider_error;
 use crate::bilibili::{BilibiliInterface, BilibiliService as BilibiliServiceImpl};

@@ -89,10 +89,10 @@ pub mod retry {
         // underlying timeout several layers deep.
         let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
         while let Some(candidate) = current {
-            if let Some(io_err) = candidate.downcast_ref::<std::io::Error>() {
-                if is_transient_io_error(io_err) {
-                    return true;
-                }
+            if let Some(io_err) = candidate.downcast_ref::<std::io::Error>()
+                && is_transient_io_error(io_err)
+            {
+                return true;
             }
             current = candidate.source();
         }

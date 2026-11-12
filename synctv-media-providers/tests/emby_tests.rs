@@ -3,9 +3,9 @@
 //! Tests for item ID validation, API prefix detection, and HTTP API interactions using wiremock.
 
 #![allow(clippy::unwrap_used)]
-use synctv_media_providers::emby::{EmbyInterface, EmbyService};
-use synctv_media_providers::transport_dto::emby::{login_req, LoginReq, LoginResp};
 use synctv_media_providers::EmbyClient;
+use synctv_media_providers::emby::{EmbyInterface, EmbyService};
+use synctv_media_providers::transport_dto::emby::{LoginReq, LoginResp, login_req};
 use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -258,10 +258,12 @@ async fn test_emby_client_list_users_success() {
     assert_eq!(users.len(), 1);
     assert_eq!(users[0].id, "user-uuid-123");
     assert_eq!(users[0].name, "admin");
-    assert!(users[0]
-        .policy
-        .as_ref()
-        .is_some_and(|policy| policy.is_administrator));
+    assert!(
+        users[0]
+            .policy
+            .as_ref()
+            .is_some_and(|policy| policy.is_administrator)
+    );
 }
 
 #[tokio::test]

@@ -3,11 +3,11 @@
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
+use synctv_core::Error;
 use synctv_core::cache::KeyBuilder;
 use synctv_core::models::RoomId;
 use synctv_core::service::InMemoryTokenBlacklistStore;
 use synctv_core::service::{GuestTokenValidator, JwtService, TokenBlacklistStore};
-use synctv_core::Error;
 
 #[tokio::test]
 async fn test_blacklisted_guest_token_rejected_by_validator() {

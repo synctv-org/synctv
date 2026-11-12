@@ -4,10 +4,10 @@
 //! Drop remains a best-effort fallback for unexpected early exits.
 
 use crate::{
+    Result,
     models::{RoomId, UserId},
     repository::room_member::RemovedRoomMember,
     service::PermissionWriteFence,
-    Result,
 };
 use std::sync::Arc;
 

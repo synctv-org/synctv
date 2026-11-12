@@ -1,12 +1,12 @@
 use crate::{
+    Error, Result,
     models::{
         AuditAction, AuditDetails, AuditTargetType, ReviewRequestId, RoomId, RoomMember, UserId,
     },
-    Error, Result,
 };
 
 use super::{
-    outbox::MemberJoinedEffectsRequest, RealtimeOutboxPermissionChangedEventFactory, RoomService,
+    RealtimeOutboxPermissionChangedEventFactory, RoomService, outbox::MemberJoinedEffectsRequest,
 };
 
 impl RoomService {

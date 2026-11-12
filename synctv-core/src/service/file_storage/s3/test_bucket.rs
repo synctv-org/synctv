@@ -5,10 +5,10 @@ use reqwest::header;
 use sha2::{Digest, Sha256};
 
 use super::{
-    protocol::{amz_datetime, S3SigningContext},
+    S3CompatibleFileStorageService, S3FileStorageConfig,
+    protocol::{S3SigningContext, amz_datetime},
     setup::{s3_http_client, s3_operator_from_config},
     url::s3_url,
-    S3CompatibleFileStorageService, S3FileStorageConfig,
 };
 use crate::{Error, Result};
 

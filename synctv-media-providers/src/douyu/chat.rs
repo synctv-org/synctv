@@ -6,8 +6,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
-use super::stt::{decode, encode, packet, take_packets};
 use super::DouyuDanmakuEvent;
+use super::stt::{decode, encode, packet, take_packets};
 use crate::ProviderClientError;
 
 const DOUYU_CHAT_ADDRS: [&str; 2] = ["danmuproxy.douyu.com:8601", "danmuproxy.douyu.com:8602"];
@@ -82,11 +82,10 @@ pub async fn watch_danmaku(room_id: &str) -> Result<DouyuDanmakuStream, Provider
                     match take_packets(&mut buffer) {
                         Ok(frames) => {
                             for frame in frames {
-                                if let Some(event) = parse_chat(&frame) {
-                                    if sender.send(Ok(event)).await.is_err() {
+                                if let Some(event) = parse_chat(&frame)
+                                    && sender.send(Ok(event)).await.is_err() {
                                         return;
                                     }
-                                }
                             }
                         }
                         Err(error) => {

@@ -9,9 +9,9 @@ use synctv_proto::playback_provider::rtmp::{
     RtmpHlsPlaylistResponse, RtmpHlsSegmentResponse,
 };
 
-use crate::http::{middleware::RequestMetadata, AppResult, AppState};
+use crate::http::{AppResult, AppState, middleware::RequestMetadata};
 use crate::providers::playback_provider::transport::{
-    query, range_header, signed_query_fields, stream_http_response, PlaybackProviderHttpResponse,
+    PlaybackProviderHttpResponse, query, range_header, signed_query_fields, stream_http_response,
 };
 
 #[derive(Debug, serde::Deserialize)]

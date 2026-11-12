@@ -9,8 +9,8 @@ use synctv_core::repository::ProviderPlaybackSessionRepository;
 use synctv_core::service::{ProvidersManager, RoomService};
 
 use super::ClientApiImpl;
-use crate::impls::admin::AdminApiImpl;
 use crate::impls::ApiError;
+use crate::impls::admin::AdminApiImpl;
 
 const CLEANUP_BATCH_SIZE: usize = 100;
 
@@ -129,24 +129,23 @@ pub trait ProviderPlaybackLifecycleApi: Send + Sync {
         current: &RoomPlaybackState,
     ) -> Result<(), ApiError> {
         let repo = self.lifecycle_session_repo();
-        if let Some(previous) = previous {
-            if previous.playback_generation != current.playback_generation {
-                let reason = if current.playing_media_id.is_none()
-                    && current.playing_playlist_id.is_none()
-                {
+        if let Some(previous) = previous
+            && previous.playback_generation != current.playback_generation
+        {
+            let reason =
+                if current.playing_media_id.is_none() && current.playing_playlist_id.is_none() {
                     ProviderPlaybackStopReason::Stopped
                 } else {
                     ProviderPlaybackStopReason::TargetChanged
                 };
-                repo.request_generation_stop(
-                    previous.room_id,
-                    previous.playback_generation,
-                    previous.computed_position(),
-                    reason,
-                )
-                .await
-                .map_err(ApiError::from)?;
-            }
+            repo.request_generation_stop(
+                previous.room_id,
+                previous.playback_generation,
+                previous.computed_position(),
+                reason,
+            )
+            .await
+            .map_err(ApiError::from)?;
         }
         if current.playing_media_id.is_some() || current.playing_playlist_id.is_some() {
             self.report_provider_progress_for_state(

@@ -9,16 +9,15 @@ use crate::service::{OAuth2OidcProviderConfig, OAuth2ProviderPrivateConfig};
 use crate::{Error, InternalExt};
 use async_trait::async_trait;
 use jsonwebtoken::{
-    decode, decode_header,
+    Algorithm, DecodingKey, Validation, decode, decode_header,
     jwk::{Jwk, JwkSet, KeyOperations, PublicKeyUse},
-    Algorithm, DecodingKey, Validation,
 };
 use oauth2::{
-    basic::{BasicErrorResponse, BasicRevocationErrorResponse, BasicTokenType},
     AuthType, AuthUrl, Client, ClientId, ClientSecret, EndpointNotSet, EndpointSet,
     ExtraTokenFields, PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope,
     StandardRevocableToken, StandardTokenIntrospectionResponse, StandardTokenResponse,
     TokenResponse, TokenUrl,
+    basic::{BasicErrorResponse, BasicRevocationErrorResponse, BasicTokenType},
 };
 use reqwest::Client as ReqwestClient;
 use serde::{Deserialize, Serialize};
@@ -797,20 +796,20 @@ impl OidcProvider {
         let now = Instant::now();
         {
             let cache = self.jwks_cache.read().await;
-            if let Some(cached) = cache.as_ref() {
-                if cached_jwks_is_fresh(cached, jwks_uri, now) {
-                    return Ok(Self::jwks_snapshot(cached, true));
-                }
+            if let Some(cached) = cache.as_ref()
+                && cached_jwks_is_fresh(cached, jwks_uri, now)
+            {
+                return Ok(Self::jwks_snapshot(cached, true));
             }
         }
 
         let mut refresh_state = self.jwks_refresh_state.lock().await;
         let now = Instant::now();
         let cache = self.jwks_cache.read().await;
-        if let Some(cached) = cache.as_ref() {
-            if cached_jwks_is_fresh(cached, jwks_uri, now) {
-                return Ok(Self::jwks_snapshot(cached, false));
-            }
+        if let Some(cached) = cache.as_ref()
+            && cached_jwks_is_fresh(cached, jwks_uri, now)
+        {
+            return Ok(Self::jwks_snapshot(cached, false));
         }
         drop(cache);
         if let Some(err) = Self::recent_jwks_failure(&refresh_state, jwks_uri, now) {
@@ -1049,15 +1048,14 @@ fn validate_jwk_for_id_token(jwk: &Jwk, algorithm: Algorithm) -> Result<(), Erro
             "OIDC ID Token signing key is not intended for signatures".to_string(),
         ));
     }
-    if let Some(operations) = jwk.common.key_operations.as_ref() {
-        if !operations
+    if let Some(operations) = jwk.common.key_operations.as_ref()
+        && !operations
             .iter()
             .any(|operation| operation == &KeyOperations::Verify)
-        {
-            return Err(Error::Authentication(
-                "OIDC ID Token signing key cannot verify signatures".to_string(),
-            ));
-        }
+    {
+        return Err(Error::Authentication(
+            "OIDC ID Token signing key cannot verify signatures".to_string(),
+        ));
     }
     if let Some(key_algorithm) = jwk.common.key_algorithm {
         let key_algorithm =
@@ -1611,12 +1609,16 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
 
     #[test]
     fn test_token_endpoint_auth_method_honors_discovery_and_forced_request_body() {
-        let post = vec![TokenEndpointAuthMethod::ClientSecretPost
-            .as_str()
-            .to_string()];
-        let basic = vec![TokenEndpointAuthMethod::ClientSecretBasic
-            .as_str()
-            .to_string()];
+        let post = vec![
+            TokenEndpointAuthMethod::ClientSecretPost
+                .as_str()
+                .to_string(),
+        ];
+        let basic = vec![
+            TokenEndpointAuthMethod::ClientSecretBasic
+                .as_str()
+                .to_string(),
+        ];
         let unsupported = vec!["private_key_jwt".to_string()];
 
         assert_eq!(

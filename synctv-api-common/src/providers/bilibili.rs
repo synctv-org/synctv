@@ -8,9 +8,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use synctv_core::models::{
-    resolve_provider_instance_binding, BilibiliHistoryType, BilibiliPgcTimelineType,
-    BilibiliPlaylistSource, BilibiliPlaylistSourceConfig, CredentialProviderInstanceName,
-    MediaSourceConfig, PlaylistSourceConfig, UserId,
+    BilibiliHistoryType, BilibiliPgcTimelineType, BilibiliPlaylistSource,
+    BilibiliPlaylistSourceConfig, CredentialProviderInstanceName, MediaSourceConfig,
+    PlaylistSourceConfig, UserId, resolve_provider_instance_binding,
 };
 use synctv_core::provider::{
     BilibiliMatchRequest, BilibiliMatchedResource, BilibiliParseLivePageRequest,
@@ -1775,8 +1775,8 @@ mod tests {
     }
 
     #[test]
-    fn effective_instance_rejects_explicit_request_conflicting_with_credential_binding(
-    ) -> TestResult {
+    fn effective_instance_rejects_explicit_request_conflicting_with_credential_binding()
+    -> TestResult {
         let err = provider_err(BilibiliApiImpl::resolve_effective_instance_name(
             Some("bilibili_other"),
             CredentialProviderInstanceName::CredentialBacked(Some("bilibili_remote")),

@@ -4,17 +4,17 @@ use std::time::Duration as StdDuration;
 use synctv_common::ExecutionControl;
 
 use crate::{
+    Error, Result,
     models::{OpaquePasswordRecord, Room, RoomId, UserId},
     repository::room_password::RoomPasswordCredentialState,
     service::optimistic_retry,
-    Error, Result,
 };
 
 use super::{
-    join::RoomPasswordJoinProof, RealtimeOutboxPermissionChangedEventFactory,
-    RoomOpaqueLoginStartChallenge, RoomOpaquePasswordLoginSession,
-    RoomOpaquePasswordRegistrationSession, RoomOpaqueRegistrationStartChallenge, RoomService,
     ROOM_OPAQUE_LOGIN_SESSION_TTL_SECS, ROOM_OPAQUE_REGISTRATION_SESSION_TTL_SECS,
+    RealtimeOutboxPermissionChangedEventFactory, RoomOpaqueLoginStartChallenge,
+    RoomOpaquePasswordLoginSession, RoomOpaquePasswordRegistrationSession,
+    RoomOpaqueRegistrationStartChallenge, RoomService, join::RoomPasswordJoinProof,
 };
 
 pub(in crate::service::room) fn room_opaque_credential_identifier(room_id: &RoomId) -> Vec<u8> {
@@ -165,17 +165,16 @@ impl RoomService {
         if current_state.version != session.expected_password_version {
             return Err(Error::Authentication("Authentication failed".to_string()));
         }
-        if let Some(ref brute_force) = self.brute_force_service {
-            if let Err(error) = brute_force
+        if let Some(ref brute_force) = self.brute_force_service
+            && let Err(error) = brute_force
                 .reset_subject_key_with_control(&session.brute_force_subject_key, None)
                 .await
-            {
-                tracing::warn!(
-                    room_id = %session.room_id,
-                    error = %error,
-                    "Failed to reset room password rate limit counter after successful OPAQUE login"
-                );
-            }
+        {
+            tracing::warn!(
+                room_id = %session.room_id,
+                error = %error,
+                "Failed to reset room password rate limit counter after successful OPAQUE login"
+            );
         }
         self.join_room_with_password_proof(
             session.room_id,

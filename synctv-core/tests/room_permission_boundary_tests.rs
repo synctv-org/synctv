@@ -19,6 +19,7 @@
 use chrono::Utc;
 use sqlx::PgPool;
 use synctv_core::{
+    Error,
     models::{
         AddMemberOptions, Room, RoomId, RoomMember, RoomMemberPermissionBits, RoomPermission,
         RoomRole, RoomStatus, User, UserId, UserRole, UserStatus,
@@ -28,10 +29,9 @@ use synctv_core::{
         BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, MemberService,
         NotificationService, PermissionService, RoomService, UserService,
     },
-    Error,
 };
 use synctv_core_testing::{
-    create_test_database_with_options_and_label, TestDatabase, TestOptionExt, TestResultExt,
+    TestDatabase, TestOptionExt, TestResultExt, create_test_database_with_options_and_label,
 };
 // Test Infrastructure
 

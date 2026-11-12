@@ -1,7 +1,7 @@
 use crate::{
+    Error, Result,
     models::{RoomId, RoomPlaybackState, UserId},
     service::SwitchPlaybackTarget,
-    Error, Result,
 };
 
 use super::{AuthorizedAdminActor, RoomService};

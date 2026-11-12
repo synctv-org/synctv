@@ -204,7 +204,7 @@ impl SpsParser {
 
 #[cfg(test)]
 mod tests {
-    use super::{H264Error, H264ErrorValue, SpsParser, MAX_POC_CYCLE_ENTRIES};
+    use super::{H264Error, H264ErrorValue, MAX_POC_CYCLE_ENTRIES, SpsParser};
     use bytes::BytesMut;
 
     /// Minimal bit-level SPS builder for parser policy tests (MSB-first).

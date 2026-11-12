@@ -1,6 +1,6 @@
 use std::sync::{Arc, OnceLock};
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 
 use super::args::{GlobalConfigArgs, RemoteAccessArgs};
 use super::execute::resolve_remote_endpoint;

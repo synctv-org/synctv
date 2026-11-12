@@ -1,11 +1,11 @@
 use super::{
-    flv_tag_header::{AudioTagHeader, VideoTagHeader},
     Unmarshal,
+    flv_tag_header::{AudioTagHeader, VideoTagHeader},
 };
 
 use {
     super::{
-        define::{aac_packet_type, avc_packet_type, tag_type, AvcCodecId, FlvData, SoundFormat},
+        define::{AvcCodecId, FlvData, SoundFormat, aac_packet_type, avc_packet_type, tag_type},
         errors::FlvDemuxerError,
         mpeg4_aac::Mpeg4AacProcessor,
         mpeg4_avc::Mpeg4AvcProcessor,

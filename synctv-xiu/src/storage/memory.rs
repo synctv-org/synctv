@@ -15,7 +15,7 @@
 // Eviction uses a BTreeMap index keyed by sequence number. Capacity pressure
 // scans entries oldest-first while skipping each stream's protected working set.
 
-use super::{validate_component, validate_storage_key, HlsStorage};
+use super::{HlsStorage, validate_component, validate_storage_key};
 use async_trait::async_trait;
 use bytes::Bytes;
 use std::collections::BTreeMap;
@@ -94,23 +94,24 @@ impl MemoryStorageInner {
 
     /// Remove a key, updating both the data map and time index.
     fn remove(&mut self, key: &StorageKey) -> bool {
-        if let Some(entry) = self.data.remove(key) {
-            self.total_bytes -= entry.data.len();
-            self.time_index.remove(&entry.seq);
-            let stream_id = (key.app.clone(), key.stream.clone());
-            let remove_stream = if let Some(count) = self.stream_counts.get_mut(&stream_id) {
-                *count -= 1;
-                *count == 0
-            } else {
-                debug_assert!(false, "stored entry must have a stream count");
-                false
-            };
-            if remove_stream {
-                self.stream_counts.remove(&stream_id);
+        match self.data.remove(key) {
+            Some(entry) => {
+                self.total_bytes -= entry.data.len();
+                self.time_index.remove(&entry.seq);
+                let stream_id = (key.app.clone(), key.stream.clone());
+                let remove_stream = if let Some(count) = self.stream_counts.get_mut(&stream_id) {
+                    *count -= 1;
+                    *count == 0
+                } else {
+                    debug_assert!(false, "stored entry must have a stream count");
+                    false
+                };
+                if remove_stream {
+                    self.stream_counts.remove(&stream_id);
+                }
+                true
             }
-            true
-        } else {
-            false
+            _ => false,
         }
     }
 
@@ -837,17 +838,21 @@ mod tests {
             .unwrap();
 
         for index in 0..window {
-            assert!(storage
-                .exists("live", "stream_a", &format!("a_{index}"))
-                .await
-                .unwrap());
+            assert!(
+                storage
+                    .exists("live", "stream_a", &format!("a_{index}"))
+                    .await
+                    .unwrap()
+            );
         }
         assert!(!storage.exists("live", "stream_b", "b_0").await.unwrap());
         for index in 1..=window + 1 {
-            assert!(storage
-                .exists("live", "stream_b", &format!("b_{index}"))
-                .await
-                .unwrap());
+            assert!(
+                storage
+                    .exists("live", "stream_b", &format!("b_{index}"))
+                    .await
+                    .unwrap()
+            );
         }
         assert_eq!(storage.key_count(), window * 2 + 1);
     }
@@ -885,10 +890,12 @@ mod tests {
 
         for stream in ["stream_a", "stream_b"] {
             for index in 0..window {
-                assert!(storage
-                    .exists("live", stream, &format!("{stream}_{index}"))
-                    .await
-                    .unwrap());
+                assert!(
+                    storage
+                        .exists("live", stream, &format!("{stream}_{index}"))
+                        .await
+                        .unwrap()
+                );
             }
         }
         assert_eq!(storage.key_count(), window * 2);
@@ -1052,10 +1059,12 @@ mod tests {
                 reserve
             );
             for segment_index in (SEGMENTS - reserve)..SEGMENTS {
-                assert!(storage
-                    .exists("live", &stream, &format!("segment_{segment_index:02}"))
-                    .await
-                    .unwrap());
+                assert!(
+                    storage
+                        .exists("live", &stream, &format!("segment_{segment_index:02}"))
+                        .await
+                        .unwrap()
+                );
             }
         }
     }
@@ -1114,24 +1123,32 @@ mod tests {
     async fn test_memory_storage_path_traversal_rejected() {
         let storage = MemoryStorage::new();
 
-        assert!(storage
-            .write("..", "stream", "name", Bytes::from_static(b"x"))
-            .await
-            .is_err());
-        assert!(storage
-            .write("app", "..", "name", Bytes::from_static(b"x"))
-            .await
-            .is_err());
-        assert!(storage
-            .write("app", "stream", "../name", Bytes::from_static(b"x"))
-            .await
-            .is_err());
+        assert!(
+            storage
+                .write("..", "stream", "name", Bytes::from_static(b"x"))
+                .await
+                .is_err()
+        );
+        assert!(
+            storage
+                .write("app", "..", "name", Bytes::from_static(b"x"))
+                .await
+                .is_err()
+        );
+        assert!(
+            storage
+                .write("app", "stream", "../name", Bytes::from_static(b"x"))
+                .await
+                .is_err()
+        );
         assert!(storage.read("app", "stream", "a/b").await.is_err());
         assert!(storage.delete("app", "stream", "a/b").await.is_err());
         assert!(storage.exists("app", "stream", "a/b").await.is_err());
-        assert!(storage
-            .get_public_url("app", "stream", "a/b")
-            .await
-            .is_err());
+        assert!(
+            storage
+                .get_public_url("app", "stream", "a/b")
+                .await
+                .is_err()
+        );
     }
 }

@@ -14,7 +14,7 @@ use synctv_core::models::id::{RoomId, UserId};
 use synctv_realtime::sync::{RealtimeConfig, RealtimeEvent, RealtimeManager, RoomMessageHub};
 mod integration_test_helpers;
 use integration_test_helpers::{
-    broadcast_until_all_clients_receive, create_node, user_actor, TestRedis,
+    TestRedis, broadcast_until_all_clients_receive, create_node, user_actor,
 };
 
 #[tokio::test]

@@ -162,10 +162,11 @@ impl RungViewerGuard {
                             rung_state.subscribers = rung_state.subscribers.saturating_sub(1);
                         }
                     }
-                    if rung_state.waiting_viewers == 0 && rung_state.subscribers == 0 {
-                        if let Some(running) = rung_state.running.as_mut() {
-                            running.idle_since.get_or_insert(now);
-                        }
+                    if rung_state.waiting_viewers == 0
+                        && rung_state.subscribers == 0
+                        && let Some(running) = rung_state.running.as_mut()
+                    {
+                        running.idle_since.get_or_insert(now);
                     }
                 }
                 prune_source(source);
@@ -250,13 +251,16 @@ impl TranscodeManager {
             schedule_wake: Notify::new(),
         });
         let manager = Arc::new(Self { inner });
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            let scheduler = Arc::clone(&manager.inner);
-            handle.spawn(async move {
-                scheduler_loop(scheduler).await;
-            });
-        } else {
-            warn!("No Tokio runtime; transcode scheduler not started");
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                let scheduler = Arc::clone(&manager.inner);
+                handle.spawn(async move {
+                    scheduler_loop(scheduler).await;
+                });
+            }
+            _ => {
+                warn!("No Tokio runtime; transcode scheduler not started");
+            }
         }
         manager
     }
@@ -495,27 +499,24 @@ impl ManagerInner {
             let mut state = self.state.lock().expect("transcode state poisoned");
             let now = std::time::Instant::now();
             if let Some(source) = state.get_mut(&(room_id.to_string(), media_id.to_string())) {
-                if let Some(rung_state) = source.rungs.get_mut(rung) {
-                    if rung_state.running.take().is_some() {
-                        wake = true;
-                        match outcome {
-                            Ok(()) => {
-                                debug!(room_id, media_id, rung, "Transcode rung ended");
-                            }
-                            Err(TranscodeError::Unsupported(reason)) => {
-                                warn!(
-                                    room_id,
-                                    media_id,
-                                    rung,
-                                    reason,
-                                    "Transcode rung permanently unsupported"
-                                );
-                                rung_state.unsupported = Some(reason.clone());
-                            }
-                            Err(error) => {
-                                warn!(room_id, media_id, rung, %error, "Transcode rung failed");
-                                rung_state.last_failure = Some(now);
-                            }
+                if let Some(rung_state) = source.rungs.get_mut(rung)
+                    && rung_state.running.take().is_some()
+                {
+                    wake = true;
+                    match outcome {
+                        Ok(()) => {
+                            debug!(room_id, media_id, rung, "Transcode rung ended");
+                        }
+                        Err(TranscodeError::Unsupported(reason)) => {
+                            warn!(
+                                room_id,
+                                media_id, rung, reason, "Transcode rung permanently unsupported"
+                            );
+                            rung_state.unsupported = Some(reason.clone());
+                        }
+                        Err(error) => {
+                            warn!(room_id, media_id, rung, %error, "Transcode rung failed");
+                            rung_state.last_failure = Some(now);
                         }
                     }
                 }
@@ -890,7 +891,7 @@ async fn subscribe_source_frames(
 #[must_use]
 pub(crate) fn parse_metadata_resolution(data: &[u8]) -> Option<(u32, u32)> {
     use synctv_xiu::bytesio::bytes_reader::BytesReader;
-    use synctv_xiu::flv::amf0::{amf0_reader::Amf0Reader, Amf0ValueType};
+    use synctv_xiu::flv::amf0::{Amf0ValueType, amf0_reader::Amf0Reader};
 
     let mut reader = Amf0Reader::new(BytesReader::new(bytes::BytesMut::from(data)));
     let values = reader.read_all().ok()?;

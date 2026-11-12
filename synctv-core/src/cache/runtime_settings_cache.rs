@@ -9,10 +9,10 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::Result;
 use crate::cache::l2_backend::CacheL2Backend;
 use crate::cache::tiered::{CacheKey, FenceReadResult, TieredCache, Versioned};
 use crate::models::settings::RuntimeSetting;
-use crate::Result;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RuntimeSettingKey(String);

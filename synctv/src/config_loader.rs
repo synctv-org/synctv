@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use crate::app_config::default_data_dir as app_default_data_dir;
 use crate::app_config::AppConfig as Config;
+use crate::app_config::default_data_dir as app_default_data_dir;
 use crate::path_util::absolute_display_path;
 use config::{ConfigError, FileFormat};
 use serde::Deserialize;
@@ -870,13 +870,13 @@ pub fn load_config_with_options(options: &LoadConfigOptions) -> Result<Config> {
 
 #[cfg(test)]
 mod tests {
+    use super::{
+        ConfigLoadExtensions, LoadConfigOptions, UnknownConfigPolicy, load_config,
+        load_config_with_options, load_core_config_file, load_public_id_config_with_options,
+        public_id_config_extensions,
+    };
     #[cfg(target_os = "macos")]
     use super::{default_config_search_paths, user_home_dir};
-    use super::{
-        load_config, load_config_with_options, load_core_config_file,
-        load_public_id_config_with_options, public_id_config_extensions, ConfigLoadExtensions,
-        LoadConfigOptions, UnknownConfigPolicy,
-    };
     use std::fmt::Debug;
     use std::sync::MutexGuard;
     use synctv_common::time::{default_timezone_name, set_default_timezone_name};
@@ -955,10 +955,14 @@ mod tests {
         value: Option<String>,
     }
 
+    // Every use of this guard is serialized behind
+    // `acquire_process_config_test_lock()`, so the environment mutations are
+    // race-free; `set_var`/`remove_var` are `unsafe` under the 2024 edition.
+    #[allow(unsafe_code)]
     impl EnvVarGuard {
         fn set(key: &'static str, value: impl Into<String>) -> Self {
             let previous = std::env::var(key).ok();
-            std::env::set_var(key, value.into());
+            unsafe { std::env::set_var(key, value.into()) };
             Self {
                 key,
                 value: previous,
@@ -967,7 +971,7 @@ mod tests {
 
         fn remove(key: &'static str) -> Self {
             let previous = std::env::var(key).ok();
-            std::env::remove_var(key);
+            unsafe { std::env::remove_var(key) };
             Self {
                 key,
                 value: previous,
@@ -975,12 +979,13 @@ mod tests {
         }
     }
 
+    #[allow(unsafe_code)]
     impl Drop for EnvVarGuard {
         fn drop(&mut self) {
             if let Some(value) = self.value.take() {
-                std::env::set_var(self.key, value);
+                unsafe { std::env::set_var(self.key, value) };
             } else {
-                std::env::remove_var(self.key);
+                unsafe { std::env::remove_var(self.key) };
             }
         }
     }

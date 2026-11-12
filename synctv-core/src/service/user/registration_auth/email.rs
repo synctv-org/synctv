@@ -3,10 +3,10 @@ use std::net::IpAddr;
 use synctv_common::ExecutionControl;
 
 use crate::{
+    Error, Result,
     models::{SignupMethod, User, UserStatus},
     repository::{EmailRegistrationTokenRepository, PasswordCredentialMaterial},
     service::{EmailOutboxService, UserService},
-    Error, Result,
 };
 
 use super::{

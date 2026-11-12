@@ -6,14 +6,14 @@
 //! Uses proto-generated types for request/response to ensure type consistency
 //! with gRPC handlers.
 
+use crate::http::AppState;
 use crate::http::error::AppResult;
 use crate::http::middleware::RequestMetadata;
 use crate::http::validation::ProtoQuery;
-use crate::http::AppState;
 use axum::{
+    Json,
     extract::{Path, State},
     http::StatusCode,
-    Json,
 };
 use synctv_api_common::impls::EndpointRateLimitCategory;
 use synctv_proto::client::{

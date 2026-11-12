@@ -1,4 +1,4 @@
-use reqwest::{header, Client};
+use reqwest::{Client, header};
 use serde::de::DeserializeOwned;
 use serde_json::json;
 
@@ -6,7 +6,7 @@ use super::types::{
     CloudreveList, CloudreveLogin, CloudreveResponse, CloudreveSearch, CloudreveThumbnail,
     CloudreveToken, CloudreveUrl, CloudreveUser,
 };
-use crate::{fetch_json, ProviderClientError, PROVIDER_USER_AGENT};
+use crate::{PROVIDER_USER_AGENT, ProviderClientError, fetch_json};
 
 fn normalize_host(host: &str) -> Result<String, ProviderClientError> {
     let parsed = url::Url::parse(host).map_err(|error| {

@@ -533,14 +533,12 @@ impl StreamRegistryTrait for TestStreamRegistry {
             publisher.generation_id == generation_id
                 && publisher.lease_epoch == expected_lease_epoch
         });
-        if owns_lease {
-            if let Some(mut generation) = publishers.remove(&key) {
-                generation.ended_at = Some(synctv_core::SystemClock.now());
-                self.generations
-                    .lock()
-                    .await
-                    .insert((key.0, key.1, generation_id.to_string()), generation);
-            }
+        if owns_lease && let Some(mut generation) = publishers.remove(&key) {
+            generation.ended_at = Some(synctv_core::SystemClock.now());
+            self.generations
+                .lock()
+                .await
+                .insert((key.0, key.1, generation_id.to_string()), generation);
         }
         Ok(owns_lease)
     }
@@ -808,13 +806,15 @@ mod tests {
                 )
                 .await?
         );
-        assert!(require_publisher(
-            registry
-                .get_active_generation("room-ready", "media-ready")
-                .await?,
-        )?
-        .ready_at
-        .is_some());
+        assert!(
+            require_publisher(
+                registry
+                    .get_active_generation("room-ready", "media-ready")
+                    .await?,
+            )?
+            .ready_at
+            .is_some()
+        );
         Ok(())
     }
 
@@ -841,10 +841,12 @@ mod tests {
                 first.lease_epoch,
             )
             .await?;
-        assert!(registry
-            .get_active_generation("room1", "media1")
-            .await?
-            .is_none());
+        assert!(
+            registry
+                .get_active_generation("room1", "media1")
+                .await?
+                .is_none()
+        );
         assert_eq!(
             require_publisher(
                 registry

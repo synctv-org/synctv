@@ -1,14 +1,14 @@
 use synctv_xiu::streamhub::define::{FrameData, FrameDataSender, PacketData, PacketDataSender};
 use tokio::time::Instant;
+use tonic::Request;
 use tonic::codec::CompressionEncoding;
 use tonic::metadata::{Ascii, MetadataValue};
-use tonic::Request;
 use tracing::{info, warn};
 
 use super::connection_pool::GrpcConnectionPool;
 use super::proto::{
-    stream_relay_service_client::StreamRelayServiceClient, PullRtmpStreamRequest, RtpPacket,
-    RtpPacketType,
+    PullRtmpStreamRequest, RtpPacket, RtpPacketType,
+    stream_relay_service_client::StreamRelayServiceClient,
 };
 
 const STREAM_MESSAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);

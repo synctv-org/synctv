@@ -1,7 +1,7 @@
 use crate::{
     models::{MediaId, RoomId, RoomPlaybackState, UserId},
     repository::room_member::RemovedRoomMember,
-    service::{room::MemberResourceCleanupResult, RoomService},
+    service::{RoomService, room::MemberResourceCleanupResult},
 };
 
 impl RoomService {
@@ -27,30 +27,29 @@ impl RoomService {
 
     /// Invalidate room cache locally and broadcast to other replicas.
     pub(super) async fn notify_room_invalidation(&self, room_id: &RoomId) {
-        if let Some(ref service) = self.cache_invalidation {
-            if let Err(e) = service.invalidate_and_broadcast_room(room_id).await {
-                tracing::warn!(
-                    error = %e,
-                    room_id = %room_id,
-                    "Failed to broadcast room cache invalidation"
-                );
-            }
+        if let Some(ref service) = self.cache_invalidation
+            && let Err(e) = service.invalidate_and_broadcast_room(room_id).await
+        {
+            tracing::warn!(
+                error = %e,
+                room_id = %room_id,
+                "Failed to broadcast room cache invalidation"
+            );
         }
     }
 
     /// Broadcast room settings cache invalidation to other replicas.
     pub(super) async fn notify_room_settings_invalidation(&self, room_id: &RoomId) {
-        if let Some(ref service) = self.cache_invalidation {
-            if let Err(e) = service
+        if let Some(ref service) = self.cache_invalidation
+            && let Err(e) = service
                 .invalidate_and_broadcast_room_settings(room_id)
                 .await
-            {
-                tracing::warn!(
-                    error = %e,
-                    room_id = %room_id,
-                    "Failed to broadcast room settings cache invalidation"
-                );
-            }
+        {
+            tracing::warn!(
+                error = %e,
+                room_id = %room_id,
+                "Failed to broadcast room settings cache invalidation"
+            );
         }
     }
 

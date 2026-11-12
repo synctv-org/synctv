@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
+use crate::Result;
 use crate::service::SystemStatsService;
 use crate::service::{OnlinePresenceService, PresenceOverview, RemoteProviderManager, RoomService};
-use crate::Result;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceAdditionalState {

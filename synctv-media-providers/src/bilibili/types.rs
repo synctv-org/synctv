@@ -1252,11 +1252,12 @@ mod tests {
         assert_eq!(videos.len(), 1);
         assert!(videos[0].backup_url.is_empty());
         assert!(dash.audio.is_empty());
-        assert!(dash
-            .dolby
-            .expect("Dolby metadata should deserialize")
-            .audio
-            .is_empty());
+        assert!(
+            dash.dolby
+                .expect("Dolby metadata should deserialize")
+                .audio
+                .is_empty()
+        );
 
         let response: VideoUrlResp = serde_json::from_value(serde_json::json!({
             "code": 0,
@@ -1280,12 +1281,14 @@ mod tests {
             "ttl": 1,
             "data": { "subtitle": { "subtitles": null } }
         }))?;
-        assert!(response
-            .data
-            .expect("subtitle response should have data")
-            .subtitle
-            .subtitles
-            .is_empty());
+        assert!(
+            response
+                .data
+                .expect("subtitle response should have data")
+                .subtitle
+                .subtitles
+                .is_empty()
+        );
 
         let response: VideoUrlResp = serde_json::from_value(serde_json::json!({
             "code": -10403,
@@ -1315,11 +1318,13 @@ mod tests {
 
         assert_eq!(response.code, -101);
         assert!(response.data.is_some());
-        assert!(response
-            .data
-            .expect("data should deserialize")
-            .dash
-            .is_none());
+        assert!(
+            response
+                .data
+                .expect("data should deserialize")
+                .dash
+                .is_none()
+        );
         Ok(())
     }
 }

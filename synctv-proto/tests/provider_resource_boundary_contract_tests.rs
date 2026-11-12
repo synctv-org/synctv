@@ -45,7 +45,9 @@ fn emby_provider_exposes_only_browse_thumbnail_stream() {
         .expect("Emby provider service descriptor");
 
     assert_eq!(provider.methods().count(), 6);
-    assert!(provider
-        .methods()
-        .any(|method| method.name() == "GetThumbnail" && method.is_server_streaming()));
+    assert!(
+        provider
+            .methods()
+            .any(|method| method.name() == "GetThumbnail" && method.is_server_streaming())
+    );
 }

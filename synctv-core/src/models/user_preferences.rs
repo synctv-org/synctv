@@ -85,29 +85,35 @@ mod tests {
 
     #[test]
     fn two_factor_requires_two_non_oauth_methods() {
-        assert!(!UserAuthFactors {
-            password: true,
-            webauthn: false,
-            totp: false,
-            totp_recovery_codes_remaining: 0,
-            email: false,
-        }
-        .supports_two_factor());
-        assert!(UserAuthFactors {
-            password: true,
-            webauthn: true,
-            totp: false,
-            totp_recovery_codes_remaining: 0,
-            email: false,
-        }
-        .supports_two_factor());
-        assert!(UserAuthFactors {
-            password: false,
-            webauthn: true,
-            totp: false,
-            totp_recovery_codes_remaining: 0,
-            email: true,
-        }
-        .supports_two_factor());
+        assert!(
+            !UserAuthFactors {
+                password: true,
+                webauthn: false,
+                totp: false,
+                totp_recovery_codes_remaining: 0,
+                email: false,
+            }
+            .supports_two_factor()
+        );
+        assert!(
+            UserAuthFactors {
+                password: true,
+                webauthn: true,
+                totp: false,
+                totp_recovery_codes_remaining: 0,
+                email: false,
+            }
+            .supports_two_factor()
+        );
+        assert!(
+            UserAuthFactors {
+                password: false,
+                webauthn: true,
+                totp: false,
+                totp_recovery_codes_remaining: 0,
+                email: true,
+            }
+            .supports_two_factor()
+        );
     }
 }

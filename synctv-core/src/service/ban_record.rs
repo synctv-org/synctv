@@ -1,7 +1,7 @@
 use sqlx::PgPool;
 
-use crate::repository::BanRecordRepository;
 use crate::Result;
+use crate::repository::BanRecordRepository;
 
 pub use crate::repository::{BanRecordListQuery, BanRecordPage, BanRecordRow, BanRecordTargetType};
 

@@ -218,13 +218,17 @@ async fn reliable_stop_command_commits_when_unpublish_broadcast_is_missing() -> 
         .await?;
 
     assert_eq!(outcome, PublisherStopOutcome::Stopped);
-    assert!(registry
-        .get_active_generation("room-reliable-stop", "media-reliable-stop")
-        .await?
-        .is_none());
-    assert!(!manager
-        .active_publishers
-        .contains_key("room-reliable-stop:media-reliable-stop"));
+    assert!(
+        registry
+            .get_active_generation("room-reliable-stop", "media-reliable-stop")
+            .await?
+            .is_none()
+    );
+    assert!(
+        !manager
+            .active_publishers
+            .contains_key("room-reliable-stop:media-reliable-stop")
+    );
     assert!(matches!(
         lifecycle_rx.recv().await,
         Some(StreamLifecycleEvent::Stopped { generation_id: stopped, .. })
@@ -469,10 +473,12 @@ async fn delayed_unpublish_does_not_remove_new_streamhub_generation() -> TestRes
         .ok_or_else(|| test_error("replacement generation should remain tracked"))?;
     assert_eq!(tracked.generation_id(), Some(new_generation_id));
     drop(tracked);
-    assert!(registry
-        .get_active_generation("room-generation", "media-generation")
-        .await?
-        .is_some());
+    assert!(
+        registry
+            .get_active_generation("room-generation", "media-generation")
+            .await?
+            .is_some()
+    );
     assert_eq!(registry.unregister_if_lease_matches_call_count(), 0);
     Ok(())
 }
@@ -1027,9 +1033,11 @@ async fn reverse_reconciliation_waits_for_committed_readiness() -> TestResult {
             .await?
     );
     manager.reconcile_missing_from_registry().await;
-    assert!(manager
-        .active_publishers
-        .contains_key("room-reverse-ready:media-reverse-ready"));
+    assert!(
+        manager
+            .active_publishers
+            .contains_key("room-reverse-ready:media-reverse-ready")
+    );
     Ok(())
 }
 
@@ -1290,17 +1298,21 @@ async fn publisher_activity_recovers_a_missed_publish_event() -> TestResult {
             generation_id: generation_id.to_string(),
         })
     );
-    assert!(manager
-        .active_publishers
-        .contains_key("room-activity-recovery:media-activity-recovery"));
-    assert!(require_publisher(
-        registry
-            .get_active_generation("room-activity-recovery", "media-activity-recovery")
-            .await?,
-        "activity-recovered publisher should remain registered",
-    )?
-    .ready_at
-    .is_some());
+    assert!(
+        manager
+            .active_publishers
+            .contains_key("room-activity-recovery:media-activity-recovery")
+    );
+    assert!(
+        require_publisher(
+            registry
+                .get_active_generation("room-activity-recovery", "media-activity-recovery")
+                .await?,
+            "activity-recovered publisher should remain registered",
+        )?
+        .ready_at
+        .is_some()
+    );
 
     drop(broadcast_tx);
     tokio::time::timeout(Duration::from_secs(1), manager_task).await??;
@@ -1383,10 +1395,12 @@ async fn readiness_failure_rolls_back_registration_without_started_event() -> Te
 
     assert!(result.is_err());
     assert!(manager.active_publishers.is_empty());
-    assert!(registry
-        .get_active_generation("room-readiness-failure", "media-readiness-failure")
-        .await?
-        .is_none());
+    assert!(
+        registry
+            .get_active_generation("room-readiness-failure", "media-readiness-failure")
+            .await?
+            .is_none()
+    );
     assert!(lifecycle_rx.try_recv().is_err());
     assert_eq!(registry.unregister_if_lease_matches_call_count(), 1);
     Ok(())

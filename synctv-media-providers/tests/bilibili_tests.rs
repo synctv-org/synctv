@@ -5,8 +5,8 @@
 //! inline in src/bilibili/client.rs via #[cfg(test)].
 
 #![allow(clippy::unwrap_used)]
-use synctv_media_providers::bilibili::BilibiliResource;
 use synctv_media_providers::BilibiliClient;
+use synctv_media_providers::bilibili::BilibiliResource;
 
 #[test]
 fn test_match_url_bvid_standard() {

@@ -23,11 +23,11 @@ use synctv_core::{
         RoomServiceOptions, UserService,
     },
 };
+use synctv_core_testing::{TestOptionExt, TestResultExt};
 use synctv_core_testing::{
     redis_connection_manager, start_redis as start_test_redis,
     start_redis_client_manager_with_label, timestamped_l2_envelope,
 };
-use synctv_core_testing::{TestOptionExt, TestResultExt};
 
 // Test Helpers
 
@@ -889,11 +889,13 @@ async fn test_playback_state_cross_replica_invalidation_clears_l2() {
         .set(&room.id, state.clone())
         .await
         .checked("test operation should succeed");
-    assert!(l2_cache
-        .get(&room.id)
-        .await
-        .checked("test operation should succeed")
-        .is_some());
+    assert!(
+        l2_cache
+            .get(&room.id)
+            .await
+            .checked("test operation should succeed")
+            .is_some()
+    );
 
     publisher
         .invalidate_playback_state(&room.id)

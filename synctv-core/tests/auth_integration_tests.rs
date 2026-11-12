@@ -26,7 +26,7 @@ use opaque_ke::{
 };
 use sqlx::PgPool;
 use synctv_core::{
-    cache,
+    Error, KeyBuilder, cache,
     models::UserStatus,
     repository::UserRepository,
     service::{
@@ -34,7 +34,6 @@ use synctv_core::{
         InMemoryTokenBlacklistStore, JwtService, SecurityPipeline, SecurityPipelineRuntime,
         TokenBlacklistStore, UserService,
     },
-    Error, KeyBuilder,
 };
 use synctv_core_testing::{create_test_pool, err, ok, some};
 

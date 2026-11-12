@@ -176,8 +176,8 @@ mod tests {
     use super::default_playlist_fanout_service;
     use async_trait::async_trait;
     use std::sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicUsize, Ordering},
     };
     use synctv_core::models::{Playlist, PlaylistId, RoomId, UserId};
     use synctv_core::service::NewRealtimeOutboxEvent;
@@ -302,7 +302,7 @@ mod tests {
             other => {
                 return Err(test_error(format!(
                     "expected PlaylistCreated, got {other:?}"
-                )))
+                )));
             }
         }
         Ok(())

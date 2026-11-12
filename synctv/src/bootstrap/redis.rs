@@ -10,8 +10,8 @@ use tokio::task::JoinHandle;
 use tracing::info;
 
 use synctv_core::{
-    redis_connection_manager_options, ManagedRedisRuntime, RedisConnectionRuntime,
-    RedisCoordinationRuntime, RedisDeploymentMode,
+    ManagedRedisRuntime, RedisConnectionRuntime, RedisCoordinationRuntime, RedisDeploymentMode,
+    redis_connection_manager_options,
 };
 
 type SentinelNodeConnectionInfo = redis::sentinel::SentinelNodeConnectionInfo;
@@ -61,15 +61,15 @@ fn build_url_from_split_parts(
         return String::new();
     }
 
-    if let Some(username) = username {
-        if url.set_username(username).is_err() {
-            return String::new();
-        }
+    if let Some(username) = username
+        && url.set_username(username).is_err()
+    {
+        return String::new();
     }
-    if let Some(password) = password {
-        if url.set_password(Some(password)).is_err() {
-            return String::new();
-        }
+    if let Some(password) = password
+        && url.set_password(Some(password)).is_err()
+    {
+        return String::new();
     }
     if let Some(path_segment) = path_segment {
         let Ok(mut segments) = url.path_segments_mut() else {
@@ -404,9 +404,9 @@ async fn init_sentinel(
                     }
 
                     tracing::warn!(
-                    "Sentinel health check: {} consecutive PING failures, querying Sentinel for current master",
-                    consecutive_ping_failures
-                );
+                        "Sentinel health check: {} consecutive PING failures, querying Sentinel for current master",
+                        consecutive_ping_failures
+                    );
 
                     let addrs: Vec<&str> = sentinel_addresses.iter().map(String::as_str).collect();
                     let sentinel_result = redis::sentinel::Sentinel::build(addrs);

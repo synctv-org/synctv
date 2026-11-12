@@ -211,16 +211,18 @@ async fn test_soft_delete_user() {
     let repo = UserRepository::new(pool.clone());
     let user = User::new("deleteme".into(), SignupMethod::Email);
     let created = repo.create(&user).await.checked("operation should succeed");
-    assert!(repo
-        .delete(&created.id)
-        .await
-        .checked("operation should succeed"));
+    assert!(
+        repo.delete(&created.id)
+            .await
+            .checked("operation should succeed")
+    );
     // Soft-deleted users should not be returned by get_by_id
-    assert!(repo
-        .get_by_id(&created.id)
-        .await
-        .checked("operation should succeed")
-        .is_none());
+    assert!(
+        repo.get_by_id(&created.id)
+            .await
+            .checked("operation should succeed")
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -254,14 +256,17 @@ async fn test_user_blocking_is_personal_idempotent_and_searchable() {
         .checked("second user should be blocked");
 
     assert_eq!(repeated_blocked_at, first_blocked_at);
-    assert!(repo
-        .is_blocking(&blocker.id, &blocked_alpha.id)
-        .await
-        .checked("blocking relationship should be readable"));
-    assert!(!repo
-        .is_blocking(&blocked_alpha.id, &blocker.id)
-        .await
-        .checked("reverse blocking relationship should be readable"));
+    assert!(
+        repo.is_blocking(&blocker.id, &blocked_alpha.id)
+            .await
+            .checked("blocking relationship should be readable")
+    );
+    assert!(
+        !repo
+            .is_blocking(&blocked_alpha.id, &blocker.id)
+            .await
+            .checked("reverse blocking relationship should be readable")
+    );
 
     let (first_page, total) = repo
         .list_blocked_users(
@@ -285,16 +290,21 @@ async fn test_user_blocking_is_personal_idempotent_and_searchable() {
     assert_eq!(search_total, 1);
     assert_eq!(search_result[0].user.id, blocked_alpha.id);
 
-    assert!(repo
-        .unblock_user(&blocker.id, &blocked_alpha.id)
-        .await
-        .checked("user should be unblocked"));
-    assert!(!repo
-        .unblock_user(&blocker.id, &blocked_alpha.id)
-        .await
-        .checked("unblocking should be idempotent"));
-    assert!(!repo
-        .is_blocking(&blocker.id, &blocked_alpha.id)
-        .await
-        .checked("removed relationship should remain readable"));
+    assert!(
+        repo.unblock_user(&blocker.id, &blocked_alpha.id)
+            .await
+            .checked("user should be unblocked")
+    );
+    assert!(
+        !repo
+            .unblock_user(&blocker.id, &blocked_alpha.id)
+            .await
+            .checked("unblocking should be idempotent")
+    );
+    assert!(
+        !repo
+            .is_blocking(&blocker.id, &blocked_alpha.id)
+            .await
+            .checked("removed relationship should remain readable")
+    );
 }

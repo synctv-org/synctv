@@ -10,10 +10,10 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::Result;
 use crate::cache::l2_backend::CacheL2Backend;
 use crate::cache::tiered::{CacheKey, TieredCache, Timestamped};
 use crate::models::{UserId, UserRole, UserStatus};
-use crate::Result;
 
 impl CacheKey for UserId {
     fn cache_key(&self) -> String {
@@ -285,11 +285,13 @@ mod tests {
         let user = create_test_user(user_id, "alice");
 
         // Cache miss
-        assert!(cache
-            .get(&user_id)
-            .await
-            .checked("operation should succeed")
-            .is_none());
+        assert!(
+            cache
+                .get(&user_id)
+                .await
+                .checked("operation should succeed")
+                .is_none()
+        );
 
         // Set and get
         cache
@@ -308,11 +310,13 @@ mod tests {
             .invalidate(&user_id)
             .await
             .checked("operation should succeed");
-        assert!(cache
-            .get(&user_id)
-            .await
-            .checked("operation should succeed")
-            .is_none());
+        assert!(
+            cache
+                .get(&user_id)
+                .await
+                .checked("operation should succeed")
+                .is_none()
+        );
     }
 
     #[tokio::test]

@@ -2,23 +2,23 @@ use sqlx::PgPool;
 use std::sync::Arc;
 
 use crate::{
+    Result,
     cache::{CacheInvalidationRuntime, ConsistencyCoordinator},
     repository::{
-        realtime_outbox::RealtimeOutboxRepository, ChatRepository, MediaRepository,
-        PlaybackSourceMetadataRepository, PlaylistRepository, RoomMemberRepository,
-        RoomPasswordRepository, RoomPlaybackStateRepository, RoomRepository,
+        ChatRepository, MediaRepository, PlaybackSourceMetadataRepository, PlaylistRepository,
+        RoomMemberRepository, RoomPasswordRepository, RoomPlaybackStateRepository, RoomRepository,
         RoomSettingsRepository, UserProviderCredentialRepository,
+        realtime_outbox::RealtimeOutboxRepository,
     },
     service::{
+        OpaquePasswordService, PermissionService, PermissionServiceRuntime, PlaybackService,
+        PlaylistService, ProvidersManager, RoomService, UserService,
         audit::AuditService,
         media::MediaService,
         member::MemberService,
         notification::NotificationService,
         room_settings::{RoomSettingsRuntime, RoomSettingsService},
-        OpaquePasswordService, PermissionService, PermissionServiceRuntime, PlaybackService,
-        PlaylistService, ProvidersManager, RoomService, UserService,
     },
-    Result,
 };
 
 use super::{RoomOpaquePasswordLoginSessionStore, RoomOpaquePasswordRegistrationSessionStore};

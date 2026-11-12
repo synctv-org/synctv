@@ -1521,9 +1521,11 @@ mod tests {
         config.server.quic.enabled = true;
 
         let errors = config.validate().expect_err("QUIC without TLS must fail");
-        assert!(errors
-            .iter()
-            .any(|error| error.contains("server.quic is enabled but server.tls is disabled")));
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("server.quic is enabled but server.tls is disabled"))
+        );
     }
 
     #[test]
@@ -1537,10 +1539,9 @@ mod tests {
         let errors = config
             .validate()
             .expect_err("TLS port equal to the plain HTTP port must fail");
-        assert!(errors
-            .iter()
-            .any(|error| error
-                .contains("server.tls.port (8080) must differ from server.port (8080)")));
+        assert!(errors.iter().any(|error| {
+            error.contains("server.tls.port (8080) must differ from server.port (8080)")
+        }));
     }
 
     #[test]
@@ -1551,9 +1552,11 @@ mod tests {
         let errors = config
             .validate()
             .expect_err("enabled TLS without cert paths must fail");
-        assert!(errors
-            .iter()
-            .any(|error| error.contains("cert_path/key_path is empty")));
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("cert_path/key_path is empty"))
+        );
     }
 
     #[test]
@@ -1569,9 +1572,11 @@ mod tests {
         let errors = config
             .validate()
             .expect_err("defaults carry unrelated secret errors");
-        assert!(errors
-            .iter()
-            .all(|error| !error.contains("server.tls") && !error.contains("server.quic")));
+        assert!(
+            errors
+                .iter()
+                .all(|error| !error.contains("server.tls") && !error.contains("server.quic"))
+        );
     }
 
     #[test]
@@ -1580,9 +1585,11 @@ mod tests {
         config.jwt.secret = "Short-secret-with-2-classes".to_string();
 
         let errors = config.validate().expect_err("short JWT secrets must fail");
-        assert!(errors
-            .iter()
-            .any(|error| error.contains("JWT secret is too short")));
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("JWT secret is too short"))
+        );
     }
 
     #[test]
@@ -1605,9 +1612,11 @@ mod tests {
 
         let errors = config.validate().expect_err("empty Web UI path must fail");
 
-        assert!(errors
-            .iter()
-            .any(|error| error.contains("server.web_ui_directory must not be empty")));
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("server.web_ui_directory must not be empty"))
+        );
     }
 
     #[test]
@@ -1619,15 +1628,21 @@ mod tests {
 
         let errors = config.validate().expect_err("logging settings must fail");
 
-        assert!(errors
-            .iter()
-            .any(|error| error.contains("logging.level 'verbose'")));
-        assert!(errors
-            .iter()
-            .any(|error| error.contains("livestream.logging.format 'pretty'")));
-        assert!(errors
-            .iter()
-            .any(|error| error.contains("webrtc.logging.output.path must not be empty")));
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("logging.level 'verbose'"))
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("livestream.logging.format 'pretty'"))
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("webrtc.logging.output.path must not be empty"))
+        );
     }
 
     #[test]
@@ -1784,9 +1799,11 @@ mod tests {
             let errors = config
                 .validate()
                 .expect_err("an unspecified cluster advertise host must fail validation");
-            assert!(errors
-                .iter()
-                .any(|error| error.contains("cluster.advertise_host must resolve")));
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains("cluster.advertise_host must resolve"))
+            );
         }
     }
 
@@ -1800,8 +1817,10 @@ mod tests {
         let errors = config
             .validate()
             .expect_err("a malformed static peer must fail validation");
-        assert!(errors
-            .iter()
-            .any(|error| error.contains("cluster.peers[0] is invalid")));
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("cluster.peers[0] is invalid"))
+        );
     }
 }

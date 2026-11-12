@@ -3,7 +3,7 @@
 //! This is the full HTTP client implementation.
 //! Both gRPC server and local usage call this service.
 
-use super::{client::BilibiliClient, BilibiliError};
+use super::{BilibiliError, client::BilibiliClient};
 use super::{DanmakuMessage, HeartbeatConfig, ReconnectConfig, ReconnectResult};
 use crate::transport_dto::bilibili::{
     DashInfo as ProtoDashInfo, Empty, GetDashPgcurlReq, GetDashPgcurlResp, GetDashVideoUrlReq,
@@ -19,7 +19,7 @@ use crate::transport_dto::bilibili::{
     VideoSegment as ProtoVideoSegment, VideoUrl, WatchBilibiliLiveDanmakuReq,
 };
 use async_trait::async_trait;
-use futures_util::{stream, Stream, StreamExt};
+use futures_util::{Stream, StreamExt, stream};
 use reqwest::Client;
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -165,7 +165,7 @@ pub trait BilibiliInterface: Send + Sync {
     ) -> Result<ListFollowedPgcResp, BilibiliError>;
 
     async fn list_history(&self, request: ListHistoryReq)
-        -> Result<ListHistoryResp, BilibiliError>;
+    -> Result<ListHistoryResp, BilibiliError>;
 
     async fn list_pgc_timeline(
         &self,
@@ -1058,8 +1058,8 @@ impl BilibiliInterface for BilibiliService {
         request: ListHistoryReq,
     ) -> Result<ListHistoryResp, BilibiliError> {
         use crate::transport_dto::bilibili::{
-            bilibili_history_item, BilibiliHistoryItem, HistoryCursor, HistoryLiveTarget,
-            HistoryPgcTarget, HistoryType, HistoryVideoTarget,
+            BilibiliHistoryItem, HistoryCursor, HistoryLiveTarget, HistoryPgcTarget, HistoryType,
+            HistoryVideoTarget, bilibili_history_item,
         };
 
         let client = client_from_cookies_and_state(
@@ -1367,8 +1367,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_service_reuses_shared_wbi_state(
-    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    async fn test_service_reuses_shared_wbi_state()
+    -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let service = BilibiliService::new()?;
         service.wbi_state.reset_for_tests();
         service.wbi_state.set_wbi_key("shared-key".to_string());

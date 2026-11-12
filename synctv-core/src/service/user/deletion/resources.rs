@@ -4,9 +4,9 @@ use chrono::{DateTime, Utc};
 use sqlx::{Postgres, Transaction};
 
 use crate::{
-    models::{ChatMessageType, DeletionSource, MediaId, PlaylistId, RoomId, UserId},
-    repository::{realtime_outbox::NewRealtimeOutboxEvent, RoomMemberRepository},
     Result,
+    models::{ChatMessageType, DeletionSource, MediaId, PlaylistId, RoomId, UserId},
+    repository::{RoomMemberRepository, realtime_outbox::NewRealtimeOutboxEvent},
 };
 
 use super::{

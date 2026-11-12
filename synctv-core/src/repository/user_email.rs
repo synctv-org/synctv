@@ -2,8 +2,8 @@ use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 
 use crate::{
-    models::{DeletionSource, SignupMethod, User, UserId, UserRole, UserStatus},
     Error, Result,
+    models::{DeletionSource, SignupMethod, User, UserId, UserRole, UserStatus},
 };
 
 #[derive(Debug, Clone)]

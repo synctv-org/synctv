@@ -1,11 +1,11 @@
 use crate::{
+    Error, Result,
     models::{MediaId, RoomId, User, UserId},
     repository::realtime_outbox::NewRealtimeOutboxEvent,
     service::{
         RealtimeOutboxOwnedMediaKickEventFactory, RealtimeOutboxPlaybackStateEventFactory,
         RoomService,
     },
-    Error, Result,
 };
 
 impl RoomService {

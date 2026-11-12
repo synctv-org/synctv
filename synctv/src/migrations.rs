@@ -193,8 +193,8 @@ fn is_missing_migrations_table(err: &sqlx::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_embedded_migrations, describe_migration_error, inspect_embedded_migrations,
-        EmbeddedMigrationsStatus, MigrationHistoryIssue,
+        EmbeddedMigrationsStatus, MigrationHistoryIssue, classify_embedded_migrations,
+        describe_migration_error, inspect_embedded_migrations,
     };
 
     #[test]

@@ -32,8 +32,8 @@ mod tests {
     use crate::FILE_DESCRIPTOR_SET;
 
     #[test]
-    fn management_descriptor_uses_structured_unary_responses(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn management_descriptor_uses_structured_unary_responses()
+    -> Result<(), Box<dyn std::error::Error>> {
         let descriptor = FileDescriptorSet::decode(FILE_DESCRIPTOR_SET)?;
         let file = descriptor
             .file
@@ -77,8 +77,8 @@ mod tests {
     }
 
     #[test]
-    fn management_proto_json_uses_lower_camel_and_integer_enums(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn management_proto_json_uses_lower_camel_and_integer_enums()
+    -> Result<(), Box<dyn std::error::Error>> {
         let users: crate::proto::ListUsersRequest =
             serde_json::from_str(r#"{"pageSize":20,"sortDirection":2,"status":1,"role":3}"#)?;
         assert_eq!(users.page_size, 20);
@@ -107,23 +107,29 @@ mod tests {
 
     #[test]
     fn management_proto_json_rejects_snake_case_and_enum_strings() {
-        assert!(serde_json::from_str::<crate::proto::ListUsersRequest>(
-            r#"{"page_size":20,"sort_direction":2}"#
-        )
-        .is_err());
-        assert!(serde_json::from_str::<crate::proto::ListUsersRequest>(
-            r#"{"pageSize":20,"sortDirection":"SORT_DIRECTION_DESC"}"#
-        )
-        .is_err());
-        assert!(serde_json::from_str::<crate::proto::ListPlaylistsRequest>(
-            r#"{"room_id":"room-1","provider_instance_name":"alist-main"}"#
-        )
-        .is_err());
+        assert!(
+            serde_json::from_str::<crate::proto::ListUsersRequest>(
+                r#"{"page_size":20,"sort_direction":2}"#
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_str::<crate::proto::ListUsersRequest>(
+                r#"{"pageSize":20,"sortDirection":"SORT_DIRECTION_DESC"}"#
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_str::<crate::proto::ListPlaylistsRequest>(
+                r#"{"room_id":"room-1","provider_instance_name":"alist-main"}"#
+            )
+            .is_err()
+        );
     }
 
     #[test]
-    fn management_descriptor_does_not_embed_provider_service_contracts(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn management_descriptor_does_not_embed_provider_service_contracts()
+    -> Result<(), Box<dyn std::error::Error>> {
         let descriptor = FileDescriptorSet::decode(FILE_DESCRIPTOR_SET)?;
 
         let forbidden_services = [
@@ -364,8 +370,10 @@ mod tests {
         assert!(provider_runtime.contains("command: BilibiliLoginSmsCommand"));
         assert!(provider_runtime.contains("query: BilibiliUserInfoQuery"));
         assert!(provider_runtime.contains("command: BilibiliLogoutCommand"));
-        assert!(!provider_runtime
-            .contains("req: provider_common_proto::ListAvailableProviderInstancesRequest"));
+        assert!(
+            !provider_runtime
+                .contains("req: provider_common_proto::ListAvailableProviderInstancesRequest")
+        );
         assert!(
             !provider_runtime.contains("req: provider_common_proto::ListProviderBackendsRequest")
         );
@@ -381,13 +389,17 @@ mod tests {
         assert!(
             !provider_runtime.contains("req: provider_common_proto::DeleteProviderInstanceRequest")
         );
-        assert!(!provider_runtime
-            .contains("req: provider_common_proto::ReconnectProviderInstanceRequest"));
+        assert!(
+            !provider_runtime
+                .contains("req: provider_common_proto::ReconnectProviderInstanceRequest")
+        );
         assert!(
             !provider_runtime.contains("req: provider_common_proto::EnableProviderInstanceRequest")
         );
-        assert!(!provider_runtime
-            .contains("req: provider_common_proto::DisableProviderInstanceRequest"));
+        assert!(
+            !provider_runtime
+                .contains("req: provider_common_proto::DisableProviderInstanceRequest")
+        );
         assert!(!provider_runtime.contains("req: alist_proto::LoginRequest"));
         assert!(!provider_runtime.contains("req: alist_proto::ListRequest"));
         assert!(!provider_runtime.contains("req: alist_proto::SearchRequest"));

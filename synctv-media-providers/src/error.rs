@@ -71,10 +71,10 @@ pub async fn fetch_json<T: serde::de::DeserializeOwned>(
 pub async fn bytes_with_limit(
     mut response: reqwest::Response,
 ) -> Result<Vec<u8>, ProviderClientError> {
-    if let Some(cl) = response.content_length() {
-        if usize::try_from(cl).map_or(true, |s| s > MAX_RESPONSE_SIZE) {
-            return Err(ProviderClientError::ResponseTooLarge { size: cl });
-        }
+    if let Some(cl) = response.content_length()
+        && usize::try_from(cl).map_or(true, |s| s > MAX_RESPONSE_SIZE)
+    {
+        return Err(ProviderClientError::ResponseTooLarge { size: cl });
     }
     let mut bytes = Vec::with_capacity(
         response

@@ -1,6 +1,7 @@
 use sqlx::PgPool;
 
 use crate::{
+    Error, Result,
     models::{
         ContentReport, ContentReportAdminRow, ContentReportId, ContentReportStatus,
         ContentReportTarget, CreateContentReport, UserId,
@@ -9,7 +10,6 @@ use crate::{
         ChatRepository, ContentReportRepository, RoomMemberRepository, RoomRepository,
         UserRepository,
     },
-    Error, Result,
 };
 
 pub use crate::repository::{ContentReportListQuery, ContentReportListScope, ContentReportPage};

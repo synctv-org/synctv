@@ -10,8 +10,8 @@ use synctv_core::cache::l2_backend::VersionedFenceRead;
 use synctv_core::cache::{CacheL2Backend, RedisCacheL2};
 use synctv_core_testing::start_redis as start_test_redis;
 use synctv_core_testing::{
-    ok, some, timestamped_l2_envelope, unversioned_l2_envelope, versioned_l2_envelope,
-    TestOptionExt, TestResultExt,
+    TestOptionExt, TestResultExt, ok, some, timestamped_l2_envelope, unversioned_l2_envelope,
+    versioned_l2_envelope,
 };
 
 fn ts_millis(ts: &str) -> i64 {

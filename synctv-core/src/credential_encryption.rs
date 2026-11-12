@@ -4,8 +4,8 @@
 //! Uses AES-256-GCM authenticated encryption to protect sensitive credential data at rest.
 
 use aes_gcm::{
-    aead::{Aead, AeadCore, Generate, KeyInit, Payload},
     Aes256Gcm, Key, Nonce,
+    aead::{Aead, AeadCore, Generate, KeyInit, Payload},
 };
 use hkdf::Hkdf;
 use sha2::Sha256;
@@ -273,9 +273,11 @@ mod tests {
             enc.encrypt_to_value_with_context(&original, b"test-context"),
             "credential value should encrypt",
         );
-        assert!(encrypted_value
-            .as_str()
-            .is_some_and(|s| s.starts_with("enc:")));
+        assert!(
+            encrypted_value
+                .as_str()
+                .is_some_and(|s| s.starts_with("enc:"))
+        );
 
         let decrypted = ok(
             enc.decrypt_value_with_context(&encrypted_value, b"test-context"),
@@ -375,8 +377,10 @@ mod tests {
         );
 
         assert!(first.decrypt_with_context(&encrypted, b"record-b").is_err());
-        assert!(second
-            .decrypt_with_context(&encrypted, b"record-a")
-            .is_err());
+        assert!(
+            second
+                .decrypt_with_context(&encrypted, b"record-a")
+                .is_err()
+        );
     }
 }

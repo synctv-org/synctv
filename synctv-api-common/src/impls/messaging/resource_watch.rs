@@ -13,14 +13,14 @@ use crate::impls::room_settings_snapshot::RoomSettingsSnapshotService;
 use synctv_proto::client::ObserveResource;
 use synctv_realtime::sync::ConnectionRuntime;
 
+use super::MessageSender;
 use super::event_policy::{
     watch_admin_event_matches, watch_disconnect_signal_matches,
     watch_guest_access_revocation_reason,
 };
-use super::identity::{classify_realtime_join_error_message, RealtimeJoinError, RealtimePrincipal};
+use super::identity::{RealtimeJoinError, RealtimePrincipal, classify_realtime_join_error_message};
 use super::membership::{RealtimeMembershipAccess, RealtimeMembershipProbe};
 use super::resource_observer::{ResourceObserver, ResourceObserverParams};
-use super::MessageSender;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WatchResourceKind {
@@ -221,18 +221,17 @@ impl ResourceWatchSession {
             return Err(RealtimeJoinError::from(error));
         }
 
-        if chat_replay_service.is_some() {
-            if let Err(error) = self
+        if chat_replay_service.is_some()
+            && let Err(error) = self
                 .resource_observer
                 .replay_chat_events_after(observe)
                 .await
-            {
-                self.event_service.unsubscribe(self.connection_id.as_str());
-                self.connection_service
-                    .unregister(self.connection_id.as_str())
-                    .await;
-                return Err(RealtimeJoinError::from(error));
-            }
+        {
+            self.event_service.unsubscribe(self.connection_id.as_str());
+            self.connection_service
+                .unregister(self.connection_id.as_str())
+                .await;
+            return Err(RealtimeJoinError::from(error));
         }
         if let Err(error) = self
             .resource_observer

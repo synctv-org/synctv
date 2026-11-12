@@ -2,9 +2,9 @@ use synctv_common::ExecutionControl;
 use tracing::debug;
 
 use crate::{
+    InternalExt, Result,
     oauth2::OAuth2AuthorizationMode,
     service::oauth2::{OAuth2Service, OAuth2State, OAuth2UserInfo},
-    InternalExt, Result,
 };
 
 struct OAuth2ExchangeContext<'a> {

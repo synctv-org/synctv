@@ -1,5 +1,5 @@
-use super::{multipart_transport, S3CompatibleFileStorageService};
-use crate::{models::CompleteFileUploadPart, Error, Result};
+use super::{S3CompatibleFileStorageService, multipart_transport};
+use crate::{Error, Result, models::CompleteFileUploadPart};
 
 #[cfg(test)]
 use sha2::{Digest, Sha256};

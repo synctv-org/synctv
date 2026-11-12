@@ -1,7 +1,7 @@
 use crate::{
+    Result,
     cache::{CacheDomain, VersionFenceReservation},
     models::RoomId,
-    Result,
 };
 
 use super::{UserDeletedRoomImpact, UserService};

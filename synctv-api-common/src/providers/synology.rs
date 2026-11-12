@@ -5,20 +5,20 @@ use synctv_core::provider::{
     ProviderError, SynologyProvider, SynologyVideoEntry, SynologyVideoEntryKind,
 };
 use synctv_proto::providers::synology::{
-    get_image_request, BindInfo, FileItem, GetBindsResponse, GetImageRequest, ListEpisodesRequest,
-    ListFilesRequest, ListFilesResponse, ListHomeVideosRequest, ListLibrariesRequest,
-    ListLibrariesResponse, ListMoviesRequest, ListTvRecordingsRequest, ListTvShowsRequest,
-    ListVideoItemsResponse, LoginRequest, LoginResponse, LogoutRequest, LogoutResponse,
-    SynologyVideoEntryKind as ProtoKind, VideoFile, VideoItem, VideoLibrary,
+    BindInfo, FileItem, GetBindsResponse, GetImageRequest, ListEpisodesRequest, ListFilesRequest,
+    ListFilesResponse, ListHomeVideosRequest, ListLibrariesRequest, ListLibrariesResponse,
+    ListMoviesRequest, ListTvRecordingsRequest, ListTvShowsRequest, ListVideoItemsResponse,
+    LoginRequest, LoginResponse, LogoutRequest, LogoutResponse,
+    SynologyVideoEntryKind as ProtoKind, VideoFile, VideoItem, VideoLibrary, get_image_request,
 };
 use synctv_proto::source_config::{
+    SynologyEpisodesPlaylistSourceConfig, SynologyFileSourceConfig,
+    SynologyFilesPlaylistSourceConfig, SynologyHomeVideosPlaylistSourceConfig,
+    SynologyLibraryItemKind as ProtoLibraryItemKind, SynologyLibraryItemSourceConfig,
+    SynologyMediaSourceConfig, SynologyMoviesPlaylistSourceConfig, SynologyPlaylistSourceConfig,
+    SynologyTvRecordingsPlaylistSourceConfig, SynologyTvShowsPlaylistSourceConfig,
     media_source_config, playlist_source_config, synology_media_source_config,
-    synology_playlist_source_config, SynologyEpisodesPlaylistSourceConfig,
-    SynologyFileSourceConfig, SynologyFilesPlaylistSourceConfig,
-    SynologyHomeVideosPlaylistSourceConfig, SynologyLibraryItemKind as ProtoLibraryItemKind,
-    SynologyLibraryItemSourceConfig, SynologyMediaSourceConfig, SynologyMoviesPlaylistSourceConfig,
-    SynologyPlaylistSourceConfig, SynologyTvRecordingsPlaylistSourceConfig,
-    SynologyTvShowsPlaylistSourceConfig,
+    synology_playlist_source_config,
 };
 use synctv_realtime::fanout::RealtimeEventService;
 

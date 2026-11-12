@@ -417,8 +417,8 @@ mod tests {
             .context("RTSP test request is missing CSeq")
     }
 
-    async fn spawn_interleaved_h264_server(
-    ) -> Result<(SocketAddr, tokio::task::JoinHandle<Result<()>>)> {
+    async fn spawn_interleaved_h264_server()
+    -> Result<(SocketAddr, tokio::task::JoinHandle<Result<()>>)> {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
         let handle = tokio::spawn(async move {

@@ -18,19 +18,19 @@ use futures::{StreamExt as _, TryStreamExt as _};
 use synctv_common::ExecutionControl;
 
 use crate::{
-    apply_provider_headers, send_with_redirect_validation_with_control_and_timeout,
-    ProviderHeaders, ProxyError,
+    ProviderHeaders, ProxyError, apply_provider_headers,
+    send_with_redirect_validation_with_control_and_timeout,
 };
 
 use super::etag::CachedResourceMeta;
 use super::head;
 use super::passthrough::{
-    stream_existing_response_with_status, stream_head_through_with_status,
-    stream_through_with_status, StreamThroughRequest,
+    StreamThroughRequest, stream_existing_response_with_status, stream_head_through_with_status,
+    stream_through_with_status,
 };
 use super::range::{
-    format_content_range, parse_client_range_plan, range_bounds_for_total, slice_index_for_byte,
-    ClientRangeError, ClientRangePlan,
+    ClientRangeError, ClientRangePlan, format_content_range, parse_client_range_plan,
+    range_bounds_for_total, slice_index_for_byte,
 };
 use super::status::CacheStatus;
 use super::store::SliceCache;
@@ -468,40 +468,40 @@ async fn stream_original_range_with_learned_meta(
     .context("Upstream range request failed")?
     .response;
 
-    if resp.status() == StatusCode::PARTIAL_CONTENT {
-        if let Some(total_size) = head::parse_total_size_from_content_range(&resp)? {
-            cache.put_resource_meta(
-                url,
-                provider_headers,
-                CachedResourceMeta {
-                    status: Some(resp.status().as_u16()),
-                    etag: resp
-                        .headers()
-                        .get("etag")
-                        .and_then(|v| v.to_str().ok())
-                        .map(ToString::to_string),
-                    last_modified: resp
-                        .headers()
-                        .get("last-modified")
-                        .and_then(|v| v.to_str().ok())
-                        .map(ToString::to_string),
-                    total_size: Some(total_size),
-                    supports_ranges: true,
-                    content_type: resp
-                        .headers()
-                        .get("content-type")
-                        .and_then(|v| v.to_str().ok())
-                        .map(ToString::to_string),
-                    content_encoding: resp
-                        .headers()
-                        .get("content-encoding")
-                        .and_then(|v| v.to_str().ok())
-                        .map(ToString::to_string),
-                    validated_at: std::time::SystemTime::now(),
-                    last_accessed: std::time::SystemTime::now(),
-                },
-            );
-        }
+    if resp.status() == StatusCode::PARTIAL_CONTENT
+        && let Some(total_size) = head::parse_total_size_from_content_range(&resp)?
+    {
+        cache.put_resource_meta(
+            url,
+            provider_headers,
+            CachedResourceMeta {
+                status: Some(resp.status().as_u16()),
+                etag: resp
+                    .headers()
+                    .get("etag")
+                    .and_then(|v| v.to_str().ok())
+                    .map(ToString::to_string),
+                last_modified: resp
+                    .headers()
+                    .get("last-modified")
+                    .and_then(|v| v.to_str().ok())
+                    .map(ToString::to_string),
+                total_size: Some(total_size),
+                supports_ranges: true,
+                content_type: resp
+                    .headers()
+                    .get("content-type")
+                    .and_then(|v| v.to_str().ok())
+                    .map(ToString::to_string),
+                content_encoding: resp
+                    .headers()
+                    .get("content-encoding")
+                    .and_then(|v| v.to_str().ok())
+                    .map(ToString::to_string),
+                validated_at: std::time::SystemTime::now(),
+                last_accessed: std::time::SystemTime::now(),
+            },
+        );
     }
 
     stream_existing_response_with_status(resp, CacheStatus::Bypass)

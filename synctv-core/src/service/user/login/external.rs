@@ -3,15 +3,15 @@ use std::net::IpAddr;
 use synctv_common::ExecutionControl;
 
 use crate::{
+    Error, Result,
     models::UserId,
     service::{
-        user::{
-            session_types::{AuthFactorMethod, AuthenticatedLogin},
-            UserService,
-        },
         TokenCredentialBinding,
+        user::{
+            UserService,
+            session_types::{AuthFactorMethod, AuthenticatedLogin},
+        },
     },
-    Error, Result,
 };
 
 impl UserService {

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -19,7 +19,7 @@ use crate::error::Result as CoreResult;
 use crate::models::{ProviderCredential, UserId, UserProviderCredential};
 use crate::repository::UserProviderCredentialRepository;
 
-use super::credential_resolver::{credential_revision, ResolvedProviderCredential};
+use super::credential_resolver::{ResolvedProviderCredential, credential_revision};
 use super::store::{ProviderStore, ProviderStoreExt};
 use super::{AlistProvider, BilibiliProvider, EmbyProvider, ExecutionControl, ProviderError};
 
@@ -861,17 +861,17 @@ impl ProviderAccessService for CachedProviderAccessService {
                 "Failed to invalidate provider access cache entry"
             );
         }
-        if let Some(session_key) = alist_session_key {
-            if let Err(error) = store.delete(&session_key).await {
-                tracing::warn!(
-                    provider,
-                    user_id = %user_id,
-                    server_id,
-                    key = %session_key,
-                    error = %error,
-                    "Failed to invalidate provider access session"
-                );
-            }
+        if let Some(session_key) = alist_session_key
+            && let Err(error) = store.delete(&session_key).await
+        {
+            tracing::warn!(
+                provider,
+                user_id = %user_id,
+                server_id,
+                key = %session_key,
+                error = %error,
+                "Failed to invalidate provider access session"
+            );
         }
 
         Ok(())
@@ -1040,9 +1040,11 @@ mod tests {
             )
             .failed("sensitive cache writes require encryption");
 
-        assert!(error
-            .to_string()
-            .contains("Credential encryption must be configured"));
+        assert!(
+            error
+                .to_string()
+                .contains("Credential encryption must be configured")
+        );
     }
 
     #[tokio::test]
@@ -1072,15 +1074,17 @@ mod tests {
         assert!(access.is_authenticated());
         let cookies = access.into_cookies();
         assert_eq!(cookies.get("SESSDATA").map(String::as_str), Some("cookie"));
-        assert!(store
-            .get_raw(&CachedProviderAccessService::binding_key(
-                BilibiliProvider::NAME,
-                user_id,
-                &server_id,
-            ))
-            .await
-            .checked("binding cache read succeeds")
-            .is_some());
+        assert!(
+            store
+                .get_raw(&CachedProviderAccessService::binding_key(
+                    BilibiliProvider::NAME,
+                    user_id,
+                    &server_id,
+                ))
+                .await
+                .checked("binding cache read succeeds")
+                .is_some()
+        );
     }
 
     #[tokio::test]

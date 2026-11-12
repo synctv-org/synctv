@@ -1,6 +1,6 @@
 use std::fmt;
 
-use serde::{de::Visitor, Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Visitor};
 
 #[derive(Clone, PartialEq, Eq, Hash, prost::Message)]
 pub struct FieldMask {

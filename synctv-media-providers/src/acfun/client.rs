@@ -13,7 +13,7 @@ use super::{
     AcFunResource, AcFunResourceKind, AcFunSession, AcFunStreamFormat,
 };
 use crate::{
-    check_response, fetch_json, text_with_limit, ProviderClientError, PROVIDER_USER_AGENT,
+    PROVIDER_USER_AGENT, ProviderClientError, check_response, fetch_json, text_with_limit,
 };
 
 const ACFUN_ORIGIN: &str = "https://www.acfun.cn";
@@ -447,23 +447,23 @@ impl AcFunClient {
 
 fn parse_identifier(id: &str, query: Option<String>) -> Result<AcFunResource, ProviderClientError> {
     let id = id.trim();
-    if let Some(value) = id.strip_prefix("ac") {
-        if valid_numeric_parts(value) {
-            return Ok(AcFunResource {
-                kind: AcFunResourceKind::Video,
-                id: id.to_string(),
-                query,
-            });
-        }
+    if let Some(value) = id.strip_prefix("ac")
+        && valid_numeric_parts(value)
+    {
+        return Ok(AcFunResource {
+            kind: AcFunResourceKind::Video,
+            id: id.to_string(),
+            query,
+        });
     }
-    if let Some(value) = id.strip_prefix("aa") {
-        if valid_numeric_parts(value) {
-            return Ok(AcFunResource {
-                kind: AcFunResourceKind::Bangumi,
-                id: id.to_string(),
-                query,
-            });
-        }
+    if let Some(value) = id.strip_prefix("aa")
+        && valid_numeric_parts(value)
+    {
+        return Ok(AcFunResource {
+            kind: AcFunResourceKind::Bangumi,
+            id: id.to_string(),
+            query,
+        });
     }
     if id.chars().all(|value| value.is_ascii_digit()) {
         return parse_live_id(id);

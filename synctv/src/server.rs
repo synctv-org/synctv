@@ -21,10 +21,10 @@ use tower::ServiceExt;
 use tracing::{error, info, warn};
 
 use synctv_core::{
+    RedisConnectionRuntime,
     cache::UserCache,
     repository::UserProviderCredentialRepository,
     service::{RoomService, UserService},
-    RedisConnectionRuntime,
 };
 use synctv_management::lifecycle::{ManagementLifecycleController, ShutdownMode};
 use synctv_management::provider_runtime::{
@@ -34,15 +34,15 @@ use synctv_management::provider_runtime::{
     YoutubeRuntime,
 };
 use synctv_management::server::{
-    spawn_management_server, spawn_management_server_with_tcp_listener, ManagementServerConfig,
+    ManagementServerConfig, spawn_management_server, spawn_management_server_with_tcp_listener,
 };
 use synctv_realtime::fanout::{RealtimeEventService, RealtimeFanoutService};
 use synctv_realtime::sync::ConnectionRuntime;
 use synctv_realtime::sync::RealtimeEvent;
 
 use crate::app_config::{AppConfig as Config, MetricsTlsConfig};
-use crate::bootstrap::cluster::ClusterNodeActivator;
 use crate::bootstrap::DatabasePools;
+use crate::bootstrap::cluster::ClusterNodeActivator;
 use crate::chat_moderation_dispatcher::start_chat_moderation_dispatcher;
 use crate::management_runtime::{
     ManagementAcfunRuntime, ManagementAdminRuntime, ManagementAlistRuntime,
@@ -962,10 +962,10 @@ async fn shutdown_metrics_connection_tasks(connections: &mut JoinSet<()>, timeou
     connections.abort_all();
 
     while let Some(join_result) = connections.join_next().await {
-        if let Err(error) = join_result {
-            if error.is_panic() {
-                std::panic::resume_unwind(error.into_panic());
-            }
+        if let Err(error) = join_result
+            && error.is_panic()
+        {
+            std::panic::resume_unwind(error.into_panic());
         }
     }
 }
@@ -1065,15 +1065,16 @@ async fn force_abort_runtime_server_with_deadline(
         }
         return;
     }
-    if let Ok(join_result) = tokio::time::timeout(budget, &mut handle).await {
-        match join_result {
+    match tokio::time::timeout(budget, &mut handle).await {
+        Ok(join_result) => match join_result {
             Ok(Ok(())) => info!("{name} aborted cleanly"),
             Ok(Err(err)) => warn!("{name} returned error after forced abort: {err}"),
             Err(err) if err.is_cancelled() => info!("{name} aborted"),
             Err(err) => warn!("{name} failed after forced abort: {err}"),
+        },
+        _ => {
+            warn!("{name} did not join after forced abort");
         }
-    } else {
-        warn!("{name} did not join after forced abort");
     }
 }
 
@@ -1100,14 +1101,15 @@ async fn force_abort_background_task_with_deadline(
         }
         return;
     }
-    if let Ok(join_result) = tokio::time::timeout(budget, &mut handle).await {
-        match join_result {
+    match tokio::time::timeout(budget, &mut handle).await {
+        Ok(join_result) => match join_result {
             Ok(()) => info!("{name} aborted cleanly"),
             Err(err) if err.is_cancelled() => info!("{name} aborted"),
             Err(err) => warn!("{name} failed after forced abort: {err}"),
+        },
+        _ => {
+            warn!("{name} did not join after forced abort");
         }
-    } else {
-        warn!("{name} did not join after forced abort");
     }
 }
 
@@ -2015,36 +2017,36 @@ impl SyncTvServer {
                 shutdown_rx.clone(),
             ));
 
-        if let Some(cluster_activation) = &self.services.cluster_activation {
-            if let Err(err) = cluster_activation.activate().await {
-                let api_handle = self.api_handle.take();
-                let metrics_handle = self.metrics_handle.take();
-                let management_handle = self.management_handle.take();
-                let startup_cleanup_budget =
-                    Duration::from_secs(self.config.server.shutdown_drain_timeout_seconds)
-                        .min(STARTUP_CLEANUP_TIMEOUT);
-                let startup_cleanup_deadline = tokio::time::Instant::now() + startup_cleanup_budget;
-                let playback_lifecycle_event_source_handle =
-                    self.playback_lifecycle_event_source_handle.take();
-                shutdown_after_cluster_activation_failure(
-                    &mut self,
-                    ClusterActivationFailureShutdown {
-                        shutdown_tx: shutdown_tx.clone(),
-                        cleanup_cancel: cleanup_cancel.clone(),
-                        cleanup_handle: Some(cleanup_handle),
-                        api_handle,
-                        metrics_handle,
-                        management_handle,
-                        playback_lifecycle_event_source_handle,
-                        deadline: startup_cleanup_deadline,
-                        coordinator,
-                    },
-                )
+        if let Some(cluster_activation) = &self.services.cluster_activation
+            && let Err(err) = cluster_activation.activate().await
+        {
+            let api_handle = self.api_handle.take();
+            let metrics_handle = self.metrics_handle.take();
+            let management_handle = self.management_handle.take();
+            let startup_cleanup_budget =
+                Duration::from_secs(self.config.server.shutdown_drain_timeout_seconds)
+                    .min(STARTUP_CLEANUP_TIMEOUT);
+            let startup_cleanup_deadline = tokio::time::Instant::now() + startup_cleanup_budget;
+            let playback_lifecycle_event_source_handle =
+                self.playback_lifecycle_event_source_handle.take();
+            shutdown_after_cluster_activation_failure(
+                &mut self,
+                ClusterActivationFailureShutdown {
+                    shutdown_tx: shutdown_tx.clone(),
+                    cleanup_cancel: cleanup_cancel.clone(),
+                    cleanup_handle: Some(cleanup_handle),
+                    api_handle,
+                    metrics_handle,
+                    management_handle,
+                    playback_lifecycle_event_source_handle,
+                    deadline: startup_cleanup_deadline,
+                    coordinator,
+                },
+            )
+            .await;
+            self.close_database_pools_with_deadline(startup_cleanup_deadline)
                 .await;
-                self.close_database_pools_with_deadline(startup_cleanup_deadline)
-                    .await;
-                return Err(err);
-            }
+            return Err(err);
         }
 
         // Spawn streaming event listener for replica-wide kicks
@@ -2996,7 +2998,7 @@ the shared server TLS configuration"
                                         let peer = request
                                             .extensions()
                                             .get::<axum::extract::ConnectInfo<TlsApiConnectInfo>>()
-                                            .map(|info| info.0 .0);
+                                            .map(|info| info.0.0);
                                         if let Some(peer) = peer {
                                             request
                                                 .extensions_mut()
@@ -3030,74 +3032,75 @@ the shared server TLS configuration"
 
             // HTTP/3 (QUIC) listener: same router over UDP, plus WebTransport
             // room sessions; TCP responses advertise the endpoint via Alt-Svc.
-            if quic_config.enabled {
-                if let Some(rustls_config) = shared_rustls_config.clone() {
-                    {
-                        let udp_port = quic_config.port.unwrap_or(server_tls_config.port);
-                        // IPv6 listen addresses only parse via SocketAddr — a
-                        // `ip:port` format string mangles `::` into `::8080`.
-                        let bind_addr = std::net::SocketAddr::new(http_addr.ip(), udp_port);
-                        let wt_handler = std::sync::Arc::new(synctv_api::RoomWebTransportHandler {
-                            state: (*shared_http_app_state).clone(),
-                        });
-                        // The HTTP/3 path attaches the QUIC peer address as a
-                        // `PeerAddress` extension (synctv-quic has no axum
-                        // dependency); synthesize the `ConnectInfo<SocketAddr>`
-                        // every extractor already reads so per-IP rate limiting,
-                        // brute-force lockout, and audit attribution work over
-                        // HTTP/3 exactly as they do over TCP.
-                        let h3_router = router.clone().layer(axum::middleware::from_fn(
-                            |mut request: axum::http::Request<axum::body::Body>,
-                             next: axum::middleware::Next| async move {
-                                if request
+            if quic_config.enabled
+                && let Some(rustls_config) = shared_rustls_config.clone()
+            {
+                {
+                    let udp_port = quic_config.port.unwrap_or(server_tls_config.port);
+                    // IPv6 listen addresses only parse via SocketAddr — a
+                    // `ip:port` format string mangles `::` into `::8080`.
+                    let bind_addr = std::net::SocketAddr::new(http_addr.ip(), udp_port);
+                    let wt_handler = std::sync::Arc::new(synctv_api::RoomWebTransportHandler {
+                        state: (*shared_http_app_state).clone(),
+                    });
+                    // The HTTP/3 path attaches the QUIC peer address as a
+                    // `PeerAddress` extension (synctv-quic has no axum
+                    // dependency); synthesize the `ConnectInfo<SocketAddr>`
+                    // every extractor already reads so per-IP rate limiting,
+                    // brute-force lockout, and audit attribution work over
+                    // HTTP/3 exactly as they do over TCP.
+                    let h3_router = router.clone().layer(axum::middleware::from_fn(
+                        |mut request: axum::http::Request<axum::body::Body>,
+                         next: axum::middleware::Next| async move {
+                            if request
+                                .extensions()
+                                .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+                                .is_none()
+                            {
+                                // PeerAddress is Copy; take it out of the
+                                // immutable borrow before the mutable insert.
+                                let peer = request
                                     .extensions()
-                                    .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-                                    .is_none()
-                                {
-                                    // PeerAddress is Copy; take it out of the
-                                    // immutable borrow before the mutable insert.
-                                    let peer = request
-                                        .extensions()
-                                        .get::<synctv_quic::PeerAddress>()
-                                        .copied();
-                                    if let Some(peer) = peer {
-                                        request
-                                            .extensions_mut()
-                                            .insert(axum::extract::ConnectInfo(peer.0));
-                                    }
+                                    .get::<synctv_quic::PeerAddress>()
+                                    .copied();
+                                if let Some(peer) = peer {
+                                    request
+                                        .extensions_mut()
+                                        .insert(axum::extract::ConnectInfo(peer.0));
                                 }
-                                next.run(request).await
-                            },
-                        ));
-                        match synctv_quic::serve_quic::<_, axum::body::Body, axum::body::Body, _>(
-                            bind_addr,
-                            synctv_quic::QuicServerConfig {
-                                rustls: rustls_config,
-                                max_webtransport_sessions: quic_config.max_webtransport_sessions,
-                            },
-                            h3_router,
-                            // Stream the HTTP/3 request body straight into
-                            // axum (bidirectional gRPC and early responses
-                            // work without buffering the upload first).
-                            axum::body::Body::new,
-                            Some(wt_handler),
-                            graceful_cancel.clone(),
-                        )
-                        .await
-                        {
-                            Ok(bound) => {
-                                info!("HTTP/3 (QUIC) server listening on {bound}");
-                                // Advertise only after a successful bind: browsers
-                                // cache Alt-Svc, and a phantom endpoint would
-                                // break the TCP API for clients that honor it.
-                                let alt_svc = format!(
-                                    "h3=\":{}\"; ma={}",
-                                    bound.port(),
-                                    quic_config.alt_svc_max_age_seconds
-                                )
-                                .parse::<axum::http::HeaderValue>()
-                                .expect("Alt-Svc header value is ASCII");
-                                router = router.layer(axum::middleware::from_fn(
+                            }
+                            next.run(request).await
+                        },
+                    ));
+                    match synctv_quic::serve_quic::<_, axum::body::Body, axum::body::Body, _>(
+                        bind_addr,
+                        synctv_quic::QuicServerConfig {
+                            rustls: rustls_config,
+                            max_webtransport_sessions: quic_config.max_webtransport_sessions,
+                        },
+                        h3_router,
+                        // Stream the HTTP/3 request body straight into
+                        // axum (bidirectional gRPC and early responses
+                        // work without buffering the upload first).
+                        axum::body::Body::new,
+                        Some(wt_handler),
+                        graceful_cancel.clone(),
+                    )
+                    .await
+                    {
+                        Ok(bound) => {
+                            info!("HTTP/3 (QUIC) server listening on {bound}");
+                            // Advertise only after a successful bind: browsers
+                            // cache Alt-Svc, and a phantom endpoint would
+                            // break the TCP API for clients that honor it.
+                            let alt_svc = format!(
+                                "h3=\":{}\"; ma={}",
+                                bound.port(),
+                                quic_config.alt_svc_max_age_seconds
+                            )
+                            .parse::<axum::http::HeaderValue>()
+                            .expect("Alt-Svc header value is ASCII");
+                            router = router.layer(axum::middleware::from_fn(
                                     move |request: axum::http::Request<axum::body::Body>,
                                           next: axum::middleware::Next| {
                                         let alt_svc = alt_svc.clone();
@@ -3111,32 +3114,29 @@ the shared server TLS configuration"
                                     },
                                 ));
 
-                                // Pin the served certificate in the advertisement so
-                                // self-signed deployments work without manual client
-                                // configuration; unreadable hashes pin nothing.
-                                let certificate_hash = synctv_quic::certificate_hash_base64(
-                                    &server_tls_config.cert_path,
-                                )
-                                .await
-                                .unwrap_or_default();
+                            // Pin the served certificate in the advertisement so
+                            // self-signed deployments work without manual client
+                            // configuration; unreadable hashes pin nothing.
+                            let certificate_hash =
+                                synctv_quic::certificate_hash_base64(&server_tls_config.cert_path)
+                                    .await
+                                    .unwrap_or_default();
 
-                                shared_http_app_state
-                                    .realtime_transport_advertisement
-                                    .write()
-                                    .push(synctv_proto::client::RealtimeTransportCapability {
-                                        kind:
-                                            synctv_proto::client::RealtimeTransportKind::WebTransport
-                                                as i32,
-                                        path: synctv_api::WEBTRANSPORT_ROOMS_PATH.to_string(),
-                                        certificate_hash,
-                                    });
-                            }
-                            Err(error) => {
-                                error!(
-                                    error = %error,
-                                    "HTTP/3 (QUIC) listener failed to start; serving TCP only"
-                                );
-                            }
+                            shared_http_app_state
+                                .realtime_transport_advertisement
+                                .write()
+                                .push(synctv_proto::client::RealtimeTransportCapability {
+                                    kind: synctv_proto::client::RealtimeTransportKind::WebTransport
+                                        as i32,
+                                    path: synctv_api::WEBTRANSPORT_ROOMS_PATH.to_string(),
+                                    certificate_hash,
+                                });
+                        }
+                        Err(error) => {
+                            error!(
+                                error = %error,
+                                "HTTP/3 (QUIC) listener failed to start; serving TCP only"
+                            );
                         }
                     }
                 }
@@ -3284,7 +3284,7 @@ the shared server TLS configuration"
                         let (stream, peer_addr) = accept_result
                             .map_err(|error| anyhow::anyhow!("Metrics server accept error: {error}"))?;
                         let app = metrics_app.clone();
-                        if let Some(acceptor) = tls_acceptor.clone() {
+                        match tls_acceptor.clone() { Some(acceptor) => {
                             connections.spawn(async move {
                                 match acceptor.accept(stream).await {
                                     Ok(tls_stream) => {
@@ -3297,13 +3297,13 @@ the shared server TLS configuration"
                                     }
                                 }
                             });
-                        } else {
+                        } _ => {
                             connections.spawn(async move {
                                 if let Err(error) = serve_metrics_connection(stream, app).await {
                                     warn!(target: "synctv::metrics", peer = %peer_addr, error = %error, "metrics connection failed");
                                 }
                             });
-                        }
+                        }}
                     }
                 }
             }
@@ -3548,22 +3548,22 @@ impl axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, TlsA
 #[cfg(test)]
 mod tests {
     use super::{
+        FORCE_SHUTDOWN_COORDINATOR_BUDGET, LivestreamShutdown, RuntimeShutdownOptions,
+        SharedProviderPlaybackRuntime, StartupFailureShutdownContext,
         await_runtime_server_shutdown, await_task_shutdown, build_api_execution_runtime,
         build_core_api_impls, build_playback_provider_services, build_provider_access_service,
         build_provider_api_impls, cleanup_partial_startup, coordinator_shutdown_deadline,
         livestream_shutdown_timeout_secs, management_apis_from_http_state,
         map_background_task_exit, map_runtime_server_exit, shutdown_after_startup_failure,
         shutdown_livestream_state, shutdown_metrics_connection_tasks, shutdown_runtime_phase,
-        spawn_admin_event_listener, LivestreamShutdown, RuntimeShutdownOptions,
-        SharedProviderPlaybackRuntime, StartupFailureShutdownContext,
-        FORCE_SHUTDOWN_COORDINATOR_BUDGET,
+        spawn_admin_event_listener,
     };
     use crate::app_config::AppConfig as Config;
     use crate::shutdown::ShutdownCoordinator;
     use async_trait::async_trait;
     use std::sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     };
     use std::time::Duration;
     use synctv_core::{
@@ -4890,7 +4890,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn test_sighup_handler_does_not_complete_immediately() {
-        use tokio::time::{timeout, Duration};
+        use tokio::time::{Duration, timeout};
 
         let mut sighup_signal =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())

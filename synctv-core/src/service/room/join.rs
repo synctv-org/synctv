@@ -2,13 +2,13 @@ use futures::future::BoxFuture;
 use sqlx::{Postgres, Transaction};
 
 use crate::{
+    Error, Result,
     models::{
         AddMemberOptions, ReviewRequestId, ReviewStatus, Room, RoomId, RoomMember,
         RoomMemberWithUser, RoomRole, RoomSettings, RoomStatus, UserId,
     },
     repository::ReviewRepository,
     service::{RealtimeOutboxPermissionChangedEventFactory, RoomService},
-    Error, Result,
 };
 
 use super::outbox::MemberJoinedEffectsRequest;
@@ -406,15 +406,15 @@ impl RoomService {
             .execute(&mut *tx)
             .await;
 
-            if let Err(error) = insert_result {
-                if !matches!(
+            if let Err(error) = insert_result
+                && !matches!(
                     &error,
                     sqlx::Error::Database(db_error)
                         if db_error.constraint()
                             == Some("idx_room_join_requests_pending_unique")
-                ) {
-                    return Err(Error::Database(error));
-                }
+                )
+            {
+                return Err(Error::Database(error));
             }
         }
 

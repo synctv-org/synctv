@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use synctv_common::ExecutionControl;
 
-use crate::{reqwest_error_indicates_connection_failure, run_with_proxy_cancellation, ProxyError};
+use crate::{ProxyError, reqwest_error_indicates_connection_failure, run_with_proxy_cancellation};
 
 /// Maximum number of redirects to follow manually.
 const MAX_REDIRECTS: usize = 10;

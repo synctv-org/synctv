@@ -3,11 +3,11 @@
 //! Pure HTTP client for Alist API, no dependency on `MediaProvider`
 
 use reqwest::{
+    Client,
     header::{
-        HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONTENT_TYPE, ORIGIN, REFERER,
+        AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue, ORIGIN, REFERER,
         USER_AGENT,
     },
-    Client,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -17,7 +17,7 @@ use super::types::{
     LoginData,
 };
 use crate::error::with_retry;
-use crate::error::{check_response, json_with_limit, ProviderClientError as AlistError};
+use crate::error::{ProviderClientError as AlistError, check_response, json_with_limit};
 use serde::de::DeserializeOwned;
 
 /// Validate that a path does not contain traversal components.

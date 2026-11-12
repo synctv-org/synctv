@@ -1,7 +1,7 @@
-use axum::{extract::State, routing::post, Json, Router};
+use axum::{Json, Router, extract::State, routing::post};
 use futures::FutureExt;
 
-use crate::http::{middleware::RequestMetadata, AppResult, AppState};
+use crate::http::{AppResult, AppState, middleware::RequestMetadata};
 use synctv_api_common::impls::EndpointRateLimitCategory;
 use synctv_proto::providers::acfun::{ResolveRequest, ResolveResponse};
 

@@ -3,8 +3,8 @@ use synctv_core::models::{MediaId, RoomId, UserId};
 use synctv_core::service::StreamKickAuditRequest;
 
 use super::{
-    compare_active_streams, live_streaming_unavailable_error, normalize_non_empty_filter,
-    paginate_vec, usize_to_i32_api, AdminApiImpl, ApiError, RequestContext,
+    AdminApiImpl, ApiError, RequestContext, compare_active_streams,
+    live_streaming_unavailable_error, normalize_non_empty_filter, paginate_vec, usize_to_i32_api,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,15 +52,15 @@ impl AdminApiImpl {
 
         let mut streams = Vec::new();
         for active_publisher in active_publishers {
-            if let Some(filter_room) = room_id.as_deref() {
-                if active_publisher.room_id != filter_room {
-                    continue;
-                }
+            if let Some(filter_room) = room_id.as_deref()
+                && active_publisher.room_id != filter_room
+            {
+                continue;
             }
-            if let Some(filter_user) = user_filter.as_deref() {
-                if active_publisher.generation.user_id != filter_user {
-                    continue;
-                }
+            if let Some(filter_user) = user_filter.as_deref()
+                && active_publisher.generation.user_id != filter_user
+            {
+                continue;
             }
 
             let user_id = if active_publisher.generation.user_id.is_empty() {
@@ -105,10 +105,10 @@ impl AdminApiImpl {
                 started_at: active_publisher.generation.started_at.timestamp(),
             };
 
-            if let Some(filter_node) = node_filter.as_deref() {
-                if stream.node_id != filter_node {
-                    continue;
-                }
+            if let Some(filter_node) = node_filter.as_deref()
+                && stream.node_id != filter_node
+            {
+                continue;
             }
             if let Some(search) = &search {
                 let haystack = format!(

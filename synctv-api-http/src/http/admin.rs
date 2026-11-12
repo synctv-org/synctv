@@ -4,17 +4,17 @@
 //! Thin handlers that delegate to `AdminApiImpl`.
 
 use axum::{
+    Json, Router,
     extract::{Path, State},
     routing::{get, patch, post},
-    Json, Router,
 };
 use std::sync::Arc;
 
 use super::{
+    AppError, AppResult, AppState,
     admin_execute::{execute_admin_endpoint, execute_root_endpoint},
     middleware::RequestMetadata,
     validation::ProtoQuery,
-    AppError, AppResult, AppState,
 };
 use synctv_proto::{admin, client};
 

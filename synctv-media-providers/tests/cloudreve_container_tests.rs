@@ -1,8 +1,8 @@
 //! Cloudreve v4 contract checks against the official container image.
 
-use anyhow::{ensure, Context};
-use serde_json::{json, Value};
-use synctv_core_testing::{start_external_service, ExternalServiceRequest};
+use anyhow::{Context, ensure};
+use serde_json::{Value, json};
+use synctv_core_testing::{ExternalServiceRequest, start_external_service};
 use synctv_media_providers::CloudreveClient;
 
 const CLOUDREVE_IMAGE: &str = "cloudreve/cloudreve";

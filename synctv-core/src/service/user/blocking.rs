@@ -1,8 +1,8 @@
 use chrono::{DateTime, Utc};
 
 use crate::{
-    models::{BlockedUser, PageParams, UserId},
     Error, Result,
+    models::{BlockedUser, PageParams, UserId},
 };
 
 use super::UserService;

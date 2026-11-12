@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
 use crate::{
+    Error, Result,
     models::{Playlist, PlaylistId, PlaylistSourceConfig, RoomId, SourceProvider, UserId},
     provider::{
         DynamicBrowsePathSegment, DynamicListQuery, DynamicListResult, DynamicPlaylistProvider,
         MediaProvider, NextPlayItem, ProviderActor, ProviderContext,
     },
-    Error, Result,
 };
 
 use super::MediaService;

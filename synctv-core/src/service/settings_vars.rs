@@ -28,13 +28,13 @@
 //! ```
 
 use parking_lot::RwLock;
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::fmt::{self, Display};
 use std::hash::BuildHasherDefault;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::{broadcast, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::sync::{Mutex, broadcast};
 use tracing::{debug, warn};
 
 use super::SettingsService;
@@ -121,7 +121,7 @@ where
 /// ```
 #[macro_export]
 macro_rules! setting {
-    ($name:ident, $type:ty, $key:literal, $default:expr) => {
+    ($name:ident, $type:ty, $key:literal, $default:expr_2021) => {
         #[derive(Clone)]
         pub struct $name($crate::service::settings_vars::Setting<$type>);
 
@@ -148,7 +148,7 @@ macro_rules! setting {
             }
         }
     };
-    ($name:ident, $type:ty, $key:literal, $default:expr, $validator:expr) => {
+    ($name:ident, $type:ty, $key:literal, $default:expr_2021, $validator:expr_2021) => {
         #[derive(Clone)]
         pub struct $name($crate::service::settings_vars::Setting<$type>);
 

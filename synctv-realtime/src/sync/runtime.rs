@@ -14,7 +14,7 @@ use super::room_hub::{ConnectionId, RoomLifecycleEvent, RoomMessageHub};
 use super::{RealtimeEvent, SharedRealtimeEvent};
 use crate::error::{Error, Result};
 use synctv_core::models::{RealtimeActor, RoomId, UserId};
-use synctv_core::{service::OnlinePresenceService, SharedStateMode, SharedStateProfile};
+use synctv_core::{SharedStateMode, SharedStateProfile, service::OnlinePresenceService};
 
 pub fn build_connection_manager(
     limits: ConnectionLimits,
@@ -465,7 +465,7 @@ impl ConnectionRuntime for ConnectionManager {
 mod tests {
     use super::{build_connection_manager, build_room_message_runtime};
 
-    use crate::{sync::ConnectionLimits, Error};
+    use crate::{Error, sync::ConnectionLimits};
     use async_trait::async_trait;
     use std::sync::Arc;
     use std::time::Duration;
@@ -509,8 +509,8 @@ mod tests {
     }
 
     #[test]
-    fn test_build_connection_manager_requires_shared_runtime_when_cluster_state_is_required(
-    ) -> crate::Result<()> {
+    fn test_build_connection_manager_requires_shared_runtime_when_cluster_state_is_required()
+    -> crate::Result<()> {
         let profile = SharedStateProfile::for_cluster_runtime(None, "test:", true);
         let error = require_error(
             build_connection_manager(
@@ -532,8 +532,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_build_connection_manager_stays_local_when_shared_state_is_not_required(
-    ) -> crate::Result<()> {
+    async fn test_build_connection_manager_stays_local_when_shared_state_is_not_required()
+    -> crate::Result<()> {
         let profile = SharedStateProfile::for_cluster_runtime(None, "test:", false);
 
         let manager = build_connection_manager(
@@ -549,8 +549,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_build_connection_manager_uses_shared_runtime_when_best_effort_has_one(
-    ) -> crate::Result<()> {
+    async fn test_build_connection_manager_uses_shared_runtime_when_best_effort_has_one()
+    -> crate::Result<()> {
         let profile =
             SharedStateProfile::for_cluster_runtime(Some(hanging_runtime()), "test:", false);
 
@@ -574,8 +574,8 @@ mod tests {
     }
 
     #[test]
-    fn test_build_room_message_runtime_requires_shared_runtime_when_cluster_state_is_required(
-    ) -> crate::Result<()> {
+    fn test_build_room_message_runtime_requires_shared_runtime_when_cluster_state_is_required()
+    -> crate::Result<()> {
         let profile = SharedStateProfile::for_cluster_runtime(None, "test:", true);
         let error = require_error(
             build_room_message_runtime(&profile),
@@ -592,8 +592,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_build_room_message_runtime_stays_local_when_shared_state_is_not_required(
-    ) -> crate::Result<()> {
+    async fn test_build_room_message_runtime_stays_local_when_shared_state_is_not_required()
+    -> crate::Result<()> {
         let profile = SharedStateProfile::for_cluster_runtime(None, "test:", false);
 
         let runtime = build_room_message_runtime(&profile)?;
@@ -604,8 +604,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_build_room_message_runtime_uses_shared_runtime_when_best_effort_has_one(
-    ) -> crate::Result<()> {
+    async fn test_build_room_message_runtime_uses_shared_runtime_when_best_effort_has_one()
+    -> crate::Result<()> {
         let profile =
             SharedStateProfile::for_cluster_runtime(Some(hanging_runtime()), "test:", false);
 

@@ -161,8 +161,8 @@ mod tests {
     use super::default_room_settings_fanout_service;
     use crate::realtime_fanout::local_realtime_fanout_service;
     use crate::test_support::RecordingRealtimeEventService;
-    use std::sync::atomic::Ordering;
     use std::sync::Arc;
+    use std::sync::atomic::Ordering;
     use synctv_core::models::{RoomId, UserId};
     use synctv_realtime::sync::RealtimeEvent;
 
@@ -209,8 +209,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_prepared_room_settings_fanout_keeps_event_identity_when_snapshot_is_applied(
-    ) -> TestResult {
+    async fn test_prepared_room_settings_fanout_keeps_event_identity_when_snapshot_is_applied()
+    -> TestResult {
         let service = default_room_settings_fanout_service(
             crate::realtime_fanout::disabled_realtime_fanout_service(),
         );

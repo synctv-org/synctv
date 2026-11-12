@@ -2,8 +2,8 @@
 //!
 //! Provides aggregated statistics for admin dashboards.
 
-use crate::repository::{SystemStats, SystemStatsRepository};
 use crate::Result;
+use crate::repository::{SystemStats, SystemStatsRepository};
 use sqlx::PgPool;
 
 /// Service for fetching system-wide statistics

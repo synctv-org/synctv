@@ -1291,10 +1291,10 @@ fn check_memory_health_macos() -> Option<ServerStateMemoryHealth> {
         if line.contains("page size of") {
             if let Some(start) = line.find("page size of ") {
                 let rest = &line[start + 13..];
-                if let Some(end) = rest.find(" bytes") {
-                    if let Ok(parsed_page_size) = rest[..end].parse::<u64>() {
-                        page_size = parsed_page_size;
-                    }
+                if let Some(end) = rest.find(" bytes")
+                    && let Ok(parsed_page_size) = rest[..end].parse::<u64>()
+                {
+                    page_size = parsed_page_size;
                 }
             }
         } else if line.starts_with("Pages free:") {

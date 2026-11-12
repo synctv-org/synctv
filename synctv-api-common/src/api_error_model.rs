@@ -359,14 +359,18 @@ mod tests {
 
         let rpc_status = tonic_types::pb::Status::decode(status.details())?;
         assert_eq!(rpc_status.code, tonic::Code::ResourceExhausted as i32);
-        assert!(rpc_status
-            .details
-            .iter()
-            .any(|detail| detail.type_url == "type.googleapis.com/google.rpc.ErrorInfo"));
-        assert!(rpc_status
-            .details
-            .iter()
-            .any(|detail| detail.type_url == "type.googleapis.com/google.rpc.RetryInfo"));
+        assert!(
+            rpc_status
+                .details
+                .iter()
+                .any(|detail| detail.type_url == "type.googleapis.com/google.rpc.ErrorInfo")
+        );
+        assert!(
+            rpc_status
+                .details
+                .iter()
+                .any(|detail| detail.type_url == "type.googleapis.com/google.rpc.RetryInfo")
+        );
 
         Ok(())
     }

@@ -1,12 +1,12 @@
 use tonic::{Request, Response, Status};
 
-use super::{map_api_error, ClientServiceImpl};
+use super::{ClientServiceImpl, map_api_error};
 use synctv_api_common::impls::{ApiError, EndpointRateLimitCategory};
 use synctv_proto::client::{
-    public_service_server::PublicService, DiscoverRoomsRequest, DiscoverRoomsResponse,
-    GetPublicSettingsRequest, GetPublicSettingsResponse, GetRoomDiscoveryRequest,
-    GetServerInfoRequest, GetServerInfoResponse, GetServerTimeRequest, GetServerTimeResponse,
-    RoomDiscoveryItem,
+    DiscoverRoomsRequest, DiscoverRoomsResponse, GetPublicSettingsRequest,
+    GetPublicSettingsResponse, GetRoomDiscoveryRequest, GetServerInfoRequest,
+    GetServerInfoResponse, GetServerTimeRequest, GetServerTimeResponse, RoomDiscoveryItem,
+    public_service_server::PublicService,
 };
 
 #[tonic::async_trait]

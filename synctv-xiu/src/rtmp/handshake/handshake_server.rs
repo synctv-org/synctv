@@ -387,7 +387,7 @@ mod tests {
         let timestamp: u32 = 12345;
         data.extend_from_slice(&timestamp.to_be_bytes());
         data.extend_from_slice(&[0u8; 4]); // version zeros
-                                           // Fill remaining 1528 bytes with pattern
+        // Fill remaining 1528 bytes with pattern
         data.extend(
             (0u8..=u8::MAX)
                 .cycle()

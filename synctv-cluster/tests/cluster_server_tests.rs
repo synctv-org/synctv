@@ -6,8 +6,8 @@ use std::sync::Arc;
 use tonic::Request;
 
 use synctv_cluster::grpc::server::ClusterServer;
-use synctv_cluster::grpc::synctv::cluster::cluster_service_server::ClusterService;
 use synctv_cluster::grpc::synctv::cluster::GetNodesRequest;
+use synctv_cluster::grpc::synctv::cluster::cluster_service_server::ClusterService;
 use synctv_cluster::{NodeInfo, NodeRegistry};
 
 fn make_server() -> (Arc<NodeRegistry>, ClusterServer) {

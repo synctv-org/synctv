@@ -9,7 +9,7 @@ use synctv_media_providers::twitch::{
 };
 use synctv_proto::providers::twitch::{self as proto, *};
 use synctv_proto::source_config::{
-    self as source_proto, twitch_media_source_config, TwitchPlaylistContent,
+    self as source_proto, TwitchPlaylistContent, twitch_media_source_config,
 };
 use synctv_realtime::fanout::RealtimeEventService;
 

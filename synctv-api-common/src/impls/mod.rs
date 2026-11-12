@@ -33,8 +33,8 @@ pub mod validation;
 // Re-export for convenience
 pub use admin::{
     ActiveStreamListSortBy, AdminApiImpl, AdminApiOptions, AdminApiRuntime, AdminAuthValidator,
-    AdminReadServices, RequestContext as AdminRequestContext, ValidatedAdmin,
-    LOCAL_MANAGEMENT_ACTOR_USER_ID,
+    AdminReadServices, LOCAL_MANAGEMENT_ACTOR_USER_ID, RequestContext as AdminRequestContext,
+    ValidatedAdmin,
 };
 pub use client::{
     ClientApiImpl, ClientApiOptions, ClientApiRuntime, ClientApiRuntimeServices, GuestRoomAccess,
@@ -42,9 +42,9 @@ pub use client::{
 };
 pub use email::EmailApiImpl;
 pub use messaging::{
-    spawn_observed_playback_lifecycle_event_source, HeartbeatSchedule, MessageConcurrencyConfig,
-    MessageSender, PlaybackAutoAdvanceSubscriber, ProtoCodec, ProviderPlaybackProgressSubscriber,
-    StreamMessageHandler,
+    HeartbeatSchedule, MessageConcurrencyConfig, MessageSender, PlaybackAutoAdvanceSubscriber,
+    ProtoCodec, ProviderPlaybackProgressSubscriber, StreamMessageHandler,
+    spawn_observed_playback_lifecycle_event_source,
 };
 pub use notification::NotificationApiImpl;
 pub use oauth2::OAuth2ApiImpl;
@@ -400,8 +400,8 @@ where
     }
 }
 
-pub use synctv_adapter::error::error_codes;
 pub use synctv_adapter::error::ErrorKind;
+pub use synctv_adapter::error::error_codes;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApiFieldViolation {

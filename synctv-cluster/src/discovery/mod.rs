@@ -21,7 +21,7 @@ pub use node_registry::{
 };
 pub use runtime::{ClusterHealthRuntime, ClusterNodeDirectory, ClusterNodeDirectoryFactory};
 pub use static_discovery::{
-    normalize_static_peer_address, StaticDiscovery, StaticDiscoveryConfig, StaticPeerConfig,
+    StaticDiscovery, StaticDiscoveryConfig, StaticPeerConfig, normalize_static_peer_address,
 };
 
 use std::time::Duration;

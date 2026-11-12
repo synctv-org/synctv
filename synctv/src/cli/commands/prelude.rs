@@ -1,4 +1,4 @@
-pub(super) use anyhow::{bail, Result};
+pub(super) use anyhow::{Result, bail};
 pub(super) use clap::{ArgAction, ArgGroup, Args, Subcommand, ValueEnum};
 pub(super) use synctv_management::proto as management_proto;
 

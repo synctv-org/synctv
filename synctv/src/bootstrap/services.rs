@@ -7,21 +7,21 @@ use tracing::{info, warn};
 
 use super::redis::RedisConnectionOptions;
 use synctv_core::{
+    RedisDeploymentMode, SharedStateMode, SharedStateProfile,
     cache::{
-        build_l2_cache_backend, version_fence_store_from_shared_state_profile,
         CacheInvalidationRuntime, CacheL2Backend, CacheManager, ConsistencyCoordinator, KeyBuilder,
-        RoomCache, UserCache, UsernameCache, VersionFenceStore,
+        RoomCache, UserCache, UsernameCache, VersionFenceStore, build_l2_cache_backend,
+        version_fence_store_from_shared_state_profile,
     },
     provider::{
         AlistProvider, CachedProviderAccessService, ProviderAccessService, ProviderStoreRegistry,
         ProviderStoreResolver,
     },
     repository::{
-        realtime_outbox::RealtimeOutboxRepository, ChatRepository, FileStorageRepository,
-        NotificationRepository, ProviderInstanceRepository, RoomMemberRepository, RoomRepository,
-        RoomSettingsRepository as RoomSettingsRepo, SettingsRepository,
-        UserOAuthProviderRepository, UserProviderCredentialRepository,
-        WebAuthnCredentialRepository,
+        ChatRepository, FileStorageRepository, NotificationRepository, ProviderInstanceRepository,
+        RoomMemberRepository, RoomRepository, RoomSettingsRepository as RoomSettingsRepo,
+        SettingsRepository, UserOAuthProviderRepository, UserProviderCredentialRepository,
+        WebAuthnCredentialRepository, realtime_outbox::RealtimeOutboxRepository,
     },
     service::{
         AuditFlushHandle, AuditService, ChatService, ContentFilter,
@@ -38,7 +38,6 @@ use synctv_core::{
         UserNotificationService, UserService,
     },
     validation::PasswordComplexityOptions,
-    RedisDeploymentMode, SharedStateMode, SharedStateProfile,
 };
 
 #[cfg(test)]
@@ -1554,7 +1553,7 @@ mod tests {
     use synctv_core::cache::CacheInvalidationService;
     use synctv_core::models::{UserId, UserProviderCredential};
     use synctv_core::service::RateLimiter;
-    use synctv_core_testing::{failing_redis_runtime, TestResultExt};
+    use synctv_core_testing::{TestResultExt, failing_redis_runtime};
 
     #[test]
     fn security_options_debug_redacts_secrets() {
@@ -1610,13 +1609,13 @@ mod tests {
         ))))
     }
 
-    fn test_room_opaque_registration_store(
-    ) -> Arc<dyn synctv_core::service::RoomOpaquePasswordRegistrationSessionStore> {
+    fn test_room_opaque_registration_store()
+    -> Arc<dyn synctv_core::service::RoomOpaquePasswordRegistrationSessionStore> {
         synctv_core::service::local_room_opaque_password_registration_session_store()
     }
 
-    fn test_room_opaque_login_store(
-    ) -> Arc<dyn synctv_core::service::RoomOpaquePasswordLoginSessionStore> {
+    fn test_room_opaque_login_store()
+    -> Arc<dyn synctv_core::service::RoomOpaquePasswordLoginSessionStore> {
         synctv_core::service::local_room_opaque_password_login_session_store()
     }
 
@@ -1745,8 +1744,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_configure_refresh_token_rate_limiter_returns_error_without_shared_runtime_in_cluster_mode(
-    ) {
+    async fn test_configure_refresh_token_rate_limiter_returns_error_without_shared_runtime_in_cluster_mode()
+     {
         let profile = SharedStateProfile::for_cluster_runtime(None, "test:", true);
         let Err(error) = build_refresh_token_rate_limiter(&profile) else {
             std::panic::panic_any("cluster runtime must reject local refresh-token rate limiting");
@@ -2058,7 +2057,9 @@ mod tests {
 
         assert!(room_service.has_runtime_settings_store());
         assert!(
-            room_service.permission_service().has_runtime_settings_store(),
+            room_service
+                .permission_service()
+                .has_runtime_settings_store(),
             "room permission service must use runtime permission defaults from RuntimeSettingsStore"
         );
     }
@@ -2256,8 +2257,10 @@ mod tests {
         let error = init_credential_encryption(Some("not-a-64-character-hex-key"), "test")
             .failed("invalid explicit credential encryption key must fail closed");
 
-        assert!(error
-            .to_string()
-            .contains("Failed to initialize credential encryption"));
+        assert!(
+            error
+                .to_string()
+                .contains("Failed to initialize credential encryption")
+        );
     }
 }

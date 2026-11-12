@@ -9,7 +9,7 @@ use synctv_core::service::NewRealtimeOutboxEvent;
 use crate::impls::pagination::paginate_all;
 use crate::realtime_lifecycle::DeletedRoomAfterCommitFanout;
 
-use super::{check_role_hierarchy, AdminApiImpl, ApiError, LOCAL_MANAGEMENT_ACTOR_USER_ID};
+use super::{AdminApiImpl, ApiError, LOCAL_MANAGEMENT_ACTOR_USER_ID, check_role_hierarchy};
 
 const USER_ROOM_CLEANUP_PAGE_SIZE: u32 = 100;
 

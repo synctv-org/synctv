@@ -17,7 +17,7 @@ use synctv_core::{
         PlaybackDurationProbeService, RoomService, UserService,
     },
 };
-use synctv_core_testing::{create_test_pool, TestOptionExt, TestResultExt};
+use synctv_core_testing::{TestOptionExt, TestResultExt, create_test_pool};
 
 #[derive(Clone)]
 struct StaticActiveRoomSource {

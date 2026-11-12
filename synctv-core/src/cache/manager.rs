@@ -4,8 +4,8 @@
 //! Supports cross-replica cache invalidation via `CacheInvalidationService`.
 
 use super::{
-    room_cache::RoomCache, user_cache::UserCache, username_cache::UsernameCache,
-    CacheInvalidationRuntime, InvalidationMessage,
+    CacheInvalidationRuntime, InvalidationMessage, room_cache::RoomCache, user_cache::UserCache,
+    username_cache::UsernameCache,
 };
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -238,11 +238,13 @@ mod tests {
             .set(&user_id, cached_user)
             .await
             .checked("operation should succeed");
-        assert!(user_cache
-            .get(&user_id)
-            .await
-            .checked("operation should succeed")
-            .is_some());
+        assert!(
+            user_cache
+                .get(&user_id)
+                .await
+                .checked("operation should succeed")
+                .is_some()
+        );
 
         // Broadcast invalidation (all nodes including local)
         service
@@ -256,11 +258,13 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         // L1 entry should be gone
-        assert!(user_cache
-            .get(&user_id)
-            .await
-            .checked("operation should succeed")
-            .is_none());
+        assert!(
+            user_cache
+                .get(&user_id)
+                .await
+                .checked("operation should succeed")
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -287,11 +291,13 @@ mod tests {
             .set(&room_id, cached_room)
             .await
             .checked("operation should succeed");
-        assert!(room_cache
-            .get(&room_id)
-            .await
-            .checked("operation should succeed")
-            .is_some());
+        assert!(
+            room_cache
+                .get(&room_id)
+                .await
+                .checked("operation should succeed")
+                .is_some()
+        );
 
         // Broadcast invalidation (all nodes including local)
         service
@@ -305,11 +311,13 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         // L1 entry should be gone
-        assert!(room_cache
-            .get(&room_id)
-            .await
-            .checked("operation should succeed")
-            .is_none());
+        assert!(
+            room_cache
+                .get(&room_id)
+                .await
+                .checked("operation should succeed")
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -359,15 +367,19 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         // Both L1 entries should be gone
-        assert!(user_cache
-            .get(&user_id)
-            .await
-            .checked("operation should succeed")
-            .is_none());
-        assert!(room_cache
-            .get(&room_id)
-            .await
-            .checked("operation should succeed")
-            .is_none());
+        assert!(
+            user_cache
+                .get(&user_id)
+                .await
+                .checked("operation should succeed")
+                .is_none()
+        );
+        assert!(
+            room_cache
+                .get(&room_id)
+                .await
+                .checked("operation should succeed")
+                .is_none()
+        );
     }
 }

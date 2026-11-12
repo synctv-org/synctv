@@ -7,10 +7,10 @@ use std::sync::Arc;
 
 use sqlx::PgPool;
 use synctv_core::{
+    Error, KeyBuilder,
     cache::{
-        self,
+        self, UserCache,
         user_cache::{CachedUser, CachedUserSnapshot},
-        UserCache,
     },
     models::{SignupMethod, User, UserId, UserRole, UserStatus},
     repository::UserRepository,
@@ -18,7 +18,6 @@ use synctv_core::{
         AuthenticatedToken, BruteForceProtection, Claims, InMemoryTokenBlacklistStore, JwtService,
         SecurityPipeline, SecurityPipelineRuntime, TokenBlacklistStore, UserService,
     },
-    Error, KeyBuilder,
 };
 use synctv_core_testing::{create_test_pool, err, ok, some};
 fn create_jwt_service() -> JwtService {

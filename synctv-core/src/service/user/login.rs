@@ -4,14 +4,14 @@ use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use synctv_common::ExecutionControl;
 
-use crate::{service::UserService, Error, Result};
+use crate::{Error, Result, service::UserService};
 
 use super::{
     identity_policy::password_binding,
     session_types::{
-        AuthFactorMethod, AuthenticatedLogin, LoginSession, LoginSessionIdentity,
-        LoginSessionState, LoginStartChallenge, OpaqueLoginStartChallenge, LOGIN_SESSION_TTL_SECS,
-        LOGIN_SESSION_TTL_SECS_I64,
+        AuthFactorMethod, AuthenticatedLogin, LOGIN_SESSION_TTL_SECS, LOGIN_SESSION_TTL_SECS_I64,
+        LoginSession, LoginSessionIdentity, LoginSessionState, LoginStartChallenge,
+        OpaqueLoginStartChallenge,
     },
 };
 
@@ -492,12 +492,16 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        assert!(username_profiles
-            .iter()
-            .any(|methods| methods.contains(&AuthFactorMethod::Email)));
-        assert!(username_profiles
-            .iter()
-            .any(|methods| !methods.contains(&AuthFactorMethod::Email)));
+        assert!(
+            username_profiles
+                .iter()
+                .any(|methods| methods.contains(&AuthFactorMethod::Email))
+        );
+        assert!(
+            username_profiles
+                .iter()
+                .any(|methods| !methods.contains(&AuthFactorMethod::Email))
+        );
     }
 
     #[test]

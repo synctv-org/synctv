@@ -5,8 +5,8 @@
 //! API for protected writes. Cluster mode stays rejected at config validation.
 
 use crate::{Error, InternalExt, RedisConnectionRuntime, Result};
-use redis::aio::ConnectionManager as RedisConnectionManager;
 use redis::Script;
+use redis::aio::ConnectionManager as RedisConnectionManager;
 use std::future::Future;
 use std::sync::{Arc, LazyLock};
 

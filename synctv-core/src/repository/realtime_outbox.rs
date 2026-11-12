@@ -3,16 +3,16 @@ use serde::{Deserialize, Serialize};
 use sqlx::{PgConnection, PgPool};
 
 use crate::{
+    Error, Result,
     models::{RealtimeEvent, RoomPermissionSet},
     repository::{
+        JsonbArray, OptionalJsonbArray,
         room_resource_event::{
             NewRoomResourceEvent, RoomMemberResourceSummary, RoomResourceEventPayload,
             RoomResourceEventScope, RoomResourceEventSummary, RoomResourceEventSummaryDetails,
             RoomResourceKind,
         },
-        JsonbArray, OptionalJsonbArray,
     },
-    Error, Result,
 };
 
 pub const REALTIME_OUTBOX_CHANNEL: &str = "realtime_outbox_new";

@@ -5,14 +5,14 @@ use reqwest::header;
 use sha2::{Digest, Sha256};
 
 use super::{
+    S3FileStorageConfig,
     protocol::{
-        amz_datetime, complete_multipart_upload_body, extract_xml_tag, sha256_hex_to_base64,
-        S3CompletedPart, S3SigningContext,
+        S3CompletedPart, S3SigningContext, amz_datetime, complete_multipart_upload_body,
+        extract_xml_tag, sha256_hex_to_base64,
     },
     url::s3_url,
-    S3FileStorageConfig,
 };
-use crate::{models::CompleteFileUploadPart, Error, Result};
+use crate::{Error, Result, models::CompleteFileUploadPart};
 
 const S3_UPLOAD_PART_RETRY_MAX_TIMES: usize = 3;
 const S3_UPLOAD_PART_RETRY_MIN_DELAY: Duration = Duration::from_millis(100);
@@ -299,10 +299,10 @@ fn is_retryable_transport_error(error: &reqwest::Error) -> bool {
     }
     let mut source = error.source();
     while let Some(cause) = source {
-        if let Some(io_error) = cause.downcast_ref::<std::io::Error>() {
-            if is_retryable_io_kind(io_error.kind()) {
-                return true;
-            }
+        if let Some(io_error) = cause.downcast_ref::<std::io::Error>()
+            && is_retryable_io_kind(io_error.kind())
+        {
+            return true;
         }
         source = cause.source();
     }
@@ -334,8 +334,8 @@ fn signing_context(config: &S3FileStorageConfig) -> S3SigningContext<'_> {
 #[cfg(test)]
 mod tests {
     use std::sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicUsize, Ordering},
     };
 
     use super::*;

@@ -19,15 +19,15 @@ use chrono::Utc;
 use sqlx::PgPool;
 use std::sync::Arc;
 use synctv_core::{
+    Error,
     models::{
-        room_settings::MaxMembers, AddMemberOptions, Room, RoomId, RoomMember, RoomRole,
-        RoomSettings, RoomStatus, User, UserId, UserRole, UserStatus,
+        AddMemberOptions, Room, RoomId, RoomMember, RoomRole, RoomSettings, RoomStatus, User,
+        UserId, UserRole, UserStatus, room_settings::MaxMembers,
     },
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository, UserRepository},
     service::{MemberService, NotificationService, PermissionService},
-    Error,
 };
-use synctv_core_testing::{create_test_database_with_options_and_label, ok, TestDatabase};
+use synctv_core_testing::{TestDatabase, create_test_database_with_options_and_label, ok};
 use tokio::sync::Barrier;
 // Test Infrastructure
 

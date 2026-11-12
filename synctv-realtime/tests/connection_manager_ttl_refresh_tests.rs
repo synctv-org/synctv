@@ -6,9 +6,9 @@ use std::time::Duration;
 use redis::AsyncCommands;
 use std::sync::Arc;
 
-use synctv_core::models::id::{RoomId, UserId};
 use synctv_core::SharedStateProfile;
-use synctv_realtime::sync::{build_connection_manager, ConnectionLimits, ConnectionManager};
+use synctv_core::models::id::{RoomId, UserId};
+use synctv_realtime::sync::{ConnectionLimits, ConnectionManager, build_connection_manager};
 
 mod integration_test_helpers;
 use integration_test_helpers::TestRedis;

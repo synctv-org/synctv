@@ -4,6 +4,7 @@
 //! Built-in local providers are created once at startup from explicit local
 //! provider configuration.
 
+use crate::Result;
 use crate::models::normalize_provider_instance_name;
 use crate::provider::{
     AcFunProvider, AlistProvider, BilibiliProvider, CctvProvider, CloudreveProvider,
@@ -13,7 +14,6 @@ use crate::provider::{
     TwitchProvider, YoutubeProvider,
 };
 use crate::service::RemoteProviderManager;
-use crate::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;

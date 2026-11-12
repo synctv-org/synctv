@@ -3,21 +3,22 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::{
+    Error, Result,
     models::{
-        ChatAttachment, ChatMessage, ChatMessageEventLog, ChatPlaybackMessagesQuery, ChatReadState,
-        ChatSearchMessagesQuery, CreateChatAttachmentUploadSession, CreateFileUploadSession,
-        DeleteChatMessage, EditChatMessage, NewStoredFile, PinChatMessage, RoomId, SendChatMessage,
-        SubmittedFileReference, SubmittedFileReferenceKind, UnpinChatMessage, UserId,
         CHAT_ATTACHMENT_FILENAME_MAX_CHARS, CHAT_ATTACHMENT_ID_MAX_CHARS,
         CHAT_CLIENT_MESSAGE_ID_MAX_CHARS, CHAT_CLIENT_OPERATION_ID_MAX_CHARS,
-        CHAT_REACTION_KEY_MAX_CHARS, FILE_OBJECT_KEY_MAX_CHARS, FILE_STORAGE_BACKEND_MAX_CHARS,
+        CHAT_REACTION_KEY_MAX_CHARS, ChatAttachment, ChatMessage, ChatMessageEventLog,
+        ChatPlaybackMessagesQuery, ChatReadState, ChatSearchMessagesQuery,
+        CreateChatAttachmentUploadSession, CreateFileUploadSession, DeleteChatMessage,
+        EditChatMessage, FILE_OBJECT_KEY_MAX_CHARS, FILE_STORAGE_BACKEND_MAX_CHARS, NewStoredFile,
+        PinChatMessage, RoomId, SendChatMessage, SubmittedFileReference,
+        SubmittedFileReferenceKind, UnpinChatMessage, UserId,
     },
-    Error, Result,
 };
 
 use super::MAX_CHAT_ATTACHMENTS_PER_MESSAGE;
 use crate::service::file_storage::{
-    validate_file_metadata, validate_file_mime_type, CreateFileReuseGrant, FileStorageService,
+    CreateFileReuseGrant, FileStorageService, validate_file_metadata, validate_file_mime_type,
 };
 use crate::service::file_upload_policies::chat_attachment_upload_policy;
 
@@ -137,10 +138,9 @@ pub(super) fn read_state_covers_message(
     if let (Some(current_sequence), Some(target)) = (
         state.last_read_event_sequence,
         event.map(|event| event.sequence),
-    ) {
-        if current_sequence >= target {
-            return true;
-        }
+    ) && current_sequence >= target
+    {
+        return true;
     }
     if let (Some(message_id), Some(created_at)) = (
         state.last_read_message_id,
@@ -300,15 +300,14 @@ pub(super) fn validate_chat_attachments(attachments: &[NewStoredFile]) -> Result
                 "attachment id must be between 1 and {CHAT_ATTACHMENT_ID_MAX_CHARS} characters"
             )));
         }
-        if let Some(filename) = &attachment.filename {
-            if filename.trim().is_empty()
+        if let Some(filename) = &attachment.filename
+            && (filename.trim().is_empty()
                 || filename.chars().count() > CHAT_ATTACHMENT_FILENAME_MAX_CHARS
-                || filename.chars().any(char::is_control)
-            {
-                return Err(Error::InvalidInput(format!(
-                    "attachment filename must be between 1 and {CHAT_ATTACHMENT_FILENAME_MAX_CHARS} characters without control characters"
-                )));
-            }
+                || filename.chars().any(char::is_control))
+        {
+            return Err(Error::InvalidInput(format!(
+                "attachment filename must be between 1 and {CHAT_ATTACHMENT_FILENAME_MAX_CHARS} characters without control characters"
+            )));
         }
         if attachment.storage_backend.trim().is_empty()
             || attachment.storage_backend.chars().count() > FILE_STORAGE_BACKEND_MAX_CHARS

@@ -1,6 +1,6 @@
 use crate::{
-    models::{RoomMember, RoomMemberWithUser, RoomPermissionSet, RoomRole, RoomSettings},
     Result,
+    models::{RoomMember, RoomMemberWithUser, RoomPermissionSet, RoomRole, RoomSettings},
 };
 
 use super::{EffectivePermissionCalculator, PermissionService, RuntimePermissionDefaults};

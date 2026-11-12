@@ -1,9 +1,9 @@
 use sqlx::{Postgres, Transaction};
 
 use crate::{
+    Result,
     models::{ReviewStatus, SignupMethod, UserId},
     service::UserService,
-    Result,
 };
 
 use super::super::super::PendingRegistrationConflict;

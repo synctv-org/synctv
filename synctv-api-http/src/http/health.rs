@@ -9,11 +9,11 @@
 //! - `/metrics` - Prometheus metrics endpoint
 
 use axum::{
+    Router,
     extract::State,
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Json},
     routing::get,
-    Router,
 };
 use std::time::Duration;
 use tracing::warn;
@@ -170,15 +170,15 @@ pub async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse
 
     // Check memory pressure - high memory usage should mark node as unhealthy
     let memory_health = check_memory_health();
-    if let Some(ref mem) = memory_health {
-        if mem.status == "unhealthy" {
-            error_messages.push(format!(
-                "Memory: usage at {:.1}% (threshold: {:.0}%)",
-                mem.usage_percent, MEMORY_UNHEALTHY_THRESHOLD_PERCENT
-            ));
-            is_healthy = false;
-            warn!(target: "synctv::health", "Memory pressure detected: {:.1}% usage", mem.usage_percent);
-        }
+    if let Some(ref mem) = memory_health
+        && mem.status == "unhealthy"
+    {
+        error_messages.push(format!(
+            "Memory: usage at {:.1}% (threshold: {:.0}%)",
+            mem.usage_percent, MEMORY_UNHEALTHY_THRESHOLD_PERCENT
+        ));
+        is_healthy = false;
+        warn!(target: "synctv::health", "Memory pressure detected: {:.1}% usage", mem.usage_percent);
     }
 
     let status_code = if is_healthy {
@@ -490,10 +490,10 @@ fn check_memory_health_macos() -> Option<MemoryHealth> {
             // Extract page size from line like: "Mach Virtual Memory Statistics: (page size of 16384 bytes)"
             if let Some(start) = line.find("page size of ") {
                 let rest = &line[start + 13..];
-                if let Some(end) = rest.find(" bytes") {
-                    if let Ok(ps) = rest[..end].parse::<u64>() {
-                        page_size = ps;
-                    }
+                if let Some(end) = rest.find(" bytes")
+                    && let Ok(ps) = rest[..end].parse::<u64>()
+                {
+                    page_size = ps;
                 }
             }
         } else if line.starts_with("Pages free:") {
@@ -626,8 +626,8 @@ mod tests {
     use crate::http::tests::test_app_state;
     use async_trait::async_trait;
     use axum::extract::State;
-    use axum::http::header::AUTHORIZATION;
     use axum::http::HeaderValue;
+    use axum::http::header::AUTHORIZATION;
     use axum::response::IntoResponse;
     use http_body_util::BodyExt;
     use std::sync::Arc;

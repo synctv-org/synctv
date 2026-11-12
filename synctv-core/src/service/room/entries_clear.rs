@@ -1,11 +1,11 @@
 use crate::{
-    models::{PlaylistId, RoomId, RoomPermission, RoomPlaybackState, UserId},
     Error, Result,
+    models::{PlaylistId, RoomId, RoomPermission, RoomPlaybackState, UserId},
 };
 
 use super::{
-    apply_delete_entries_impact_in_tx, plan_clear_playlist_scope_in_tx, EntryDeletionImpact,
-    RealtimeOutboxDeleteEntriesEventFactory, RoomService,
+    EntryDeletionImpact, RealtimeOutboxDeleteEntriesEventFactory, RoomService,
+    apply_delete_entries_impact_in_tx, plan_clear_playlist_scope_in_tx,
 };
 
 #[derive(Debug, Clone, Default, PartialEq)]

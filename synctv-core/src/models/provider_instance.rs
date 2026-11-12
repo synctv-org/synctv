@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use super::{pagination::PageParams, query::SortDirection, SourceProvider, UserId};
+use super::{SourceProvider, UserId, pagination::PageParams, query::SortDirection};
 
 pub const DEFAULT_PROVIDER_INSTANCE_TIMEOUT_SECONDS: u32 = 10;
 pub const PROVIDER_INSTANCE_NAME_MAX_LEN: usize = 64;
@@ -80,10 +80,10 @@ pub fn resolve_provider_instance_binding(
 
     let credential_instance =
         normalize_provider_instance_name(credential_instance_name).map(str::to_string);
-    if let Some(requested) = requested {
-        if Some(requested.clone()) != credential_instance {
-            return Err(ProviderInstanceBindingMismatch);
-        }
+    if let Some(requested) = requested
+        && Some(requested.clone()) != credential_instance
+    {
+        return Err(ProviderInstanceBindingMismatch);
     }
 
     Ok(credential_instance)
@@ -656,19 +656,23 @@ mod tests {
 
     #[test]
     fn provider_instance_binding_rejects_explicit_conflict() {
-        assert!(resolve_provider_instance_binding(
-            Some("alist_other"),
-            CredentialProviderInstanceName::CredentialBacked(Some("alist_remote")),
-        )
-        .is_err());
+        assert!(
+            resolve_provider_instance_binding(
+                Some("alist_other"),
+                CredentialProviderInstanceName::CredentialBacked(Some("alist_remote")),
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn provider_instance_binding_rejects_explicit_instance_for_unbound_credential() {
-        assert!(resolve_provider_instance_binding(
-            Some("alist_remote"),
-            CredentialProviderInstanceName::CredentialBacked(None),
-        )
-        .is_err());
+        assert!(
+            resolve_provider_instance_binding(
+                Some("alist_remote"),
+                CredentialProviderInstanceName::CredentialBacked(None),
+            )
+            .is_err()
+        );
     }
 }

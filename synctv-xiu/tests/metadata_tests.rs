@@ -5,8 +5,8 @@
 
 #![allow(clippy::unwrap_used)]
 use bytes::BytesMut;
-use synctv_xiu::flv::amf0::amf0_writer::Amf0Writer;
 use synctv_xiu::flv::amf0::Amf0ValueType;
+use synctv_xiu::flv::amf0::amf0_writer::Amf0Writer;
 use synctv_xiu::rtmp::cache::metadata::MetaData;
 
 /// Helper to create metadata bytes from AMF0 values

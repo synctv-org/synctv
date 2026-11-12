@@ -4,14 +4,14 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use failsafe::{backoff, failure_policy, Config as CbConfig};
+use failsafe::{Config as CbConfig, backoff, failure_policy};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use synctv_core::RedisCoordinationRuntime;
 use tokio::sync::RwLock;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 use tokio_util::sync::CancellationToken;
 
 use super::runtime::{ClusterNodeDirectory, ClusterNodeDirectoryFactory};
@@ -186,8 +186,8 @@ static REGISTER_REMOTE_NODE_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
 ///
 /// Opens after 3 consecutive failures. Uses exponential backoff starting at
 /// 10 seconds up to 60 seconds before allowing probe requests in half-open state.
-fn create_redis_circuit_breaker(
-) -> failsafe::StateMachine<failure_policy::ConsecutiveFailures<backoff::Exponential>, ()> {
+fn create_redis_circuit_breaker()
+-> failsafe::StateMachine<failure_policy::ConsecutiveFailures<backoff::Exponential>, ()> {
     let backoff = backoff::exponential(Duration::from_secs(10), Duration::from_mins(1));
     let policy = failure_policy::consecutive_failures(3, backoff);
     CbConfig::new().failure_policy(policy).build()
@@ -894,7 +894,7 @@ impl NodeRegistry {
                     *mode = ClusterMode::Normal;
                 }
             }
-            Err(ref error) => {
+            Err(error) => {
                 let error_str = error.to_string();
                 if crate::error::is_sentinel_failover_error(&error_str) {
                     tracing::warn!(
@@ -2041,8 +2041,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_merge_verified_discovery_nodes_includes_k8s_dns_peers_missing_from_redis(
-    ) -> Result<()> {
+    async fn test_merge_verified_discovery_nodes_includes_k8s_dns_peers_missing_from_redis()
+    -> Result<()> {
         let registry = NodeRegistry::new_local_only("self".to_string(), 30, "synctv:")?;
 
         let redis_nodes = vec![NodeInfo::new(
@@ -2146,8 +2146,8 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "Requires Docker (testcontainers)"]
-    async fn test_unregister_remote_without_expected_epoch_does_not_remove_newer_registration(
-    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    async fn test_unregister_remote_without_expected_epoch_does_not_remove_newer_registration()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let (redis_container, redis_url) =
             synctv_core_testing::start_redis_url_with_label("node-registry-unregister-remote")
                 .await;

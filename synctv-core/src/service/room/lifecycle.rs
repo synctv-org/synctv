@@ -1,15 +1,15 @@
 use std::sync::Arc;
 
 use crate::{
+    Error, Result,
     models::{
         AuditAction, AuditDetails, AuditTargetType, DeletionSource, RoomId, RoomPermission, UserId,
     },
-    Error, Result,
 };
 
 use super::{
-    permission_fence_guard::PermissionFenceGuard, soft_delete_room_and_cleanup_in_tx,
-    NewRealtimeOutboxEvent, RoomService,
+    NewRealtimeOutboxEvent, RoomService, permission_fence_guard::PermissionFenceGuard,
+    soft_delete_room_and_cleanup_in_tx,
 };
 
 impl RoomService {

@@ -2,7 +2,7 @@
 
 use axum::{
     body::Body,
-    http::{header, HeaderName, HeaderValue, StatusCode},
+    http::{HeaderName, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use std::fmt;
@@ -167,10 +167,10 @@ impl IntoResponse for AppError {
             header::CONTENT_TYPE,
             HeaderValue::from_static("application/json; charset=utf-8"),
         );
-        if let Some(retry_after_seconds) = google_error.retry_after_seconds {
-            if let Ok(value) = HeaderValue::from_str(&retry_after_seconds.to_string()) {
-                response.headers_mut().insert(header::RETRY_AFTER, value);
-            }
+        if let Some(retry_after_seconds) = google_error.retry_after_seconds
+            && let Ok(value) = HeaderValue::from_str(&retry_after_seconds.to_string())
+        {
+            response.headers_mut().insert(header::RETRY_AFTER, value);
         }
         for (name, value) in extra_headers {
             response.headers_mut().insert(name, value);
@@ -230,10 +230,10 @@ impl From<crate::impls::ApiError> for AppError {
             status_override: None,
             extra_headers: Vec::new(),
         };
-        if let crate::impls::ApiError::RangeNotSatisfiable { total_size } = err {
-            if let Ok(value) = HeaderValue::from_str(&format!("bytes */{total_size}")) {
-                app_err.extra_headers.push((header::CONTENT_RANGE, value));
-            }
+        if let crate::impls::ApiError::RangeNotSatisfiable { total_size } = err
+            && let Ok(value) = HeaderValue::from_str(&format!("bytes */{total_size}"))
+        {
+            app_err.extra_headers.push((header::CONTENT_RANGE, value));
         }
         app_err
     }
@@ -275,8 +275,8 @@ pub fn map_api_error(err: crate::impls::ApiError) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::to_bytes;
     use axum::body::Body;
+    use axum::body::to_bytes;
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
 

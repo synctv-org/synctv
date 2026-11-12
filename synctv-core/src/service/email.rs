@@ -3,16 +3,16 @@
 //! Handles SMTP-backed email delivery for email bind, login, and password reset flows.
 
 use lettre::{
-    message::{header::ContentType, Mailbox, MultiPart},
+    AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
+    message::{Mailbox, MultiPart, header::ContentType},
     transport::smtp::{
         authentication::{Credentials, DEFAULT_MECHANISMS},
         client::{AsyncSmtpConnection, AsyncTokioStream},
         extension::ClientId,
     },
-    AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
 };
 use parking_lot::RwLock;
-use rustls::{pki_types::ServerName, ClientConfig, RootCertStore};
+use rustls::{ClientConfig, RootCertStore, pki_types::ServerName};
 use serde::{Deserialize, Serialize};
 use std::{
     io,
@@ -28,7 +28,7 @@ use tokio_socks::tcp::Socks5Stream;
 use url::Url;
 
 use super::email_templates::EmailTemplateManager;
-use crate::{repository::EmailOutboxKind, Error, InternalExt, Result};
+use crate::{Error, InternalExt, Result, repository::EmailOutboxKind};
 
 /// Mask an email address for safe logging: `user***@example.com`
 pub fn mask_email(email: &str) -> String {
@@ -985,19 +985,23 @@ mod tests {
             "http://proxy.example.com:8080",
             "socks5://user:secret@proxy.example.com:1080",
         ] {
-            assert!(SmtpProxyConfig {
-                url: url.to_string(),
-                credentials: None,
+            assert!(
+                SmtpProxyConfig {
+                    url: url.to_string(),
+                    credentials: None,
+                }
+                .validate()
+                .is_err()
+            );
+        }
+        assert!(
+            SmtpCredentials {
+                username: "proxy-user".to_string(),
+                password: String::new(),
             }
             .validate()
-            .is_err());
-        }
-        assert!(SmtpCredentials {
-            username: "proxy-user".to_string(),
-            password: String::new(),
-        }
-        .validate()
-        .is_err());
+            .is_err()
+        );
     }
 
     #[test]

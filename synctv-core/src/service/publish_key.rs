@@ -13,9 +13,9 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::{
+    Clock, Error, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
     models::{MediaId, RoomId, UserId},
     service::JwtService,
-    Clock, Error, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
 };
 
 mod jti;

@@ -129,12 +129,12 @@ pub fn map_remote_status(context: &str, status: &Status) -> ProviderClientError 
 }
 
 fn attach_retry_after(mut status: Status, retry_after_secs: Option<u64>) -> Status {
-    if let Some(secs) = retry_after_secs {
-        if let Ok(value) = secs.to_string().parse() {
-            status
-                .metadata_mut()
-                .insert(RETRY_AFTER_METADATA_KEY, value);
-        }
+    if let Some(secs) = retry_after_secs
+        && let Ok(value) = secs.to_string().parse()
+    {
+        status
+            .metadata_mut()
+            .insert(RETRY_AFTER_METADATA_KEY, value);
     }
     status
 }

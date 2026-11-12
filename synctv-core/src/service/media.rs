@@ -9,26 +9,26 @@
 
 use crate::repository::realtime_outbox::RealtimeOutboxRepository;
 use crate::{
+    Error, Result,
     models::{
-        normalize_provider_instance_name, FromProviderParams, Media, MediaId, MediaSourceConfig,
-        PlaylistId, RoomId, SourceProvider, UserId,
+        FromProviderParams, Media, MediaId, MediaSourceConfig, PlaylistId, RoomId, SourceProvider,
+        UserId, normalize_provider_instance_name,
     },
     provider::{
-        provider_requires_credential_repo, PlaybackResult, ProviderAccessService, ProviderActor,
-        ProviderContext, ProviderResourceMetadata, ProviderStoreResolver, SourceConfig,
-        SourceCover,
+        PlaybackResult, ProviderAccessService, ProviderActor, ProviderContext,
+        ProviderResourceMetadata, ProviderStoreResolver, SourceConfig, SourceCover,
+        provider_requires_credential_repo,
     },
-    repository::{realtime_outbox::NewRealtimeOutboxEvent, UserProviderCredentialRepository},
     repository::{MediaRepository, PlaylistRepository, UserRepository},
+    repository::{UserProviderCredentialRepository, realtime_outbox::NewRealtimeOutboxEvent},
     service::{
+        FileStorageService, PermissionService, ProvidersManager,
         notification::{MediaAddedNotification, NotificationService},
         provider_binding::{
             provider_instance_name_for_source_update, resolve_credential_provider_instance_binding,
         },
         source_config::validate_source_config_size,
-        FileStorageService, PermissionService, ProvidersManager,
     },
-    Error, Result,
 };
 use futures::StreamExt;
 use std::collections::HashMap;
@@ -41,9 +41,9 @@ mod helpers;
 pub use cover::{CreateMediaCoverUploadSession, CreateMediaThumbnailUploadSession};
 pub use dynamic::DynamicPlaylistPreviewRequest;
 use helpers::{
-    batch_media_position, dedup_media_ids, ensure_media_creator_can_edit,
-    media_source_config_error, media_source_prepare_error, validate_media_name, MAX_BATCH_SIZE,
-    MEDIA_BATCH_PREPARE_CONCURRENCY,
+    MAX_BATCH_SIZE, MEDIA_BATCH_PREPARE_CONCURRENCY, batch_media_position, dedup_media_ids,
+    ensure_media_creator_can_edit, media_source_config_error, media_source_prepare_error,
+    validate_media_name,
 };
 
 pub type RealtimeOutboxMediaEventFactory =
@@ -174,10 +174,9 @@ impl MediaService {
         if let Some(event) = outbox_event_factory
             .map(|factory| factory(media))
             .transpose()?
+            && let Some(outbox) = &self.realtime_outbox
         {
-            if let Some(outbox) = &self.realtime_outbox {
-                outbox.insert_with_executor(&event, &mut **tx).await?;
-            }
+            outbox.insert_with_executor(&event, &mut **tx).await?;
         }
         Ok(())
     }
@@ -191,10 +190,9 @@ impl MediaService {
         if let Some(events) = outbox_event_factory
             .map(|factory| factory(media))
             .transpose()?
+            && let Some(outbox) = &self.realtime_outbox
         {
-            if let Some(outbox) = &self.realtime_outbox {
-                outbox.insert_many_with_executor(&events, tx).await?;
-            }
+            outbox.insert_many_with_executor(&events, tx).await?;
         }
         Ok(())
     }

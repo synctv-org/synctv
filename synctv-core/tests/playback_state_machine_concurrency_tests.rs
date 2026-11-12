@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use synctv_core::repository::UserRepository;
-use synctv_core_testing::{create_test_pool, TestResultExt};
+use synctv_core_testing::{TestResultExt, create_test_pool};
 
 mod playback_state_machine_support;
 

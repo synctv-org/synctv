@@ -1,12 +1,12 @@
 use crate::{
+    Error, Result,
     models::{
         AuditAction, AuditDetails, AuditTargetType, Room, RoomId, RoomMember, RoomRole, UserId,
     },
     repository::ReviewRepository,
-    Error, Result,
 };
 
-use super::{creation_policy::RoomCreationPolicy, RoomService};
+use super::{RoomService, creation_policy::RoomCreationPolicy};
 
 impl RoomService {
     /// Approve a pending room_creation creation request and create the room.

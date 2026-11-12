@@ -21,7 +21,7 @@ pub use consistency::{
 pub use invalidation::{CacheInvalidationRuntime, CacheInvalidationService, InvalidationMessage};
 pub use key_builder::KeyBuilder;
 pub use l2_backend::{
-    build_l2_cache_backend, local_l2_cache_backend, CacheL2Backend, NoopCacheL2, RedisCacheL2,
+    CacheL2Backend, NoopCacheL2, RedisCacheL2, build_l2_cache_backend, local_l2_cache_backend,
 };
 pub use manager::CacheManager;
 pub use member_permission_cache::{

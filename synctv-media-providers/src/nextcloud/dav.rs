@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use percent_encoding::percent_decode_str;
-use quick_xml::events::Event;
 use quick_xml::Reader;
+use quick_xml::events::Event;
 
 use super::types::NextcloudDavItem;
 use crate::ProviderClientError;

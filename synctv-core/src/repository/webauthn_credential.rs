@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use webauthn_rs::prelude::Passkey;
 
-use crate::{models::UserId, Error, Result};
+use crate::{Error, Result, models::UserId};
 
 #[derive(Debug, Clone)]
 pub struct WebAuthnCredential {

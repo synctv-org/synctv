@@ -3,10 +3,10 @@
 //! Thin wrapper around `EmbyService` that implements gRPC server trait.
 
 use super::emby::{
-    emby_server::Emby, DeleteActiveEncodingsReq, Empty, FsListReq, FsListResp, GetItemReq,
-    GetItemsReq, GetItemsResp, Item, LoginReq, LoginResp, LogoutReq, MeReq, MeResp,
-    PlaybackInfoReq, PlaybackInfoResp, ReportPlaybackProgressReq, ReportPlaybackStartReq,
-    ReportPlaybackStopReq, SystemInfoReq, SystemInfoResp,
+    DeleteActiveEncodingsReq, Empty, FsListReq, FsListResp, GetItemReq, GetItemsReq, GetItemsResp,
+    Item, LoginReq, LoginResp, LogoutReq, MeReq, MeResp, PlaybackInfoReq, PlaybackInfoResp,
+    ReportPlaybackProgressReq, ReportPlaybackStartReq, ReportPlaybackStopReq, SystemInfoReq,
+    SystemInfoResp, emby_server::Emby,
 };
 use super::error_mapper::map_provider_error;
 use crate::emby::{EmbyInterface, EmbyService as EmbyServiceImpl};

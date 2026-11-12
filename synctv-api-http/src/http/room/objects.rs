@@ -1,9 +1,9 @@
 use axum::{
+    Json,
     body::Bytes,
     extract::{Path, Query, State},
-    http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode},
+    http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
-    Json,
 };
 
 use super::execute::{execute_public_endpoint, execute_room_actor_endpoint, execute_user_endpoint};
@@ -12,7 +12,7 @@ use super::types::{
     MediaCoverObjectQuery, MediaThumbnailObjectPath, MediaThumbnailObjectQuery,
     PlaylistCoverObjectPath, PlaylistCoverObjectQuery, RoomCoverObjectPath, RoomCoverObjectQuery,
 };
-use crate::http::{middleware::RequestMetadata, AppResult, AppState};
+use crate::http::{AppResult, AppState, middleware::RequestMetadata};
 use synctv_api_common::impls::{EndpointRateLimitCategory, EndpointRateLimitScope};
 use synctv_proto::client::{
     CompleteChatAttachmentUploadSessionRequest, CompleteChatAttachmentUploadSessionResponse,

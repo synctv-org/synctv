@@ -7,13 +7,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use futures::{stream, StreamExt, TryStreamExt};
+use futures::{StreamExt, TryStreamExt, stream};
 use serde::{Deserialize, Serialize};
 
 use crate::cache::l2_backend::CacheL2Backend;
 use crate::cache::tiered::TieredCache;
 use crate::models::UserId;
-use crate::{cache::CacheInvalidationRuntime, Result};
+use crate::{Result, cache::CacheInvalidationRuntime};
 
 /// L1 (in-memory) cache TTL in seconds.
 /// Matches UserCache/RoomCache defaults so stale entries are bounded even
@@ -169,14 +169,14 @@ impl UsernameCache {
         self.inner.invalidate(user_id).await?;
 
         // Broadcast invalidation to other replicas (best effort)
-        if let Some(ref service) = self.invalidation_service {
-            if let Err(e) = service.invalidate_username(user_id).await {
-                tracing::warn!(
-                    error = %e,
-                    user_id = %user_id,
-                    "Failed to broadcast username cache invalidation to other replicas"
-                );
-            }
+        if let Some(ref service) = self.invalidation_service
+            && let Err(e) = service.invalidate_username(user_id).await
+        {
+            tracing::warn!(
+                error = %e,
+                user_id = %user_id,
+                "Failed to broadcast username cache invalidation to other replicas"
+            );
         }
 
         Ok(())
@@ -280,11 +280,13 @@ mod tests {
         let user_id = create_test_user_id(97_001);
 
         // Cache miss
-        assert!(cache
-            .get(&user_id)
-            .await
-            .checked("operation should succeed")
-            .is_none());
+        assert!(
+            cache
+                .get(&user_id)
+                .await
+                .checked("operation should succeed")
+                .is_none()
+        );
 
         // Set and get
         cache
@@ -303,11 +305,13 @@ mod tests {
             .invalidate(&user_id)
             .await
             .checked("operation should succeed");
-        assert!(cache
-            .get(&user_id)
-            .await
-            .checked("operation should succeed")
-            .is_none());
+        assert!(
+            cache
+                .get(&user_id)
+                .await
+                .checked("operation should succeed")
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -349,18 +353,22 @@ mod tests {
             .set(&user_id, "alice")
             .await
             .checked("operation should succeed");
-        assert!(cache
-            .get(&user_id)
-            .await
-            .checked("operation should succeed")
-            .is_some());
+        assert!(
+            cache
+                .get(&user_id)
+                .await
+                .checked("operation should succeed")
+                .is_some()
+        );
 
         cache.clear_memory();
-        assert!(cache
-            .get(&user_id)
-            .await
-            .checked("operation should succeed")
-            .is_none());
+        assert!(
+            cache
+                .get(&user_id)
+                .await
+                .checked("operation should succeed")
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -372,21 +380,25 @@ mod tests {
             .set(&user_id, "alice")
             .await
             .checked("operation should succeed");
-        assert!(cache
-            .get(&user_id)
-            .await
-            .checked("operation should succeed")
-            .is_some());
+        assert!(
+            cache
+                .get(&user_id)
+                .await
+                .checked("operation should succeed")
+                .is_some()
+        );
 
         cache
             .invalidate_by_id(&user_id.to_string())
             .await
             .checked("operation should succeed");
-        assert!(cache
-            .get(&user_id)
-            .await
-            .checked("operation should succeed")
-            .is_none());
+        assert!(
+            cache
+                .get(&user_id)
+                .await
+                .checked("operation should succeed")
+                .is_none()
+        );
     }
 
     /// set() with an invalidation service configured must not self-invalidate

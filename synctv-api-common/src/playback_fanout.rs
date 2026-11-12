@@ -232,11 +232,11 @@ pub fn default_playback_fanout_service(
 
 #[cfg(test)]
 mod tests {
-    use super::{default_playback_fanout_service, PlaybackFanoutActor};
+    use super::{PlaybackFanoutActor, default_playback_fanout_service};
     use async_trait::async_trait;
     use std::sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
     };
     use synctv_core::models::{MediaId, RoomId, RoomPlaybackState, UserId};
     use synctv_core::service::NewRealtimeOutboxEvent;
@@ -365,7 +365,7 @@ mod tests {
             other => {
                 return Err(test_error(format!(
                     "expected PlaybackStateChanged, got {other:?}"
-                )))
+                )));
             }
         }
         Ok(())

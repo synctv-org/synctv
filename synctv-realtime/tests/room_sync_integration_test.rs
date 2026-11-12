@@ -10,15 +10,15 @@
 #![allow(clippy::unwrap_used)]
 use std::time::Duration;
 
-use synctv_core::models::id::{RoomId, UserId};
-use synctv_core::models::RealtimeActor;
 use synctv_core::SharedStateProfile;
+use synctv_core::models::RealtimeActor;
+use synctv_core::models::id::{RoomId, UserId};
 use synctv_core_testing::redis_connection_manager;
 use synctv_realtime::sync::{
-    build_room_message_runtime, ConnectionId, RoomLifecycleEvent, RoomMessageRuntime,
+    ConnectionId, RoomLifecycleEvent, RoomMessageRuntime, build_room_message_runtime,
 };
 mod integration_test_helpers;
-use integration_test_helpers::{user_actor, TestRedis};
+use integration_test_helpers::{TestRedis, user_actor};
 
 /// Helper: create a `RoomMessageHub` with Redis backing using the given prefix.
 async fn create_hub(redis_url: &str, key_prefix: &str) -> std::sync::Arc<dyn RoomMessageRuntime> {

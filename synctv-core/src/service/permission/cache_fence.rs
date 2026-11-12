@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use crate::{
+    Result,
     cache::{CacheDomain, CacheInvalidationRuntime, MemberPermissionKey},
     models::{RoomId, UserId},
-    Result,
 };
 
 use super::{PermissionCacheFence, PermissionService, PermissionWriteFence};

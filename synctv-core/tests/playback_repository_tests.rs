@@ -8,13 +8,13 @@ use synctv_core::models::{
     RoomMember, RoomRole, SourceProvider,
 };
 use synctv_core::{
+    Error,
     models::{Room, RoomId, RoomStatus, User, UserId, UserRole, UserStatus},
     repository::{
         MediaRepository, PlaylistRepository, RoomMemberRepository, RoomPlaybackStateRepository,
         RoomRepository, UserRepository,
     },
     service::DeleteEntriesRequest,
-    Error,
 };
 use synctv_core_testing::{create_test_pool, create_test_room_service, err, ok, some};
 

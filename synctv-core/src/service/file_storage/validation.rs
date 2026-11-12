@@ -1,12 +1,13 @@
 use std::collections::HashSet;
 
 use crate::{
+    Error, Result,
     models::{
-        CreateFileUploadSession, FileMetadata, FileUploadPolicy, NewStoredFile, FILE_ID_MAX_CHARS,
-        FILE_OBJECT_KEY_MAX_CHARS, FILE_SHA256_HEX_CHARS, FILE_STORAGE_BACKEND_MAX_CHARS,
+        CreateFileUploadSession, FILE_ID_MAX_CHARS, FILE_OBJECT_KEY_MAX_CHARS,
+        FILE_SHA256_HEX_CHARS, FILE_STORAGE_BACKEND_MAX_CHARS, FileMetadata, FileUploadPolicy,
+        NewStoredFile,
     },
     service::file_storage::S3FileStorageConfig,
-    Error, Result,
 };
 
 pub(crate) fn validate_file_metadata(metadata: &FileMetadata) -> Result<()> {
@@ -213,21 +214,21 @@ pub(crate) fn validate_file_dimensions(
             policy.kind
         )));
     }
-    if let (Some(max_width), Some(width)) = (policy.max_width, width) {
-        if width > max_width {
-            return Err(Error::InvalidInput(format!(
-                "{} image width must be at most {max_width}px",
-                policy.kind
-            )));
-        }
+    if let (Some(max_width), Some(width)) = (policy.max_width, width)
+        && width > max_width
+    {
+        return Err(Error::InvalidInput(format!(
+            "{} image width must be at most {max_width}px",
+            policy.kind
+        )));
     }
-    if let (Some(max_height), Some(height)) = (policy.max_height, height) {
-        if height > max_height {
-            return Err(Error::InvalidInput(format!(
-                "{} image height must be at most {max_height}px",
-                policy.kind
-            )));
-        }
+    if let (Some(max_height), Some(height)) = (policy.max_height, height)
+        && height > max_height
+    {
+        return Err(Error::InvalidInput(format!(
+            "{} image height must be at most {max_height}px",
+            policy.kind
+        )));
     }
     Ok(())
 }
@@ -257,21 +258,20 @@ pub(crate) fn validate_file_audio_metadata(
     }
     if let (Some(max_duration), Some(duration)) =
         (policy.max_audio_duration_seconds, duration_seconds)
+        && duration > max_duration
     {
-        if duration > max_duration {
-            return Err(Error::InvalidInput(format!(
-                "{} audio duration must be at most {max_duration} seconds",
-                policy.kind
-            )));
-        }
+        return Err(Error::InvalidInput(format!(
+            "{} audio duration must be at most {max_duration} seconds",
+            policy.kind
+        )));
     }
-    if let (Some(max_bitrate), Some(bitrate)) = (policy.max_audio_bitrate_bps, bitrate_bps) {
-        if bitrate > max_bitrate {
-            return Err(Error::InvalidInput(format!(
-                "{} audio bitrate must be at most {max_bitrate} bps",
-                policy.kind
-            )));
-        }
+    if let (Some(max_bitrate), Some(bitrate)) = (policy.max_audio_bitrate_bps, bitrate_bps)
+        && bitrate > max_bitrate
+    {
+        return Err(Error::InvalidInput(format!(
+            "{} audio bitrate must be at most {max_bitrate} bps",
+            policy.kind
+        )));
     }
     Ok(())
 }

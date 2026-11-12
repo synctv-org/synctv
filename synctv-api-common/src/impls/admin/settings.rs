@@ -1,7 +1,7 @@
 use synctv_core::{
-    models::{room_settings::RoomSettingsPatch, AuditDetails, PlayMode, UserId},
-    provider::ExecutionControl,
     Error as CoreError,
+    models::{AuditDetails, PlayMode, UserId, room_settings::RoomSettingsPatch},
+    provider::ExecutionControl,
 };
 
 use crate::impls::client::convert::room_settings_to_proto;
@@ -648,11 +648,11 @@ impl AdminApiImpl {
     ) -> Result<RuntimeSettingsPatchResult, ApiError> {
         let mut update_mask = synctv_core::service::RuntimeSettingsUpdateMask::default();
 
-        if let Some(server) = patch.server {
-            if let Some(value) = server.name {
-                current.server.name = value;
-                update_mask.server.name = true;
-            }
+        if let Some(server) = patch.server
+            && let Some(value) = server.name
+        {
+            current.server.name = value;
+            update_mask.server.name = true;
         }
 
         if let Some(room_defaults) = patch.room_defaults {
@@ -851,11 +851,11 @@ impl AdminApiImpl {
             }
         }
 
-        if let Some(cors) = patch.cors {
-            if let Some(origins) = cors.allowed_origins {
-                current.cors.allowed_origins = synctv_core::service::CorsAllowedOrigins(origins);
-                update_mask.cors.allowed_origins = true;
-            }
+        if let Some(cors) = patch.cors
+            && let Some(origins) = cors.allowed_origins
+        {
+            current.cors.allowed_origins = synctv_core::service::CorsAllowedOrigins(origins);
+            update_mask.cors.allowed_origins = true;
         }
 
         Ok(RuntimeSettingsPatchResult {

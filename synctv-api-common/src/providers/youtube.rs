@@ -5,9 +5,9 @@ use synctv_core::models::{YoutubeChannelContent, YoutubePlaylistSourceConfig};
 use synctv_core::provider::{ProviderError, YoutubeProvider};
 use synctv_media_providers::youtube::{normalize_channel_id, normalize_playlist_id};
 use synctv_proto::providers::youtube::{
-    list_request, BindInfo, BindRequest, BindResponse, Format, GetBindsResponse, ListItem,
-    ListRequest, ListResponse, Metadata, ResolveRequest, ResolveResponse, UnbindRequest,
-    UnbindResponse,
+    BindInfo, BindRequest, BindResponse, Format, GetBindsResponse, ListItem, ListRequest,
+    ListResponse, Metadata, ResolveRequest, ResolveResponse, UnbindRequest, UnbindResponse,
+    list_request,
 };
 use synctv_proto::source_config as source_proto;
 use synctv_realtime::fanout::RealtimeEventService;

@@ -1,7 +1,8 @@
 use synctv_proto::source_config::{
-    bilibili_media_source_config, BilibiliLiveSourceConfig, BilibiliMediaSourceConfig,
-    BilibiliPgcSourceConfig, BilibiliVideoSourceConfig, DirectUrlMediaSourceConfig,
-    EmbyMediaSourceConfig, EmbyPlaylistSourceConfig, MediaSourceConfig, PlaylistSourceConfig,
+    BilibiliLiveSourceConfig, BilibiliMediaSourceConfig, BilibiliPgcSourceConfig,
+    BilibiliVideoSourceConfig, DirectUrlMediaSourceConfig, EmbyMediaSourceConfig,
+    EmbyPlaylistSourceConfig, MediaSourceConfig, PlaylistSourceConfig,
+    bilibili_media_source_config,
 };
 use tonic::Status;
 

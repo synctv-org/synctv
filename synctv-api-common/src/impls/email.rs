@@ -682,8 +682,8 @@ impl EmailApiImpl {
 #[cfg(test)]
 mod tests {
     use super::{
-        map_email_mutation_error, map_email_user_lookup_error, EmailApiImpl,
-        GENERIC_EMAIL_LOGIN_MESSAGE, GENERIC_PASSWORD_RESET_MESSAGE,
+        EmailApiImpl, GENERIC_EMAIL_LOGIN_MESSAGE, GENERIC_PASSWORD_RESET_MESSAGE,
+        map_email_mutation_error, map_email_user_lookup_error,
     };
     use std::sync::Arc;
     use synctv_core::cache::{KeyBuilder, UsernameCache};
@@ -762,8 +762,8 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "Requires Docker-backed PostgreSQL"]
-    async fn request_password_reset_returns_same_message_for_existing_and_missing_users(
-    ) -> TestResult {
+    async fn request_password_reset_returns_same_message_for_existing_and_missing_users()
+    -> TestResult {
         let (_container, pool) = synctv_core_testing::create_test_pool().await;
         let api = build_test_email_api(pool.clone())?;
         let repo = synctv_core::repository::UserRepository::new(pool.clone());
@@ -962,9 +962,11 @@ mod tests {
         let AuthenticatedLogin::MfaRequired { challenge, .. } = first_factor else {
             return Err(test_error("password first factor should require MFA"));
         };
-        assert!(challenge
-            .available_methods
-            .contains(&synctv_core::service::AuthFactorMethod::Email));
+        assert!(
+            challenge
+                .available_methods
+                .contains(&synctv_core::service::AuthFactorMethod::Email)
+        );
 
         let request = api_ok(
             api.request_mfa_email_code_with_control(&challenge.session_id, None)

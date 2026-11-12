@@ -1,9 +1,9 @@
 use crate::{
+    Error, Result,
     models::{
         Room, RoomAdminPermissionBits, RoomGuestPermissionBits, RoomMemberPermissionBits, RoomRole,
         UserId,
     },
-    Error, Result,
 };
 
 pub(in crate::service::room) fn validate_role_can_be_assigned(role: RoomRole) -> Result<()> {

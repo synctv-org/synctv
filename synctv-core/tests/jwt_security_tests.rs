@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use base64::{engine::general_purpose, Engine as _};
+use base64::{Engine as _, engine::general_purpose};
 use chrono::Utc;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use serde::{Deserialize, Serialize};
@@ -111,7 +111,7 @@ async fn test_jwt_tampering_detection_payload() {
 #[tokio::test]
 async fn test_jwt_expiry_enforcement() {
     use chrono::Utc;
-    use jsonwebtoken::{encode, EncodingKey, Header};
+    use jsonwebtoken::{EncodingKey, Header, encode};
 
     #[derive(Debug, Serialize, Deserialize)]
     struct ExpiredClaims {
@@ -241,7 +241,7 @@ async fn test_jwt_malformed_token_rejection() {
 
 #[tokio::test]
 async fn test_jwt_wrong_algorithm_rejection() {
-    use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 
     #[derive(Debug, Serialize, Deserialize)]
     struct TestClaims {
@@ -281,7 +281,7 @@ async fn test_jwt_wrong_algorithm_rejection() {
 
 #[tokio::test]
 async fn test_jwt_future_issued_at_rejection() {
-    use jsonwebtoken::{encode, EncodingKey, Header};
+    use jsonwebtoken::{EncodingKey, Header, encode};
 
     #[derive(Debug, Serialize, Deserialize)]
     struct FutureClaims {

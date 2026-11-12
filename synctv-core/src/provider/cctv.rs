@@ -11,9 +11,9 @@ use super::{
     SourceCover,
 };
 use crate::models::{
-    detect_direct_url_format, CctvChapterMetadata, CctvMediaSourceConfig, CctvPlaybackMetadata,
-    CctvPlaybackStreamKind, MediaSourceConfig, PlaybackCctvMedia, PlaybackMedia,
-    PlaybackMediaProvider, PlaybackMetadata,
+    CctvChapterMetadata, CctvMediaSourceConfig, CctvPlaybackMetadata, CctvPlaybackStreamKind,
+    MediaSourceConfig, PlaybackCctvMedia, PlaybackMedia, PlaybackMediaProvider, PlaybackMetadata,
+    detect_direct_url_format,
 };
 use synctv_media_providers::cctv::{
     CctvClient, CctvMedia, CctvMetadata, CctvResource, CctvStreamKind,
@@ -413,11 +413,13 @@ mod tests {
         .expect("CCTV playback should map");
         assert_eq!(result.duration_seconds, Some(123.0));
         assert_eq!(result.default_mode, "video_hls");
-        assert!(result
-            .playback_infos
-            .values()
-            .flat_map(|info| &info.medias)
-            .all(|media| media.p2p_swarm_id.is_some()));
+        assert!(
+            result
+                .playback_infos
+                .values()
+                .flat_map(|info| &info.medias)
+                .all(|media| media.p2p_swarm_id.is_some())
+        );
         assert!(matches!(
             result.playback_infos[&result.default_mode].medias[0].provider,
             PlaybackMediaProvider::Cctv(PlaybackCctvMedia::Refresh {

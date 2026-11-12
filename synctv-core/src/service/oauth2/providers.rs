@@ -4,11 +4,11 @@ use std::sync::Arc;
 use tracing::info;
 
 use crate::{
-    models::oauth2_client::OAuth2Provider,
-    models::SettingsValidationContext,
-    oauth2::Provider as OAuth2ProviderTrait,
-    service::{oauth2::OAuth2ProviderEntry, oauth2::OAuth2Service, OAuth2SignupPolicy},
     Error, Result,
+    models::SettingsValidationContext,
+    models::oauth2_client::OAuth2Provider,
+    oauth2::Provider as OAuth2ProviderTrait,
+    service::{OAuth2SignupPolicy, oauth2::OAuth2ProviderEntry, oauth2::OAuth2Service},
 };
 
 impl OAuth2Service {

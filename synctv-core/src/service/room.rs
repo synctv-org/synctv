@@ -70,15 +70,15 @@ use std::sync::Arc;
 use crate::{
     cache::{CacheInvalidationRuntime, ConsistencyCoordinator},
     repository::{
-        realtime_outbox::{NewRealtimeOutboxEvent, RealtimeOutboxRepository},
         ChatRepository, MediaRepository, PlaylistRepository, RoomMemberRepository,
         RoomPasswordRepository, RoomPlaybackStateRepository, RoomRepository,
         RoomSettingsRepository, RoomTaxonomyRepository,
+        realtime_outbox::{NewRealtimeOutboxEvent, RealtimeOutboxRepository},
     },
     service::{
+        OpaquePasswordService, PermissionService, PlaybackService, PlaylistService,
         audit::AuditService, media::MediaService, member::MemberService,
         notification::NotificationService, room_settings::RoomSettingsService, user::UserService,
-        OpaquePasswordService, PermissionService, PlaybackService, PlaylistService,
     },
 };
 
@@ -132,9 +132,9 @@ mod member_permissions;
 mod member_queries;
 pub use member_queries::RealtimeMembershipAccess;
 mod member_resource_cleanup;
+pub use member_resource_cleanup::MemberResourceCleanupResult;
 use member_resource_cleanup::cleanup_member_resources_in_tx;
 pub(crate) use member_resource_cleanup::preserve_non_owned_dynamic_playlist_children_in_tx;
-pub use member_resource_cleanup::MemberResourceCleanupResult;
 mod member_review;
 mod member_review_approval;
 mod member_review_rejection;
@@ -147,18 +147,18 @@ mod member_update_execution;
 mod opaque_sessions;
 mod ownership;
 pub use opaque_sessions::{
+    ROOM_OPAQUE_LOGIN_SESSION_TTL_SECS, ROOM_OPAQUE_REGISTRATION_SESSION_TTL_SECS,
+    RoomOpaqueLoginStartChallenge, RoomOpaquePasswordLoginSession,
+    RoomOpaquePasswordLoginSessionStore, RoomOpaquePasswordRegistrationSession,
+    RoomOpaquePasswordRegistrationSessionStore, RoomOpaqueRegistrationStartChallenge,
+};
+pub use opaque_sessions::{
     local_room_opaque_password_login_session_store,
     local_room_opaque_password_registration_session_store,
 };
 pub use opaque_sessions::{
     room_opaque_password_login_session_store_from_shared_state_profile,
     room_opaque_password_registration_session_store_from_shared_state_profile,
-};
-pub use opaque_sessions::{
-    RoomOpaqueLoginStartChallenge, RoomOpaquePasswordLoginSession,
-    RoomOpaquePasswordLoginSessionStore, RoomOpaquePasswordRegistrationSession,
-    RoomOpaquePasswordRegistrationSessionStore, RoomOpaqueRegistrationStartChallenge,
-    ROOM_OPAQUE_LOGIN_SESSION_TTL_SECS, ROOM_OPAQUE_REGISTRATION_SESSION_TTL_SECS,
 };
 mod outbox;
 pub use outbox::{

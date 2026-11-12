@@ -8,27 +8,26 @@ use std::time::Duration;
 
 use chrono::{Datelike, NaiveDate};
 use sha2::{Digest as _, Sha256};
-use sqlx::postgres::{PgConnectOptions, PgConnection, PgPoolOptions, PgSslMode};
 use sqlx::Connection as _;
 use sqlx::PgPool;
-use testcontainers::core::wait::LogWaitStrategy;
+use sqlx::postgres::{PgConnectOptions, PgConnection, PgPoolOptions, PgSslMode};
+use testcontainers::ContainerAsync;
 use testcontainers::core::Mount;
+use testcontainers::core::wait::LogWaitStrategy;
 use testcontainers::core::{ImageExt, ReuseDirective, WaitFor};
 use testcontainers::runners::AsyncRunner;
-use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
 use tokio::sync::OnceCell;
 use url::Url;
 
 use crate::docker::{
-    acquire_run_lock, active_run_ids, candidate_endpoints_for_host,
+    ProcessLock, TEST_RUN_LABEL, acquire_run_lock, active_run_ids, candidate_endpoints_for_host,
     cleanup_orphaned_run_lock_files, cleanup_orphaned_testcontainers,
     current_test_run_id as docker_current_test_run_id,
     current_test_run_id_from as docker_current_test_run_id_from,
     docker_named_container_belongs_to_current_run, docker_port_candidates, ensure_docker_image,
     host_address_family, run_has_active_lock, sanitize_container_name,
-    startup_error_is_named_container_conflict, startup_error_is_retriable, ProcessLock,
-    TEST_RUN_LABEL,
+    startup_error_is_named_container_conflict, startup_error_is_retriable,
 };
 
 fn trusted_dynamic_sql(sql: String) -> sqlx::AssertSqlSafe<String> {
@@ -1133,11 +1132,13 @@ async fn cleanup_idle_test_databases(shared: &SharedPostgresServer) {
 }
 
 async fn acquire_process_lock(name: String) -> ProcessLock {
-    tokio::task::spawn_blocking(move || loop {
-        if let Some(lock) = ProcessLock::try_acquire(&name) {
-            return lock;
+    tokio::task::spawn_blocking(move || {
+        loop {
+            if let Some(lock) = ProcessLock::try_acquire(&name) {
+                return lock;
+            }
+            std::thread::sleep(Duration::from_millis(100));
         }
-        std::thread::sleep(Duration::from_millis(100));
     })
     .await
     .expect("postgres process lock task should not panic")
@@ -1181,15 +1182,14 @@ async fn init_shared_postgres_server() -> SharedPostgresServer {
                 }
                 Ok(Err(err)) => {
                     let err_string = err.to_string();
-                    if startup_error_is_named_container_conflict(&err_string) {
-                        if let Some((host, port)) = resolve_existing_named_postgres_endpoint(
+                    if startup_error_is_named_container_conflict(&err_string)
+                        && let Some((host, port)) = resolve_existing_named_postgres_endpoint(
                             &container_name,
                             ADMIN_DATABASE,
                         )
                         .await
-                        {
-                            break (None, host, port);
-                        }
+                    {
+                        break (None, host, port);
                     }
                     if startup_error_is_retriable(&err_string)
                         && std::time::Instant::now() < start_deadline

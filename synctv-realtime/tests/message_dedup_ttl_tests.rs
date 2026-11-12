@@ -41,7 +41,7 @@ async fn test_dedup_ttl_expiry_allows_reprocessing() {
     // Run pending tasks to force moka to evict expired entries
     // (moka evicts lazily, so we might need to trigger it)
     dedup.clear(); // Force eviction
-                   // Actually, clear() invalidates all entries. Let's use a different approach:
+    // Actually, clear() invalidates all entries. Let's use a different approach:
 
     // Re-create with the same short TTL
     let dedup2 = MessageDeduplicator::new(Duration::from_secs(1));
@@ -117,8 +117,8 @@ async fn test_mark_processed_respects_ttl() {
 /// Concurrent `should_process` with TTL: exactly one succeeds per TTL window.
 #[tokio::test]
 async fn test_concurrent_should_process_per_ttl_window() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     let dedup = Arc::new(MessageDeduplicator::new(Duration::from_secs(1)));
     let key = make_key("event-5");

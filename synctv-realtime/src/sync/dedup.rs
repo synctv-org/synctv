@@ -151,8 +151,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_dedup_concurrent_should_process() -> Result<(), tokio::task::JoinError> {
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         let dedup = Arc::new(MessageDeduplicator::with_defaults());
         let key = DedupKey {

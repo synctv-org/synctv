@@ -24,10 +24,10 @@ pub mod testing;
 mod tls;
 mod webtransport;
 
-pub use bridge::{serve_request, H3RecvBody};
+pub use bridge::{H3RecvBody, serve_request};
 pub use frame_budget::{BudgetedConnection, MAX_CONTROL_FRAME_LEN};
-pub use frames::{read_frame, write_frame, MAX_FRAME_BYTES, MAX_OUTBOUND_FRAME_BYTES};
-pub use server::{serve_quic, QuicServerConfig};
+pub use frames::{MAX_FRAME_BYTES, MAX_OUTBOUND_FRAME_BYTES, read_frame, write_frame};
+pub use server::{QuicServerConfig, serve_quic};
 
 /// Direct peer address of a QUIC connection, attached to every request the
 /// HTTP/3 listener serves (plain requests, WebTransport CONNECTs, and
@@ -43,8 +43,8 @@ pub use tls::{
     rustls_config_with_alpn,
 };
 pub use webtransport::{
-    is_webtransport_connect, share_session, WebTransportHandler, WtBidiStream, WtSendStream,
-    WtSession, WtSessionDriver, WtStreamOpener, WEBTRANSPORT_PROTOCOL,
+    WEBTRANSPORT_PROTOCOL, WebTransportHandler, WtBidiStream, WtSendStream, WtSession,
+    WtSessionDriver, WtStreamOpener, is_webtransport_connect, share_session,
 };
 
 // Re-exported so downstream crates can name stream traits without depending

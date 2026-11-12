@@ -9,10 +9,10 @@ use tonic::{Request, Response, Status};
 use synctv_api_common::impls::NotificationApiImpl;
 use synctv_api_common::impls::{EndpointRateLimitCategory, RequestExecutor};
 use synctv_proto::client::{
-    notification_service_server::NotificationService, DeleteAllReadRequest, DeleteAllReadResponse,
-    DeleteNotificationRequest, DeleteNotificationResponse, GetNotificationRequest,
-    ListNotificationsRequest, ListNotificationsResponse, MarkAllAsReadRequest,
-    MarkAllAsReadResponse, MarkAsReadRequest, MarkAsReadResponse, NotificationProto,
+    DeleteAllReadRequest, DeleteAllReadResponse, DeleteNotificationRequest,
+    DeleteNotificationResponse, GetNotificationRequest, ListNotificationsRequest,
+    ListNotificationsResponse, MarkAllAsReadRequest, MarkAllAsReadResponse, MarkAsReadRequest,
+    MarkAsReadResponse, NotificationProto, notification_service_server::NotificationService,
 };
 
 /// gRPC `NotificationService` implementation

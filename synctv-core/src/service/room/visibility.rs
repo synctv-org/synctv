@@ -1,7 +1,7 @@
 use crate::{
+    Error, Result,
     models::{Room, RoomId, RoomPermission, UserId},
     service::GuestKickReason,
-    Error, Result,
 };
 
 use super::RoomService;
@@ -59,17 +59,17 @@ impl RoomService {
         tx.commit().await?;
 
         self.notify_room_invalidation(room_id).await;
-        if was_public && !is_public {
-            if let Err(error) = self
+        if was_public
+            && !is_public
+            && let Err(error) = self
                 .revoke_all_guest_access(room_id, GuestKickReason::RoomMadePrivate)
                 .await
-            {
-                tracing::warn!(
-                    room_id = %room_id,
-                    error = %error,
-                    "Failed to revoke guest access after room visibility change"
-                );
-            }
+        {
+            tracing::warn!(
+                room_id = %room_id,
+                error = %error,
+                "Failed to revoke guest access after room visibility change"
+            );
         }
 
         Ok(updated)

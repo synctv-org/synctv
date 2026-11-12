@@ -4,16 +4,16 @@ use axum::{
 };
 use futures::FutureExt;
 use synctv_proto::playback_provider::synology::{
-    get_synology_image_resource_request, GetSynologyImageResourceRequest,
-    GetSynologyResourceRequest, GetSynologySegmentRequest, GetSynologySubtitleRequest,
-    SynologyFileImageResource, SynologyImageResourceResponse, SynologyPosterImageResource,
-    SynologyResourceResponse, SynologySegmentResponse, SynologySubtitleResponse,
+    GetSynologyImageResourceRequest, GetSynologyResourceRequest, GetSynologySegmentRequest,
+    GetSynologySubtitleRequest, SynologyFileImageResource, SynologyImageResourceResponse,
+    SynologyPosterImageResource, SynologyResourceResponse, SynologySegmentResponse,
+    SynologySubtitleResponse, get_synology_image_resource_request,
 };
 
-use crate::http::{middleware::RequestMetadata, AppResult, AppState};
+use crate::http::{AppResult, AppState, middleware::RequestMetadata};
 use crate::providers::playback_provider::transport::{
-    query, range_header, signed_query_fields, stream_http_response, target_url,
-    PlaybackProviderHttpResponse,
+    PlaybackProviderHttpResponse, query, range_header, signed_query_fields, stream_http_response,
+    target_url,
 };
 
 #[derive(Debug, serde::Deserialize)]

@@ -1,14 +1,14 @@
 use tracing::info;
 
 use crate::{
+    Error, InternalExt, Result,
     models::{SignupMethod, User},
     repository::query_builder::trusted_dynamic_sql,
     service::{
+        UserService,
         oauth2::{OAuth2LinkResult, OAuth2PendingRegistration, OAuth2Service, OAuth2UserInfo},
         user::PendingRegistrationConflict,
-        UserService,
     },
-    Error, InternalExt, Result,
 };
 
 impl OAuth2Service {

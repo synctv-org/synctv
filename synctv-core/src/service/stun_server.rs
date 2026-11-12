@@ -6,8 +6,8 @@
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 use tokio::net::UdpSocket;
 use tokio::task::JoinHandle;
@@ -396,7 +396,7 @@ impl StunServer {
 mod tests {
     use super::*;
     use tokio::net::UdpSocket;
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
         match result {
@@ -531,21 +531,27 @@ mod tests {
 
     #[test]
     fn test_validate_external_addr_private_rfc1918() {
-        assert!(err(
-            validate_external_addr("10.0.0.1:3478"),
-            "private external addr should fail"
-        )
-        .contains("not routable"));
-        assert!(err(
-            validate_external_addr("172.16.0.1:3478"),
-            "private external addr should fail"
-        )
-        .contains("not routable"));
-        assert!(err(
-            validate_external_addr("192.168.1.1:3478"),
-            "private external addr should fail"
-        )
-        .contains("not routable"));
+        assert!(
+            err(
+                validate_external_addr("10.0.0.1:3478"),
+                "private external addr should fail"
+            )
+            .contains("not routable")
+        );
+        assert!(
+            err(
+                validate_external_addr("172.16.0.1:3478"),
+                "private external addr should fail"
+            )
+            .contains("not routable")
+        );
+        assert!(
+            err(
+                validate_external_addr("192.168.1.1:3478"),
+                "private external addr should fail"
+            )
+            .contains("not routable")
+        );
     }
 
     #[test]

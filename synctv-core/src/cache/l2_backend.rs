@@ -1020,9 +1020,9 @@ impl CacheL2Backend for NoopCacheL2 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_helpers::{failing_redis_runtime, TestResultExt};
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use crate::test_helpers::{TestResultExt, failing_redis_runtime};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
 
     struct DelayedTestBackend {

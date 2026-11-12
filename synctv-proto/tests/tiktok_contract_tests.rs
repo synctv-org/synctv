@@ -12,9 +12,11 @@ fn tiktok_services_and_wire_contract_are_registered() {
         .get_service_by_name("synctv.playback_provider.tiktok.TikTokPlaybackProviderService")
         .expect("TikTok playback provider service descriptor");
     assert_eq!(playback.methods().count(), 3);
-    assert!(playback
-        .methods()
-        .any(|method| method.name() == "GetHlsResource"));
+    assert!(
+        playback
+            .methods()
+            .any(|method| method.name() == "GetHlsResource")
+    );
 
     let media = synctv_proto::source_config::MediaSourceConfig {
         provider: Some(media_source_config::Provider::Tiktok(

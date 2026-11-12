@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use crate::{
-    models::{resolve_provider_instance_binding, CredentialProviderInstanceName, SourceProvider},
+    Error, Result,
+    models::{CredentialProviderInstanceName, SourceProvider, resolve_provider_instance_binding},
     provider::{MediaProvider, ProviderContext, SourceConfig},
     repository::UserProviderCredentialRepository,
-    Error, Result,
 };
 
 /// Select the provider instance used for a source update.

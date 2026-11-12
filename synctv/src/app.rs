@@ -15,19 +15,19 @@ use anyhow::Result;
 use sqlx::PgPool;
 use tracing::{error, info, warn};
 
-use synctv_cluster::leader::{build_managed_leader_runtime, LeaderRuntime, LeadershipEvent};
+use synctv_cluster::leader::{LeaderRuntime, LeadershipEvent, build_managed_leader_runtime};
 use synctv_core::{
+    RedisConnectionRuntime,
     cache::{CacheInvalidationRuntime, InvalidationMessage, KeyBuilder},
     repository::realtime_outbox::RealtimeOutboxRepository,
     service::RealtimeOutboxService,
-    RedisConnectionRuntime,
 };
 use synctv_management::lifecycle::ManagementLifecycleController;
 use synctv_realtime::sync::{
+    CacheTarget, ConnectionLimits, RealtimeConfig, RealtimeEvent, RealtimeEventHandler,
+    RealtimeManager, RealtimeManagerRuntime, RoomMessageRuntime,
     build_connection_runtime as build_realtime_connection_runtime,
-    build_room_message_runtime as build_realtime_room_message_runtime, CacheTarget,
-    ConnectionLimits, RealtimeConfig, RealtimeEvent, RealtimeEventHandler, RealtimeManager,
-    RealtimeManagerRuntime, RoomMessageRuntime,
+    build_room_message_runtime as build_realtime_room_message_runtime,
 };
 
 use synctv_api::{distributed_realtime_fanout_service, local_realtime_fanout_service};
@@ -36,15 +36,15 @@ use synctv_realtime::sync::ConnectionRuntime;
 
 use crate::app_config::AppConfig as Config;
 use crate::bootstrap::cluster::{
-    build_cluster_coordination_provider, init_cluster_discovery, ClusterCoordinationProvider,
-    ClusterNodeActivator, DefaultClusterNodeActivator,
+    ClusterCoordinationProvider, ClusterNodeActivator, DefaultClusterNodeActivator,
+    build_cluster_coordination_provider, init_cluster_discovery,
 };
-use crate::bootstrap::livestream::{init_livestream, LivestreamInitOptions};
+use crate::bootstrap::livestream::{LivestreamInitOptions, init_livestream};
 use crate::bootstrap::node_id::generate_node_id;
 use crate::bootstrap::webrtc::init_webrtc;
 use crate::bootstrap::{
-    bootstrap_root_user, has_any_admin_users, init_database_with_read_pool_and_cancel, init_redis,
-    init_services_with_options, DatabasePools, InitServicesOptions, RedisInitOptions,
+    DatabasePools, InitServicesOptions, RedisInitOptions, bootstrap_root_user, has_any_admin_users,
+    init_database_with_read_pool_and_cancel, init_redis, init_services_with_options,
 };
 use crate::email_outbox_dispatcher::start_email_outbox_dispatcher;
 use crate::realtime_bridge::room_event_to_realtime_event;
@@ -1127,19 +1127,21 @@ impl Application {
         if should_start_cache_invalidation_listener_for_runtime(
             runtime_plan,
             infra.shared_runtime.is_some(),
-        ) {
-            if let Err(e) = cache_invalidation.start().await {
-                // When distributed mode is explicitly enabled, cache invalidation failure
-                // is a fatal error - the cluster cannot maintain cache consistency without it.
-                // In standalone mode, we can continue with local-only caching.
-                if runtime_plan.cluster_runtime() {
-                    return Err(anyhow::anyhow!(
-                        "Failed to start cache invalidation listener (distributed mode): {e}. \
+        ) && let Err(e) = cache_invalidation.start().await
+        {
+            // When distributed mode is explicitly enabled, cache invalidation failure
+            // is a fatal error - the cluster cannot maintain cache consistency without it.
+            // In standalone mode, we can continue with local-only caching.
+            if runtime_plan.cluster_runtime() {
+                return Err(anyhow::anyhow!(
+                    "Failed to start cache invalidation listener (distributed mode): {e}. \
                          Cache consistency is required when cluster.enabled=true."
-                    ));
-                }
-                warn!("Failed to start cache invalidation listener (continuing in standalone mode): {}", e);
+                ));
             }
+            warn!(
+                "Failed to start cache invalidation listener (continuing in standalone mode): {}",
+                e
+            );
         }
 
         // Initialize core services
@@ -1387,7 +1389,9 @@ impl Application {
             "chat_partition",
             time_partition_manager.start_auto_management(24, singleton_cancel.clone()),
         );
-        info!("Chat message partition management started (leader-gated with fencing, check interval: 24 hours)");
+        info!(
+            "Chat message partition management started (leader-gated with fencing, check interval: 24 hours)"
+        );
 
         let notification_partition_manager =
             synctv_core::service::NotificationPartitionManager::new(
@@ -1398,7 +1402,9 @@ impl Application {
             "notification_partition",
             notification_partition_manager.start_auto_management(24, singleton_cancel.clone()),
         );
-        info!("Notification partition management started (leader-gated, monthly granularity, check interval: 24 hours)");
+        info!(
+            "Notification partition management started (leader-gated, monthly granularity, check interval: 24 hours)"
+        );
 
         let cleanup_config = synctv_core::service::CleanupConfig {
             unreferenced_file_retention_seconds: infra
@@ -1421,7 +1427,9 @@ impl Application {
             "data_cleanup",
             cleanup_service.start_periodic(24, singleton_cancel.clone()),
         );
-        info!("Periodic data cleanup started (leader-gated with fencing, interval: 24 hours, dynamic settings from registry)");
+        info!(
+            "Periodic data cleanup started (leader-gated with fencing, interval: 24 hours, dynamic settings from registry)"
+        );
 
         let db_maintenance = synctv_core::service::DatabaseMaintenanceService::new_with_options(
             infra.pool.clone(),
@@ -1589,7 +1597,9 @@ impl Application {
             "playback_duration_probe",
             playback_duration_probe.spawn(Duration::from_secs(30), cancel),
         );
-        info!("Playback duration probe background scanner started (active-room scoped, interval: 30s)");
+        info!(
+            "Playback duration probe background scanner started (active-room scoped, interval: 30s)"
+        );
     }
 
     async fn init_cluster(
@@ -1910,13 +1920,13 @@ mod tests {
     };
     use crate::bootstrap::cluster::{ClusterNodeActivator, DefaultClusterNodeActivator};
     use synctv_core::{
+        RedisConnectionRuntime, SharedRedisConnectionRuntime,
         models::{SignupMethod, User, UserRole, UserStatus},
         repository::{PasswordCredentialMaterial, UserPasswordRepository, UserRepository},
         service::OpaquePasswordService,
-        RedisConnectionRuntime, SharedRedisConnectionRuntime,
     };
     use synctv_core_testing::test_redis_key_prefix;
-    use tokio::sync::{broadcast, RwLock};
+    use tokio::sync::{RwLock, broadcast};
 
     #[tokio::test]
     async fn kernel_assigned_listeners_stay_bound_until_server_startup() {

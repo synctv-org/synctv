@@ -3,7 +3,7 @@
 use crate::models::permission::{
     RoomAdminPermissionBits, RoomGuestPermissionBits, RoomMemberPermissionBits, RoomPermissionSet,
 };
-use crate::{models::SettingsValidationContext, Error, Result};
+use crate::{Error, Result, models::SettingsValidationContext};
 
 /// Core trait for room settings
 ///
@@ -38,16 +38,16 @@ pub trait RoomSetting: Sized + Send + Sync + 'static {
 /// Generates a typed room setting wrapper and validation implementation.
 #[macro_export]
 macro_rules! room_setting {
-    ($name:ident, $ty:ty, $key:expr, $default:expr) => {
+    ($name:ident, $ty:ty, $key:expr_2021, $default:expr_2021) => {
         $crate::room_setting!(@impl $name, $ty, $key, $default, |_v: &$ty, _ctx: &$crate::models::SettingsValidationContext<'_>| -> $crate::Result<()> { Ok(()) }, |_this: &$name, _settings: &$crate::models::room_settings::RoomSettings, ctx: &$crate::models::SettingsValidationContext<'_>| -> $crate::Result<()> { _this.validate(ctx) });
     };
-    ($name:ident, $ty:ty, $key:expr, $default:expr, $validator:expr) => {
+    ($name:ident, $ty:ty, $key:expr_2021, $default:expr_2021, $validator:expr_2021) => {
         $crate::room_setting!(@impl $name, $ty, $key, $default, $validator, |_this: &$name, _settings: &$crate::models::room_settings::RoomSettings, ctx: &$crate::models::SettingsValidationContext<'_>| -> $crate::Result<()> { _this.validate(ctx) });
     };
-    ($name:ident, $ty:ty, $key:expr, $default:expr, $validator:expr, $settings_validator:expr) => {
+    ($name:ident, $ty:ty, $key:expr_2021, $default:expr_2021, $validator:expr_2021, $settings_validator:expr_2021) => {
         $crate::room_setting!(@impl $name, $ty, $key, $default, $validator, $settings_validator);
     };
-    (@impl $name:ident, $ty:ty, $key:expr, $default:expr, $validator:expr, $settings_validator:expr) => {
+    (@impl $name:ident, $ty:ty, $key:expr_2021, $default:expr_2021, $validator:expr_2021, $settings_validator:expr_2021) => {
         #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
         #[serde(transparent)]
         pub struct $name(pub $ty);
@@ -564,24 +564,30 @@ mod tests {
     #[test]
     fn max_members_validation_accepts_zero_and_limit() {
         with_context(|ctx| {
-            assert!(RoomSettings {
-                max_members: MaxMembers(0),
-                ..Default::default()
-            }
-            .validate(ctx)
-            .is_ok());
-            assert!(RoomSettings {
-                max_members: MaxMembers(MaxMembers::MAX),
-                ..Default::default()
-            }
-            .validate(ctx)
-            .is_ok());
-            assert!(RoomSettings {
-                max_members: MaxMembers(MaxMembers::MAX + 1),
-                ..Default::default()
-            }
-            .validate(ctx)
-            .is_err());
+            assert!(
+                RoomSettings {
+                    max_members: MaxMembers(0),
+                    ..Default::default()
+                }
+                .validate(ctx)
+                .is_ok()
+            );
+            assert!(
+                RoomSettings {
+                    max_members: MaxMembers(MaxMembers::MAX),
+                    ..Default::default()
+                }
+                .validate(ctx)
+                .is_ok()
+            );
+            assert!(
+                RoomSettings {
+                    max_members: MaxMembers(MaxMembers::MAX + 1),
+                    ..Default::default()
+                }
+                .validate(ctx)
+                .is_err()
+            );
         });
     }
 

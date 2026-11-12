@@ -1,16 +1,16 @@
 use crate::impls::ApiError;
-use futures::{stream, StreamExt as _, TryStreamExt as _};
+use futures::{StreamExt as _, TryStreamExt as _, stream};
 use std::net::IpAddr;
 use synctv_core::models::{
     ChatMessageEvent, ChatMessageSelection, ChatMessageWithAttachments, DeleteChatMessage,
     EditChatMessage, FileBlob, FileUploadSession, NewStoredFile, UserId,
 };
 
+use super::super::ClientApiImpl;
 use super::super::convert::{chat_message_selection_from_proto_values, chat_metadata_from_proto};
 #[cfg(test)]
 use super::super::media::required_stored_file_fields;
 use super::super::media::upload_session_fields;
-use super::super::ClientApiImpl;
 
 pub(super) fn runtime_settings_store_unavailable_error() -> ApiError {
     ApiError::ServiceUnavailable("Public settings are not available on this server.".to_string())
@@ -136,11 +136,7 @@ pub(super) fn validate_room_password_for_verify(password: &str) -> Result<(), Ap
 }
 
 pub(super) fn positive_i32(value: i32, default: i32) -> i32 {
-    if value > 0 {
-        value
-    } else {
-        default
-    }
+    if value > 0 { value } else { default }
 }
 
 pub(super) fn optional_positive_window_seconds(

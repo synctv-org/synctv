@@ -1,14 +1,14 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 #[cfg(unix)]
 use hyper_util::rt::TokioIo;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use synctv_management::proto::management_service_client::ManagementServiceClient;
 use tonic::transport::Channel;
-use tonic::{metadata::MetadataValue, service::Interceptor, Request, Status};
+use tonic::{Request, Status, metadata::MetadataValue, service::Interceptor};
 
 use crate::config_loader::{
-    load_config_with_options, load_dotenv, public_id_config_extensions, LoadConfigOptions,
+    LoadConfigOptions, load_config_with_options, load_dotenv, public_id_config_extensions,
 };
 
 const MANAGEMENT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -338,8 +338,8 @@ mod tests {
     #[cfg(unix)]
     use super::RemoteAdminSession;
     use super::{
-        normalize_endpoint, resolve_candidate_endpoints, resolve_management_auth_token,
-        AdminConnectionOptions,
+        AdminConnectionOptions, normalize_endpoint, resolve_candidate_endpoints,
+        resolve_management_auth_token,
     };
     #[cfg(unix)]
     use std::pin::Pin;
@@ -357,7 +357,6 @@ mod tests {
     use std::sync::OnceLock;
     #[cfg(unix)]
     use synctv_management::proto::{
-        management_service_server::{ManagementService, ManagementServiceServer},
         AddAdminRequest, AddAlistMediaRequest, AddBilibiliLiveMediaRequest,
         AddBilibiliPgcMediaRequest, AddBilibiliVideoMediaRequest, AddDirectUrlMediaRequest,
         AddEmbyMediaRequest, AddMediaRequest, AddMemberRequest, AlistGetBindsRequest,
@@ -392,6 +391,7 @@ mod tests {
         UpdateMemberRemarkNameRequest, UpdatePlaybackStateRequest, UpdatePlaylistRequest,
         UpdateRoomPasswordRequest, UpdateUserPreferencesRequest, UpdateUserRoleRequest,
         UpdateUserUsernameRequest,
+        management_service_server::{ManagementService, ManagementServiceServer},
     };
     #[cfg(unix)]
     use synctv_proto::{
@@ -411,10 +411,15 @@ mod tests {
         value: Option<String>,
     }
 
+    // `set_var`/`remove_var` are `unsafe` under the 2024 edition because the
+    // process environment is global. Every use of this guard is serialized
+    // behind `process_env_test_lock()`, so the mutations are race-free within
+    // this test binary.
+    #[allow(unsafe_code)]
     impl EnvVarGuard {
         fn remove(key: &'static str) -> Self {
             let previous = std::env::var(key).ok();
-            std::env::remove_var(key);
+            unsafe { std::env::remove_var(key) };
             Self {
                 key,
                 value: previous,
@@ -423,7 +428,7 @@ mod tests {
 
         fn set(key: &'static str, value: &str) -> Self {
             let previous = std::env::var(key).ok();
-            std::env::set_var(key, value);
+            unsafe { std::env::set_var(key, value) };
             Self {
                 key,
                 value: previous,
@@ -431,12 +436,13 @@ mod tests {
         }
     }
 
+    #[allow(unsafe_code)]
     impl Drop for EnvVarGuard {
         fn drop(&mut self) {
             if let Some(value) = self.value.take() {
-                std::env::set_var(self.key, value);
+                unsafe { std::env::set_var(self.key, value) };
             } else {
-                std::env::remove_var(self.key);
+                unsafe { std::env::remove_var(self.key) };
             }
         }
     }

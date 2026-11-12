@@ -148,10 +148,12 @@ mod tests {
         let response = playback_provider_options_preflight_for_server(&server, &headers);
 
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        assert!(response
-            .headers()
-            .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
-            .is_none());
+        assert!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .is_none()
+        );
         Ok(())
     }
 
@@ -167,10 +169,12 @@ mod tests {
         let response = playback_provider_options_preflight_for_server(&server, &headers);
 
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        assert!(response
-            .headers()
-            .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
-            .is_none());
+        assert!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .is_none()
+        );
         Ok(())
     }
 }

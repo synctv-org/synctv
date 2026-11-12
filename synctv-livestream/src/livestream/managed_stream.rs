@@ -4,13 +4,13 @@ use crate::util::unix_now_secs;
 use anyhow::Result;
 use async_trait::async_trait;
 use dashmap::DashMap;
-use futures::{stream, StreamExt as _};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use futures::{StreamExt as _, stream};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, info_span, warn, Instrument};
+use tracing::{Instrument, debug, error, info, info_span, warn};
 
 /// Shared lifecycle state for pull streams and external publish streams.
 ///
@@ -63,11 +63,7 @@ impl StreamLifecycle {
         let result = self
             .subscriber_count
             .try_update(Ordering::AcqRel, Ordering::Acquire, |v| {
-                if v > 0 {
-                    Some(v - 1)
-                } else {
-                    None
-                }
+                if v > 0 { Some(v - 1) } else { None }
             });
         if result.is_err() {
             warn!("Attempted to decrement subscriber count below zero");
@@ -397,8 +393,7 @@ impl<S: ManagedStream> StreamPool<S> {
                         let current_count = stream.lifecycle().subscriber_count();
                         debug!(
                             "Cleanup aborted for {}: {} late subscriber(s) detected after mark_stopping",
-                            stream_key,
-                            current_count,
+                            stream_key, current_count,
                         );
 
                         let is_same_instance = streams

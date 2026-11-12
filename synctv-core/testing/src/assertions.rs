@@ -15,7 +15,7 @@
 /// ```
 #[macro_export]
 macro_rules! assert_in_range {
-    ($value:expr, $min:expr, $max:expr) => {
+    ($value:expr_2021, $min:expr_2021, $max:expr_2021) => {
         let v = $value;
         let min = $min;
         let max = $max;
@@ -38,7 +38,7 @@ macro_rules! assert_in_range {
 /// ```
 #[macro_export]
 macro_rules! assert_ok {
-    ($result:expr) => {
+    ($result:expr_2021) => {
         match $result {
             Ok(value) => value,
             Err(e) => std::panic::panic_any(format!("Expected Ok, got Err: {e:?}")),
@@ -55,7 +55,7 @@ macro_rules! assert_ok {
 /// ```
 #[macro_export]
 macro_rules! assert_err {
-    ($result:expr) => {
+    ($result:expr_2021) => {
         match $result {
             Err(e) => e,
             Ok(v) => std::panic::panic_any(format!("Expected Err, got Ok: {v:?}")),

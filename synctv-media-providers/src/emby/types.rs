@@ -378,7 +378,7 @@ pub fn device_profile_from_playback_client_profile(
                             "VideoSideData"
                         }
                         crate::transport_dto::emby::SubtitleDeliveryMethod::Unspecified => {
-                            return None
+                            return None;
                         }
                     };
                     Some(serde_json::json!({

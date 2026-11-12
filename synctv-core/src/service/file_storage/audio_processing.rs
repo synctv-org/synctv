@@ -2,16 +2,16 @@ use std::sync::Mutex;
 
 use symphonia::core::{
     errors::Error as SymphoniaError,
-    formats::{probe::Hint, FormatOptions, FormatReader, TrackType},
+    formats::{FormatOptions, FormatReader, TrackType, probe::Hint},
     io::{MediaSource, MediaSourceStream},
     meta::MetadataOptions,
     units::{Duration as SymphoniaDuration, TimeBase, Timestamp},
 };
 
 use crate::{
-    models::FileUploadPolicy,
-    service::file_storage::{validation::validate_file_audio_metadata, FileObjectReader},
     Error, Result,
+    models::FileUploadPolicy,
+    service::file_storage::{FileObjectReader, validation::validate_file_audio_metadata},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

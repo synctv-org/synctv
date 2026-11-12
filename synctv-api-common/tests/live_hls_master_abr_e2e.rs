@@ -12,14 +12,14 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use synctv_api_common::api_runtime::LivestreamRuntimeSettings;
 use synctv_api_common::playback_provider::common::{
-    get_live_hls_master_chunks, LiveHlsMasterChunksRequest, LivePlaybackDeps,
+    LiveHlsMasterChunksRequest, LivePlaybackDeps, get_live_hls_master_chunks,
 };
 use synctv_api_common::proxy_signature::{ProxySigningKey, ProxySigningKeyQueryExt};
 use synctv_common::ssrf::SsrfGuard;
 use synctv_livestream::{
-    local_stream_registry, FfmpegWorkerConfig, HlsS3Options, HlsStorageBackend, HlsStreamingApi,
-    LivestreamConfig, LivestreamServer, StreamRegistryTrait, StreamTracker, TranscodeConfig,
-    TranscodePreset, WorkerConfig, WorkerEngine,
+    FfmpegWorkerConfig, HlsS3Options, HlsStorageBackend, HlsStreamingApi, LivestreamConfig,
+    LivestreamServer, StreamRegistryTrait, StreamTracker, TranscodeConfig, TranscodePreset,
+    WorkerConfig, WorkerEngine, local_stream_registry,
 };
 use synctv_realtime::sync::{ConnectionLimits, ConnectionManager};
 use synctv_xiu::rtmp::auth::{AuthCallback, AuthPublishRewrite, RtmpStreamMode};
@@ -320,10 +320,10 @@ async fn hls_master_warms_and_lists_transcode_rung_variants() -> anyhow::Result<
             "/segments/",
         )
         .await?;
-        if let Some(playlist) = playlist {
-            if playlist.contains("#EXTINF:") {
-                break playlist;
-            }
+        if let Some(playlist) = playlist
+            && playlist.contains("#EXTINF:")
+        {
+            break playlist;
         }
         anyhow::ensure!(
             tokio::time::Instant::now() < playlist_deadline,

@@ -14,7 +14,7 @@ pub use providers::{
     GoogleConfig, LogtoConfig, MicrosoftConfig, OidcConfig, QqConfig,
 };
 
-use crate::{service::OAuth2ProviderPrivateConfig, Error};
+use crate::{Error, service::OAuth2ProviderPrivateConfig};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

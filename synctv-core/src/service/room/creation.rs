@@ -1,14 +1,14 @@
 use crate::{
+    Error, Result,
     models::{
         NotificationData, PageParams, Room, RoomCategoryId, RoomLabelId, RoomMember, RoomRole,
         RoomSettings, UserId, UserListQuery, UserStatus,
     },
     service::room::{RealtimeOutboxRoomEventFactory, RoomService},
-    Error, Result,
 };
 
 use super::creation_policy::{
-    runtime_settings_store_unavailable_for_room_creation, RoomCreationPolicy,
+    RoomCreationPolicy, runtime_settings_store_unavailable_for_room_creation,
 };
 use super::creation_request::RoomCreationRequestDraft;
 

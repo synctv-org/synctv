@@ -160,10 +160,8 @@ pub fn resolve_path(config_path: &Path, path: &Path) -> PathBuf {
 }
 
 pub fn collect_files(root: &Path, project: bool) -> Result<Vec<PathBuf>, String> {
-    if project {
-        if let Some(files) = git_project_files(root)? {
-            return Ok(files);
-        }
+    if project && let Some(files) = git_project_files(root)? {
+        return Ok(files);
     }
     let mut files = Vec::new();
     collect_files_inner(root, root, project, &mut files)?;
@@ -649,17 +647,21 @@ mod tests {
         fs::write(directory.path().join("lib/pending.dart"), "pending")?;
         fs::write(directory.path().join("generated/output"), "generated")?;
         fs::write(directory.path().join(".gitignore"), "generated/\n")?;
-        assert!(Command::new("git")
-            .arg("init")
-            .arg(directory.path())
-            .status()?
-            .success());
-        assert!(Command::new("git")
-            .arg("-C")
-            .arg(directory.path())
-            .args(["add", ".gitignore", "lib/main.dart"])
-            .status()?
-            .success());
+        assert!(
+            Command::new("git")
+                .arg("init")
+                .arg(directory.path())
+                .status()?
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(directory.path())
+                .args(["add", ".gitignore", "lib/main.dart"])
+                .status()?
+                .success()
+        );
 
         let files = collect_files(directory.path(), true)?;
         let relative = files
@@ -694,8 +696,8 @@ mod tests {
     }
 
     #[test]
-    fn project_watch_directories_cover_new_files_without_generated_output(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn project_watch_directories_cover_new_files_without_generated_output()
+    -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         let root = directory.path();
         fs::create_dir_all(root.join("lib/empty"))?;
@@ -788,26 +790,30 @@ mod tests {
         )?;
 
         fs::write(repository.path().join("pubspec.yaml"), "name: changed\n")?;
-        assert!(Command::new("git")
-            .arg("-C")
-            .arg(repository.path())
-            .args(["add", "pubspec.yaml"])
-            .status()?
-            .success());
-        assert!(Command::new("git")
-            .arg("-C")
-            .arg(repository.path())
-            .args([
-                "-c",
-                "user.name=SyncTV Test",
-                "-c",
-                "user.email=test@example.invalid",
-                "commit",
-                "-m",
-                "changed fixture",
-            ])
-            .status()?
-            .success());
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(repository.path())
+                .args(["add", "pubspec.yaml"])
+                .status()?
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(repository.path())
+                .args([
+                    "-c",
+                    "user.name=SyncTV Test",
+                    "-c",
+                    "user.email=test@example.invalid",
+                    "commit",
+                    "-m",
+                    "changed fixture",
+                ])
+                .status()?
+                .success()
+        );
         let second = git_stdout(repository.path(), &["rev-parse", "HEAD"])?;
 
         let error = prepare_git_source(
@@ -827,32 +833,38 @@ mod tests {
 
     fn create_test_repository() -> Result<tempfile::TempDir, Box<dyn std::error::Error>> {
         let repository = tempfile::tempdir()?;
-        assert!(Command::new("git")
-            .arg("init")
-            .arg(repository.path())
-            .status()?
-            .success());
+        assert!(
+            Command::new("git")
+                .arg("init")
+                .arg(repository.path())
+                .status()?
+                .success()
+        );
         fs::write(repository.path().join("pubspec.yaml"), "name: app\n")?;
-        assert!(Command::new("git")
-            .arg("-C")
-            .arg(repository.path())
-            .args(["add", "pubspec.yaml"])
-            .status()?
-            .success());
-        assert!(Command::new("git")
-            .arg("-C")
-            .arg(repository.path())
-            .args([
-                "-c",
-                "user.name=SyncTV Test",
-                "-c",
-                "user.email=test@example.invalid",
-                "commit",
-                "-m",
-                "fixture",
-            ])
-            .status()?
-            .success());
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(repository.path())
+                .args(["add", "pubspec.yaml"])
+                .status()?
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(repository.path())
+                .args([
+                    "-c",
+                    "user.name=SyncTV Test",
+                    "-c",
+                    "user.email=test@example.invalid",
+                    "commit",
+                    "-m",
+                    "fixture",
+                ])
+                .status()?
+                .success()
+        );
         Ok(repository)
     }
 

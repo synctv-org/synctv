@@ -1,7 +1,7 @@
 use crate::{
+    Error, Result,
     models::{RoomId, RoomMember, RoomPermission, RoomRole, RoomSettings, UserId},
     service::{PermissionService, RoomService},
-    Error, Result,
 };
 
 impl RoomService {

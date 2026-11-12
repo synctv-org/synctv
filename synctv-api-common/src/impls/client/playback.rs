@@ -10,17 +10,17 @@ use synctv_core::service::{
 };
 
 use super::convert::{
-    dynamic_playlist_source_fields, playback_client_profile_from_proto,
+    PlaybackHttpSigningContext, dynamic_playlist_source_fields, playback_client_profile_from_proto,
     playback_history_page_to_proto, provider_playback_info_to_model, provider_target_from_proto,
-    try_playback_state_to_proto, try_playback_to_proto, PlaybackHttpSigningContext,
+    try_playback_state_to_proto, try_playback_to_proto,
 };
 use super::playback_lifecycle::ProviderPlaybackLifecycleApi;
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
+use crate::impls::ApiError;
 use crate::impls::playback::{
     normalized_provider_duration, playback_expires_at, playback_generation_error_allows_state_only,
     playback_snapshot_error_indicates_stale_state,
 };
-use crate::impls::ApiError;
 use crate::playback_fanout::{PlaybackFanoutActor, PreparedPlaybackStateFanout};
 use synctv_core::models::MediaId;
 
@@ -1673,14 +1673,14 @@ impl crate::impls::playback::PlaybackService for ClientApiImpl {
             }
         };
 
-        if let Some(probe) = self.playback_duration_probe.as_ref() {
-            if let Err(error) = probe.probe_active_source_once(state).await {
-                tracing::warn!(
-                    room_id = %room_id,
-                    error = %error,
-                    "Observed playback lifecycle duration probe failed"
-                );
-            }
+        if let Some(probe) = self.playback_duration_probe.as_ref()
+            && let Err(error) = probe.probe_active_source_once(state).await
+        {
+            tracing::warn!(
+                room_id = %room_id,
+                error = %error,
+                "Observed playback lifecycle duration probe failed"
+            );
         }
 
         let prepared_fanout = self

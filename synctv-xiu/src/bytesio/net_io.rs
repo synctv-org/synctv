@@ -99,12 +99,19 @@ pub async fn new_udpio_pair() -> Result<(UdpIO, UdpIO), BytesIOError> {
 
         if first_local_port == 65535 {
             next_local_port = 1;
-        } else if let Ok(udpio_1) = UdpIO::new_with_local_port(first_local_port + 1).await {
-            return Ok((udpio_0, udpio_1));
-        } else if first_local_port + 1 == 65535 {
-            next_local_port = 1;
         } else {
-            next_local_port = first_local_port + 2;
+            match UdpIO::new_with_local_port(first_local_port + 1).await {
+                Ok(udpio_1) => {
+                    return Ok((udpio_0, udpio_1));
+                }
+                _ => {
+                    if first_local_port + 1 == 65535 {
+                        next_local_port = 1;
+                    } else {
+                        next_local_port = first_local_port + 2;
+                    }
+                }
+            }
         }
     }
 
@@ -122,16 +129,22 @@ pub async fn new_udpio_pair() -> Result<(UdpIO, UdpIO), BytesIOError> {
             });
         }
 
-        if let Ok(udpio_0) = UdpIO::new_with_local_port(next_local_port).await {
-            if let Ok(udpio_1) = UdpIO::new_with_local_port(next_local_port + 1).await {
-                return Ok((udpio_0, udpio_1));
-            } else if next_local_port + 1 == 65535 {
-                next_local_port = 1;
-            } else {
-                next_local_port += 2;
+        match UdpIO::new_with_local_port(next_local_port).await {
+            Ok(udpio_0) => match UdpIO::new_with_local_port(next_local_port + 1).await {
+                Ok(udpio_1) => {
+                    return Ok((udpio_0, udpio_1));
+                }
+                _ => {
+                    if next_local_port + 1 == 65535 {
+                        next_local_port = 1;
+                    } else {
+                        next_local_port += 2;
+                    }
+                }
+            },
+            _ => {
+                next_local_port += 1;
             }
-        } else {
-            next_local_port += 1;
         }
     }
 }
@@ -228,8 +241,8 @@ impl TNetIO for TcpIO {
 #[cfg(test)]
 mod tests {
 
-    use super::new_udpio_pair;
     use super::UdpIO;
+    use super::new_udpio_pair;
 
     use tokio;
 

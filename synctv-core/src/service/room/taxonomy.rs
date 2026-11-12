@@ -1,12 +1,12 @@
 use std::collections::HashSet;
 
 use crate::{
+    Error, Result,
     models::{
         Room, RoomCategory, RoomCategoryId, RoomId, RoomLabel, RoomLabelId, UpsertRoomCategory,
         UpsertRoomLabel, UserId,
     },
     service::RoomService,
-    Error, Result,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

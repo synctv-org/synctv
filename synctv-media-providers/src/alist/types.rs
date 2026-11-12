@@ -3,7 +3,7 @@
 //! HTTP-specific types for Alist JSON API responses.
 //! These are converted to proto types in the service layer.
 
-use serde::{de::Error as _, Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, de::Error as _};
 
 /// Generic Alist API response wrapper (for HTTP responses)
 #[derive(Debug, Deserialize)]

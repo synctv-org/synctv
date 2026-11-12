@@ -14,7 +14,7 @@
 //! - Single-use (consumed on first use)
 //! - Does not expose the actual JWT token
 
-use axum::{extract::State, Json};
+use axum::{Json, extract::State};
 
 use super::middleware::RequestMetadata;
 use super::{AppResult, AppState};

@@ -527,18 +527,22 @@ mod tests {
 
         let split = packet.len() / 2;
         let mut buffer = BytesMut::from(&packet[..split]);
-        assert!(protocol
-            .decode(&mut buffer)
-            .expect("partial packet should wait")
-            .is_empty());
+        assert!(
+            protocol
+                .decode(&mut buffer)
+                .expect("partial packet should wait")
+                .is_empty()
+        );
         assert_eq!(buffer.as_ref(), &packet[..split]);
 
         buffer.extend_from_slice(&packet[split..]);
         buffer.extend_from_slice(&packet);
-        assert!(protocol
-            .decode(&mut buffer)
-            .expect("packets should decode")
-            .is_empty());
+        assert!(
+            protocol
+                .decode(&mut buffer)
+                .expect("packets should decode")
+                .is_empty()
+        );
         assert!(buffer.is_empty());
     }
 }

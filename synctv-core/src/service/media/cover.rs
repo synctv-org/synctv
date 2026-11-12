@@ -1,4 +1,5 @@
 use crate::{
+    Error, Result,
     models::{
         CompleteFileUploadSession, CompleteFileUploadSessionResult, CreateFileUploadSession,
         FileMetadata, FileObjectDownload, FileRangeRequest, FileUploadManifestPart,
@@ -6,13 +7,12 @@ use crate::{
         SourceProvider, StoreFileUpload, StoreFileUploadResult, SubmittedFileReference, UserId,
     },
     service::{
-        media_cover_upload_policy, media_thumbnail_upload_policy, FileStorageCleanupOrigin,
-        FileStorageContext,
+        FileStorageCleanupOrigin, FileStorageContext, media_cover_upload_policy,
+        media_thumbnail_upload_policy,
     },
-    Error, Result,
 };
 
-use super::{ensure_media_creator_can_edit, MediaService};
+use super::{MediaService, ensure_media_creator_can_edit};
 
 const MEDIA_COVER_REFERENCE_KIND: &str = "media_cover";
 const MEDIA_THUMBNAIL_REFERENCE_KIND: &str = "media_thumbnail";
@@ -328,17 +328,16 @@ impl MediaService {
             .ok_or(Error::OptimisticLockConflict)?;
         tx.commit().await?;
 
-        if let Some(old_reference) = old_reference {
-            if old_reference.storage_backend != file.storage_backend
-                || old_reference.object_key != file.object_key
-            {
-                storage
-                    .schedule_delete_files(
-                        FileStorageCleanupOrigin::ReferenceReleased,
-                        &[old_reference],
-                    )
-                    .await?;
-            }
+        if let Some(old_reference) = old_reference
+            && (old_reference.storage_backend != file.storage_backend
+                || old_reference.object_key != file.object_key)
+        {
+            storage
+                .schedule_delete_files(
+                    FileStorageCleanupOrigin::ReferenceReleased,
+                    &[old_reference],
+                )
+                .await?;
         }
 
         Ok(updated_media)
@@ -439,17 +438,16 @@ impl MediaService {
             .ok_or(Error::OptimisticLockConflict)?;
         tx.commit().await?;
 
-        if let Some(old_reference) = old_reference {
-            if old_reference.storage_backend != file.storage_backend
-                || old_reference.object_key != file.object_key
-            {
-                storage
-                    .schedule_delete_files(
-                        FileStorageCleanupOrigin::ReferenceReleased,
-                        &[old_reference],
-                    )
-                    .await?;
-            }
+        if let Some(old_reference) = old_reference
+            && (old_reference.storage_backend != file.storage_backend
+                || old_reference.object_key != file.object_key)
+        {
+            storage
+                .schedule_delete_files(
+                    FileStorageCleanupOrigin::ReferenceReleased,
+                    &[old_reference],
+                )
+                .await?;
         }
 
         Ok(updated_media)

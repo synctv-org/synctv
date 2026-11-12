@@ -1,8 +1,8 @@
 use reqwest::{Method, RequestBuilder, Url};
 use serde_json::json;
 
-use crate::error::{fetch_json, ProviderClientError};
 use crate::PROVIDER_USER_AGENT;
+use crate::error::{ProviderClientError, fetch_json};
 
 use super::{
     TrueNasDownloadTicket, TrueNasFileItem, TrueNasFileStat, TrueNasList, TrueNasSystemInfo,

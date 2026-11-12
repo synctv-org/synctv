@@ -7,8 +7,8 @@
 
 use std::{
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -459,10 +459,12 @@ async fn rustfs_delete_scopes_exact_app_stream_and_base_path() -> Result<()> {
     assert_eq!(primary.delete_app("room").await?, 1);
     assert!(primary.exists("room-extra", "media", &current).await?);
     assert!(neighbor.exists("room", "media", &current).await?);
-    assert!(primary
-        .list_streams()
-        .await?
-        .contains(&("room-extra".to_string(), "media".to_string())));
+    assert!(
+        primary
+            .list_streams()
+            .await?
+            .contains(&("room-extra".to_string(), "media".to_string()))
+    );
     Ok(())
 }
 

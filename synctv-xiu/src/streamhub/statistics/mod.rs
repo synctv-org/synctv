@@ -8,7 +8,7 @@ use {
     serde::Serialize,
     std::{collections::HashMap, sync::Arc, time::Duration},
     tokio::{
-        sync::{broadcast::Receiver, Mutex},
+        sync::{Mutex, broadcast::Receiver},
         time,
     },
 };

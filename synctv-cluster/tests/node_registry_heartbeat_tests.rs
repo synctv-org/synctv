@@ -5,10 +5,10 @@
 
 #![allow(clippy::unwrap_used)]
 use std::sync::Arc;
-use synctv_core_testing::{start_redis_client_url_with_label, RedisContainer};
+use synctv_core_testing::{RedisContainer, start_redis_client_url_with_label};
 
-use synctv_cluster::discovery::node_registry::NodeRegistry;
 use synctv_cluster::HeartbeatResult;
+use synctv_cluster::discovery::node_registry::NodeRegistry;
 
 /// Helper to create a Redis container and client.
 async fn setup_redis() -> (RedisContainer, redis::Client, String) {

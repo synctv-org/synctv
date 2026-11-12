@@ -1,4 +1,4 @@
-use futures::{stream, StreamExt as _, TryStreamExt as _};
+use futures::{StreamExt as _, TryStreamExt as _, stream};
 use synctv_core::{
     models::{
         MediaListQuery as CoreMediaListQuery, PlaylistListQuery as CorePlaylistListQuery, UserId,
@@ -9,21 +9,21 @@ use synctv_core::{
 const ADMIN_MEDIA_LOAD_CONCURRENCY: usize = 16;
 
 use crate::impls::client::convert::{
-    optional_provider_target_to_proto, provider_resource_metadata_to_proto,
-    provider_target_from_proto, try_playlist_path_node_to_proto, MediaProtoView,
+    MediaProtoView, optional_provider_target_to_proto, provider_resource_metadata_to_proto,
+    provider_target_from_proto, try_playlist_path_node_to_proto,
 };
 use crate::impls::client::media::{
-    dynamic_playlist_thumbnail_url, prepare_delete_entries_outbox_fanout, MoveMediaFanoutPlanner,
-    PrepareDeleteEntriesOutboxFanout,
+    MoveMediaFanoutPlanner, PrepareDeleteEntriesOutboxFanout, dynamic_playlist_thumbnail_url,
+    prepare_delete_entries_outbox_fanout,
 };
 use crate::impls::source_provider::proto_source_provider_filter;
 
 use super::{
-    i64_count_to_usize, i64_to_i32_api, map_admin_media_sort, map_admin_playlist_sort,
-    map_admin_playlist_sort_from_media_sort, map_client_sort_direction,
+    AdminApiImpl, ApiError, i64_count_to_usize, i64_to_i32_api, map_admin_media_sort,
+    map_admin_playlist_sort, map_admin_playlist_sort_from_media_sort, map_client_sort_direction,
     map_resource_availability_filter, normalize_non_empty_filter, page_i32_to_usize,
     page_offset_usize, page_size_i32_to_usize, page_u32_to_usize, usize_to_i32_api,
-    usize_to_i64_api, usize_to_u32_api, usize_to_u64_api, AdminApiImpl, ApiError,
+    usize_to_i64_api, usize_to_u32_api, usize_to_u64_api,
 };
 
 fn dynamic_pagination_from_proto(
@@ -1150,7 +1150,7 @@ impl AdminApiImpl {
 mod tests {
     use super::*;
     use synctv_proto::client::{
-        list_playlist_items_request::Pagination, CursorPagination, PagePagination,
+        CursorPagination, PagePagination, list_playlist_items_request::Pagination,
     };
 
     #[test]

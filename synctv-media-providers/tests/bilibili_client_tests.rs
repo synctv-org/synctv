@@ -7,8 +7,8 @@
 //! can be verified against a local mock server.
 
 #![allow(clippy::unwrap_used)]
-use synctv_media_providers::bilibili::{BilibiliEndpoints, BilibiliResource};
 use synctv_media_providers::BilibiliClient;
+use synctv_media_providers::bilibili::{BilibiliEndpoints, BilibiliResource};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 

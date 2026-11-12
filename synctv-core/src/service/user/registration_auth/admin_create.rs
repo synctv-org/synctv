@@ -1,8 +1,8 @@
 use crate::{
+    Error, Result,
     models::{SignupMethod, User, UserId},
     repository::PasswordCredentialMaterial,
     service::UserService,
-    Error, Result,
 };
 
 impl UserService {

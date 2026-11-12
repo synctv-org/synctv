@@ -12,7 +12,7 @@ pub(crate) mod proto {
     ));
 }
 
-pub use chat::{watch_danmaku, AcFunDanmakuStream};
+pub use chat::{AcFunDanmakuStream, watch_danmaku};
 pub use client::{AcFunClient, AcFunEndpoints};
 pub use types::{
     AcFunDanmaku, AcFunLiveDanmakuEvent, AcFunLiveSession, AcFunMedia, AcFunMetadata,

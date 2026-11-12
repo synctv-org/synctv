@@ -244,13 +244,13 @@ mod reference {
                 });
             }
 
-            if let Some(first_char) = username.chars().next() {
-                if first_char == '_' || first_char == '-' {
-                    return Err(ValidationError::Field {
-                        field: "username".to_string(),
-                        message: "cannot start with underscore or hyphen".to_string(),
-                    });
-                }
+            if let Some(first_char) = username.chars().next()
+                && (first_char == '_' || first_char == '-')
+            {
+                return Err(ValidationError::Field {
+                    field: "username".to_string(),
+                    message: "cannot start with underscore or hyphen".to_string(),
+                });
             }
 
             let lower_username = username.to_lowercase();

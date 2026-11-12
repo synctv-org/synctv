@@ -1,8 +1,8 @@
 use synctv_core::models::{AuditDetails, UserId, UserRole};
 
 use super::{
-    check_role_hierarchy, usize_to_i32_api, AdminApiImpl, ApiError, BatchResultsAccumulator,
-    RequestContext,
+    AdminApiImpl, ApiError, BatchResultsAccumulator, RequestContext, check_role_hierarchy,
+    usize_to_i32_api,
 };
 
 const MAX_BATCH_ITEMS: usize = 100;

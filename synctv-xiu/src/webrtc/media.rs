@@ -220,10 +220,9 @@ impl VideoFrameEncoder {
         if self
             .access_unit_timestamp
             .is_some_and(|timestamp| timestamp != packet.header.timestamp)
+            && let Some(frame) = self.flush_access_unit()?
         {
-            if let Some(frame) = self.flush_access_unit()? {
-                frames.push(frame);
-            }
+            frames.push(frame);
         }
         self.access_unit_timestamp = Some(packet.header.timestamp);
 
@@ -244,10 +243,10 @@ impl VideoFrameEncoder {
         if let Some(sequence) = self.maybe_sequence_header()? {
             frames.push(sequence);
         }
-        if packet.header.marker {
-            if let Some(frame) = self.flush_access_unit()? {
-                frames.push(frame);
-            }
+        if packet.header.marker
+            && let Some(frame) = self.flush_access_unit()?
+        {
+            frames.push(frame);
         }
         Ok(frames)
     }
@@ -473,10 +472,9 @@ mod tests {
                 if let FrameData::Audio {
                     timestamp, data, ..
                 } = frame
+                    && data.get(1).copied() == Some(aac_packet_type::AAC_RAW)
                 {
-                    if data.get(1).copied() == Some(aac_packet_type::AAC_RAW) {
-                        raw_timestamps.push(timestamp);
-                    }
+                    raw_timestamps.push(timestamp);
                 }
             }
         }

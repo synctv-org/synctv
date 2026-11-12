@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use super::{
     id::{MediaId, PlaylistId, RoomId},
     media::SourceProvider,
-    provider_target::{hash_empty_provider_target, hash_optional_provider_target, ProviderTarget},
+    provider_target::{ProviderTarget, hash_empty_provider_target, hash_optional_provider_target},
 };
 
 /// Playback source behavior exposed to room synchronization and clients.

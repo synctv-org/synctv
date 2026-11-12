@@ -13,8 +13,8 @@ use synctv_api::{
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     models::{
-        room_settings::RequireApproval, ReviewRequestId, ReviewStatus, RoomAdminPermissionBits,
-        RoomRole, RoomSettings, RoomStatus, SignupMethod, User, UserId, UserRole, UserStatus,
+        ReviewRequestId, ReviewStatus, RoomAdminPermissionBits, RoomRole, RoomSettings, RoomStatus,
+        SignupMethod, User, UserId, UserRole, UserStatus, room_settings::RequireApproval,
     },
     repository::{
         ProviderInstanceRepository, RoomMemberRepository, RoomRepository, SettingsRepository,

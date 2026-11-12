@@ -7,8 +7,8 @@ use synctv_proto::providers::truenas::{
     LogoutRequest, LogoutResponse,
 };
 use synctv_proto::source_config::{
-    media_source_config, playlist_source_config, TrueNasFolderPlaylistSourceConfig,
-    TrueNasMediaSourceConfig, TrueNasPlaylistSourceConfig,
+    TrueNasFolderPlaylistSourceConfig, TrueNasMediaSourceConfig, TrueNasPlaylistSourceConfig,
+    media_source_config, playlist_source_config,
 };
 use synctv_realtime::fanout::RealtimeEventService;
 

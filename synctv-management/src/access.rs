@@ -55,7 +55,7 @@ fn constant_time_eq(left: &[u8; 32], right: &[u8; 32]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::ManagementAccessController;
-    use tonic::{metadata::MetadataValue, Code, Request, Status};
+    use tonic::{Code, Request, Status, metadata::MetadataValue};
 
     #[test]
     fn management_access_controller_allows_missing_header_when_token_disabled() -> Result<(), Status>

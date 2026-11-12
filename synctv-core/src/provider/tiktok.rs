@@ -1419,20 +1419,24 @@ mod tests {
         let mut first = None;
         let mut found_current = false;
 
-        assert!(TikTokProvider::scan_ordered_page(
-            vec![item("1"), item("2")],
-            &target,
-            &mut first,
-            &mut found_current,
-        )
-        .is_none());
-        assert!(TikTokProvider::scan_ordered_page(
-            vec![item("3"), item("4")],
-            &target,
-            &mut first,
-            &mut found_current,
-        )
-        .is_none());
+        assert!(
+            TikTokProvider::scan_ordered_page(
+                vec![item("1"), item("2")],
+                &target,
+                &mut first,
+                &mut found_current,
+            )
+            .is_none()
+        );
+        assert!(
+            TikTokProvider::scan_ordered_page(
+                vec![item("3"), item("4")],
+                &target,
+                &mut first,
+                &mut found_current,
+            )
+            .is_none()
+        );
         assert!(found_current);
         assert_eq!(
             first
@@ -1489,14 +1493,18 @@ mod tests {
         )
         .expect("video playback should map");
         let video_info = &video.playback_infos[&video.default_mode];
-        assert!(video_info
-            .medias
-            .iter()
-            .all(|media| media.p2p_swarm_id.is_some()));
-        assert!(video_info
-            .subtitles
-            .iter()
-            .all(|subtitle| subtitle.p2p_swarm_id.is_some()));
+        assert!(
+            video_info
+                .medias
+                .iter()
+                .all(|media| media.p2p_swarm_id.is_some())
+        );
+        assert!(
+            video_info
+                .subtitles
+                .iter()
+                .all(|subtitle| subtitle.p2p_swarm_id.is_some())
+        );
 
         let mut live_variant = variant(
             "https://cdn.test/live.m3u8",
@@ -1517,13 +1525,17 @@ mod tests {
         )
         .expect("live playback should map");
         let live_info = &live.playback_infos[&live.default_mode];
-        assert!(live_info
-            .medias
-            .iter()
-            .all(|media| media.p2p_swarm_id.is_none()));
-        assert!(live_info
-            .subtitles
-            .iter()
-            .all(|subtitle| subtitle.p2p_swarm_id.is_none()));
+        assert!(
+            live_info
+                .medias
+                .iter()
+                .all(|media| media.p2p_swarm_id.is_none())
+        );
+        assert!(
+            live_info
+                .subtitles
+                .iter()
+                .all(|subtitle| subtitle.p2p_swarm_id.is_none())
+        );
     }
 }

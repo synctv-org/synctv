@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use chrono::{Duration, Utc};
 use sqlx::PgPool;
+use synctv_core::Error;
 use synctv_core::models::{
     CreateFileUploadSession, DeletionSource, FileReferenceTarget, FileUploadSessionCreateResult,
     NewStoredFile, Room, RoomId, RoomStatus, User, UserId, UserRole, UserStatus,
@@ -19,9 +20,8 @@ use synctv_core::service::{
     AlwaysLeader, CleanupConfig, CleanupService, CleanupServiceOptions, FileStorageCleanupOrigin,
     FileStorageContext, FileStorageService, LeaderCheck,
 };
-use synctv_core::Error;
 use synctv_core_testing::{
-    create_test_pool, ensure_chat_partition_for, ok, TestOptionExt, TestResultExt,
+    TestOptionExt, TestResultExt, create_test_pool, ensure_chat_partition_for, ok,
 };
 
 /// A `LeaderCheck` that always returns false
@@ -970,16 +970,18 @@ async fn account_owned_rooms_follow_the_account_recovery_window() {
     let protected = service.run_all().await;
     assert_eq!(protected.rooms_purged, 0);
     assert_eq!(protected.users_purged, 0);
-    assert!(ok(
-        sqlx::query_scalar!(
-            "SELECT EXISTS(SELECT 1 FROM rooms WHERE id = $1)",
-            room.id.as_i64()
+    assert!(
+        ok(
+            sqlx::query_scalar!(
+                "SELECT EXISTS(SELECT 1 FROM rooms WHERE id = $1)",
+                room.id.as_i64()
+            )
+            .fetch_one(&pool)
+            .await,
+            "protected room existence query should succeed",
         )
-        .fetch_one(&pool)
-        .await,
-        "protected room existence query should succeed",
-    )
-    .unwrap_or(false));
+        .unwrap_or(false)
+    );
 
     let one_hundred_days_ago = Utc::now() - Duration::days(100);
     ok(

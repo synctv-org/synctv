@@ -6,14 +6,14 @@ use super::{
     pools::RepoPools,
     query_builder::ilike_contains_pattern,
     required_count,
-    room_taxonomy::{optional_room_category_from_parts, OptionalRoomCategoryRowParts},
+    room_taxonomy::{OptionalRoomCategoryRowParts, optional_room_category_from_parts},
 };
 use crate::{
+    Error, Result,
     models::{
         OpaquePasswordRecord, PageParams, Room, RoomCategoryId, RoomId, RoomLabelId, RoomListQuery,
         RoomListSortBy, RoomSettings, RoomStatus, UserId,
     },
-    Error, Result,
 };
 
 #[derive(Debug, sqlx::FromRow)]

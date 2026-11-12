@@ -4,9 +4,9 @@ use std::time::Duration as StdDuration;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
     models::{RoomId, UserId},
     service::session_store::RedisJsonSessionStore,
-    RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
 };
 
 pub const ROOM_OPAQUE_REGISTRATION_SESSION_TTL_SECS: u64 = 300;
@@ -313,14 +313,14 @@ impl RoomOpaquePasswordLoginSessionStore for RedisRoomOpaquePasswordLoginSession
 }
 
 #[must_use]
-pub fn local_room_opaque_password_registration_session_store(
-) -> Arc<dyn RoomOpaquePasswordRegistrationSessionStore> {
+pub fn local_room_opaque_password_registration_session_store()
+-> Arc<dyn RoomOpaquePasswordRegistrationSessionStore> {
     Arc::new(InMemoryRoomOpaquePasswordRegistrationSessionStore::new())
 }
 
 #[must_use]
-pub fn local_room_opaque_password_login_session_store(
-) -> Arc<dyn RoomOpaquePasswordLoginSessionStore> {
+pub fn local_room_opaque_password_login_session_store()
+-> Arc<dyn RoomOpaquePasswordLoginSessionStore> {
     Arc::new(InMemoryRoomOpaquePasswordLoginSessionStore::new())
 }
 

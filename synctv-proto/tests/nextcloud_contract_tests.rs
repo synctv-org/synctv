@@ -7,16 +7,20 @@ fn nextcloud_services_are_registered_in_descriptor_pools() {
         .get_service_by_name("synctv.provider.nextcloud.NextcloudProviderService")
         .expect("Nextcloud provider service descriptor");
     assert_eq!(provider.methods().count(), 8);
-    assert!(provider
-        .methods()
-        .any(|method| method.name() == "GetPreview" && method.is_server_streaming()));
+    assert!(
+        provider
+            .methods()
+            .any(|method| method.name() == "GetPreview" && method.is_server_streaming())
+    );
     let playback = synctv_proto::PLAYBACK_PROVIDER_DESCRIPTOR_POOL
         .get_service_by_name("synctv.playback_provider.nextcloud.NextcloudPlaybackProviderService")
         .expect("Nextcloud playback provider service descriptor");
     assert_eq!(playback.methods().count(), 5);
-    assert!(playback
-        .methods()
-        .any(|method| method.name() == "GetPreviewResource"));
+    assert!(
+        playback
+            .methods()
+            .any(|method| method.name() == "GetPreviewResource")
+    );
 }
 
 #[test]
@@ -92,10 +96,12 @@ fn nextcloud_contract_preserves_native_ids_and_source_variants() {
     let response = synctv_proto::PROVIDERS_DESCRIPTOR_POOL
         .get_message_by_name("synctv.provider.nextcloud.ListResponse")
         .expect("Nextcloud list response descriptor");
-    assert!(response
-        .get_field_by_name("total")
-        .expect("total")
-        .supports_presence());
+    assert!(
+        response
+            .get_field_by_name("total")
+            .expect("total")
+            .supports_presence()
+    );
 
     let playback = synctv_proto::DESCRIPTOR_POOL
         .get_message_by_name("synctv.client.PlaybackMetadata")

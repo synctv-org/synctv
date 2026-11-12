@@ -13,6 +13,7 @@ use synctv_core::{
 };
 use synctv_proto::{admin as admin_proto, client as client_proto};
 
+use crate::ApiError;
 use crate::impls::admin::settings::{
     ChatSettingsPatch, CorsSettingsPatch, EmailSettingsPatch, OAuth2SettingsPatch,
     OptionalConfigPatch, PermissionSettingsPatch, PlaybackHistorySettingsPatch,
@@ -20,7 +21,6 @@ use crate::impls::admin::settings::{
     RoomSettingsUpdatePatch, RtmpSettingsPatch, RuntimeSettingsPatch, ServerSettingsPatch,
     SmtpCredentialsInput, SmtpProxyInput, UserSettingsPatch, WebRtcSettingsPatch,
 };
-use crate::ApiError;
 
 pub fn runtime_settings_patch_from_admin_proto(
     req: admin_proto::UpdateSettingsRequest,
@@ -284,7 +284,7 @@ fn select_runtime_settings_patch(
     let mut selected = RuntimeSettingsPatch::default();
 
     macro_rules! select_required {
-        ($section:ident, $field:ident, $path:expr) => {{
+        ($section:ident, $field:ident, $path:expr_2021) => {{
             let value = source
                 .$section
                 .as_mut()
@@ -408,7 +408,7 @@ fn select_runtime_settings_patch(
             _ => {
                 return Err(ApiError::InvalidInput(format!(
                     "unsupported update_mask path '{path}'"
-                )))
+                )));
             }
         }
     }
@@ -799,10 +799,10 @@ fn resolve_oauth2_client_secret(
     if let Some(secret) = supplied {
         return Ok(secret);
     }
-    if let Some((current_client_id, current_secret)) = current {
-        if current_client_id == client_id {
-            return Ok(current_secret.to_string());
-        }
+    if let Some((current_client_id, current_secret)) = current
+        && current_client_id == client_id
+    {
+        return Ok(current_secret.to_string());
     }
     Err(ApiError::InvalidInput(format!(
         "OAuth2 provider '{name}' {provider_type}.client_secret is required for a new provider, provider type change, or client_id change"

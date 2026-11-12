@@ -3,8 +3,9 @@
 use opaque_ke::argon2::Argon2 as OpaqueArgon2Ksf;
 use opaque_ke::rand::rngs::OsRng;
 use opaque_ke::{
-    ciphersuite::CipherSuite, ClientLogin, ClientLoginFinishParameters, ClientRegistration,
+    ClientLogin, ClientLoginFinishParameters, ClientRegistration,
     ClientRegistrationFinishParameters, CredentialResponse, RegistrationResponse,
+    ciphersuite::CipherSuite,
 };
 use std::{net::IpAddr, sync::Arc};
 use synctv_core::cache::{KeyBuilder, UsernameCache};

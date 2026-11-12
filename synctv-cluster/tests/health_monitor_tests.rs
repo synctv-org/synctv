@@ -8,9 +8,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use synctv_cluster::discovery::health_monitor::HealthMonitor;
 use synctv_cluster::NodeHealth;
 use synctv_cluster::NodeInfo;
+use synctv_cluster::discovery::health_monitor::HealthMonitor;
 
 // Test 1: stale nodes are marked unhealthy
 

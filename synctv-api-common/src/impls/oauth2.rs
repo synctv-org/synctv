@@ -552,14 +552,12 @@ impl OAuth2ApiImpl {
                         message: api_error.message().to_string(),
                     }
                 })?
+                && existing_user_id != target_user_id
             {
-                if existing_user_id != target_user_id {
-                    return Err(ApiError::OAuth2ProviderAccountLinkedElsewhere {
-                        operation,
-                        message: "This provider account is already linked to another user"
-                            .to_string(),
-                    });
-                }
+                return Err(ApiError::OAuth2ProviderAccountLinkedElsewhere {
+                    operation,
+                    message: "This provider account is already linked to another user".to_string(),
+                });
             }
 
             // Bind flow: associate provider with existing user
@@ -1228,8 +1226,8 @@ mod tests {
 
     #[test]
     fn test_oauth2_unlink_counts_specific_identity_without_removing_same_provider_siblings() {
-        use synctv_core::models::oauth2_client::{OAuth2Provider, UserOAuthProviderMapping};
         use synctv_core::models::UserId;
+        use synctv_core::models::oauth2_client::{OAuth2Provider, UserOAuthProviderMapping};
 
         let now = synctv_core::SystemClock.now();
         let mappings = vec![
@@ -1272,8 +1270,8 @@ mod tests {
 
     #[test]
     fn test_oauth2_unlink_counts_provider_wide_unlink_removes_all_provider_identities() {
-        use synctv_core::models::oauth2_client::{OAuth2Provider, UserOAuthProviderMapping};
         use synctv_core::models::UserId;
+        use synctv_core::models::oauth2_client::{OAuth2Provider, UserOAuthProviderMapping};
 
         let now = synctv_core::SystemClock.now();
         let mappings = vec![

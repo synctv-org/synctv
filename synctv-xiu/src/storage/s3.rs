@@ -5,16 +5,16 @@
 #[cfg(feature = "s3")]
 mod inner {
     use crate::storage::{
-        minute_bucket_is_expired, path_leaf, segment_minute_bucket, validate_component,
-        validate_storage_key, HlsStorage, HLS_SEGMENTS_ROOT,
+        HLS_SEGMENTS_ROOT, HlsStorage, minute_bucket_is_expired, path_leaf, segment_minute_bucket,
+        validate_component, validate_storage_key,
     };
     use async_trait::async_trait;
     use bytes::Bytes;
     use futures::{StreamExt as _, TryStreamExt};
     use opendal::{
+        EntryMode, ErrorKind as OpendalErrorKind, Operator,
         layers::{ConcurrentLimitLayer, RetryLayer, TimeoutLayer},
         services::S3,
-        EntryMode, ErrorKind as OpendalErrorKind, Operator,
     };
     use std::io::{Error, ErrorKind, Result};
     use std::sync::Arc;
@@ -612,10 +612,12 @@ mod inner {
             })
             .unwrap();
 
-            assert!(storage
-                .exists("room", "media", &current_segment("retry"))
-                .await
-                .unwrap());
+            assert!(
+                storage
+                    .exists("room", "media", &current_segment("retry"))
+                    .await
+                    .unwrap()
+            );
             server.await.unwrap();
             assert_eq!(request_count.load(std::sync::atomic::Ordering::Acquire), 3);
         }
@@ -637,55 +639,69 @@ mod inner {
             let storage = S3Storage::new(config).unwrap();
 
             // Path traversal via ".." in app
-            assert!(storage
-                .write("..", "stream", "name", Bytes::from_static(b"x"))
-                .await
-                .is_err());
+            assert!(
+                storage
+                    .write("..", "stream", "name", Bytes::from_static(b"x"))
+                    .await
+                    .is_err()
+            );
             assert!(storage.read("..", "stream", "name").await.is_err());
             assert!(storage.delete("..", "stream", "name").await.is_err());
             assert!(storage.exists("..", "stream", "name").await.is_err());
-            assert!(storage
-                .get_public_url("..", "stream", "name")
-                .await
-                .is_err());
+            assert!(
+                storage
+                    .get_public_url("..", "stream", "name")
+                    .await
+                    .is_err()
+            );
 
             // Path traversal via ".." in stream
-            assert!(storage
-                .write("app", "..", "name", Bytes::from_static(b"x"))
-                .await
-                .is_err());
+            assert!(
+                storage
+                    .write("app", "..", "name", Bytes::from_static(b"x"))
+                    .await
+                    .is_err()
+            );
             assert!(storage.read("app", "..", "name").await.is_err());
             assert!(storage.delete("app", "..", "name").await.is_err());
             assert!(storage.exists("app", "..", "name").await.is_err());
             assert!(storage.get_public_url("app", "..", "name").await.is_err());
 
             // Path traversal via ".." in name
-            assert!(storage
-                .write("app", "stream", "..", Bytes::from_static(b"x"))
-                .await
-                .is_err());
+            assert!(
+                storage
+                    .write("app", "stream", "..", Bytes::from_static(b"x"))
+                    .await
+                    .is_err()
+            );
             assert!(storage.read("app", "stream", "..").await.is_err());
             assert!(storage.delete("app", "stream", "..").await.is_err());
             assert!(storage.exists("app", "stream", "..").await.is_err());
             assert!(storage.get_public_url("app", "stream", "..").await.is_err());
 
             // Slash in component
-            assert!(storage
-                .write("a/b", "stream", "name", Bytes::from_static(b"x"))
-                .await
-                .is_err());
+            assert!(
+                storage
+                    .write("a/b", "stream", "name", Bytes::from_static(b"x"))
+                    .await
+                    .is_err()
+            );
 
             // Empty component
-            assert!(storage
-                .write("", "stream", "name", Bytes::from_static(b"x"))
-                .await
-                .is_err());
+            assert!(
+                storage
+                    .write("", "stream", "name", Bytes::from_static(b"x"))
+                    .await
+                    .is_err()
+            );
 
             // Backslash in component
-            assert!(storage
-                .write("a\\b", "stream", "name", Bytes::from_static(b"x"))
-                .await
-                .is_err());
+            assert!(
+                storage
+                    .write("a\\b", "stream", "name", Bytes::from_static(b"x"))
+                    .await
+                    .is_err()
+            );
         }
 
         #[cfg(any(feature = "tls-aws-lc", feature = "tls-ring"))]
@@ -817,9 +833,11 @@ mod inner {
                     .unwrap(),
                 "hls/segments/29676270/room/media/29676270_abcd"
             );
-            assert!(storage
-                .get_object_key("room", "media", "unbucketed_segment")
-                .is_err());
+            assert!(
+                storage
+                    .get_object_key("room", "media", "unbucketed_segment")
+                    .is_err()
+            );
         }
     }
 }

@@ -4,6 +4,7 @@ use futures::{StreamExt, TryStreamExt};
 use sha2::{Digest, Sha256};
 
 use crate::{
+    Error, Result,
     models::{
         CompleteFileUploadSession, CompleteFileUploadSessionResult, CreateFileUploadSession,
         FileBlob, FileBlobCompression, FileBlobPart, FileByteRange, FileObjectDownload,
@@ -17,9 +18,13 @@ use crate::{
         UpsertFileUploadSessionPart,
     },
     service::file_storage::{
-        attach_file_ownership_proof_token, collect_file_object_download, constant_time_eq,
-        database_file_namespace_base_path, decode_file_object_key, encode_file_object_key,
-        file_object_access, file_object_key, file_ownership_proof_digest,
+        CreateFileReuseGrant, DatabaseFileStorageCompressionConfig, DatabaseFileStorageService,
+        FILE_UPLOAD_EXPIRES_SECONDS, FILE_UPLOAD_TOKEN_HEADER, FileObjectReader, FileReuseGrant,
+        FileStorageCleanupOrigin, FileStorageContext, FileStorageService,
+        MAX_DATABASE_FILE_UPLOAD_PART_SIZE_BYTES, UploadSessionMetadataInput,
+        ValidatedFileReuseGrant, attach_file_ownership_proof_token, collect_file_object_download,
+        constant_time_eq, database_file_namespace_base_path, decode_file_object_key,
+        encode_file_object_key, file_object_access, file_object_key, file_ownership_proof_digest,
         file_part_manifest_digest, file_read_backend_slot, file_reuse_grant,
         file_upload_token_for_object_key, mark_upload_session_ownership_proof_verified,
         media_processing::attach_variants_to_files, new_file_id, payload_len_i64,
@@ -32,13 +37,8 @@ use crate::{
         validate_create_file_upload_session, validate_file_mime_type, validate_file_reuse_grant,
         validate_file_upload_token, validate_file_upload_token_context,
         validate_session_file_for_storage, validate_stored_files, validate_upload_range,
-        validated_upload_manifest, CreateFileReuseGrant, DatabaseFileStorageCompressionConfig,
-        DatabaseFileStorageService, FileObjectReader, FileReuseGrant, FileStorageCleanupOrigin,
-        FileStorageContext, FileStorageService, UploadSessionMetadataInput,
-        ValidatedFileReuseGrant, FILE_UPLOAD_EXPIRES_SECONDS, FILE_UPLOAD_TOKEN_HEADER,
-        MAX_DATABASE_FILE_UPLOAD_PART_SIZE_BYTES,
+        validated_upload_manifest,
     },
-    Error, Result,
 };
 
 impl DatabaseFileStorageService {
@@ -1064,12 +1064,12 @@ impl FileStorageService for DatabaseFileStorageService {
             .mime_type
             .as_deref()
             .ok_or_else(|| Error::InvalidInput("invalid file upload token".to_string()))?;
-        if let Some(content_type) = content_type.as_deref() {
-            if upload_media_type(content_type)? != mime_type {
-                return Err(Error::InvalidInput(
-                    "file content-type does not match upload session".to_string(),
-                ));
-            }
+        if let Some(content_type) = content_type.as_deref()
+            && upload_media_type(content_type)? != mime_type
+        {
+            return Err(Error::InvalidInput(
+                "file content-type does not match upload session".to_string(),
+            ));
         }
         let expected_size = payload
             .size_bytes
@@ -1307,88 +1307,85 @@ impl FileStorageService for DatabaseFileStorageService {
             };
             if let Some((object_key, mime_type, size_bytes, content_manifest_sha256, metadata)) =
                 reference_file
+                && let Some(ownership_proof) = metadata.ownership_proof.as_ref()
             {
-                if let Some(ownership_proof) = metadata.ownership_proof.as_ref() {
-                    let proof = request
-                        .ownership_proof
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|proof| !proof.is_empty())
-                        .ok_or_else(|| {
-                            Error::InvalidInput("file ownership proof is required".to_string())
+                let proof = request
+                    .ownership_proof
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|proof| !proof.is_empty())
+                    .ok_or_else(|| {
+                        Error::InvalidInput("file ownership proof is required".to_string())
+                    })?;
+                let nonce = ownership_proof.nonce.as_str();
+                let ranges = &ownership_proof.ranges;
+                let object_key_ref = object_key.as_str();
+                let chunks = futures::stream::iter(0..ranges.len())
+                    .map(|index| async move {
+                        let range = &ranges[index];
+                        let start = u64::try_from(range.offset).map_err(|_| {
+                            Error::Internal("file ownership proof range is invalid".to_string())
                         })?;
-                    let nonce = ownership_proof.nonce.as_str();
-                    let ranges = &ownership_proof.ranges;
-                    let object_key_ref = object_key.as_str();
-                    let chunks = futures::stream::iter(0..ranges.len())
-                        .map(|index| async move {
-                            let range = &ranges[index];
-                            let start = u64::try_from(range.offset).map_err(|_| {
+                        let length = u64::try_from(range.length).map_err(|_| {
+                            Error::Internal("file ownership proof range is invalid".to_string())
+                        })?;
+                        let end_inclusive = start
+                            .checked_add(length)
+                            .and_then(|end| end.checked_sub(1))
+                            .ok_or_else(|| {
                                 Error::Internal("file ownership proof range is invalid".to_string())
                             })?;
-                            let length = u64::try_from(range.length).map_err(|_| {
-                                Error::Internal("file ownership proof range is invalid".to_string())
-                            })?;
-                            let end_inclusive = start
-                                .checked_add(length)
-                                .and_then(|end| end.checked_sub(1))
-                                .ok_or_else(|| {
-                                    Error::Internal(
-                                        "file ownership proof range is invalid".to_string(),
-                                    )
-                                })?;
-                            self.load_range_data(
-                                object_key_ref,
-                                Some(FileRangeRequest::Exact(FileByteRange {
-                                    start,
-                                    end_inclusive,
-                                })),
-                            )
-                            .await
-                        })
-                        .buffered(3)
-                        .try_collect::<Vec<_>>()
-                        .await?;
-                    let expected = file_ownership_proof_digest(
-                        nonce,
-                        ranges,
-                        &content_manifest_sha256,
-                        size_bytes,
-                        chunks.iter().map(bytes::Bytes::as_ref),
-                    );
-                    if !constant_time_eq(proof.as_bytes(), expected.as_bytes()) {
-                        return Err(Error::InvalidInput(
-                            "file ownership proof does not match object".to_string(),
-                        ));
-                    }
-                    let metadata = mark_upload_session_ownership_proof_verified(&metadata);
-                    self.repository
-                        .update_reference_metadata(
-                            reference_kind,
-                            &reference_id,
-                            &self.storage_backend,
-                            &object_key,
-                            &crate::models::FileReferenceMetadata::UploadSession(metadata),
+                        self.load_range_data(
+                            object_key_ref,
+                            Some(FileRangeRequest::Exact(FileByteRange {
+                                start,
+                                end_inclusive,
+                            })),
                         )
-                        .await?;
-                    return Ok(CompleteFileUploadSessionResult {
-                        object: Some(FileBlob {
-                            storage_backend: self.storage_backend.clone(),
-                            object_key,
-                            mime_type,
-                            size_bytes,
-                            total_size_bytes: size_bytes,
-                            content_manifest_sha256,
-                            compression: FileBlobCompression::None,
-                            range: None,
-                            data: bytes::Bytes::new(),
-                            metadata: Default::default(),
-                            created_at: crate::SystemClock.now(),
-                        }),
-                        uploaded_size_bytes: size_bytes,
-                        uploaded_parts: Vec::new(),
-                    });
+                        .await
+                    })
+                    .buffered(3)
+                    .try_collect::<Vec<_>>()
+                    .await?;
+                let expected = file_ownership_proof_digest(
+                    nonce,
+                    ranges,
+                    &content_manifest_sha256,
+                    size_bytes,
+                    chunks.iter().map(bytes::Bytes::as_ref),
+                );
+                if !constant_time_eq(proof.as_bytes(), expected.as_bytes()) {
+                    return Err(Error::InvalidInput(
+                        "file ownership proof does not match object".to_string(),
+                    ));
                 }
+                let metadata = mark_upload_session_ownership_proof_verified(&metadata);
+                self.repository
+                    .update_reference_metadata(
+                        reference_kind,
+                        &reference_id,
+                        &self.storage_backend,
+                        &object_key,
+                        &crate::models::FileReferenceMetadata::UploadSession(metadata),
+                    )
+                    .await?;
+                return Ok(CompleteFileUploadSessionResult {
+                    object: Some(FileBlob {
+                        storage_backend: self.storage_backend.clone(),
+                        object_key,
+                        mime_type,
+                        size_bytes,
+                        total_size_bytes: size_bytes,
+                        content_manifest_sha256,
+                        compression: FileBlobCompression::None,
+                        range: None,
+                        data: bytes::Bytes::new(),
+                        metadata: Default::default(),
+                        created_at: crate::SystemClock.now(),
+                    }),
+                    uploaded_size_bytes: size_bytes,
+                    uploaded_parts: Vec::new(),
+                });
             }
         }
         let session = self

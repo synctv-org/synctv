@@ -1,5 +1,5 @@
 use {
-    super::{amf0_markers, errors::Amf0WriteErrorValue, Amf0ValueType, Amf0WriteError},
+    super::{Amf0ValueType, Amf0WriteError, amf0_markers, errors::Amf0WriteErrorValue},
     crate::bytesio::bytes_writer::BytesWriter,
     byteorder::BigEndian,
     bytes::BytesMut,

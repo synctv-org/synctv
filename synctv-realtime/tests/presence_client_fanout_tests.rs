@@ -8,8 +8,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use synctv_cluster::discovery::node_registry::{ClusterMode, NodeRegistry};
 use synctv_cluster::discovery::NodeInfo;
+use synctv_cluster::discovery::node_registry::{ClusterMode, NodeRegistry};
 use synctv_core::models::UserId;
 use synctv_core::{RedisConnectionRuntime, RedisCoordinationRuntime};
 use synctv_realtime::grpc::UserOnlineStatus;

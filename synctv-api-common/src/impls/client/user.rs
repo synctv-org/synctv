@@ -16,6 +16,7 @@ use synctv_proto::client::{
     OpaquePasswordUpdateVerificationMethod, SensitiveOperationVerificationMethod,
 };
 
+use super::ClientApiImpl;
 use super::convert::{
     file_metadata_from_proto, room_settings_to_proto, stored_file_reference_to_media_cover,
     try_user_to_proto,
@@ -26,7 +27,6 @@ use super::media::{
     upload_session_fields, uploaded_parts_response_fields,
 };
 use super::media::{file_upload_reference_to_proto, required_file_upload_reference};
-use super::ClientApiImpl;
 
 const USER_ROOM_DELETION_PAGE_SIZE: u32 = 100;
 

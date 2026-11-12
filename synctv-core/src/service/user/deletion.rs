@@ -3,9 +3,9 @@ use std::collections::{HashMap, HashSet};
 use chrono::{DateTime, Utc};
 
 use crate::{
+    Error, Result,
     models::{ChatMessageType, DeletionSource, MediaId, RoomId, RoomPlaybackState, User, UserId},
     repository::realtime_outbox::NewRealtimeOutboxEvent,
-    Error, Result,
 };
 
 use super::UserService;

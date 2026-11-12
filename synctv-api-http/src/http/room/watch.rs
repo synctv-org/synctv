@@ -3,7 +3,7 @@ use axum::{
     http::HeaderMap,
     response::sse::{Event, KeepAlive, Sse},
 };
-use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use std::convert::Infallible;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -13,16 +13,16 @@ use tokio_stream::{Stream, StreamExt};
 
 use super::super::websocket::RealtimeTransportFormat;
 use super::query::{
-    parse_watch_delivery_mode, validate_include_message_types, watch_after_event_sequence,
-    WatchPlaylistItemsQuery, WatchQuery,
+    WatchPlaylistItemsQuery, WatchQuery, parse_watch_delivery_mode, validate_include_message_types,
+    watch_after_event_sequence,
 };
 use super::request_metadata;
 use super::{AppResult, AppState, RequestMetadata};
 use crate::http::validation::ProtoQuery;
+use synctv_api_common::impls::EndpointRateLimitCategory;
 use synctv_api_common::impls::messaging::{
     MessageSender, RealtimeJoinError, ResourceWatchSession, ResourceWatchSessionConfig,
 };
-use synctv_api_common::impls::EndpointRateLimitCategory;
 use synctv_proto::client::{
     ListPlaylistItemsRequest, WatchChatEventsRequest, WatchChatPinEventsRequest,
     WatchPlaylistItemsRequest, WatchRoomMemberEventsRequest, WatchRoomSettingsRequest,

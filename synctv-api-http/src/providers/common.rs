@@ -1,16 +1,16 @@
 use axum::{
+    Json, Router,
     extract::{Path, Query, State},
     routing::{get, post, put},
-    Json, Router,
 };
 use futures::future::BoxFuture;
 
 use crate::http::middleware::RequestMetadata;
+use crate::http::{AppResult, error::map_api_error};
 use crate::http::{
-    admin_execute::{execute_admin_endpoint, execute_admin_endpoint_with_control},
     AppState,
+    admin_execute::{execute_admin_endpoint, execute_admin_endpoint_with_control},
 };
-use crate::http::{error::map_api_error, AppResult};
 use std::str::FromStr as _;
 use synctv_api_common::impls::{ApiError, EndpointRateLimitCategory};
 use synctv_proto::providers::common::{
@@ -705,8 +705,8 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "Requires Docker-backed PostgreSQL"]
-    async fn provider_common_api_list_backends_includes_local_default_and_enabled_remote_instances(
-    ) -> TestResult {
+    async fn provider_common_api_list_backends_includes_local_default_and_enabled_remote_instances()
+    -> TestResult {
         let (_postgres, pool) = create_test_pool().await;
         let repo = Arc::new(ProviderInstanceRepository::new(pool.clone()));
         let provider_instance_manager = Arc::new(RemoteProviderManager::new(repo.clone()));

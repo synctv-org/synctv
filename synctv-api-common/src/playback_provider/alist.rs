@@ -9,9 +9,9 @@ use synctv_proto::playback_provider::alist::{
 };
 
 use super::common::{
-    playback_provider_route_base, playback_transport_action_to_chunk_stream,
-    verify_playback_provider_access_with_deps, HasPlaybackProviderAccessFields, HlsRewriteSigning,
-    PlaybackProviderAccessRequest, PlaybackProviderApiRuntime, PlaybackTransportExecutorDeps,
+    HasPlaybackProviderAccessFields, HlsRewriteSigning, PlaybackProviderAccessRequest,
+    PlaybackProviderApiRuntime, PlaybackTransportExecutorDeps, playback_provider_route_base,
+    playback_transport_action_to_chunk_stream, verify_playback_provider_access_with_deps,
 };
 use crate::impls::ApiError;
 
@@ -58,8 +58,8 @@ async fn execute_alist_action_with_auth_retry<F, Fut>(
 where
     F: FnMut(std::sync::Arc<dyn synctv_core::provider::ProviderStore>) -> Fut,
     Fut: std::future::Future<
-        Output = Result<synctv_core::provider::PlaybackTransportAction, ApiError>,
-    >,
+            Output = Result<synctv_core::provider::PlaybackTransportAction, ApiError>,
+        >,
 {
     retry_alist_upstream_auth(
         || {
@@ -443,8 +443,8 @@ impl<'a> AlistPlaybackProviderDeps<'a> {
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use synctv_proto::playback_provider::common::StreamChunk;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};

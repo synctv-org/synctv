@@ -37,9 +37,9 @@ mod store;
 mod types;
 
 pub use memory_store::InMemoryTicketStore;
+pub use redis_store::RedisTicketStore;
 #[cfg(test)]
 use redis_store::run_ws_ticket_redis_op;
-pub use redis_store::RedisTicketStore;
 pub use store::TicketStore;
 pub use types::{
     CreateGuestTicketRequest, PendingValidatedTicket, UserValidationResult, ValidatedGuestTicket,

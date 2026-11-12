@@ -14,10 +14,10 @@
 
 use std::sync::Arc;
 
+use crate::Result;
 use crate::cache::l2_backend::CacheL2Backend;
 use crate::cache::tiered::{FenceReadResult, TieredCache, Timestamped, Versioned};
 use crate::models::{RoomId, RoomPlaybackState};
-use crate::Result;
 
 // RoomId's CacheKey impl is defined once in room_cache.rs to avoid duplicate impl errors.
 
@@ -197,11 +197,13 @@ mod tests {
         let state = create_test_state("room1");
 
         // Cache miss
-        assert!(cache
-            .get(&room_id)
-            .await
-            .checked("operation should succeed")
-            .is_none());
+        assert!(
+            cache
+                .get(&room_id)
+                .await
+                .checked("operation should succeed")
+                .is_none()
+        );
 
         // Set and get
         cache
@@ -220,11 +222,13 @@ mod tests {
             .invalidate(&room_id)
             .await
             .checked("operation should succeed");
-        assert!(cache
-            .get(&room_id)
-            .await
-            .checked("operation should succeed")
-            .is_none());
+        assert!(
+            cache
+                .get(&room_id)
+                .await
+                .checked("operation should succeed")
+                .is_none()
+        );
     }
 
     #[tokio::test]

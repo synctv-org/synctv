@@ -10,21 +10,21 @@
 
 use super::registry::HEARTBEAT_INTERVAL_SECS;
 use super::registry_trait::{
-    LeaseRefreshOutcome, LeaseRefreshRequest, StreamGenerationRegistration, StreamRegistryTrait,
-    PUBLISHER_REFRESH_BATCH_SIZE,
+    LeaseRefreshOutcome, LeaseRefreshRequest, PUBLISHER_REFRESH_BATCH_SIZE,
+    StreamGenerationRegistration, StreamRegistryTrait,
 };
 use crate::util::{unix_now_secs, validate_stream_ids};
 use dashmap::DashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use synctv_xiu::streamhub::{
     define::{BroadcastEventReceiver, StreamHubEvent, StreamHubEventSender},
     stream::StreamIdentifier,
     utils::Uuid,
 };
-use tokio::sync::{mpsc, oneshot, Notify};
+use tokio::sync::{Notify, mpsc, oneshot};
 use tokio::task::{AbortHandle, JoinHandle};
-use tokio::time::{interval, Duration};
+use tokio::time::{Duration, interval};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 
@@ -445,36 +445,39 @@ impl PublisherManager {
             );
             return;
         };
-        if let Some(entry) = self.active_publishers.get(&key) {
-            if entry.bind_publisher(generation_id) {
-                entry.touch();
-            } else {
-                self.schedule_registry_sync();
-            }
-        } else {
-            match self
-                .maintenance_tx
-                .try_send(PublisherMaintenanceCommand::RecoverPublisher {
-                    room_id: room_id.to_string(),
-                    media_id: media_id.to_string(),
-                    generation_id,
-                }) {
-                Ok(()) => {}
-                Err(mpsc::error::TrySendError::Full(_)) => {
-                    debug!(
-                        room_id,
-                        media_id,
-                        %generation_id,
-                        "Publisher activity recovery queue is full; a later activity sample will retry"
-                    );
+        match self.active_publishers.get(&key) {
+            Some(entry) => {
+                if entry.bind_publisher(generation_id) {
+                    entry.touch();
+                } else {
+                    self.schedule_registry_sync();
                 }
-                Err(mpsc::error::TrySendError::Closed(_)) => {
-                    warn!(
-                        room_id,
-                        media_id,
-                        %generation_id,
-                        "Publisher activity recovery worker is closed"
-                    );
+            }
+            _ => {
+                match self
+                    .maintenance_tx
+                    .try_send(PublisherMaintenanceCommand::RecoverPublisher {
+                        room_id: room_id.to_string(),
+                        media_id: media_id.to_string(),
+                        generation_id,
+                    }) {
+                    Ok(()) => {}
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        debug!(
+                            room_id,
+                            media_id,
+                            %generation_id,
+                            "Publisher activity recovery queue is full; a later activity sample will retry"
+                        );
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        warn!(
+                            room_id,
+                            media_id,
+                            %generation_id,
+                            "Publisher activity recovery worker is closed"
+                        );
+                    }
                 }
             }
         }
@@ -1048,10 +1051,8 @@ impl PublisherManager {
         match current_after {
             None => {
                 let removed = self.remove_tracked_publisher(&publisher_key, request);
-                if was_ready {
-                    if let Some(entry) = removed {
-                        self.emit_stopped(request, entry.user_id.clone()).await;
-                    }
+                if was_ready && let Some(entry) = removed {
+                    self.emit_stopped(request, entry.user_id.clone()).await;
                 }
                 Ok(PublisherStopOutcome::AlreadyStopped)
             }
@@ -1104,21 +1105,19 @@ impl PublisherManager {
                                     entry.owns_generation(&info.generation_id)
                                 }) =>
                     {
-                        if let Some(mut current) = self.active_publishers.get_mut(publisher_key) {
-                            if current.lease_epoch != info.lease_epoch
-                                || current.user_id != info.user_id
-                            {
-                                *current.value_mut() = Arc::new(current.clone_with_registration(
-                                    info.user_id,
-                                    info.lease_epoch,
-                                    info.supports_rtp,
-                                ));
-                            }
+                        if let Some(mut current) = self.active_publishers.get_mut(publisher_key)
+                            && (current.lease_epoch != info.lease_epoch
+                                || current.user_id != info.user_id)
+                        {
+                            *current.value_mut() = Arc::new(current.clone_with_registration(
+                                info.user_id,
+                                info.lease_epoch,
+                                info.supports_rtp,
+                            ));
                         }
                         trace!(
                             "Reconcile: publisher room={} media={} still active on this node",
-                            room_id,
-                            media_id
+                            room_id, media_id
                         );
                     }
                     Ok(Some(info)) if info.node_id == self.local_node_id => {
@@ -1379,25 +1378,28 @@ impl PublisherManager {
                 let lease_epoch = info.lease_epoch;
                 let generation_id = info.generation_id.clone();
                 let mut local_registration_updated = false;
-                if let Some(mut current) = self.active_publishers.get_mut(publisher_key) {
-                    if Arc::ptr_eq(current.value(), tracked_entry) {
-                        *current.value_mut() = Arc::new(tracked_entry.clone_with_registration(
-                            user_id.clone(),
-                            lease_epoch,
-                            info.supports_rtp,
-                        ));
-                        local_registration_updated = true;
-                    } else {
+                match self.active_publishers.get_mut(publisher_key) {
+                    Some(mut current) => {
+                        if Arc::ptr_eq(current.value(), tracked_entry) {
+                            *current.value_mut() = Arc::new(tracked_entry.clone_with_registration(
+                                user_id.clone(),
+                                lease_epoch,
+                                info.supports_rtp,
+                            ));
+                            local_registration_updated = true;
+                        } else {
+                            debug!(
+                                "Skipped tracked registration refresh for room={} media={} because local entry changed during re-registration",
+                                room_id, media_id
+                            );
+                        }
+                    }
+                    _ => {
                         debug!(
-                            "Skipped tracked registration refresh for room={} media={} because local entry changed during re-registration",
+                            "Skipped tracked registration refresh for room={} media={} because it is no longer tracked",
                             room_id, media_id
                         );
                     }
-                } else {
-                    debug!(
-                        "Skipped tracked registration refresh for room={} media={} because it is no longer tracked",
-                        room_id, media_id
-                    );
                 }
                 if became_ready && local_registration_updated {
                     self.emit_lifecycle_event(StreamLifecycleEvent::Started {
@@ -1946,8 +1948,7 @@ impl PublisherManager {
                             .store(0, Ordering::Release);
                         trace!(
                             "Heartbeat cycle succeeded for room {} / media {}",
-                            request.room_id,
-                            request.media_id
+                            request.room_id, request.media_id
                         );
                     }
                     LeaseRefreshOutcome::Missing => {

@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Buffer pressure level for backpressure signaling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

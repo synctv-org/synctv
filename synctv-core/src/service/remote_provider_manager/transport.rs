@@ -1,11 +1,11 @@
 use super::RemoteProviderManager;
 use crate::models::ProviderInstance;
 use std::sync::Arc;
-use synctv_media_providers::remote_transport::{
-    create_remote_connection as create_remote_provider_connection, RemoteProviderConnection,
-    RemoteProviderConnectionOptions, RemoteProviderTransportConfig,
-};
 use synctv_media_providers::ProviderClientError;
+use synctv_media_providers::remote_transport::{
+    RemoteProviderConnection, RemoteProviderConnectionOptions, RemoteProviderTransportConfig,
+    create_remote_connection as create_remote_provider_connection,
+};
 
 impl RemoteProviderManager {
     pub(super) fn map_remote_transport_error(error: ProviderClientError) -> crate::Error {

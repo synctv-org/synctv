@@ -38,7 +38,7 @@ pub async fn redis_runtime_snapshot(
 #[async_trait]
 pub trait RedisCoordinationRuntime: RedisConnectionRuntime {
     async fn multiplexed_connection(&self)
-        -> redis::RedisResult<redis::aio::MultiplexedConnection>;
+    -> redis::RedisResult<redis::aio::MultiplexedConnection>;
 
     async fn async_pubsub(&self) -> redis::RedisResult<redis::aio::PubSub>;
 }
@@ -286,8 +286,8 @@ pub fn redis_connection_manager_options(
 #[cfg(test)]
 mod tests {
     use super::{
-        redis_connection_manager_options, redis_runtime_snapshot, shared_runtime,
-        shared_runtime_from_conn, ManagedRedisRuntime, RedisConnectionRuntime,
+        ManagedRedisRuntime, RedisConnectionRuntime, redis_connection_manager_options,
+        redis_runtime_snapshot, shared_runtime, shared_runtime_from_conn,
     };
     use std::sync::Arc;
     use std::time::Duration;

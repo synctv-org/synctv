@@ -1,8 +1,8 @@
 use sqlx::{PgConnection, PgPool};
 
 use crate::{
-    models::{MediaId, PlaylistId, RoomId, RoomPlaybackProgress, RoomPlaybackState, UserId},
     Error, Result,
+    models::{MediaId, PlaylistId, RoomId, RoomPlaybackProgress, RoomPlaybackState, UserId},
 };
 
 /// Room playback state repository

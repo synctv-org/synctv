@@ -1,9 +1,9 @@
 #![allow(clippy::unwrap_used)]
 
 use tonic::transport::Server;
+use tonic_health::pb::HealthCheckRequest;
 use tonic_health::pb::health_check_response::ServingStatus;
 use tonic_health::pb::health_client::HealthClient;
-use tonic_health::pb::HealthCheckRequest;
 
 #[tokio::test]
 async fn management_health_reports_empty_service_as_serving() {

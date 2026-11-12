@@ -2,7 +2,7 @@ use async_trait::async_trait;
 
 use crate::Result;
 
-use super::{now_unix_seconds, TicketStore, WsTicketData};
+use super::{TicketStore, WsTicketData, now_unix_seconds};
 
 /// Wrapper that pairs ticket data with its per-entry TTL for moka's `Expiry` trait.
 #[derive(Clone)]

@@ -1,7 +1,7 @@
 use synctv_core::models::{UserAuthFactors, UserId, UserPreferences, UserRole};
 use synctv_core::service::UserService;
 
-use super::{user_notification_preferences_to_proto, usize_to_i32_api, ApiError};
+use super::{ApiError, user_notification_preferences_to_proto, usize_to_i32_api};
 
 pub(in crate::impls::admin) struct BatchResultsAccumulator {
     results: Vec<synctv_proto::admin::BatchResultItem>,

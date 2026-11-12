@@ -1,10 +1,10 @@
 use crate::{
+    Error, Result,
     models::{
         AuditAction, AuditDetails, AuditTargetType, Room, RoomId, RoomMember, RoomRole, UserId,
     },
-    service::room::{RealtimeOutboxPermissionChangedEventFactory, RoomService},
     service::PermissionWriteFence,
-    Error, Result,
+    service::room::{RealtimeOutboxPermissionChangedEventFactory, RoomService},
 };
 use sqlx::{Postgres, Transaction};
 

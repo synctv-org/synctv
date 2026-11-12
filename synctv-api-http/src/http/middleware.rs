@@ -6,10 +6,10 @@ use axum::{
     middleware::Next,
     response::Response,
 };
-use std::future::{ready, Future};
+use std::future::{Future, ready};
 use std::sync::LazyLock;
 
-use super::{optional_header_str, AppError, AppState};
+use super::{AppError, AppState, optional_header_str};
 
 /// Transport metadata extracted from the HTTP request without performing
 /// authentication, blacklist, rate-limit, or timeout decisions.
@@ -449,8 +449,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_nested_routes_with_additional_route_layers_still_get_security_headers(
-    ) -> TestResult {
+    async fn test_nested_routes_with_additional_route_layers_still_get_security_headers()
+    -> TestResult {
         async fn mock_rate_limit(
             request: axum::extract::Request,
             next: axum::middleware::Next,

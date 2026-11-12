@@ -1,7 +1,7 @@
 use crate::{
+    Error, Result,
     models::{AuditAction, AuditDetails, AuditTargetType, ReviewRequestId, RoomId, UserId},
     repository::ReviewRepository,
-    Error, Result,
 };
 
 use super::{RealtimeOutboxPermissionChangedEventFactory, RoomService};

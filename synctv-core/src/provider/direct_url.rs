@@ -3,17 +3,17 @@
 //! Provides direct playback for HTTP(S) URLs
 
 use super::{
-    playback_transport::PlaybackTransportAction,
-    store::{ProviderStoreExt, VersionedPlayback},
     MediaProvider, PlaybackInfo, PlaybackProxyAutoPolicy, PlaybackProxyAutoReason,
     PlaybackProxyPolicy, PlaybackResult, ProviderContext, ProviderError, SourceConfig,
+    playback_transport::PlaybackTransportAction,
+    store::{ProviderStoreExt, VersionedPlayback},
 };
 use crate::models::media::{
     DirectUrlPlaybackMetadata, PlaybackDanmaku, PlaybackDanmakuProvider, PlaybackDirectUrlDanmaku,
     PlaybackDirectUrlMedia, PlaybackDirectUrlSubtitle, PlaybackMedia, PlaybackMediaProvider,
     PlaybackMetadata, PlaybackSubtitle, PlaybackSubtitleProvider,
 };
-use crate::models::{detect_direct_url_format, DirectUrlMediaSourceConfig};
+use crate::models::{DirectUrlMediaSourceConfig, detect_direct_url_format};
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -988,29 +988,27 @@ impl MediaProvider for DirectUrlProvider {
         let store = _ctx.store.as_ref();
 
         // Check cache
-        if !has_expired_resources {
-            if let Some(store) = store {
-                if let Ok(Some(cached)) = store.get::<VersionedPlayback>(&cache_key).await {
-                    if super::versioned_playback_is_fresh(&cached) {
-                        return super::build_cached_versioned_playback_response(
-                            cached,
-                            Self::NAME,
-                            _ctx,
-                            |result, version, expires_at| {
-                                mark_direct_url_playback_resources(
-                                    result,
-                                    version,
-                                    expires_at,
-                                    route_selection,
-                                    auto_mode,
-                                    client_profile,
-                                );
-                            },
-                        )
-                        .await;
-                    }
-                }
-            }
+        if !has_expired_resources
+            && let Some(store) = store
+            && let Ok(Some(cached)) = store.get::<VersionedPlayback>(&cache_key).await
+            && super::versioned_playback_is_fresh(&cached)
+        {
+            return super::build_cached_versioned_playback_response(
+                cached,
+                Self::NAME,
+                _ctx,
+                |result, version, expires_at| {
+                    mark_direct_url_playback_resources(
+                        result,
+                        version,
+                        expires_at,
+                        route_selection,
+                        auto_mode,
+                        client_profile,
+                    );
+                },
+            )
+            .await;
         }
 
         let first_media = medias
@@ -1931,12 +1929,14 @@ mod tests {
             );
         }
 
-        assert!(resolve_dash_scope_target(
-            "https://cdn.example.com/live/refresh.mpd",
-            "other.mpd",
-            None,
-        )
-        .is_err());
+        assert!(
+            resolve_dash_scope_target(
+                "https://cdn.example.com/live/refresh.mpd",
+                "other.mpd",
+                None,
+            )
+            .is_err()
+        );
     }
 
     #[test]

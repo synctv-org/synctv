@@ -342,9 +342,10 @@ impl ProviderStore for RedisProviderStore {
                 let key_owned = key.to_string();
                 let redis_runtime = self.redis_runtime.clone();
                 let owner_token_owned = owner_token.clone();
-                return Ok(StoreLockGuard::new(move || {
-                    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                        handle.spawn(async move {
+                return Ok(StoreLockGuard::new(
+                    move || match tokio::runtime::Handle::try_current() {
+                        Ok(handle) => {
+                            handle.spawn(async move {
                             let timeout = redis_runtime.operation_timeout();
                             let mut conn =
                                 match crate::redis_runtime_snapshot(&*redis_runtime, "lock release")
@@ -377,13 +378,15 @@ impl ProviderStore for RedisProviderStore {
                                 );
                             }
                         });
-                    } else {
-                        tracing::warn!(
-                            key = %key_owned,
-                            "Skipping Redis provider lock release because no Tokio runtime is available; lock will expire via TTL"
-                        );
-                    }
-                }));
+                        }
+                        _ => {
+                            tracing::warn!(
+                                key = %key_owned,
+                                "Skipping Redis provider lock release because no Tokio runtime is available; lock will expire via TTL"
+                            );
+                        }
+                    },
+                ));
             }
 
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -696,11 +699,13 @@ mod tests {
 
         // Different provider name creates a separate store
         let store3 = registry.load("emby");
-        assert!(store3
-            .get_raw("key1")
-            .await
-            .checked("operation should succeed")
-            .is_none());
+        assert!(
+            store3
+                .get_raw("key1")
+                .await
+                .checked("operation should succeed")
+                .is_none()
+        );
     }
 
     #[test]

@@ -2,9 +2,9 @@
 
 use super::oidc::{OidcEndpointOverrides, OidcProvider};
 use super::{require_oauth2_redirect_url, validate_required_oauth2_field};
+use crate::Error;
 use crate::oauth2::{OAuth2Authorization, OAuth2AuthorizationMode, OAuth2UserInfo, Provider};
 use crate::service::{OAuth2GoogleProviderConfig, OAuth2ProviderPrivateConfig};
-use crate::Error;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 

@@ -563,14 +563,18 @@ mod tests {
             .expect("second claim")
             .remove(0);
         assert!(second.lock_version > first.lock_version);
-        assert!(!repository
-            .mark_sent(&first.id, "worker-a", first.lock_version)
-            .await
-            .expect("old acknowledgement"));
-        assert!(repository
-            .mark_sent(&second.id, "worker-b", second.lock_version)
-            .await
-            .expect("current acknowledgement"));
+        assert!(
+            !repository
+                .mark_sent(&first.id, "worker-a", first.lock_version)
+                .await
+                .expect("old acknowledgement")
+        );
+        assert!(
+            repository
+                .mark_sent(&second.id, "worker-b", second.lock_version)
+                .await
+                .expect("current acknowledgement")
+        );
     }
 
     #[tokio::test]
@@ -592,10 +596,12 @@ mod tests {
             .await
             .expect("age lease");
 
-        assert!(repository
-            .renew_lease(&claimed.id, "worker-a", claimed.lock_version)
-            .await
-            .expect("renew lease"));
+        assert!(
+            repository
+                .renew_lease(&claimed.id, "worker-a", claimed.lock_version)
+                .await
+                .expect("renew lease")
+        );
         assert_eq!(
             repository
                 .requeue_stale_processing(120)
@@ -611,10 +617,12 @@ mod tests {
         let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
         let repository = EmailOutboxRepository::new(pool.clone());
         let mut tx = pool.begin().await.expect("begin transaction");
-        assert!(repository
-            .insert_with_executor(&job("rolled-back"), &mut tx)
-            .await
-            .expect("insert job"));
+        assert!(
+            repository
+                .insert_with_executor(&job("rolled-back"), &mut tx)
+                .await
+                .expect("insert job")
+        );
         tx.rollback().await.expect("rollback transaction");
         let count = sqlx::query_scalar!(
             r#"SELECT COUNT(*)::BIGINT AS "count!" FROM email_outbox WHERE id = 'rolled-back'"#,
@@ -714,11 +722,13 @@ mod tests {
         .execute(&pool)
         .await
         .expect("move future job to dead");
-        assert!(repository
-            .load_cleanup_pending(10)
-            .await
-            .expect("load known cleanup jobs")
-            .is_empty());
+        assert!(
+            repository
+                .load_cleanup_pending(10)
+                .await
+                .expect("load known cleanup jobs")
+                .is_empty()
+        );
         assert_eq!(
             repository
                 .close_unknown_dead_cleanup()

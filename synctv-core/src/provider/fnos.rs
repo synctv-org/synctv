@@ -18,14 +18,14 @@ use super::{
     ProviderPlaybackSessionLifecycle, SourceConfig, SourceCover,
 };
 use crate::models::{
-    detect_direct_url_format, normalize_provider_instance_name,
-    normalize_provider_instance_name_owned, FnosAudioTrackMetadata, FnosFilePlaybackMetadata,
-    FnosMediaPlaybackMetadata, FnosMediaSource, FnosMediaSourceConfig, FnosPlaybackMetadata,
-    FnosPlaybackSession, FnosPlaylistSource, FnosPlaylistSourceConfig, FnosProxyResource,
-    FnosSubtitleTrackMetadata, FnosTargetKind, FnosTranscodeResource, MediaSourceConfig, PlayMode,
-    PlaybackFnosMedia, PlaybackFnosSubtitle, PlaybackMedia, PlaybackMediaProvider,
-    PlaybackMetadata, PlaybackSubtitle, PlaybackSubtitleProvider, PlaylistSourceConfig,
-    ProviderCredential, ProviderPlaybackSession, ProviderTarget, UserId, UserProviderCredential,
+    FnosAudioTrackMetadata, FnosFilePlaybackMetadata, FnosMediaPlaybackMetadata, FnosMediaSource,
+    FnosMediaSourceConfig, FnosPlaybackMetadata, FnosPlaybackSession, FnosPlaylistSource,
+    FnosPlaylistSourceConfig, FnosProxyResource, FnosSubtitleTrackMetadata, FnosTargetKind,
+    FnosTranscodeResource, MediaSourceConfig, PlayMode, PlaybackFnosMedia, PlaybackFnosSubtitle,
+    PlaybackMedia, PlaybackMediaProvider, PlaybackMetadata, PlaybackSubtitle,
+    PlaybackSubtitleProvider, PlaylistSourceConfig, ProviderCredential, ProviderPlaybackSession,
+    ProviderTarget, UserId, UserProviderCredential, detect_direct_url_format,
+    normalize_provider_instance_name, normalize_provider_instance_name_owned,
 };
 use crate::repository::{
     NewProviderPlaybackSession, ProviderPlaybackSessionRepository, UserProviderCredentialRepository,
@@ -1640,14 +1640,14 @@ fn mark_fnos_playback_resources(
             continue;
         }
         if mode_name.starts_with("direct_") {
-            if selection.direct {
-                if let Some(direct_info) = super::build_direct_playback_info_for_client(
+            if selection.direct
+                && let Some(direct_info) = super::build_direct_playback_info_for_client(
                     &mode_name,
                     &original_info,
                     client_profile,
-                ) {
-                    generated.insert(mode_name, direct_info);
-                }
+                )
+            {
+                generated.insert(mode_name, direct_info);
             }
             continue;
         }
@@ -1935,30 +1935,27 @@ impl MediaProvider for FnosProvider {
                         },
                     ))),
                 };
-                if selection.direct {
-                    if let Ok(webdav) = self.client.webdav_config(&endpoints, &credential).await {
-                        if let Ok(url) = FnosClient::webdav_file_url(&webdav, path) {
-                            let headers = webdav_headers(&credential);
-                            if let Some(info) = result.playback_infos.get("direct").cloned() {
-                                let medias = info
-                                    .medias
-                                    .into_iter()
-                                    .map(|mut media| {
-                                        media.provider = PlaybackMediaProvider::Fnos(
-                                            PlaybackFnosMedia::Direct {
-                                                url: url.clone(),
-                                                headers: headers.clone(),
-                                            },
-                                        );
-                                        media
-                                    })
-                                    .collect();
-                                result.playback_infos.insert(
-                                    "direct_url".to_string(),
-                                    PlaybackInfo { medias, ..info },
-                                );
-                            }
-                        }
+                if selection.direct
+                    && let Ok(webdav) = self.client.webdav_config(&endpoints, &credential).await
+                    && let Ok(url) = FnosClient::webdav_file_url(&webdav, path)
+                {
+                    let headers = webdav_headers(&credential);
+                    if let Some(info) = result.playback_infos.get("direct").cloned() {
+                        let medias = info
+                            .medias
+                            .into_iter()
+                            .map(|mut media| {
+                                media.provider =
+                                    PlaybackMediaProvider::Fnos(PlaybackFnosMedia::Direct {
+                                        url: url.clone(),
+                                        headers: headers.clone(),
+                                    });
+                                media
+                            })
+                            .collect();
+                        result
+                            .playback_infos
+                            .insert("direct_url".to_string(), PlaybackInfo { medias, ..info });
                     }
                 }
                 (result, format!("file:{path}"))
@@ -2416,12 +2413,12 @@ impl MediaProvider for FnosProvider {
                                     medias.into_iter().map(|(_, media)| media).collect();
                                 (medias, info)
                             });
-                    if let Some((medias, info)) = direct_medias {
-                        if !medias.is_empty() {
-                            result
-                                .playback_infos
-                                .insert("direct_url".to_string(), PlaybackInfo { medias, ..info });
-                        }
+                    if let Some((medias, info)) = direct_medias
+                        && !medias.is_empty()
+                    {
+                        result
+                            .playback_infos
+                            .insert("direct_url".to_string(), PlaybackInfo { medias, ..info });
                     }
                 }
                 (result, format!("media:{item_guid}:{}", play.media_guid))
@@ -2472,8 +2469,8 @@ impl MediaProvider for FnosProvider {
                 _ => None,
             })
         });
-        if let (Some(media), Some(resource_version)) = (media, resource_version) {
-            if let Some((repo, session)) = super::playback_session_registration(
+        if let (Some(media), Some(resource_version)) = (media, resource_version)
+            && let Some((repo, session)) = super::playback_session_registration(
                 ctx,
                 format!("media:{resource_version}"),
                 Some(resource_version.clone()),
@@ -2482,11 +2479,11 @@ impl MediaProvider for FnosProvider {
                     item_guid: media.item_guid.clone(),
                     media_guid: Some(media.media_guid.clone()),
                 }),
-            )? {
-                repo.upsert(session)
-                    .await
-                    .map_err(|error| ProviderError::Internal(error.to_string()))?;
-            }
+            )?
+        {
+            repo.upsert(session)
+                .await
+                .map_err(|error| ProviderError::Internal(error.to_string()))?;
         }
         Ok(result)
     }

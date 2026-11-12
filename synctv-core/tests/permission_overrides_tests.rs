@@ -4,8 +4,8 @@ mod permission_test_support;
 
 use synctv_core::{
     models::{
-        room_settings::MemberRemovedPermissions, RoomMemberPermissionBits, RoomPermission,
-        RoomSettings,
+        RoomMemberPermissionBits, RoomPermission, RoomSettings,
+        room_settings::MemberRemovedPermissions,
     },
     repository::UserRepository,
 };

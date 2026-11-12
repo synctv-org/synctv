@@ -3,8 +3,8 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use regex::Regex;
-use reqwest::header::{COOKIE, REFERER, USER_AGENT};
 use reqwest::Url;
+use reqwest::header::{COOKIE, REFERER, USER_AGENT};
 
 use super::types::{
     RawAuthor, RawItem, RawListEnvelope, RawLiveEnvelope, RawLiveRoom, RawUserDetail,
@@ -15,7 +15,7 @@ use super::{
     TikTokVariant,
 };
 use crate::{
-    check_response, fetch_json, text_with_limit, ProviderClientError, PROVIDER_USER_AGENT,
+    PROVIDER_USER_AGENT, ProviderClientError, check_response, fetch_json, text_with_limit,
 };
 
 const TIKTOK_ORIGIN: &str = "https://www.tiktok.com";
@@ -468,21 +468,21 @@ fn media_from_item(item: RawItem) -> Result<TikTokMedia, ProviderClientError> {
                 }),
         );
     }
-    if variants.is_empty() {
-        if let Some(url) = music.and_then(|music| music.play_url.as_deref()) {
-            variants.push(TikTokVariant {
-                url: normalize_url(url),
-                format: TikTokStreamFormat::Audio,
-                quality: "slideshow audio".to_string(),
-                codec: Some("aac".to_string()),
-                width: None,
-                height: None,
-                bitrate: None,
-                audio_only: true,
-                watermarked: false,
-                headers_required: true,
-            });
-        }
+    if variants.is_empty()
+        && let Some(url) = music.and_then(|music| music.play_url.as_deref())
+    {
+        variants.push(TikTokVariant {
+            url: normalize_url(url),
+            format: TikTokStreamFormat::Audio,
+            quality: "slideshow audio".to_string(),
+            codec: Some("aac".to_string()),
+            width: None,
+            height: None,
+            bitrate: None,
+            audio_only: true,
+            watermarked: false,
+            headers_required: true,
+        });
     }
     if variants.is_empty() {
         return Err(ProviderClientError::Api {
@@ -1002,18 +1002,22 @@ mod tests {
                 .url,
             "https://img/cover.jpg"
         );
-        assert!(media
-            .variants
-            .iter()
-            .any(|variant| variant.codec.as_deref() == Some("hevc")));
+        assert!(
+            media
+                .variants
+                .iter()
+                .any(|variant| variant.codec.as_deref() == Some("hevc"))
+        );
         assert!(media.variants.iter().any(|variant| {
             variant.codec.as_deref() == Some("hevc") && variant.bitrate == Some(2_000_000)
         }));
         assert!(media.variants.iter().any(|variant| variant.watermarked));
-        assert!(!media
-            .variants
-            .iter()
-            .any(|variant| variant.codec.as_deref() == Some("vvc")));
+        assert!(
+            !media
+                .variants
+                .iter()
+                .any(|variant| variant.codec.as_deref() == Some("vvc"))
+        );
     }
 
     #[tokio::test]
@@ -1095,10 +1099,12 @@ mod tests {
         assert!(media.metadata.is_live);
         assert_eq!(media.metadata.concurrent_viewers, Some(321));
         assert_eq!(media.variants.len(), 2);
-        assert!(media
-            .variants
-            .iter()
-            .all(|variant| variant.codec.as_deref() == Some("hevc")));
+        assert!(
+            media
+                .variants
+                .iter()
+                .all(|variant| variant.codec.as_deref() == Some("hevc"))
+        );
     }
 
     #[tokio::test]

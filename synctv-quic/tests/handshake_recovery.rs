@@ -10,7 +10,7 @@ use bytes::Bytes;
 use http::{Request, Response, StatusCode};
 use http_body_util::Full;
 use synctv_quic::testing::insecure_client_config;
-use synctv_quic::{generate_self_signed_config, serve_quic, QuicServerConfig};
+use synctv_quic::{QuicServerConfig, generate_self_signed_config, serve_quic};
 use tokio_util::sync::CancellationToken;
 use tower::service_fn;
 

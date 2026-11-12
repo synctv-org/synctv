@@ -10,11 +10,13 @@ use hmac::{Hmac, KeyInit, Mac};
 use sha1::Sha1;
 use sqlx::PgPool;
 use synctv_core::{
+    Error,
     cache::{KeyBuilder, LocalVersionFenceStore, UsernameCache, VersionFenceStore},
     models::{
-        DeletionSource, Media, MediaId, NotificationType, Playlist, PlaylistId, Room, RoomId,
-        RoomMember, RoomStatus, SignupMethod, SourceProvider, User, UserId, UserRole, UserStatus,
-        OPAQUE_CIPHERSUITE_RISTRETTO255_SHA512_ARGON2ID, OPAQUE_SERVER_SETUP_VERSION,
+        DeletionSource, Media, MediaId, NotificationType,
+        OPAQUE_CIPHERSUITE_RISTRETTO255_SHA512_ARGON2ID, OPAQUE_SERVER_SETUP_VERSION, Playlist,
+        PlaylistId, Room, RoomId, RoomMember, RoomStatus, SignupMethod, SourceProvider, User,
+        UserId, UserRole, UserStatus,
     },
     repository::{
         ChatRepository, MediaRepository, PlaylistRepository, RoomMemberRepository, RoomRepository,
@@ -22,19 +24,18 @@ use synctv_core::{
         WebAuthnCredentialRepository,
     },
     service::{
-        local_passkey_session_store, AccountRegistrationOutcome, AuthFactorMethod,
-        AuthenticatedLogin, BruteForceProtection, InMemoryTokenBlacklistStore, JwtService,
-        OpaquePasswordService, PasskeyService, PasskeyServiceOptions, PermissionService,
-        PermissionServiceRuntime, RuntimeSettingsStore, SecurityPipeline, SecurityPipelineRuntime,
-        SensitiveVerificationOutcome, SettingsService, TokenAuthContext, UserRestoreOptions,
-        UserService, UserServiceRuntimeOptions,
+        AccountRegistrationOutcome, AuthFactorMethod, AuthenticatedLogin, BruteForceProtection,
+        InMemoryTokenBlacklistStore, JwtService, OpaquePasswordService, PasskeyService,
+        PasskeyServiceOptions, PermissionService, PermissionServiceRuntime, RuntimeSettingsStore,
+        SecurityPipeline, SecurityPipelineRuntime, SensitiveVerificationOutcome, SettingsService,
+        TokenAuthContext, UserRestoreOptions, UserService, UserServiceRuntimeOptions,
+        local_passkey_session_store,
     },
     validation::PasswordComplexityOptions,
-    Error,
 };
 use synctv_core_testing::{
-    create_test_pool, opaque_login_user, opaque_login_user_with_challenge, opaque_register_user,
-    opaque_register_user_with_client_ip, TestOptionExt, TestResultExt,
+    TestOptionExt, TestResultExt, create_test_pool, opaque_login_user,
+    opaque_login_user_with_challenge, opaque_register_user, opaque_register_user_with_client_ip,
 };
 use tokio::sync::Barrier;
 
@@ -213,9 +214,11 @@ async fn test_direct_password_registration_stores_opaque_credential() {
         stored_credential.record.server_setup_version,
         OPAQUE_SERVER_SETUP_VERSION
     );
-    assert!(opaque_password_service
-        .verify_password(&stored_credential.record, password,)
-        .checked("stored OPAQUE credential should verify"));
+    assert!(
+        opaque_password_service
+            .verify_password(&stored_credential.record, password,)
+            .checked("stored OPAQUE credential should verify")
+    );
 }
 
 #[tokio::test]
@@ -290,22 +293,28 @@ async fn test_email_registration_confirmation_stores_opaque_credential() {
         .create_email_registration_token_with_control(username.clone(), email.clone(), None, None)
         .await
         .checked("email registration token should be created");
-    assert!(service
-        .is_email_registration_token_active(&first_token)
-        .await
-        .checked("first registration token active state should load"));
+    assert!(
+        service
+            .is_email_registration_token_active(&first_token)
+            .await
+            .checked("first registration token active state should load")
+    );
     let token = service
         .create_email_registration_token_with_control(username.clone(), email.clone(), None, None)
         .await
         .checked("replacement email registration token should be created");
-    assert!(!service
-        .is_email_registration_token_active(&first_token)
-        .await
-        .checked("superseded registration token active state should load"));
-    assert!(service
-        .is_email_registration_token_active(&token)
-        .await
-        .checked("replacement registration token active state should load"));
+    assert!(
+        !service
+            .is_email_registration_token_active(&first_token)
+            .await
+            .checked("superseded registration token active state should load")
+    );
+    assert!(
+        service
+            .is_email_registration_token_active(&token)
+            .await
+            .checked("replacement registration token active state should load")
+    );
     let outcome = service
         .complete_email_registration_with_direct_password_transport_with_control(
             &token,
@@ -334,9 +343,11 @@ async fn test_email_registration_confirmation_stores_opaque_credential() {
         .await
         .checked("password credential lookup should succeed")
         .checked("password credential should be stored");
-    assert!(opaque_password_service
-        .verify_password(&stored_credential.record, password,)
-        .checked("stored OPAQUE credential should verify"));
+    assert!(
+        opaque_password_service
+            .verify_password(&stored_credential.record, password,)
+            .checked("stored OPAQUE credential should verify")
+    );
 
     let reuse = service
         .complete_email_registration_with_direct_password_transport_with_control(
@@ -991,10 +1002,12 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
         ))
         .await
         .checked("create explicitly deleted media");
-    assert!(media_repo
-        .delete(&explicitly_deleted_media.id)
-        .await
-        .checked("soft-delete media before account closure"));
+    assert!(
+        media_repo
+            .delete(&explicitly_deleted_media.id)
+            .await
+            .checked("soft-delete media before account closure")
+    );
 
     let foreign_progress_id: i64 = sqlx::query_scalar!(
         r#"INSERT INTO room_playback_progress
@@ -1287,14 +1300,16 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
     .await
     .checked("count pending email bind requests after deletion");
     assert_eq!(pending_bind_count, 0);
-    assert!(!service
-        .is_email_bind_token_active(
-            &doomed_user.id,
-            "pending-delete-bind@example.com",
-            &pending_bind_token,
-        )
-        .await
-        .checked("check revoked email bind token"));
+    assert!(
+        !service
+            .is_email_bind_token_active(
+                &doomed_user.id,
+                "pending-delete-bind@example.com",
+                &pending_bind_token,
+            )
+            .await
+            .checked("check revoked email bind token")
+    );
 
     let notification_count: i64 = sqlx::query_scalar!(
         r#"SELECT COUNT(*) AS "count!" FROM notifications WHERE user_id = $1"#,
@@ -1337,11 +1352,13 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
         Some(doomed_user.id)
     );
     let chat_repository = ChatRepository::new(pool.clone());
-    assert!(chat_repository
-        .get_by_room_and_id(&foreign_room.id, foreign_chat_message_id)
-        .await
-        .checked("account-deleted chat should be hidden")
-        .is_none());
+    assert!(
+        chat_repository
+            .get_by_room_and_id(&foreign_room.id, foreign_chat_message_id)
+            .await
+            .checked("account-deleted chat should be hidden")
+            .is_none()
+    );
 
     let owned_chat = sqlx::query!(
         r#"SELECT deleted_at,
@@ -1406,41 +1423,55 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
     assert!(restored.released_identities.is_empty());
     assert_eq!(restored.restored_room_ids, vec![owned_room.id]);
 
-    assert!(room_repo
-        .get_by_id(&owned_room.id)
-        .await
-        .checked("load restored room")
-        .is_some());
-    assert!(playlist_repo
-        .get_by_id(&owned_playlist.id)
-        .await
-        .checked("load restored owned playlist")
-        .is_some());
-    assert!(media_repo
-        .get_by_id(&owned_media.id)
-        .await
-        .checked("load restored owned media")
-        .is_some());
-    assert!(playlist_repo
-        .get_by_id(&foreign_playlist.id)
-        .await
-        .checked("load preserved foreign-room playlist")
-        .is_some());
-    assert!(playlist_repo
-        .get_by_id(&foreign_dynamic_playlist.id)
-        .await
-        .checked("load restored foreign-room dynamic playlist")
-        .is_some());
-    assert!(media_repo
-        .get_by_id(&foreign_media.id)
-        .await
-        .checked("load restored foreign-room media")
-        .is_some());
-    assert!(media_repo
-        .get_by_id(&explicitly_deleted_media.id)
-        .await
-        .checked("load explicitly deleted media after restore")
-        .is_none());
+    assert!(
+        room_repo
+            .get_by_id(&owned_room.id)
+            .await
+            .checked("load restored room")
+            .is_some()
+    );
+    assert!(
+        playlist_repo
+            .get_by_id(&owned_playlist.id)
+            .await
+            .checked("load restored owned playlist")
+            .is_some()
+    );
+    assert!(
+        media_repo
+            .get_by_id(&owned_media.id)
+            .await
+            .checked("load restored owned media")
+            .is_some()
+    );
+    assert!(
+        playlist_repo
+            .get_by_id(&foreign_playlist.id)
+            .await
+            .checked("load preserved foreign-room playlist")
+            .is_some()
+    );
+    assert!(
+        playlist_repo
+            .get_by_id(&foreign_dynamic_playlist.id)
+            .await
+            .checked("load restored foreign-room dynamic playlist")
+            .is_some()
+    );
+    assert!(
+        media_repo
+            .get_by_id(&foreign_media.id)
+            .await
+            .checked("load restored foreign-room media")
+            .is_some()
+    );
+    assert!(
+        media_repo
+            .get_by_id(&explicitly_deleted_media.id)
+            .await
+            .checked("load explicitly deleted media after restore")
+            .is_none()
+    );
 
     let restored_owned_chat_deleted_at = sqlx::query_scalar!(
         "SELECT deleted_at FROM chat_messages WHERE room_id = $1",
@@ -1479,11 +1510,13 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
     assert!(lifecycle.is_member);
     assert_eq!(lifecycle.version, creator_membership.version);
 
-    assert!(room_member_repo
-        .get(&foreign_room.id, &doomed_user.id)
-        .await
-        .checked("load former foreign-room membership after restore")
-        .is_none());
+    assert!(
+        room_member_repo
+            .get(&foreign_room.id, &doomed_user.id)
+            .await
+            .checked("load former foreign-room membership after restore")
+            .is_none()
+    );
     assert_eq!(
         service
             .get_email(&doomed_user.id)
@@ -1543,15 +1576,21 @@ async fn assert_restore_identity_conflict_modes(pool: PgPool) {
         .checked("conflict-tolerant restoration should restore account body");
     assert!(restored.user.username.starts_with("restored_"));
     assert_eq!(restored.released_identities.len(), 3);
-    assert!(restored
-        .released_identities
-        .contains(&"username:restore_conflict".to_string()));
-    assert!(restored
-        .released_identities
-        .contains(&"email:restore-conflict@example.com".to_string()));
-    assert!(restored
-        .released_identities
-        .contains(&"oauth2:github:restore-conflict-subject".to_string()));
+    assert!(
+        restored
+            .released_identities
+            .contains(&"username:restore_conflict".to_string())
+    );
+    assert!(
+        restored
+            .released_identities
+            .contains(&"email:restore-conflict@example.com".to_string())
+    );
+    assert!(
+        restored
+            .released_identities
+            .contains(&"oauth2:github:restore-conflict-subject".to_string())
+    );
     assert_eq!(
         service
             .get_email(&original.id)
@@ -1867,22 +1906,28 @@ async fn assert_email_bind_writes_email_only_after_confirm(pool: PgPool) {
         .start_email_bind(&created.id, new_email)
         .await
         .checked("start email bind");
-    assert!(service
-        .is_email_bind_token_active(&created.id, new_email, &first_token)
-        .await
-        .checked("first email bind token active state should load"));
+    assert!(
+        service
+            .is_email_bind_token_active(&created.id, new_email, &first_token)
+            .await
+            .checked("first email bind token active state should load")
+    );
     let token = service
         .start_email_bind(&created.id, new_email)
         .await
         .checked("replace email bind token");
-    assert!(!service
-        .is_email_bind_token_active(&created.id, new_email, &first_token)
-        .await
-        .checked("superseded email bind token active state should load"));
-    assert!(service
-        .is_email_bind_token_active(&created.id, new_email, &token)
-        .await
-        .checked("replacement email bind token active state should load"));
+    assert!(
+        !service
+            .is_email_bind_token_active(&created.id, new_email, &first_token)
+            .await
+            .checked("superseded email bind token active state should load")
+    );
+    assert!(
+        service
+            .is_email_bind_token_active(&created.id, new_email, &token)
+            .await
+            .checked("replacement email bind token active state should load")
+    );
 
     let after_start = email_repo
         .get_email(&created.id)
@@ -1944,14 +1989,16 @@ async fn assert_email_bind_writes_email_only_after_confirm(pool: PgPool) {
         .start_email_bind(&created.id, "email_bind_flow_pending_unbind@example.com")
         .await
         .checked("start pending bind before unbind");
-    assert!(service
-        .is_email_bind_token_active(
-            &created.id,
-            "email_bind_flow_pending_unbind@example.com",
-            &pending_unbind_token,
-        )
-        .await
-        .checked("pending bind token should be active before unbind"));
+    assert!(
+        service
+            .is_email_bind_token_active(
+                &created.id,
+                "email_bind_flow_pending_unbind@example.com",
+                &pending_unbind_token,
+            )
+            .await
+            .checked("pending bind token should be active before unbind")
+    );
 
     service
         .unbind_email(
@@ -1960,14 +2007,16 @@ async fn assert_email_bind_writes_email_only_after_confirm(pool: PgPool) {
         )
         .await
         .checked("unbind email should succeed");
-    assert!(!service
-        .is_email_bind_token_active(
-            &created.id,
-            "email_bind_flow_pending_unbind@example.com",
-            &pending_unbind_token,
-        )
-        .await
-        .checked("pending bind token state should load after unbind"));
+    assert!(
+        !service
+            .is_email_bind_token_active(
+                &created.id,
+                "email_bind_flow_pending_unbind@example.com",
+                &pending_unbind_token,
+            )
+            .await
+            .checked("pending bind token state should load after unbind")
+    );
 
     service
         .delete_user(&created.id)
@@ -2201,12 +2250,16 @@ async fn assert_sensitive_verification_requires_two_local_factors_when_2fa_enabl
         );
     };
     assert_eq!(challenge.required_count, 2);
-    assert!(challenge
-        .available_methods
-        .contains(&AuthFactorMethod::Password));
-    assert!(challenge
-        .available_methods
-        .contains(&AuthFactorMethod::Email));
+    assert!(
+        challenge
+            .available_methods
+            .contains(&AuthFactorMethod::Password)
+    );
+    assert!(
+        challenge
+            .available_methods
+            .contains(&AuthFactorMethod::Email)
+    );
 
     let pending = service
         .finish_sensitive_operation_password_verification(
@@ -2225,9 +2278,11 @@ async fn assert_sensitive_verification_requires_two_local_factors_when_2fa_enabl
         next_challenge.completed_methods,
         vec![AuthFactorMethod::Password]
     );
-    assert!(next_challenge
-        .available_methods
-        .contains(&AuthFactorMethod::Email));
+    assert!(
+        next_challenge
+            .available_methods
+            .contains(&AuthFactorMethod::Email)
+    );
 
     let complete = service
         .finish_sensitive_operation_verified_method(
@@ -2272,9 +2327,11 @@ async fn assert_oauth2_session_sensitive_verification_requires_one_local_factor(
         );
     };
     assert_eq!(challenge.required_count, 1);
-    assert!(challenge
-        .available_methods
-        .contains(&AuthFactorMethod::Password));
+    assert!(
+        challenge
+            .available_methods
+            .contains(&AuthFactorMethod::Password)
+    );
 
     let complete = service
         .finish_sensitive_operation_password_verification(
@@ -2738,9 +2795,11 @@ async fn assert_totp_lifecycle_and_replay_protection(pool: PgPool) {
         .checked("start TOTP setup");
     assert!(setup.otpauth_uri.starts_with("otpauth://totp/"));
     assert!(setup.otpauth_uri.contains("issuer=SyncTV"));
-    assert!(setup
-        .otpauth_uri
-        .contains(&format!("secret={}", setup.secret)));
+    assert!(
+        setup
+            .otpauth_uri
+            .contains(&format!("secret={}", setup.secret))
+    );
     assert!(setup.expires_at > Utc::now().timestamp());
 
     let encrypted_secret: serde_json::Value = sqlx::query_scalar!(
@@ -2784,12 +2843,16 @@ async fn assert_totp_lifecycle_and_replay_protection(pool: PgPool) {
     let AuthenticatedLogin::MfaRequired { challenge, .. } = replay_login else {
         std::panic::panic_any("TOTP lifecycle login should require MFA");
     };
-    assert!(challenge
-        .available_methods
-        .contains(&AuthFactorMethod::Totp));
-    assert!(challenge
-        .available_methods
-        .contains(&AuthFactorMethod::RecoveryCode));
+    assert!(
+        challenge
+            .available_methods
+            .contains(&AuthFactorMethod::Totp)
+    );
+    assert!(
+        challenge
+            .available_methods
+            .contains(&AuthFactorMethod::RecoveryCode)
+    );
     let replayed_setup_code = service
         .complete_mfa_totp_with_control(&challenge.session_id, &setup_code, None, None)
         .await
@@ -2883,9 +2946,11 @@ async fn assert_totp_lifecycle_and_replay_protection(pool: PgPool) {
     let AuthenticatedLogin::MfaRequired { challenge, .. } = totp_login else {
         std::panic::panic_any("TOTP login should require MFA");
     };
-    assert!(!challenge
-        .available_methods
-        .contains(&AuthFactorMethod::RecoveryCode));
+    assert!(
+        !challenge
+            .available_methods
+            .contains(&AuthFactorMethod::RecoveryCode)
+    );
     let next_totp_code = totp_code_with_step_offset(&setup.secret, 1);
     let completed = service
         .complete_mfa_totp_with_control(&challenge.session_id, &next_totp_code, None, None)
@@ -2944,10 +3009,12 @@ async fn assert_totp_lifecycle_and_replay_protection(pool: PgPool) {
         .set_two_factor_enabled(&user.id, false)
         .await
         .checked("disable two-factor authentication before TOTP removal");
-    assert!(service
-        .delete_totp(&user.id, &verification_id)
-        .await
-        .checked("remove TOTP after disabling two-factor authentication"));
+    assert!(
+        service
+            .delete_totp(&user.id, &verification_id)
+            .await
+            .checked("remove TOTP after disabling two-factor authentication")
+    );
 
     let expired_setup = service
         .start_totp_setup(

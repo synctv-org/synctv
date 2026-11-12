@@ -7,7 +7,7 @@ use crate::bootstrap::redis::{
 use redis::aio::ConnectionManager;
 use redis::cmd;
 use synctv_core::{ManagedRedisRuntime, RedisConnectionRuntime};
-use synctv_core_testing::{start_redis_with_client, TestOptionExt, TestResultExt};
+use synctv_core_testing::{TestOptionExt, TestResultExt, start_redis_with_client};
 use tokio::sync::RwLock;
 
 #[tokio::test]

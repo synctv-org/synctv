@@ -4,11 +4,11 @@ use sqlx::{PgPool, Postgres, QueryBuilder};
 use super::query_builder::ilike_contains_pattern;
 use crate::repository::pools::RepoPools;
 use crate::{
+    Error, Result,
     models::{
         BlockedUser, DeletionSource, PageParams, SignupMethod, User, UserId, UserLifecycleMetadata,
         UserListQuery, UserListSortBy, UserRole, UserStatus,
     },
-    Error, Result,
 };
 
 const ACTIVE_USER_BAN_EXISTS_SQL: &str = "u.is_banned = TRUE";

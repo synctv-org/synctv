@@ -1,6 +1,6 @@
 use {
     super::{
-        define::{msg_type_id, Amf0CommandMessage, RtmpMessageData},
+        define::{Amf0CommandMessage, RtmpMessageData, msg_type_id},
         errors::{MessageError, MessageErrorValue},
     },
     crate::bytesio::bytes_reader::BytesReader,
@@ -118,10 +118,10 @@ mod tests {
 
     use super::MessageParser;
     use crate::flv::amf0::{amf0_writer::Amf0Writer, define::Amf0ValueType};
+    use crate::rtmp::chunk::ChunkInfo;
     use crate::rtmp::chunk::unpacketizer::ChunkUnpacketizer;
     use crate::rtmp::chunk::unpacketizer::UnpackResult;
-    use crate::rtmp::chunk::ChunkInfo;
-    use crate::rtmp::messages::define::{msg_type_id, RtmpMessageData};
+    use crate::rtmp::messages::define::{RtmpMessageData, msg_type_id};
     use crate::rtmp::messages::errors::MessageErrorValue;
     use bytes::BytesMut;
     use indexmap::IndexMap;

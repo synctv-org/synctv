@@ -13,8 +13,8 @@ use synctv_core::{
     },
     repository::{RoomMemberRepository, RoomRepository, UserRepository},
 };
-use synctv_core_testing::create_test_pool;
 use synctv_core_testing::TestResultExt;
+use synctv_core_testing::create_test_pool;
 
 fn make_user(username: &str) -> User {
     let now = Utc::now();

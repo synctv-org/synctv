@@ -20,7 +20,7 @@ use synctv_core::service::{
     AttemptTracker, BruteForceProtection, InMemoryAttemptTracker, RedisAttemptTracker,
 };
 use synctv_core_testing::start_redis;
-use synctv_core_testing::{ok, TestResultExt};
+use synctv_core_testing::{TestResultExt, ok};
 use tokio::sync::RwLock;
 
 const TIER1_THRESHOLD: u32 = 5;
@@ -793,16 +793,20 @@ async fn test_ip_only_failure_does_not_lock_username() {
     // But a legitimate user with a different IP should be able to log in
     // (this is the key behavior - random username guessing doesn't lock out real users)
     let different_ip = Some(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 99)));
-    assert!(protection
-        .check_allowed("legitimate_user", different_ip)
-        .await
-        .is_ok());
+    assert!(
+        protection
+            .check_allowed("legitimate_user", different_ip)
+            .await
+            .is_ok()
+    );
 
     // And the username that was attacked should also be accessible from different IP
-    assert!(protection
-        .check_allowed("nonexistent_user_tried_earlier", different_ip)
-        .await
-        .is_ok());
+    assert!(
+        protection
+            .check_allowed("nonexistent_user_tried_earlier", different_ip)
+            .await
+            .is_ok()
+    );
 }
 
 /// Test differentiated failure: wrong password for existing user locks both

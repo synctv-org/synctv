@@ -49,14 +49,14 @@
 
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::sync::mpsc;
 
 use crate::{
+    Result,
     models::{AuditAction, AuditDetails, AuditTargetType},
     repository::JsonbArray,
-    Result,
 };
 
 /// Default channel capacity for the audit event buffer

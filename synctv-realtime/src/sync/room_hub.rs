@@ -11,8 +11,8 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use synctv_core::{
-    models::{RealtimeActor, RoomId},
     RedisConnectionRuntime,
+    models::{RealtimeActor, RoomId},
 };
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;

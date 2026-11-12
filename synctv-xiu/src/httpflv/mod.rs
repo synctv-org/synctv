@@ -6,6 +6,7 @@
 use crate::flv::amf0::amf0_writer::Amf0Writer;
 use crate::flv::muxer::{FlvMuxer, HEADER_LENGTH};
 use crate::streamhub::{
+    SubscribeWithRollbackError,
     define::{
         FrameData, FrameDataReceiver, NotifyInfo, StreamHubEvent, StreamHubEventSender,
         SubDataType, SubscribeType, SubscriberInfo,
@@ -14,7 +15,6 @@ use crate::streamhub::{
     stream::StreamIdentifier,
     subscribe_with_rollback_on_timeout,
     utils::Uuid,
-    SubscribeWithRollbackError,
 };
 use tokio::sync::mpsc;
 use tracing::{info, warn};

@@ -3,13 +3,13 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, Utc};
 
 use super::{
-    protocol::{sha256_hex_to_base64, S3SigningContext},
-    url::s3_url,
     S3FileStorageConfig,
+    protocol::{S3SigningContext, sha256_hex_to_base64},
+    url::s3_url,
 };
 use crate::{
-    models::{FileUploadManifestPart, FileUploadPartUrl},
     Error, Result,
+    models::{FileUploadManifestPart, FileUploadPartUrl},
 };
 
 const S3_MAX_PRESIGNED_PART_URLS: i32 = 1000;

@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
 use crate::{
-    models::{Media, MediaId, Playlist, PlaylistId, RoomId, UserId},
     Error, Result,
+    models::{Media, MediaId, Playlist, PlaylistId, RoomId, UserId},
 };
 
 use super::{DeleteEntriesPlan, DeleteEntriesRequest, EntryDeletionImpact, RoomService};

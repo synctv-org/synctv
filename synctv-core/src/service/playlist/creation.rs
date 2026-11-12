@@ -1,12 +1,12 @@
 use crate::{
+    Error, Result,
     models::{
         Playlist, PlaylistBrowseAccessMode, PlaylistId, PlaylistSourceConfig, RoomId,
         SourceProvider, UserId,
     },
-    Error, Result,
 };
 
-use super::{dynamic, PlaylistService, RealtimeOutboxPlaylistEventFactory};
+use super::{PlaylistService, RealtimeOutboxPlaylistEventFactory, dynamic};
 
 /// Request to create a playlist.
 #[derive(Debug, Clone)]

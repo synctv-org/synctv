@@ -6,7 +6,7 @@ use synctv_realtime::fanout::RealtimeEventService;
 use synctv_realtime::sync::RealtimeEvent;
 
 use crate::realtime_fanout::{
-    broadcast_event_locally, PreparedRealtimeFanoutPlan, RealtimeFanoutService,
+    PreparedRealtimeFanoutPlan, RealtimeFanoutService, broadcast_event_locally,
 };
 #[derive(Clone)]
 pub struct PreparedRoomCreatedOutboxFanout {
@@ -246,7 +246,7 @@ pub fn default_room_lifecycle_fanout_service_with_realtime(
 mod tests {
     use super::default_room_lifecycle_fanout_service_with_realtime;
     use crate::realtime_fanout::disabled_realtime_fanout_service;
-    use crate::test_support::{channel_realtime_fanout_service, RecordingRealtimeEventService};
+    use crate::test_support::{RecordingRealtimeEventService, channel_realtime_fanout_service};
     use std::sync::Arc;
     use synctv_core::models::{RoomId, UserId};
     use synctv_realtime::sync::RealtimeEvent;
@@ -421,7 +421,7 @@ mod tests {
             other => {
                 return Err(test_error(format!(
                     "expected RoomOwnerInactive, got {other:?}"
-                )))
+                )));
             }
         }
         Ok(())

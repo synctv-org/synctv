@@ -5,7 +5,7 @@ use synctv_core::{
     models::{Media, MediaId, SourceProvider},
     repository::{MediaRepository, UserRepository},
 };
-use synctv_core_testing::{create_test_pool, TestResultExt};
+use synctv_core_testing::{TestResultExt, create_test_pool};
 
 mod playback_state_machine_support;
 

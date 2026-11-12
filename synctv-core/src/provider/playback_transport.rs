@@ -1,10 +1,10 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use super::ExecutionControl;
 use super::access::ProviderAccessService;
 use super::error::ProviderError;
 use super::store::{ProviderStore, ProviderStoreExt, VersionedPlayback};
-use super::ExecutionControl;
 use crate::credential_encryption::CredentialEncryption;
 use crate::models::{MediaId, RoomId, UserId};
 use crate::repository::ProviderPlaybackSessionRepository;
@@ -333,11 +333,11 @@ fn refresh_dynamic_hls_query(
     let mut serializer = url::form_urlencoded::Serializer::new(String::new());
     for (key, value) in target_pairs {
         if rotating_keys.contains(key.as_str()) {
-            if emitted.insert(key.clone()) {
-                if let Some(values) = refreshed_values.get(&key) {
-                    for refreshed in values {
-                        serializer.append_pair(&key, refreshed);
-                    }
+            if emitted.insert(key.clone())
+                && let Some(values) = refreshed_values.get(&key)
+            {
+                for refreshed in values {
+                    serializer.append_pair(&key, refreshed);
                 }
             }
         } else {
@@ -345,11 +345,12 @@ fn refresh_dynamic_hls_query(
         }
     }
     for (key, _) in refreshed_root.query_pairs() {
-        if rotating_keys.contains(key.as_ref()) && emitted.insert(key.to_string()) {
-            if let Some(values) = refreshed_values.get(key.as_ref()) {
-                for refreshed in values {
-                    serializer.append_pair(key.as_ref(), refreshed);
-                }
+        if rotating_keys.contains(key.as_ref())
+            && emitted.insert(key.to_string())
+            && let Some(values) = refreshed_values.get(key.as_ref())
+        {
+            for refreshed in values {
+                serializer.append_pair(key.as_ref(), refreshed);
             }
         }
     }

@@ -1,12 +1,11 @@
 use super::S3CompatibleFileStorageService;
 use crate::{
+    Error, Result,
     models::NewStoredFile,
     service::file_storage::{
-        attach_prepared_file_object_access, attach_prepared_file_urls,
+        FileStorageContext, attach_prepared_file_object_access, attach_prepared_file_urls,
         strip_internal_file_metadata, validate_file_upload_token_context, validate_stored_files,
-        FileStorageContext,
     },
-    Error, Result,
 };
 
 impl S3CompatibleFileStorageService {

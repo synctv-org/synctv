@@ -1,14 +1,14 @@
 use base64::Engine as _;
 use chrono::Duration;
 use jsonwebtoken::{
-    decode, encode, Algorithm, DecodingKey, EncodingKey, Header, TokenData, Validation,
+    Algorithm, DecodingKey, EncodingKey, Header, TokenData, Validation, decode, encode,
 };
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::sync::Arc;
 
 use crate::{
-    models::{RoomId, UserId},
     Clock, Error, InternalExt, Result, SystemClock,
+    models::{RoomId, UserId},
 };
 
 mod types;

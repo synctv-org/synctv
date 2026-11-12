@@ -397,9 +397,11 @@ async fn subtitles_use_the_player_endpoint() -> TestResult {
             .and_then(|value| value.to_str().ok()),
         Some(server.uri().as_str())
     );
-    assert!(!requests
-        .iter()
-        .any(|request| request.url.path() == "/x/web-interface/nav"));
+    assert!(
+        !requests
+            .iter()
+            .any(|request| request.url.path() == "/x/web-interface/nav")
+    );
     Ok(())
 }
 
@@ -433,12 +435,16 @@ async fn subtitles_return_an_empty_list_when_the_player_has_no_tracks() -> TestR
         .received_requests()
         .await
         .ok_or_else(|| missing("requests should be recorded"))?;
-    assert!(requests
-        .iter()
-        .any(|request| request.url.path() == "/x/player/v2"));
-    assert!(!requests
-        .iter()
-        .any(|request| request.url.path() == "/x/v2/subtitle/web/view"));
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.url.path() == "/x/player/v2")
+    );
+    assert!(
+        !requests
+            .iter()
+            .any(|request| request.url.path() == "/x/v2/subtitle/web/view")
+    );
     Ok(())
 }
 

@@ -10,10 +10,10 @@ use synctv_proto::playback_provider::alist::{
     GetAlistTranscodedHlsManifestRequest, GetAlistTranscodedHlsResourceRequest,
 };
 
-use crate::http::{middleware::RequestMetadata, AppResult, AppState};
+use crate::http::{AppResult, AppState, middleware::RequestMetadata};
 use crate::providers::playback_provider::transport::{
-    query, range_header, signed_query_fields, stream_http_response, target_url,
-    PlaybackProviderHttpResponse,
+    PlaybackProviderHttpResponse, query, range_header, signed_query_fields, stream_http_response,
+    target_url,
 };
 
 #[derive(Debug, serde::Deserialize)]

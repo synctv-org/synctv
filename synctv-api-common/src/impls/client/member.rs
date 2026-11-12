@@ -14,7 +14,7 @@ use super::convert::{
     proto_role_filter_to_room_role, proto_role_to_assignable_room_role, proto_role_to_room_role,
     room_presence_stats_to_proto, try_members_to_proto, try_room_member_to_proto_with_permissions,
 };
-use super::media::{prepare_delete_entries_outbox_fanout, PrepareDeleteEntriesOutboxFanout};
+use super::media::{PrepareDeleteEntriesOutboxFanout, prepare_delete_entries_outbox_fanout};
 use super::{ClientApiImpl, RoomActor};
 
 pub fn compute_room_members_response_version(

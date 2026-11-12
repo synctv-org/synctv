@@ -1,7 +1,7 @@
 use crate::{
+    Error, Result,
     models::{RoomId, UserId},
     repository::room_password::RoomPasswordCredentialState,
-    Error, Result,
 };
 
 use super::RoomService;

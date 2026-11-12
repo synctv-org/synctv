@@ -210,7 +210,7 @@ fn test_websocket_content_filter_reuses_shared_filter() -> TestResult {
 
 #[test]
 fn test_resource_event_routes_to_its_observation_lane() {
-    use synctv_api_common::impls::messaging::{classify_message_lane, MessageLane};
+    use synctv_api_common::impls::messaging::{MessageLane, classify_message_lane};
 
     let message = ServerMessage {
         message: Some(
@@ -238,7 +238,7 @@ fn test_resource_event_routes_to_its_observation_lane() {
 
 #[test]
 fn test_realtime_termination_is_control_traffic() {
-    use synctv_api_common::impls::messaging::{classify_message_lane, MessageLane};
+    use synctv_api_common::impls::messaging::{MessageLane, classify_message_lane};
 
     let message = ServerMessage {
         message: Some(synctv_proto::client::server_message::Message::Termination(
@@ -321,7 +321,7 @@ fn test_websocket_json_ignores_fields_from_newer_clients() -> TestResult {
 
 #[test]
 fn test_notification_is_never_evicted_control_traffic() {
-    use synctv_api_common::impls::messaging::{classify_message_lane, MessageLane};
+    use synctv_api_common::impls::messaging::{MessageLane, classify_message_lane};
 
     let message = ServerMessage {
         message: Some(synctv_proto::client::server_message::Message::Notification(
@@ -681,8 +681,8 @@ fn test_validate_websocket_origin_rejects_null_origin() -> TestResult {
 }
 
 #[test]
-fn test_validate_websocket_runtime_dependency_flags_require_realtime_and_chat_services(
-) -> TestResult {
+fn test_validate_websocket_runtime_dependency_flags_require_realtime_and_chat_services()
+-> TestResult {
     let err = app_err(validate_websocket_runtime_dependency_flags(false))?;
     assert_eq!(err.status(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
 
@@ -1272,8 +1272,8 @@ async fn test_commit_websocket_upgrade_releases_reservation_when_ticket_claim_fa
 
 #[tokio::test(start_paused = true)]
 #[ignore = "Requires Docker-backed PostgreSQL"]
-async fn test_commit_websocket_upgrade_releases_reservation_when_timeout_cancels_commit(
-) -> TestResult {
+async fn test_commit_websocket_upgrade_releases_reservation_when_timeout_cancels_commit()
+-> TestResult {
     let state = crate::http::tests::test_app_state();
     let timeout_state = state.clone();
     let user_id = UserId::expect_positive(130_010);
@@ -1404,7 +1404,7 @@ async fn test_reservation_stays_full_until_connection_pre_join_succeeds() -> Tes
 fn test_slow_client_escalation_uses_default_threshold() -> TestResult {
     use synctv_api_common::impls::messaging::{FairQueueConfig, FairSessionSender, MessageSender};
     use synctv_proto::client::{
-        server_message::Message, ChatMessageEvent, ResourceEvent, ServerMessage,
+        ChatMessageEvent, ResourceEvent, ServerMessage, server_message::Message,
     };
 
     let mut config = FairQueueConfig::default();
@@ -1448,7 +1448,7 @@ fn test_slow_client_escalation_uses_default_threshold() -> TestResult {
 fn test_control_messages_bypass_saturated_bulk_lane() -> TestResult {
     use synctv_api_common::impls::messaging::{FairQueueConfig, FairSessionSender, MessageSender};
     use synctv_proto::client::{
-        server_message::Message, ChatMessageEvent, ErrorMessage, ResourceEvent, ServerMessage,
+        ChatMessageEvent, ErrorMessage, ResourceEvent, ServerMessage, server_message::Message,
     };
 
     let mut config = FairQueueConfig::default();

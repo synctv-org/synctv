@@ -17,12 +17,12 @@ use super::{
     ProviderError, SourceConfig, SourceCover,
 };
 use crate::models::{
-    detect_direct_url_format, normalize_provider_instance_name,
-    normalize_provider_instance_name_owned, MediaSourceConfig, PlayMode, PlaybackMedia,
-    PlaybackMediaProvider, PlaybackMetadata, PlaybackQnapMedia, PlaybackQnapSubtitle,
-    PlaybackSubtitle, PlaybackSubtitleProvider, PlaylistSourceConfig, ProviderCredential,
-    ProviderTarget, QnapMediaSourceConfig, QnapPlaybackMetadata, QnapPlaybackMode,
-    QnapPlaybackResource, QnapPlaylistSourceConfig, UserId, UserProviderCredential,
+    MediaSourceConfig, PlayMode, PlaybackMedia, PlaybackMediaProvider, PlaybackMetadata,
+    PlaybackQnapMedia, PlaybackQnapSubtitle, PlaybackSubtitle, PlaybackSubtitleProvider,
+    PlaylistSourceConfig, ProviderCredential, ProviderTarget, QnapMediaSourceConfig,
+    QnapPlaybackMetadata, QnapPlaybackMode, QnapPlaybackResource, QnapPlaylistSourceConfig, UserId,
+    UserProviderCredential, detect_direct_url_format, normalize_provider_instance_name,
+    normalize_provider_instance_name_owned,
 };
 use crate::repository::UserProviderCredentialRepository;
 use synctv_media_providers::qnap::{
@@ -418,10 +418,10 @@ impl QnapProvider {
         else {
             return Ok(false);
         };
-        if let ProviderCredential::Qnap { endpoint, sid, .. } = &credential.credential_data {
-            if let Ok(client) = self.client(endpoint) {
-                let _ = client.logout(sid).await;
-            }
+        if let ProviderCredential::Qnap { endpoint, sid, .. } = &credential.credential_data
+            && let Ok(client) = self.client(endpoint)
+        {
+            let _ = client.logout(sid).await;
         }
         self.credential_repo()?
             .delete(credential.id)
@@ -917,10 +917,8 @@ impl MediaProvider for QnapProvider {
                 ctx.playback_client_profile(),
                 detect_direct_url_format(&config.path),
             );
-        if prefer_transcode {
-            if let Some(info) = playback_infos.get_mut("transcoded") {
-                info.default_media_index = info.medias.len().checked_sub(1);
-            }
+        if prefer_transcode && let Some(info) = playback_infos.get_mut("transcoded") {
+            info.default_media_index = info.medias.len().checked_sub(1);
         }
         if qnap_route_selection(config.proxy_mode).direct {
             let original_modes = playback_infos
@@ -1463,14 +1461,15 @@ fn mark_qnap_playback_resources(
             .medias
             .iter()
             .any(|media| !media.requires_provider_url());
-        if selection.direct && direct_available {
-            if let Some(direct_info) = super::build_direct_playback_info_for_client(
+        if selection.direct
+            && direct_available
+            && let Some(direct_info) = super::build_direct_playback_info_for_client(
                 &mode_name,
                 &original_info,
                 client_profile,
-            ) {
-                generated.insert(mode_name.clone(), direct_info);
-            }
+            )
+        {
+            generated.insert(mode_name.clone(), direct_info);
         }
         if !selection.proxy {
             continue;

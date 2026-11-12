@@ -1,4 +1,4 @@
-use crate::{models::EmailRegistrationTokenId, Result};
+use crate::{Result, models::EmailRegistrationTokenId};
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Postgres, Transaction};

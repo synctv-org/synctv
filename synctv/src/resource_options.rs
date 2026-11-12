@@ -714,10 +714,12 @@ mod tests {
         assert_eq!(options.timezone, "Asia/Shanghai");
         assert_eq!(options.global.name, "global");
         assert!(options.global.targets.is_empty());
-        assert!(options
-            .components
-            .iter()
-            .all(|component| !component.targets.is_empty()));
+        assert!(
+            options
+                .components
+                .iter()
+                .all(|component| !component.targets.is_empty())
+        );
     }
 
     #[test]
@@ -741,10 +743,12 @@ mod tests {
             .find(|component| component.name == "cluster")
             .expect("cluster logging component must exist");
 
-        assert!(cluster
-            .targets
-            .iter()
-            .any(|target| target == "synctv::bootstrap::cluster"));
+        assert!(
+            cluster
+                .targets
+                .iter()
+                .any(|target| target == "synctv::bootstrap::cluster")
+        );
     }
 
     #[test]

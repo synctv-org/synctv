@@ -8,9 +8,9 @@ use synctv_proto::providers::nextcloud::{
     StartLoginFlowRequest, StartLoginFlowResponse,
 };
 use synctv_proto::source_config::{
-    media_source_config, nextcloud_playlist_source_config, playlist_source_config,
     NextcloudFavoritesPlaylistSourceConfig, NextcloudFolderPlaylistSourceConfig,
-    NextcloudMediaSourceConfig, NextcloudPlaylistSourceConfig,
+    NextcloudMediaSourceConfig, NextcloudPlaylistSourceConfig, media_source_config,
+    nextcloud_playlist_source_config, playlist_source_config,
 };
 use synctv_realtime::fanout::RealtimeEventService;
 

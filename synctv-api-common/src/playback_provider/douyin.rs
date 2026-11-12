@@ -2,16 +2,15 @@ use futures::StreamExt;
 use synctv_core::provider::{DouyinDanmakuEvent, ExecutionControl, HlsResourceRequest};
 use synctv_core::service::DouyinPlaybackProviderService;
 use synctv_proto::playback_provider::douyin::{
-    douyin_danmaku_event, ChatEvent, DouyinDanmakuEvent as ProtoDanmakuEvent,
-    DouyinHlsResourceKind, DouyinHlsResourceResponse, DouyinResourceResponse,
-    GetDouyinHlsResourceRequest, GetDouyinResourceRequest, StreamClosedEvent,
-    WatchDouyinDanmakuRequest,
+    ChatEvent, DouyinDanmakuEvent as ProtoDanmakuEvent, DouyinHlsResourceKind,
+    DouyinHlsResourceResponse, DouyinResourceResponse, GetDouyinHlsResourceRequest,
+    GetDouyinResourceRequest, StreamClosedEvent, WatchDouyinDanmakuRequest, douyin_danmaku_event,
 };
 
 use super::common::{
-    playback_provider_route_base, playback_transport_action_to_chunk_stream,
-    verify_playback_provider_access_with_deps, HasPlaybackProviderAccessFields, HlsRewriteSigning,
-    PlaybackProviderAccessRequest, PlaybackProviderApiRuntime, PlaybackTransportExecutorDeps,
+    HasPlaybackProviderAccessFields, HlsRewriteSigning, PlaybackProviderAccessRequest,
+    PlaybackProviderApiRuntime, PlaybackTransportExecutorDeps, playback_provider_route_base,
+    playback_transport_action_to_chunk_stream, verify_playback_provider_access_with_deps,
 };
 use crate::impls::ApiError;
 

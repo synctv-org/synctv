@@ -348,8 +348,8 @@ impl AdminApiImpl {
                         .or_else(|| Some("chat_moderation".to_string())),
                 )
                 .await?;
-            if newly_banned {
-                if let Err(error) = self
+            if newly_banned
+                && let Err(error) = self
                     .audit_service
                     .log(synctv_core::service::AuditEventParams {
                         actor_id: job.actor_user_id.to_string(),
@@ -366,9 +366,8 @@ impl AdminApiImpl {
                         user_agent: None,
                     })
                     .await
-                {
-                    tracing::error!(error = %error, job_id = %job.id, "Failed to write async chat moderation ban audit log");
-                }
+            {
+                tracing::error!(error = %error, job_id = %job.id, "Failed to write async chat moderation ban audit log");
             }
             next.ban_done = true;
             snapshot_at = self.clock.now();

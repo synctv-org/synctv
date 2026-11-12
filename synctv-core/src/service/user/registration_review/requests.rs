@@ -2,9 +2,9 @@ use webauthn_rs::prelude::Passkey;
 
 use super::super::registration_types::PendingRegistrationPasskey;
 use crate::{
+    Error, Result,
     models::{OpaquePasswordRecord, ReviewStatus, SignupMethod, User, UserId, UserStatus},
     service::UserService,
-    Error, Result,
 };
 
 mod identity;

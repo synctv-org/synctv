@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::{test_helpers::failing_redis_runtime, RedisConnectionRuntime};
+use crate::{RedisConnectionRuntime, test_helpers::failing_redis_runtime};
 
 fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
     match result {

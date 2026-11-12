@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 use synctv_core::service::{RateLimitError, RateLimiter};
-use synctv_core_testing::{ok, start_redis_client_manager, RedisContainer};
+use synctv_core_testing::{RedisContainer, ok, start_redis_client_manager};
 use tokio::sync::RwLock;
 
 // In-memory rate limiter tests

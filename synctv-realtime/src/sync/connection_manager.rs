@@ -2,24 +2,24 @@ use dashmap::DashMap;
 use redis::AsyncCommands;
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
-use synctv_core::{
-    models::{RealtimeActor, RoomId, UserId},
-    service::OnlinePresenceService,
-    RedisConnectionRuntime,
-};
 #[cfg(test)]
 use synctv_core::{DirectRedisConnectionRuntime, SharedRedisConnectionRuntime};
+use synctv_core::{
+    RedisConnectionRuntime,
+    models::{RealtimeActor, RoomId, UserId},
+    service::OnlinePresenceService,
+};
 use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, info, warn};
 
 mod model;
 pub use model::ConnectionInfo;
 use model::{
-    i64_to_usize_saturating, u64_to_usize_saturating, usize_to_i64_saturating,
-    ConnectionInfoPersistent, RoomTransition, TimeoutIndex,
+    ConnectionInfoPersistent, RoomTransition, TimeoutIndex, i64_to_usize_saturating,
+    u64_to_usize_saturating, usize_to_i64_saturating,
 };
 mod config;
 pub use config::{ConnectionLimits, ConnectionLimitsOptions};
@@ -29,9 +29,9 @@ mod disconnects;
 mod redis_maintenance;
 mod redis_state;
 use redis_state::{
-    run_unregister_cleanup_script, spawn_pending_retries_task, PendingRedisOp,
-    UnregisterCleanupScriptArgs, ACTOR_INDEX_DIRECTORY_KEY_SUFFIX, CONNECTION_METADATA_TTL_SECONDS,
-    ROOM_INDEX_DIRECTORY_KEY_SUFFIX,
+    ACTOR_INDEX_DIRECTORY_KEY_SUFFIX, CONNECTION_METADATA_TTL_SECONDS, PendingRedisOp,
+    ROOM_INDEX_DIRECTORY_KEY_SUFFIX, UnregisterCleanupScriptArgs, run_unregister_cleanup_script,
+    spawn_pending_retries_task,
 };
 
 #[cfg(test)]
@@ -830,16 +830,15 @@ impl ConnectionManager {
                 conn.expire(&room_index_directory_key, CONNECTION_METADATA_TTL_SECONDS),
             )
             .await;
-        if let Some(previous_room_index_key) = previous_room_index_key.as_ref() {
-            if let Err(e) = self
+        if let Some(previous_room_index_key) = previous_room_index_key.as_ref()
+            && let Err(e) = self
                 .redis_op(
                     "remove connection from previous room index",
                     conn.srem::<_, _, ()>(previous_room_index_key, connection_id),
                 )
                 .await
-            {
-                warn!("Failed to remove connection from previous room index: {e}");
-            }
+        {
+            warn!("Failed to remove connection from previous room index: {e}");
         }
         let _: Result<(), _> = self
             .redis_op(
@@ -1222,10 +1221,10 @@ impl ConnectionManager {
         let old_room_id: Option<RoomId> =
             self.connections.get(connection_id).and_then(|c| c.room_id);
 
-        if let Some(ref old_room) = old_room_id {
-            if old_room == &room_id {
-                return Ok(());
-            }
+        if let Some(ref old_room) = old_room_id
+            && old_room == &room_id
+        {
+            return Ok(());
         }
 
         // Check distributed per-room capacity first when Redis is enabled,
@@ -1300,13 +1299,13 @@ impl ConnectionManager {
                     room_entry.push(connection_id.to_string());
                 }
 
-                if let Some(ref old_room) = current_room_id {
-                    if let Some(mut old_room_conns) = self.room_connections.get_mut(old_room) {
-                        old_room_conns.retain(|id| id != connection_id);
-                        if old_room_conns.is_empty() {
-                            drop(old_room_conns);
-                            self.room_connections.remove(old_room);
-                        }
+                if let Some(ref old_room) = current_room_id
+                    && let Some(mut old_room_conns) = self.room_connections.get_mut(old_room)
+                {
+                    old_room_conns.retain(|id| id != connection_id);
+                    if old_room_conns.is_empty() {
+                        drop(old_room_conns);
+                        self.room_connections.remove(old_room);
                     }
                 }
 
@@ -1555,28 +1554,23 @@ impl ConnectionManager {
 
             // Check WebRTC session timeout
             // Only check if the connection is marked as RTC-joined
-            if conn.voice_rtc_joined {
-                if let Some(rtc_duration) = conn.voice_rtc_session_duration() {
-                    if rtc_duration > self.limits.webrtc_session_timeout {
-                        warn!(
-                            connection_id = %conn.connection_id,
-                            actor = %conn.actor,
-                            room_id = ?conn.room_id,
-                            voice_rtc_session_duration = ?rtc_duration,
-                            webrtc_session_timeout = ?self.limits.webrtc_session_timeout,
-                            "WebRTC session timeout"
-                        );
-                        if let Some(room_id) = &conn.room_id {
-                            rtc_timeouts.push((
-                                *room_id,
-                                conn.actor.clone(),
-                                conn.connection_id.clone(),
-                            ));
-                        }
-                        // Add to disconnect list to force reconnection
-                        to_disconnect.push(conn.connection_id.clone());
-                    }
+            if conn.voice_rtc_joined
+                && let Some(rtc_duration) = conn.voice_rtc_session_duration()
+                && rtc_duration > self.limits.webrtc_session_timeout
+            {
+                warn!(
+                    connection_id = %conn.connection_id,
+                    actor = %conn.actor,
+                    room_id = ?conn.room_id,
+                    voice_rtc_session_duration = ?rtc_duration,
+                    webrtc_session_timeout = ?self.limits.webrtc_session_timeout,
+                    "WebRTC session timeout"
+                );
+                if let Some(room_id) = &conn.room_id {
+                    rtc_timeouts.push((*room_id, conn.actor.clone(), conn.connection_id.clone()));
                 }
+                // Add to disconnect list to force reconnection
+                to_disconnect.push(conn.connection_id.clone());
             }
         }
 

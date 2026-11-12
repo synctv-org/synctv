@@ -12,19 +12,20 @@ use synctv_common::ExecutionControl;
 use tracing::{debug, error, info, warn};
 
 use crate::{
+    Clock, Error, Result,
     models::{
-        AuditAction, AuditDetails, AuditTargetType, ChatAttachment, ChatEventKind,
-        ChatHistoryCursor, ChatHistoryPage, ChatMessage, ChatMessageContext, ChatMessageEvent,
-        ChatMessageEventLog, ChatMessageOperationKind, ChatMessageReadReceiptsPage,
-        ChatMessageSelection, ChatMessageStatus, ChatMessageType, ChatMessageWithAttachments,
-        ChatPinEvent, ChatPinnedMessage, ChatPlaybackMessagesQuery, ChatReactionUsersCursor,
-        ChatReactionUsersPage, ChatReadStateWithUnread, ChatSearchMessagesPage,
-        ChatSearchMessagesQuery, CompleteFileUploadSession, CompleteFileUploadSessionResult,
-        CreateChatAttachmentUploadSession, DeleteChatMessage, DeletionSource, EditChatMessage,
-        FileObjectDownload, FileRangeRequest, FileUploadRange, FileUploadSessionCreateResult,
-        GetFileObject, MarkChatRead, PinChatMessage, RoomId, SendChatMessage, SetChatReaction,
-        StoreFileUpload, StoreFileUploadResult, SubmittedFileReference, SubmittedFileReferenceKind,
-        UnpinChatMessage, UserId, CHAT_PIN_NOTE_MAX_CHARS,
+        AuditAction, AuditDetails, AuditTargetType, CHAT_PIN_NOTE_MAX_CHARS, ChatAttachment,
+        ChatEventKind, ChatHistoryCursor, ChatHistoryPage, ChatMessage, ChatMessageContext,
+        ChatMessageEvent, ChatMessageEventLog, ChatMessageOperationKind,
+        ChatMessageReadReceiptsPage, ChatMessageSelection, ChatMessageStatus, ChatMessageType,
+        ChatMessageWithAttachments, ChatPinEvent, ChatPinnedMessage, ChatPlaybackMessagesQuery,
+        ChatReactionUsersCursor, ChatReactionUsersPage, ChatReadStateWithUnread,
+        ChatSearchMessagesPage, ChatSearchMessagesQuery, CompleteFileUploadSession,
+        CompleteFileUploadSessionResult, CreateChatAttachmentUploadSession, DeleteChatMessage,
+        DeletionSource, EditChatMessage, FileObjectDownload, FileRangeRequest, FileUploadRange,
+        FileUploadSessionCreateResult, GetFileObject, MarkChatRead, PinChatMessage, RoomId,
+        SendChatMessage, SetChatReaction, StoreFileUpload, StoreFileUploadResult,
+        SubmittedFileReference, SubmittedFileReferenceKind, UnpinChatMessage, UserId,
     },
     repository::{
         ChatMessageOperationIdempotency, ChatModerationJobRepository, ChatModerationProgress,
@@ -32,12 +33,11 @@ use crate::{
         EditChatMessageEventRequest, PinChatMessageEventRequest, UnpinChatMessageEventRequest,
     },
     service::{
-        audit::{AuditEventParams, AuditService},
-        notification::NotificationService,
         AuthorizedAdminActor, ContentFilter, PermissionService, RateLimitConfig,
         RequestRateLimiterService, RoomSettingsService, UserService,
+        audit::{AuditEventParams, AuditService},
+        notification::NotificationService,
     },
-    Clock, Error, Result,
 };
 
 use super::file_storage::{FileStorageCleanupOrigin, FileStorageContext, FileStorageService};
@@ -412,30 +412,29 @@ impl ChatService {
         }
 
         let request_hash = chat_send_request_hash(&request)?;
-        if let Some(client_message_id) = request.client_message_id.as_deref() {
-            if let Some(event) = self
+        if let Some(client_message_id) = request.client_message_id.as_deref()
+            && let Some(event) = self
                 .chat_repository
                 .replay_idempotent_send_event(&room_id, &user_id, client_message_id, &request_hash)
                 .await?
-            {
-                let mut event = event.event;
-                self.attach_event_attachment_view_metadata(&mut event, Some(&user_id))
-                    .await?;
-                info!(
-                    room_id = %room_id,
-                    user_id = %user_id,
-                    message_id = %event.message.message.id,
-                    event_id = %event.event_id,
-                    inserted = false,
-                    "Chat message send replayed from idempotency record"
-                );
-                return Ok(ChatMessageEventOutcome {
-                    event,
-                    inserted: false,
-                    pin_event: None,
-                    deleted_reactions: 0,
-                });
-            }
+        {
+            let mut event = event.event;
+            self.attach_event_attachment_view_metadata(&mut event, Some(&user_id))
+                .await?;
+            info!(
+                room_id = %room_id,
+                user_id = %user_id,
+                message_id = %event.message.message.id,
+                event_id = %event.event_id,
+                inserted = false,
+                "Chat message send replayed from idempotency record"
+            );
+            return Ok(ChatMessageEventOutcome {
+                event,
+                inserted: false,
+                pin_event: None,
+                deleted_reactions: 0,
+            });
         }
 
         // Rate limiting: use configured chat_per_second from RateLimitConfig
@@ -943,8 +942,8 @@ impl ChatService {
             .await?;
 
         let request_hash = chat_edit_request_hash(&request)?;
-        if let Some(client_operation_id) = request.client_operation_id.as_deref() {
-            if let Some(event) = self
+        if let Some(client_operation_id) = request.client_operation_id.as_deref()
+            && let Some(event) = self
                 .chat_repository
                 .replay_message_operation_event(
                     &request.room_id,
@@ -954,14 +953,13 @@ impl ChatService {
                     &request_hash,
                 )
                 .await?
-            {
-                return Ok(ChatMessageEventOutcome {
-                    event: event.event,
-                    inserted: false,
-                    pin_event: None,
-                    deleted_reactions: 0,
-                });
-            }
+        {
+            return Ok(ChatMessageEventOutcome {
+                event: event.event,
+                inserted: false,
+                pin_event: None,
+                deleted_reactions: 0,
+            });
         }
 
         let current = self
@@ -990,24 +988,24 @@ impl ChatService {
                 "Message content cannot be empty".to_string(),
             ));
         }
-        if let Some(expected_version) = request.expected_version {
-            if expected_version != current.version {
-                if current.version > expected_version
-                    && current.content == filtered_content
-                    && current.metadata == request.metadata
-                {
-                    let event = self
-                        .existing_edit_event(&request.room_id, &current, &request.user_id)
-                        .await?;
-                    return Ok(ChatMessageEventOutcome {
-                        event,
-                        inserted: false,
-                        pin_event: None,
-                        deleted_reactions: 0,
-                    });
-                }
-                return Err(Error::OptimisticLockConflict);
+        if let Some(expected_version) = request.expected_version
+            && expected_version != current.version
+        {
+            if current.version > expected_version
+                && current.content == filtered_content
+                && current.metadata == request.metadata
+            {
+                let event = self
+                    .existing_edit_event(&request.room_id, &current, &request.user_id)
+                    .await?;
+                return Ok(ChatMessageEventOutcome {
+                    event,
+                    inserted: false,
+                    pin_event: None,
+                    deleted_reactions: 0,
+                });
             }
+            return Err(Error::OptimisticLockConflict);
         }
         let operation = request
             .client_operation_id
@@ -1045,21 +1043,20 @@ impl ChatService {
                     "Message has already been deleted".to_string(),
                 ));
             }
-            if let Some(expected_version) = request.expected_version {
-                if current.version > expected_version
-                    && current.content == filtered_content
-                    && current.metadata == request.metadata
-                {
-                    let event = self
-                        .existing_edit_event(&request.room_id, &current, &request.user_id)
-                        .await?;
-                    return Ok(ChatMessageEventOutcome {
-                        event,
-                        inserted: false,
-                        pin_event: None,
-                        deleted_reactions: 0,
-                    });
-                }
+            if let Some(expected_version) = request.expected_version
+                && current.version > expected_version
+                && current.content == filtered_content
+                && current.metadata == request.metadata
+            {
+                let event = self
+                    .existing_edit_event(&request.room_id, &current, &request.user_id)
+                    .await?;
+                return Ok(ChatMessageEventOutcome {
+                    event,
+                    inserted: false,
+                    pin_event: None,
+                    deleted_reactions: 0,
+                });
             }
             return Err(Error::OptimisticLockConflict);
         };
@@ -1446,8 +1443,8 @@ impl ChatService {
         }
         validate_client_operation_id(request.client_operation_id.as_deref())?;
         let request_hash = chat_delete_request_hash(&request)?;
-        if let Some(client_operation_id) = request.client_operation_id.as_deref() {
-            if let Some(event) = self
+        if let Some(client_operation_id) = request.client_operation_id.as_deref()
+            && let Some(event) = self
                 .chat_repository
                 .replay_message_operation_event(
                     &request.room_id,
@@ -1457,14 +1454,13 @@ impl ChatService {
                     &request_hash,
                 )
                 .await?
-            {
-                return Ok(ChatMessageEventOutcome {
-                    event: event.event,
-                    inserted: false,
-                    pin_event: None,
-                    deleted_reactions: 0,
-                });
-            }
+        {
+            return Ok(ChatMessageEventOutcome {
+                event: event.event,
+                inserted: false,
+                pin_event: None,
+                deleted_reactions: 0,
+            });
         }
         if current.status == ChatMessageStatus::Deleted {
             if let Some(event) = self.existing_delete_event(&request, current).await? {
@@ -1635,12 +1631,12 @@ impl ChatService {
         request: PinChatMessage,
     ) -> Result<ChatPinEventOutcome> {
         validate_client_operation_id(request.client_operation_id.as_deref())?;
-        if let Some(note) = request.note.as_deref() {
-            if note.trim().is_empty() || note.chars().count() > CHAT_PIN_NOTE_MAX_CHARS {
-                return Err(Error::InvalidInput(format!(
-                    "chat pin note must be between 1 and {CHAT_PIN_NOTE_MAX_CHARS} characters"
-                )));
-            }
+        if let Some(note) = request.note.as_deref()
+            && (note.trim().is_empty() || note.chars().count() > CHAT_PIN_NOTE_MAX_CHARS)
+        {
+            return Err(Error::InvalidInput(format!(
+                "chat pin note must be between 1 and {CHAT_PIN_NOTE_MAX_CHARS} characters"
+            )));
         }
         self.permission_service
             .check_permission(
@@ -1651,8 +1647,8 @@ impl ChatService {
             .await?;
 
         let request_hash = chat_pin_request_hash(&request)?;
-        if let Some(client_operation_id) = request.client_operation_id.as_deref() {
-            if let Some(event) = self
+        if let Some(client_operation_id) = request.client_operation_id.as_deref()
+            && let Some(event) = self
                 .chat_repository
                 .replay_pin_operation_event(
                     &request.room_id,
@@ -1662,12 +1658,11 @@ impl ChatService {
                     &request_hash,
                 )
                 .await?
-            {
-                return Ok(ChatPinEventOutcome {
-                    event: event.event,
-                    inserted: false,
-                });
-            }
+        {
+            return Ok(ChatPinEventOutcome {
+                event: event.event,
+                inserted: false,
+            });
         }
 
         let current = self
@@ -1735,8 +1730,8 @@ impl ChatService {
             .await?;
 
         let request_hash = chat_unpin_request_hash(&request)?;
-        if let Some(client_operation_id) = request.client_operation_id.as_deref() {
-            if let Some(event) = self
+        if let Some(client_operation_id) = request.client_operation_id.as_deref()
+            && let Some(event) = self
                 .chat_repository
                 .replay_pin_operation_event(
                     &request.room_id,
@@ -1746,12 +1741,11 @@ impl ChatService {
                     &request_hash,
                 )
                 .await?
-            {
-                return Ok(ChatPinEventOutcome {
-                    event: event.event,
-                    inserted: false,
-                });
-            }
+        {
+            return Ok(ChatPinEventOutcome {
+                event: event.event,
+                inserted: false,
+            });
         }
 
         let current = self

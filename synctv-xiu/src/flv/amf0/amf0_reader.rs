@@ -1,5 +1,5 @@
 use {
-    super::{amf0_markers, errors::Amf0ReadErrorValue, Amf0ReadError, Amf0ValueType},
+    super::{Amf0ReadError, Amf0ValueType, amf0_markers, errors::Amf0ReadErrorValue},
     // bytes::BytesMut,
     crate::bytesio::bytes_reader::BytesReader,
     byteorder::BigEndian,
@@ -289,9 +289,9 @@ mod tests {
         assert_eq!(phi.to_bits(), BigEndian::read_f64(&buf).to_bits());
     }
 
-    use super::amf0_markers;
     use super::Amf0Reader;
     use super::Amf0ValueType;
+    use super::amf0_markers;
 
     use crate::bytesio::bytes_reader::BytesReader;
     use bytes::BytesMut;

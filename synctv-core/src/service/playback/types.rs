@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use crate::{
+    Error, Result,
     models::{MediaId, PlaylistId, ProviderTarget, RoomId, RoomPlaybackState, UserId},
     repository::realtime_outbox::NewRealtimeOutboxEvent,
-    Error, Result,
 };
 
 pub type RealtimeOutboxPlaybackStateEventFactory =

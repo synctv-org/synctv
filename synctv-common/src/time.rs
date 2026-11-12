@@ -52,18 +52,17 @@ pub fn resolve_timezone_name_with(
         return Ok(parse_timezone_name(value)?.to_string());
     }
 
-    if let Some(value) = get_env("TZ").map(|value| value.trim().to_string()) {
-        if !value.is_empty() {
-            if let Ok(tz) = parse_timezone_name(&value) {
-                return Ok(tz.to_string());
-            }
-        }
+    if let Some(value) = get_env("TZ").map(|value| value.trim().to_string())
+        && !value.is_empty()
+        && let Ok(tz) = parse_timezone_name(&value)
+    {
+        return Ok(tz.to_string());
     }
 
-    if let Ok(value) = iana_time_zone::get_timezone() {
-        if let Ok(tz) = parse_timezone_name(&value) {
-            return Ok(tz.to_string());
-        }
+    if let Ok(value) = iana_time_zone::get_timezone()
+        && let Ok(tz) = parse_timezone_name(&value)
+    {
+        return Ok(tz.to_string());
     }
 
     Ok(Tz::UTC.to_string())

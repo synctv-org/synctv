@@ -12,7 +12,7 @@ use chrono::Utc;
 use synctv_core::models::id::{RoomId, UserId};
 use synctv_realtime::sync::RealtimeEvent;
 mod integration_test_helpers;
-use integration_test_helpers::{create_node, user_actor, TestRedis};
+use integration_test_helpers::{TestRedis, create_node, user_actor};
 
 #[tokio::test]
 #[ignore = "requires Docker"]

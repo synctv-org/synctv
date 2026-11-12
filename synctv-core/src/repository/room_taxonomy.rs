@@ -3,12 +3,12 @@ use std::collections::HashMap;
 use sqlx::{PgConnection, PgPool, Postgres, QueryBuilder};
 
 use crate::{
+    Result,
     models::{
         RoomCategory, RoomCategoryId, RoomId, RoomLabel, RoomLabelId, UpsertRoomCategory,
         UpsertRoomLabel, UserId,
     },
     repository::pools::RepoPools,
-    Result,
 };
 
 #[derive(Debug)]

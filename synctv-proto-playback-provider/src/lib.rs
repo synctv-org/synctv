@@ -830,8 +830,8 @@ mod tests {
     }
 
     #[test]
-    fn http_json_provider_common_update_provider_instance_request_defaults_path_and_repeated_fields(
-    ) {
+    fn http_json_provider_common_update_provider_instance_request_defaults_path_and_repeated_fields()
+     {
         let json = r#"{"endpoint":"https://provider.example.com"}"#;
 
         let decoded: crate::providers::common::UpdateProviderInstanceRequest =
@@ -1880,7 +1880,7 @@ mod tests {
 
     #[test]
     fn opaque_binary_fields_use_base64_http_json() {
-        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
 
         let decoded: crate::client::StartOpaqueLoginRequest = serde_json::from_str(
             r#"{"loginSessionId":"login-session","credentialRequest":"AQID/w=="}"#,

@@ -1,6 +1,6 @@
 use crate::{
-    models::{Media, MediaId, UserId},
     Error, Result,
+    models::{Media, MediaId, UserId},
 };
 
 pub(super) const MAX_BATCH_SIZE: usize = 100;

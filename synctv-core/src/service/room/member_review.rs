@@ -1,6 +1,6 @@
 use crate::{
-    models::{ReviewRequestId, Room, RoomId, RoomMember, RoomRole, UserId},
     Error, Result,
+    models::{ReviewRequestId, Room, RoomId, RoomMember, RoomRole, UserId},
 };
 
 use super::RoomService;

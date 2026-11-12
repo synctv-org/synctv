@@ -9,16 +9,16 @@ use std::{sync::Arc, time::Duration};
 use chrono::Utc;
 use sqlx::PgPool;
 use synctv_core::{
+    Error,
     cache::{KeyBuilder, UsernameCache},
     models::{
-        room::AutoPlaySettings, Media, MediaId, PlayMode, Playlist, ProviderTarget, SourceProvider,
-        User, UserId, UserRole, UserStatus,
+        Media, MediaId, PlayMode, Playlist, ProviderTarget, SourceProvider, User, UserId, UserRole,
+        UserStatus, room::AutoPlaySettings,
     },
     repository::{MediaRepository, RoomPlaybackStateRepository, UserRepository},
     service::{
         BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, RoomService, UserService,
     },
-    Error,
 };
 use synctv_core_testing::create_test_pool;
 use synctv_core_testing::{TestOptionExt, TestResultExt};
@@ -1698,7 +1698,7 @@ async fn test_state_consistency_after_mixed_operations() {
     assert!(state.is_playing, "Should be playing");
 }
 
-use synctv_core::models::{room_settings, RoomSettings};
+use synctv_core::models::{RoomSettings, room_settings};
 
 /// Successful seek responses set `seek_applied=true`.
 #[tokio::test]

@@ -16,12 +16,12 @@
 //! HTTP and gRPC therefore share the same application-layer behavior while the
 //! transport only extracts metadata and request bodies.
 
-use axum::{extract::State, response::Json, routing::post, Router};
-use futures::future::BoxFuture;
+use axum::{Router, extract::State, response::Json, routing::post};
 use futures::FutureExt;
+use futures::future::BoxFuture;
 
 use crate::http::{
-    error::map_api_error, middleware::RequestMetadata, AppError, AppResult, AppState,
+    AppError, AppResult, AppState, error::map_api_error, middleware::RequestMetadata,
 };
 use synctv_api_common::impls::{EmailApiImpl, EndpointRateLimitCategory};
 use synctv_proto::client::{

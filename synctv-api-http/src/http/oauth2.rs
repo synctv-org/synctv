@@ -22,9 +22,9 @@
 //! See also: [`crate::grpc::oauth2_service`] for the gRPC implementation.
 
 use axum::{
+    Json,
     extract::{Path, Query, State},
     http::HeaderMap,
-    Json,
 };
 use std::sync::Arc;
 use tracing::{debug, error, info};
@@ -37,7 +37,7 @@ use synctv_proto::client::{
     OAuth2ProviderTypePathRequest, UnlinkProviderRequest, UnlinkProviderResponse,
 };
 
-use super::{error::map_api_error, middleware::RequestMetadata, AppError, AppResult, AppState};
+use super::{AppError, AppResult, AppState, error::map_api_error, middleware::RequestMetadata};
 use synctv_api_common::impls::EndpointRateLimitCategory;
 
 #[derive(Debug, serde::Deserialize)]
@@ -549,7 +549,7 @@ pub async fn get_linked_providers(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::{header, HeaderMap, StatusCode};
+    use axum::http::{HeaderMap, StatusCode, header};
 
     type TestResult<T = ()> = anyhow::Result<T>;
 

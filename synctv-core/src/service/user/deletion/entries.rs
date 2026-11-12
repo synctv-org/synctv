@@ -1,8 +1,8 @@
 use sqlx::{Postgres, Transaction};
 
 use crate::{
-    models::{DeletionSource, MediaId, PlaylistId, RoomId, RoomPlaybackState, UserId},
     Error, Result,
+    models::{DeletionSource, MediaId, PlaylistId, RoomId, RoomPlaybackState, UserId},
 };
 
 use super::{UserDeletedRoomImpact, UserService};

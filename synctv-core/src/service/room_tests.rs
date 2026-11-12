@@ -1,12 +1,12 @@
 use super::member_role_policy::{validate_add_member_role, validate_override_bits_for_role};
+use crate::Error;
 use crate::models::{
-    room_settings::{GuestAddedPermissions, MemberAddedPermissions},
     RoomGuestPermissionBits, RoomId, RoomMember, RoomMemberPermissionBits, RoomPermissionSet,
     RoomRole, RoomSettings, RoomStatus, UserId,
+    room_settings::{GuestAddedPermissions, MemberAddedPermissions},
 };
 use crate::service::with_coordination_lock;
 use crate::test_helpers::RoomFixture;
-use crate::Error;
 use async_trait::async_trait;
 
 fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
@@ -87,8 +87,7 @@ fn test_transaction_permission_helper_uses_runtime_member_default() {
     );
 
     assert!(
-        RoomPermissionSet::default_member()
-            .has(crate::models::RoomPermission::MANAGE_OWN_MEDIA),
+        RoomPermissionSet::default_member().has(crate::models::RoomPermission::MANAGE_OWN_MEDIA),
         "static defaults include MANAGE_OWN_MEDIA, so this test guards against falling back to them"
     );
     assert!(

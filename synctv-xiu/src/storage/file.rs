@@ -4,8 +4,8 @@
 
 use super::HlsStorage;
 use crate::storage::{
-    is_minute_bucket, minute_bucket_is_expired, segment_minute_bucket, validate_component,
-    validate_storage_key, HLS_SEGMENTS_ROOT,
+    HLS_SEGMENTS_ROOT, is_minute_bucket, minute_bucket_is_expired, segment_minute_bucket,
+    validate_component, validate_storage_key,
 };
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -584,8 +584,8 @@ mod tests {
     use chrono::Utc;
     use futures::FutureExt as _;
     use std::sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     };
     use tempfile::tempdir;
 
@@ -695,15 +695,17 @@ mod tests {
         .unwrap();
 
         let segment = segment_name(&current_bucket(), "failed_publish");
-        assert!(storage
-            .write(
-                "live",
-                "stream",
-                &segment,
-                Bytes::from_static(b"complete staged data"),
-            )
-            .await
-            .is_err());
+        assert!(
+            storage
+                .write(
+                    "live",
+                    "stream",
+                    &segment,
+                    Bytes::from_static(b"complete staged data"),
+                )
+                .await
+                .is_err()
+        );
 
         let mut staging_entries = fs::read_dir(storage.staging_root_path()).await.unwrap();
         assert!(staging_entries.next_entry().await.unwrap().is_none());
@@ -809,22 +811,30 @@ mod tests {
         let deleted = storage.cleanup(Duration::from_mins(3)).await.unwrap();
 
         assert_eq!(deleted, 3);
-        assert!(!storage
-            .exists("live", "room_123", &old_segment_0)
-            .await
-            .unwrap());
-        assert!(!storage
-            .exists("live", "room_123", &old_segment_1)
-            .await
-            .unwrap());
-        assert!(storage
-            .exists("live", "room_123", &current_segment)
-            .await
-            .unwrap());
-        assert!(!storage
-            .exists("live", "room_456", &old_segment_2)
-            .await
-            .unwrap());
+        assert!(
+            !storage
+                .exists("live", "room_123", &old_segment_0)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !storage
+                .exists("live", "room_123", &old_segment_1)
+                .await
+                .unwrap()
+        );
+        assert!(
+            storage
+                .exists("live", "room_123", &current_segment)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !storage
+                .exists("live", "room_456", &old_segment_2)
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
@@ -851,30 +861,38 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(temp_dir
-            .path()
-            .join(HLS_SEGMENTS_ROOT)
-            .join(&current_bucket)
-            .join("live")
-            .join("room_123")
-            .join(&current_segment)
-            .exists());
+        assert!(
+            temp_dir
+                .path()
+                .join(HLS_SEGMENTS_ROOT)
+                .join(&current_bucket)
+                .join("live")
+                .join("room_123")
+                .join(&current_segment)
+                .exists()
+        );
 
         let deleted = storage.cleanup(Duration::from_mins(3)).await.unwrap();
         assert_eq!(deleted, 1);
-        assert!(storage
-            .exists("live", "room_123", &current_segment)
-            .await
-            .unwrap());
-        assert!(!storage
-            .exists("live", "room_123", &old_segment)
-            .await
-            .unwrap());
-        assert!(!temp_dir
-            .path()
-            .join(HLS_SEGMENTS_ROOT)
-            .join(&old_bucket)
-            .exists());
+        assert!(
+            storage
+                .exists("live", "room_123", &current_segment)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !storage
+                .exists("live", "room_123", &old_segment)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !temp_dir
+                .path()
+                .join(HLS_SEGMENTS_ROOT)
+                .join(&old_bucket)
+                .exists()
+        );
     }
 
     #[tokio::test]
@@ -882,19 +900,25 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let storage = FileStorage::new(temp_dir.path());
 
-        assert!(storage
-            .write("live", "room_123", "segment_0", Bytes::from_static(b"data"))
-            .await
-            .is_err());
+        assert!(
+            storage
+                .write("live", "room_123", "segment_0", Bytes::from_static(b"data"))
+                .await
+                .is_err()
+        );
         assert!(storage.read("live", "room_123", "segment_0").await.is_err());
-        assert!(storage
-            .exists("live", "room_123", "segment_0")
-            .await
-            .is_err());
-        assert!(storage
-            .delete("live", "room_123", "segment_0")
-            .await
-            .is_err());
+        assert!(
+            storage
+                .exists("live", "room_123", "segment_0")
+                .await
+                .is_err()
+        );
+        assert!(
+            storage
+                .delete("live", "room_123", "segment_0")
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -1193,25 +1217,35 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let storage = FileStorage::new(temp_dir.path());
 
-        assert!(storage
-            .write("..", "stream", "name", Bytes::from_static(b"x"))
-            .await
-            .is_err());
-        assert!(storage
-            .write("app", "..", "name", Bytes::from_static(b"x"))
-            .await
-            .is_err());
-        assert!(storage
-            .write("app", "stream", "..", Bytes::from_static(b"x"))
-            .await
-            .is_err());
-        assert!(storage
-            .write("a/b", "stream", "name", Bytes::from_static(b"x"))
-            .await
-            .is_err());
-        assert!(storage
-            .write("", "stream", "name", Bytes::from_static(b"x"))
-            .await
-            .is_err());
+        assert!(
+            storage
+                .write("..", "stream", "name", Bytes::from_static(b"x"))
+                .await
+                .is_err()
+        );
+        assert!(
+            storage
+                .write("app", "..", "name", Bytes::from_static(b"x"))
+                .await
+                .is_err()
+        );
+        assert!(
+            storage
+                .write("app", "stream", "..", Bytes::from_static(b"x"))
+                .await
+                .is_err()
+        );
+        assert!(
+            storage
+                .write("a/b", "stream", "name", Bytes::from_static(b"x"))
+                .await
+                .is_err()
+        );
+        assert!(
+            storage
+                .write("", "stream", "name", Bytes::from_static(b"x"))
+                .await
+                .is_err()
+        );
     }
 }

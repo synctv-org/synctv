@@ -2,11 +2,11 @@ use sqlx::PgPool;
 use std::sync::Arc;
 
 use crate::{
+    Error, Result,
     cache::KeyBuilder,
     models::{StoredFileReference, User, UserId, UserLifecycleMetadata},
     repository::FileStorageRepository,
-    service::{file_storage::FileStorageService, TokenBlacklistStore, UserService},
-    Error, Result,
+    service::{TokenBlacklistStore, UserService, file_storage::FileStorageService},
 };
 
 impl UserService {

@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 
-use crate::impls::client::RoomActor;
 use crate::impls::ApiError;
+use crate::impls::client::RoomActor;
 
 #[async_trait]
 pub trait PlaylistItemsSnapshotService: Send + Sync {

@@ -4,8 +4,8 @@
 //! Playback output references SyncTV live delivery resources.
 
 use super::{
-    playback_transport::PlaybackTransportAction, MediaProvider, PlaybackResult, ProviderContext,
-    ProviderError, SourceConfig,
+    MediaProvider, PlaybackResult, ProviderContext, ProviderError, SourceConfig,
+    playback_transport::PlaybackTransportAction,
 };
 use crate::models::media::{PlaybackMediaProvider, PlaybackRtmpMedia};
 use crate::models::{MediaId, RoomId};

@@ -4,9 +4,9 @@ use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 
 use crate::{
+    Error, Result,
     models::{OpaquePasswordRecord, RoomId},
     repository::pools::RepoPools,
-    Error, Result,
 };
 
 #[derive(sqlx::FromRow)]

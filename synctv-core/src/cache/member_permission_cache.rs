@@ -9,10 +9,10 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::Result;
 use crate::cache::l2_backend::CacheL2Backend;
 use crate::cache::tiered::{CacheKey, FenceReadResult, TieredCache, Versioned};
 use crate::models::{RoomId, RoomMember, RoomRole, UserId};
-use crate::Result;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -14,36 +14,36 @@ use synctv_core::models::MediaId;
 #[cfg(test)]
 use synctv_core::models::SortDirection as CoreSortDirection;
 
+use super::ApiError;
 use super::client::convert::{
     playback_client_profile_from_proto, provider_playback_info_to_model, try_members_to_proto,
     try_playback_state_to_proto, try_playback_to_proto, user_status_to_proto,
 };
 use super::client::user_notification_preferences_to_proto;
-use super::ApiError;
 use crate::chat_event_dispatcher::ChatEventDispatcher;
-use crate::fanout::{default_room_settings_fanout_service, RoomSettingsFanoutService};
+use crate::fanout::{RoomSettingsFanoutService, default_room_settings_fanout_service};
 use crate::impls::client::media::{
-    prepare_delete_entries_outbox_fanout, PrepareDeleteEntriesOutboxFanout,
+    PrepareDeleteEntriesOutboxFanout, prepare_delete_entries_outbox_fanout,
 };
 
+use crate::impls::RequestExecutor;
 use crate::impls::client::playback_lifecycle::ProviderPlaybackLifecycleApi;
 use crate::impls::playback::{
     playback_expires_at, playback_generation_error_allows_state_only,
     playback_snapshot_error_indicates_stale_state,
 };
-use crate::impls::RequestExecutor;
-use crate::media_fanout::{default_media_fanout_service, MediaFanoutService};
+use crate::media_fanout::{MediaFanoutService, default_media_fanout_service};
 use crate::membership_event_fanout::{
-    default_membership_event_fanout_service, MembershipEventFanoutService,
+    MembershipEventFanoutService, default_membership_event_fanout_service,
 };
 use crate::playback_fanout::{
-    default_playback_fanout_service, PlaybackFanoutActor, PlaybackFanoutService,
+    PlaybackFanoutActor, PlaybackFanoutService, default_playback_fanout_service,
 };
-use crate::playlist_fanout::{default_playlist_fanout_service, PlaylistFanoutService};
-use crate::realtime_lifecycle::{default_realtime_lifecycle_service, RealtimeLifecycleService};
-use crate::room_cache_fanout::{default_room_cache_fanout_service, RoomCacheFanoutService};
+use crate::playlist_fanout::{PlaylistFanoutService, default_playlist_fanout_service};
+use crate::realtime_lifecycle::{RealtimeLifecycleService, default_realtime_lifecycle_service};
+use crate::room_cache_fanout::{RoomCacheFanoutService, default_room_cache_fanout_service};
 use crate::room_lifecycle_fanout::{
-    default_room_lifecycle_fanout_service_with_realtime, RoomLifecycleFanoutService,
+    RoomLifecycleFanoutService, default_room_lifecycle_fanout_service_with_realtime,
 };
 use synctv_realtime::fanout::{LocalNoopRealtimeEventService, RealtimeEventService};
 use synctv_realtime::sync::ConnectionRuntime;

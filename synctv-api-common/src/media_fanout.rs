@@ -7,7 +7,7 @@ use synctv_core::service::{
 use synctv_realtime::sync::{PublishRequest, RealtimeEvent};
 
 use crate::realtime_fanout::{
-    publish_best_effort, PreparedOutboxFanout, PreparedRealtimeFanoutPlan, RealtimeFanoutService,
+    PreparedOutboxFanout, PreparedRealtimeFanoutPlan, RealtimeFanoutService, publish_best_effort,
 };
 
 type MediaBatchEventsBuilder = Arc<dyn Fn(&[Media]) -> Vec<RealtimeEvent> + Send + Sync>;
@@ -464,9 +464,9 @@ pub fn default_media_fanout_service(
 mod tests {
     use super::default_media_fanout_service;
     use crate::realtime_fanout::local_realtime_fanout_service;
-    use crate::test_support::{channel_realtime_fanout_service, RecordingRealtimeEventService};
-    use std::sync::atomic::Ordering;
+    use crate::test_support::{RecordingRealtimeEventService, channel_realtime_fanout_service};
     use std::sync::Arc;
+    use std::sync::atomic::Ordering;
     use synctv_core::models::{Media, MediaId, RoomId, UserId};
     use synctv_realtime::sync::RealtimeEvent;
 

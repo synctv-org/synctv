@@ -5,8 +5,8 @@ mod permission_test_support;
 use synctv_core::{
     cache::{CacheDomain, ConsistencyCoordinator, RedisVersionFenceStore, VersionFenceStore},
     models::{
-        room_settings::MemberRemovedPermissions, RoomId, RoomMember, RoomMemberPermissionBits,
-        RoomPermission, RoomRole, UserId,
+        RoomId, RoomMember, RoomMemberPermissionBits, RoomPermission, RoomRole, UserId,
+        room_settings::MemberRemovedPermissions,
     },
     repository::{RoomMemberRepository, RoomSettingsRepository, UserRepository},
     service::RoomServiceOptions,

@@ -55,11 +55,11 @@ where
 mod tests {
     use super::*;
     use axum::{
-        body::{to_bytes, Body},
+        Router,
+        body::{Body, to_bytes},
         http::{Request, StatusCode},
         response::IntoResponse,
         routing::get,
-        Router,
     };
     use tower::ServiceExt;
 

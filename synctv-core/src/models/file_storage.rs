@@ -797,9 +797,11 @@ mod tests {
         let error =
             serde_json::from_value::<FileUploadPolicy>(json).expect_err("policy should fail");
 
-        assert!(error
-            .to_string()
-            .contains("unknown file upload policy kind"));
+        assert!(
+            error
+                .to_string()
+                .contains("unknown file upload policy kind")
+        );
     }
 
     #[test]

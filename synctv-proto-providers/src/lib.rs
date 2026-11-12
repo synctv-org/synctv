@@ -9,7 +9,7 @@
 #[cfg(all(feature = "tls-aws-lc", feature = "tls-ring"))]
 compile_error!("features \"tls-aws-lc\" and \"tls-ring\" are mutually exclusive - use only one");
 
-pub use synctv_proto_main::{source_config, FieldMask};
+pub use synctv_proto_main::{FieldMask, source_config};
 
 /// Encoded file descriptor set for provider proto definitions.
 pub const PROVIDERS_FILE_DESCRIPTOR_SET: &[u8] = include_bytes!(concat!(

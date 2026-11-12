@@ -1,5 +1,6 @@
 use crate::repository::required_count;
 use crate::{
+    Error, Result,
     models::{
         id::UserId,
         notification::{
@@ -7,7 +8,6 @@ use crate::{
             NotificationListSortBy, NotificationType,
         },
     },
-    Error, Result,
 };
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
@@ -120,14 +120,14 @@ impl NotificationRepository {
         qb.push_bind(user_id);
         qb.push(" AND created_at >= NOW() - INTERVAL '6 months'");
 
-        if let Some(search) = &query.search {
-            if let Some(pattern) = super::query_builder::ilike_contains_pattern(search) {
-                qb.push(" AND (title ILIKE ");
-                qb.push_bind(pattern.clone());
-                qb.push(" ESCAPE '\\' OR content ILIKE ");
-                qb.push_bind(pattern);
-                qb.push(" ESCAPE '\\')");
-            }
+        if let Some(search) = &query.search
+            && let Some(pattern) = super::query_builder::ilike_contains_pattern(search)
+        {
+            qb.push(" AND (title ILIKE ");
+            qb.push_bind(pattern.clone());
+            qb.push(" ESCAPE '\\' OR content ILIKE ");
+            qb.push_bind(pattern);
+            qb.push(" ESCAPE '\\')");
         }
         if let Some(notification_type) = &query.notification_type {
             qb.push(" AND type = ");

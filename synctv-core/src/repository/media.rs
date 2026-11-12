@@ -7,11 +7,11 @@ use sqlx::PgPool;
 use std::collections::{BTreeSet, HashMap};
 
 use crate::{
-    models::{
-        normalize_provider_instance_name, DeletionSource, Media, MediaId, MediaListQuery,
-        PageParams, PlaylistId, RoomId, UserId,
-    },
     Result,
+    models::{
+        DeletionSource, Media, MediaId, MediaListQuery, PageParams, PlaylistId, RoomId, UserId,
+        normalize_provider_instance_name,
+    },
 };
 
 #[derive(Debug, sqlx::FromRow)]
@@ -214,12 +214,12 @@ impl MediaRepository {
             }
         }
 
-        if let Some(search) = &query.search {
-            if let Some(pattern) = ilike_contains_pattern(search) {
-                builder.push(" AND m.name ILIKE ");
-                builder.push_bind(pattern);
-                builder.push(" ESCAPE '\\'");
-            }
+        if let Some(search) = &query.search
+            && let Some(pattern) = ilike_contains_pattern(search)
+        {
+            builder.push(" AND m.name ILIKE ");
+            builder.push_bind(pattern);
+            builder.push(" ESCAPE '\\'");
         }
         if let Some(source_provider) = &query.source_provider {
             builder.push(" AND m.source_provider = ");
@@ -1697,16 +1697,16 @@ impl MediaRepository {
             _ => {
                 return Err(crate::Error::InvalidInput(
                     "At most one of before_media_id or after_media_id may be set".to_string(),
-                ))
+                ));
             }
         };
 
-        if let Some(anchor_id) = anchor_id {
-            if media_ids.iter().any(|media_id| media_id == anchor_id) {
-                return Err(crate::Error::InvalidInput(
-                    "Cannot move media relative to itself".to_string(),
-                ));
-            }
+        if let Some(anchor_id) = anchor_id
+            && media_ids.iter().any(|media_id| media_id == anchor_id)
+        {
+            return Err(crate::Error::InvalidInput(
+                "Cannot move media relative to itself".to_string(),
+            ));
         }
 
         let anchor_media = if let Some(anchor_id) = anchor_id {

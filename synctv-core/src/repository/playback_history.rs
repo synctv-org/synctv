@@ -2,11 +2,11 @@ use chrono::{DateTime, Utc};
 use sqlx::{PgConnection, PgPool};
 
 use crate::{
-    models::{
-        try_hash_playback_target, MediaId, PlaybackHistoryEntry, PlaybackHistoryPage, PlaylistId,
-        ProviderTarget, RoomId, SortDirection, UserId,
-    },
     Error, Result,
+    models::{
+        MediaId, PlaybackHistoryEntry, PlaybackHistoryPage, PlaylistId, ProviderTarget, RoomId,
+        SortDirection, UserId, try_hash_playback_target,
+    },
 };
 
 #[derive(Clone, Debug)]

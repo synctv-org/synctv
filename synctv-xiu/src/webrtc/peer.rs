@@ -10,17 +10,17 @@ use rtc::{
     rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication,
     rtp::packet::Packet,
     rtp_transceiver::{
+        RTCRtpTransceiverDirection, RTCRtpTransceiverInit,
         rtp_sender::{
             RTCPFeedback, RTCRtpCodec, RTCRtpCodecParameters, RTCRtpCodingParameters,
             RTCRtpEncodingParameters, RTCRtpHeaderExtensionCapability, RtpCodecKind,
         },
-        RTCRtpTransceiverDirection, RTCRtpTransceiverInit,
     },
     shared::marshal::{Marshal, MarshalSize, Unmarshal},
 };
 use sdp::description::session::{
-    SessionDescription, ATTR_KEY_INACTIVE, ATTR_KEY_RECV_ONLY, ATTR_KEY_SEND_ONLY,
-    ATTR_KEY_SEND_RECV,
+    ATTR_KEY_INACTIVE, ATTR_KEY_RECV_ONLY, ATTR_KEY_SEND_ONLY, ATTR_KEY_SEND_RECV,
+    SessionDescription,
 };
 use synctv_common::ssrf::SsrfGuard;
 use tokio::sync::watch;
@@ -28,7 +28,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 use webrtc::{
     media_stream::{
-        track_local::{static_rtp::TrackLocalStaticRTP, TrackLocal},
+        track_local::{TrackLocal, static_rtp::TrackLocalStaticRTP},
         track_remote::{TrackRemote, TrackRemoteEvent},
     },
     peer_connection::{
@@ -103,9 +103,7 @@ pub enum WebRtcError {
     InvalidSdp(String),
     #[error("WHIP offer has no H.264 format compatible with the livestream bridge")]
     IncompatibleWhipVideoCodec,
-    #[error(
-        "WHIP offer has no sendable Opus or H.264 media compatible with the livestream bridge"
-    )]
+    #[error("WHIP offer has no sendable Opus or H.264 media compatible with the livestream bridge")]
     NoCompatibleWhipMedia,
     #[error("WebRTC negotiation failed: {0}")]
     Negotiation(String),
@@ -1017,11 +1015,11 @@ pub async fn create_whep_session(
 
 #[cfg(test)]
 mod tests {
-    use anyhow::{anyhow, Result};
+    use anyhow::{Result, anyhow};
     use rtc::media::Sample;
     use std::time::Instant;
     use tokio::sync::mpsc;
-    use webrtc::media_stream::{track_local::static_sample::TrackLocalStaticSample, Track as _};
+    use webrtc::media_stream::{Track as _, track_local::static_sample::TrackLocalStaticSample};
 
     use crate::flv::define::avc_packet_type;
 
@@ -1087,10 +1085,10 @@ mod tests {
                 }
                 tokio::spawn(async move {
                     while let Some(event) = track.poll().await {
-                        if let TrackRemoteEvent::OnRtpPacket(packet) = event {
-                            if packet_sender.send(packet).await.is_err() {
-                                break;
-                            }
+                        if let TrackRemoteEvent::OnRtpPacket(packet) = event
+                            && packet_sender.send(packet).await.is_err()
+                        {
+                            break;
                         }
                     }
                 });
@@ -1104,10 +1102,10 @@ mod tests {
     ) -> Result<Bytes> {
         tokio::time::timeout(Duration::from_secs(5), async {
             while let Some(frame) = receiver.recv().await {
-                if let FrameData::Video { data, .. } = frame {
-                    if data.get(1).copied() == Some(packet_type) {
-                        return Ok(data);
-                    }
+                if let FrameData::Video { data, .. } = frame
+                    && data.get(1).copied() == Some(packet_type)
+                {
+                    return Ok(data);
                 }
             }
             Err(anyhow!(
@@ -1252,12 +1250,14 @@ a=fmtp:96 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=640c1f
 a=rtpmap:98 H264/90000\r\n\
 a=fmtp:98 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e029\r\n";
 
-        assert!(validate_whip_offer(
-            MULTI_PROFILE_OFFER,
-            &WebRtcConfig::default(),
-            RtmpStreamMode::Default,
-        )
-        .is_ok());
+        assert!(
+            validate_whip_offer(
+                MULTI_PROFILE_OFFER,
+                &WebRtcConfig::default(),
+                RtmpStreamMode::Default,
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -1296,12 +1296,14 @@ m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n\
 a=sendonly\r\n\
 a=rtpmap:111 opus/48000/2\r\n";
 
-        assert!(validate_whip_offer(
-            OPUS_OFFER,
-            &WebRtcConfig::default(),
-            RtmpStreamMode::AudioOnly,
-        )
-        .is_ok());
+        assert!(
+            validate_whip_offer(
+                OPUS_OFFER,
+                &WebRtcConfig::default(),
+                RtmpStreamMode::AudioOnly,
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -1539,14 +1541,12 @@ a=rtpmap:111 opus/48000/2\r\n";
                 if let Ok(Some(packet)) =
                     tokio::time::timeout(Duration::from_millis(100), viewer_packet_receiver.recv())
                         .await
-                {
-                    if packet
+                    && packet
                         .payload
                         .first()
                         .is_some_and(|value| value & 0x1f == 5)
-                    {
-                        return Ok::<Packet, anyhow::Error>(packet);
-                    }
+                {
+                    return Ok::<Packet, anyhow::Error>(packet);
                 }
             }
         })

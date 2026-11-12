@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
 use crate::{
-    models::{RoomId, RoomPermission, RoomPermissionSet, RoomRole, UserId},
     Error, Result,
+    models::{RoomId, RoomPermission, RoomPermissionSet, RoomRole, UserId},
 };
 
 use super::PermissionService;

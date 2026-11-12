@@ -1,6 +1,6 @@
 use crate::models::{RoomId, UserId};
 
-use super::{outbox::log_if_no_local_subscribers, EntryDeletionImpact, RoomService};
+use super::{EntryDeletionImpact, RoomService, outbox::log_if_no_local_subscribers};
 
 impl RoomService {
     pub(super) async fn finalize_entry_deletion_after_commit(&self, impact: &EntryDeletionImpact) {

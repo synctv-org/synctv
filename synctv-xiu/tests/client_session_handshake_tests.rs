@@ -12,7 +12,7 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
-use tokio::time::{timeout, Instant};
+use tokio::time::{Instant, timeout};
 
 use synctv_xiu::bytesio::net_io::{TNetIO, TcpIO};
 use synctv_xiu::rtmp::handshake::{
@@ -126,11 +126,11 @@ async fn test_client_session_handshake_normal_flow() {
         // S2: echo back C1
         let mut s0s1s2 = Vec::with_capacity(3073);
         s0s1s2.push(3); // S0: RTMP version 3
-                        // S1: 4 bytes time + 4 bytes zero + 1528 bytes random
+        // S1: 4 bytes time + 4 bytes zero + 1528 bytes random
         s0s1s2.extend_from_slice(&[0, 0, 0, 0]); // time
         s0s1s2.extend_from_slice(&[0, 0, 0, 0]); // zero
         s0s1s2.extend_from_slice(&c0c1[9..1537]); // random data (echo part of C1)
-                                                  // S2: echo C1 back
+        // S2: echo C1 back
         s0s1s2.extend_from_slice(&c0c1[1..1537]);
 
         stream.write_all(&s0s1s2).await.unwrap();

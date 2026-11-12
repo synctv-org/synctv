@@ -8,10 +8,9 @@ mod transceiver;
 pub mod utils;
 
 pub use reliability::{
-    send_event_with_backpressure_timeout, send_event_with_backpressure_timeout_for,
-    spawn_event_delivery_with_backpressure_timeout,
+    SubscribeWithRollbackError, send_event_with_backpressure_timeout,
+    send_event_with_backpressure_timeout_for, spawn_event_delivery_with_backpressure_timeout,
     spawn_event_delivery_with_backpressure_timeout_for, subscribe_with_rollback_on_timeout,
-    SubscribeWithRollbackError,
 };
 #[cfg(test)]
 use transceiver::ReceiveEventLoopContext;
@@ -183,8 +182,8 @@ impl StreamsHub {
                             );
                         } else {
                             tracing::error!(
-                            "event_loop ForceUnPublish err: {err} with identifier: {identifier}"
-                        );
+                                "event_loop ForceUnPublish err: {err} with identifier: {identifier}"
+                            );
                         }
                     }
                 }
@@ -373,10 +372,10 @@ impl StreamsHub {
         let (event_sender, event_receiver) = mpsc::unbounded_channel();
         let mut transceiver =
             StreamDataTransceiver::new(receiver, event_receiver, identifier.clone(), handler);
-        if pub_type.is_user_push() {
-            if let Some(callback) = self.publisher_activity_callback.clone() {
-                transceiver = transceiver.with_publisher_activity_callback(generation_id, callback);
-            }
+        if pub_type.is_user_push()
+            && let Some(callback) = self.publisher_activity_callback.clone()
+        {
+            transceiver = transceiver.with_publisher_activity_callback(generation_id, callback);
         }
 
         let statistic_data_sender = transceiver.get_statistics_data_sender();
@@ -417,18 +416,17 @@ impl StreamsHub {
                     }
                 };
 
-                if needs_cleanup {
-                    if let Err(e) = hub_sender
+                if needs_cleanup
+                    && let Err(e) = hub_sender
                         .send(StreamHubEvent::UnPublish {
                             identifier: identifier_for_cleanup.clone(),
                             generation_id,
                         })
                         .await
-                    {
-                        tracing::error!(
-                            "Failed to send cleanup UnPublish for {identifier_for_cleanup}: {e}"
-                        );
-                    }
+                {
+                    tracing::error!(
+                        "Failed to send cleanup UnPublish for {identifier_for_cleanup}: {e}"
+                    );
                 }
             }
         });
@@ -522,14 +520,14 @@ mod tests {
         SubscribeType,
     };
     use crate::streamhub::statistics::StatisticsStream;
-    use crate::streamhub::transceiver::{SubscriberDropCounter, PUBLISHER_ACTIVITY_INTERVAL};
+    use crate::streamhub::transceiver::{PUBLISHER_ACTIVITY_INTERVAL, SubscriberDropCounter};
     use crate::streamhub::utils::Uuid;
     use async_trait::async_trait;
     use std::collections::HashMap;
-    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::time::Duration;
-    use tokio::sync::{broadcast, oneshot, Mutex};
+    use tokio::sync::{Mutex, broadcast, oneshot};
 
     struct NoopHandler;
 

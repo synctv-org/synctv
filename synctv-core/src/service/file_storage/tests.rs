@@ -413,16 +413,18 @@ async fn pending_upload_session_limit_is_atomic_and_allows_existing_session_upda
 
     let accepted_index = if first.is_ok() { 49 } else { 50 };
     let rejected_index = if first.is_ok() { 50 } else { 49 };
-    assert!(ok(
-        repository
-            .get_object(
-                "pending-limit-test",
-                &format!("test/files/pending-limit/{rejected_index}"),
-            )
-            .await,
-        "rejected upload object lookup should succeed",
-    )
-    .is_none());
+    assert!(
+        ok(
+            repository
+                .get_object(
+                    "pending-limit-test",
+                    &format!("test/files/pending-limit/{rejected_index}"),
+                )
+                .await,
+            "rejected upload object lookup should succeed",
+        )
+        .is_none()
+    );
     ok(
         upsert_limit_test_upload_session(&repository, user_id, accepted_index).await,
         "an existing upload session should remain reusable at the limit",
@@ -1936,8 +1938,10 @@ async fn database_instant_upload_proof_state_is_scoped_to_reference() {
                     object_kind: crate::models::FileObjectKind::Generic,
                     client_request_id: None,
                 },
-                vec![submitted_file_reference_from_session_file(&first.file)
-                    .expect("first reference should build")],
+                vec![
+                    submitted_file_reference_from_session_file(&first.file)
+                        .expect("first reference should build"),
+                ],
             )
             .await,
         "first verified reference should prepare",
@@ -1952,8 +1956,10 @@ async fn database_instant_upload_proof_state_is_scoped_to_reference() {
                     object_kind: crate::models::FileObjectKind::Generic,
                     client_request_id: None,
                 },
-                vec![submitted_file_reference_from_session_file(&second.file)
-                    .expect("second reference should build")],
+                vec![
+                    submitted_file_reference_from_session_file(&second.file)
+                        .expect("second reference should build"),
+                ],
             )
             .await,
         "second unverified reference should fail",
@@ -2008,8 +2014,10 @@ async fn database_instant_upload_proof_state_is_scoped_to_reference() {
                     object_kind: crate::models::FileObjectKind::Generic,
                     client_request_id: None,
                 },
-                vec![submitted_file_reference_from_session_file(&second.file)
-                    .expect("second reference should build")],
+                vec![
+                    submitted_file_reference_from_session_file(&second.file)
+                        .expect("second reference should build"),
+                ],
             )
             .await,
         "second verified reference should prepare",
@@ -2176,21 +2184,23 @@ async fn database_storage_schedules_reference_delete_before_physical_cleanup() {
         "object delete should be claimable",
     );
     assert!(claimed_for_delete);
-    assert!(ok(
-        sqlx::query_scalar!(
-            r#"
+    assert!(
+        ok(
+            sqlx::query_scalar!(
+                r#"
             SELECT deleting_at IS NOT NULL
             FROM file_objects
             WHERE storage_backend = $1 AND object_key = $2
             "#,
-            &file.storage_backend,
-            &file.object_key,
+                &file.storage_backend,
+                &file.object_key,
+            )
+            .fetch_one(&pool)
+            .await,
+            "deleting flag should load"
         )
-        .fetch_one(&pool)
-        .await,
-        "deleting flag should load"
-    )
-    .unwrap_or_default());
+        .unwrap_or_default()
+    );
 
     ok(
         storage
@@ -2247,28 +2257,32 @@ async fn deleting_file_object_cannot_be_reused_or_referenced() {
         "object delete should be claimable",
     );
     assert!(claimed_for_delete);
-    assert!(ok(
-        repository
-            .get_object_by_manifest("primary_db", "database/chat/attachments/", &checksum, 8)
-            .await,
-        "manifest lookup should succeed"
-    )
-    .is_none());
-    let mut tx = ok(pool.begin().await, "transaction should begin");
-    assert!(ok(
-        FileStorageRepository::insert_reference_in_tx(
-            &mut tx,
-            "primary_db",
-            object_key,
-            "chat_message_attachment",
-            "message:1",
-            None,
-            &empty_reference_metadata(),
+    assert!(
+        ok(
+            repository
+                .get_object_by_manifest("primary_db", "database/chat/attachments/", &checksum, 8)
+                .await,
+            "manifest lookup should succeed"
         )
-        .await,
-        "reference insert should skip deleting object"
-    )
-    .is_none());
+        .is_none()
+    );
+    let mut tx = ok(pool.begin().await, "transaction should begin");
+    assert!(
+        ok(
+            FileStorageRepository::insert_reference_in_tx(
+                &mut tx,
+                "primary_db",
+                object_key,
+                "chat_message_attachment",
+                "message:1",
+                None,
+                &empty_reference_metadata(),
+            )
+            .await,
+            "reference insert should skip deleting object"
+        )
+        .is_none()
+    );
     ok(tx.rollback().await, "transaction should rollback");
     assert!(matches!(
         repository
@@ -2583,18 +2597,20 @@ async fn validated_file_reuse_is_scoped_to_the_object_namespace() {
     );
     assert_eq!(avatar.object_key, avatar_key);
 
-    assert!(ok(
-        repository
-            .get_object_by_manifest(
-                "database",
-                "database/chat/attachments/",
-                &content_manifest_sha256,
-                128,
-            )
-            .await,
-        "chat manifest lookup should succeed",
-    )
-    .is_none());
+    assert!(
+        ok(
+            repository
+                .get_object_by_manifest(
+                    "database",
+                    "database/chat/attachments/",
+                    &content_manifest_sha256,
+                    128,
+                )
+                .await,
+            "chat manifest lookup should succeed",
+        )
+        .is_none()
+    );
 }
 
 #[tokio::test]
@@ -3051,20 +3067,24 @@ async fn database_storage_cleans_expired_partial_upload_session() {
             .await,
         "expired session should clean"
     ));
-    assert!(ok(
-        repository
-            .list_blob_parts("database", &upload_session_key)
-            .await,
-        "temporary parts should load"
-    )
-    .is_empty());
-    assert!(ok(
-        repository
-            .get_upload_session("database", &upload_session_key)
-            .await,
-        "upload session should load"
-    )
-    .is_none());
+    assert!(
+        ok(
+            repository
+                .list_blob_parts("database", &upload_session_key)
+                .await,
+            "temporary parts should load"
+        )
+        .is_empty()
+    );
+    assert!(
+        ok(
+            repository
+                .get_upload_session("database", &upload_session_key)
+                .await,
+            "upload session should load"
+        )
+        .is_none()
+    );
     assert!(!ok(
         repository
             .object_exists("database", &session.file.object_key)
@@ -3524,9 +3544,11 @@ async fn s3_storage_multipart_session_returns_native_part_urls() {
             .map(String::as_str),
         Some("application/pdf")
     );
-    assert!(session
-        .upload_headers
-        .contains_key(FILE_UPLOAD_TOKEN_HEADER));
+    assert!(
+        session
+            .upload_headers
+            .contains_key(FILE_UPLOAD_TOKEN_HEADER)
+    );
     assert!(session.resumable);
     let upload_id = some(session.upload_id.clone(), "S3 upload_id should be returned");
     assert_eq!(session.part_urls.len(), 2);
@@ -4218,13 +4240,15 @@ async fn s3_storage_server_mediated_upload_is_bound_to_session_key() {
         .len(),
         1
     );
-    assert!(ok(
-        repository
-            .list_upload_session_parts("s3_public", &second_session_key)
-            .await,
-        "second session parts should load",
-    )
-    .is_empty());
+    assert!(
+        ok(
+            repository
+                .list_upload_session_parts("s3_public", &second_session_key)
+                .await,
+            "second session parts should load",
+        )
+        .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -4313,18 +4337,20 @@ async fn s3_storage_multipart_completion_rejects_manifest_mismatch() {
     );
 
     assert!(matches!(error, Error::InvalidInput(message) if message.contains("manifest")));
-    assert!(ok(
-        repository
-            .get_object_by_manifest(
-                "s3_public",
-                "files/",
-                &expected_content_manifest_sha256,
-                payload_size(&expected_payload),
-            )
-            .await,
-        "object by manifest should load"
-    )
-    .is_none());
+    assert!(
+        ok(
+            repository
+                .get_object_by_manifest(
+                    "s3_public",
+                    "files/",
+                    &expected_content_manifest_sha256,
+                    payload_size(&expected_payload),
+                )
+                .await,
+            "object by manifest should load"
+        )
+        .is_none()
+    );
     assert!(!ok(
         repository
             .object_validated("s3_public", &session.file.object_key)

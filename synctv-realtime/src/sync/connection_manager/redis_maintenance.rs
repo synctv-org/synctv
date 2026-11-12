@@ -4,8 +4,8 @@ use redis::AsyncCommands;
 use tracing::{debug, info, warn};
 
 use super::model::{
-    i64_to_u64_saturating, i64_to_usize_saturating, usize_to_i64_saturating,
-    usize_to_u64_saturating, ConnectionInfo, ConnectionInfoPersistent,
+    ConnectionInfo, ConnectionInfoPersistent, i64_to_u64_saturating, i64_to_usize_saturating,
+    usize_to_i64_saturating, usize_to_u64_saturating,
 };
 use super::redis_state::{
     BATCH_REFRESH_TTLS_SCRIPT, CONNECTION_METADATA_TTL_SECONDS, DECR_DELETE_NEGATIVE_SCRIPT,
@@ -974,10 +974,10 @@ impl ConnectionManager {
 
         // Find the first connection that's in the specified room
         for conn_id in &conn_ids {
-            if let Some(conn) = self.connections.get(conn_id) {
-                if conn.room_id.as_ref() == Some(room_id) {
-                    return Some(conn.connection_id.clone());
-                }
+            if let Some(conn) = self.connections.get(conn_id)
+                && conn.room_id.as_ref() == Some(room_id)
+            {
+                return Some(conn.connection_id.clone());
             }
         }
         None
@@ -1113,24 +1113,25 @@ impl ConnectionManager {
         joined: bool,
     ) {
         // Verify the connection belongs to the user and room
-        if let Some(mut conn) = self.connections.get_mut(conn_id) {
-            if &conn.actor == actor && conn.room_id.as_ref() == Some(room_id) {
-                conn.voice_rtc_joined = joined;
-                // Set or clear the RTC join timestamp
-                conn.voice_rtc_joined_at = if joined { Some(Instant::now()) } else { None };
-                if let Some(voice_rtc_joined_at) = conn.voice_rtc_joined_at {
-                    self.schedule_voice_rtc_timeout(conn_id, voice_rtc_joined_at);
-                } else {
-                    self.clear_voice_rtc_timeout(conn_id);
-                }
-                debug!(
-                    connection_id = %conn_id,
-                    actor = %actor,
-                    room_id = %room_id,
-                    joined = joined,
-                    "WebRTC join status updated"
-                );
+        if let Some(mut conn) = self.connections.get_mut(conn_id)
+            && &conn.actor == actor
+            && conn.room_id.as_ref() == Some(room_id)
+        {
+            conn.voice_rtc_joined = joined;
+            // Set or clear the RTC join timestamp
+            conn.voice_rtc_joined_at = if joined { Some(Instant::now()) } else { None };
+            if let Some(voice_rtc_joined_at) = conn.voice_rtc_joined_at {
+                self.schedule_voice_rtc_timeout(conn_id, voice_rtc_joined_at);
+            } else {
+                self.clear_voice_rtc_timeout(conn_id);
             }
+            debug!(
+                connection_id = %conn_id,
+                actor = %actor,
+                room_id = %room_id,
+                joined = joined,
+                "WebRTC join status updated"
+            );
         }
     }
 

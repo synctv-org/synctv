@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::broadcast;
 use tokio::sync::Mutex;
+use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
@@ -1050,19 +1050,19 @@ impl CacheInvalidationService {
         C: redis::aio::ConnectionLike + Send + Unpin,
     {
         // Check origin node to skip self-originated messages
-        if let Some(origin_value) = entry.map.get("origin") {
-            if Self::redis_value_as_str(origin_value) == Some(context.node_id) {
-                // Acknowledge but don't broadcast -- this node originated the message
-                Self::ack_stream_entry(
-                    conn,
-                    context,
-                    &entry.id,
-                    "acknowledge self-originated invalidation message",
-                )
-                .await;
-                failed_delivery_counts.remove(&entry.id);
-                return;
-            }
+        if let Some(origin_value) = entry.map.get("origin")
+            && Self::redis_value_as_str(origin_value) == Some(context.node_id)
+        {
+            // Acknowledge but don't broadcast -- this node originated the message
+            Self::ack_stream_entry(
+                conn,
+                context,
+                &entry.id,
+                "acknowledge self-originated invalidation message",
+            )
+            .await;
+            failed_delivery_counts.remove(&entry.id);
+            return;
         }
 
         // Extract the message payload
@@ -1709,7 +1709,7 @@ impl std::fmt::Debug for CacheInvalidationService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_helpers::{failing_redis_runtime, TestResultExt};
+    use crate::test_helpers::{TestResultExt, failing_redis_runtime};
 
     #[test]
     fn test_invalidation_message_serialization() {
@@ -1852,9 +1852,11 @@ mod tests {
         );
 
         // The needs_state_sync flag should start as false
-        assert!(!service
-            .needs_state_sync
-            .load(std::sync::atomic::Ordering::Relaxed));
+        assert!(
+            !service
+                .needs_state_sync
+                .load(std::sync::atomic::Ordering::Relaxed)
+        );
 
         // When Redis is not configured, broadcast_remote is a no-op and succeeds
         let result = service.broadcast_remote(InvalidationMessage::All).await;
@@ -1862,9 +1864,11 @@ mod tests {
 
         // Since there's no Redis configured, the flag should still be false
         // (we only set it when Redis is configured but fails)
-        assert!(!service
-            .needs_state_sync
-            .load(std::sync::atomic::Ordering::Relaxed));
+        assert!(
+            !service
+                .needs_state_sync
+                .load(std::sync::atomic::Ordering::Relaxed)
+        );
     }
 
     #[tokio::test]

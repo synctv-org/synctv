@@ -10,12 +10,12 @@
 use std::sync::Arc;
 
 use crate::{
+    Error, Result,
     models::{Playlist, UserId},
-    repository::realtime_outbox::{NewRealtimeOutboxEvent, RealtimeOutboxRepository},
     repository::PlaylistRepository,
     repository::UserProviderCredentialRepository,
+    repository::realtime_outbox::{NewRealtimeOutboxEvent, RealtimeOutboxRepository},
     service::{FileStorageService, PermissionService, ProvidersManager},
-    Error, Result,
 };
 
 mod cover;
@@ -30,8 +30,8 @@ pub use cover::CreatePlaylistCoverUploadSession;
 pub use creation::CreatePlaylistRequest;
 #[cfg(test)]
 use dynamic::{
-    normalize_dynamic_playlist_fields, validate_dynamic_playlist_source_with_dependencies,
-    DynamicPlaylistValidationDeps,
+    DynamicPlaylistValidationDeps, normalize_dynamic_playlist_fields,
+    validate_dynamic_playlist_source_with_dependencies,
 };
 pub use movement::MovePlaylistRequest;
 pub use properties::SetPlaylistRequest;
@@ -84,10 +84,9 @@ impl PlaylistService {
         if let Some(event) = outbox_event_factory
             .map(|factory| factory(playlist))
             .transpose()?
+            && let Some(outbox) = &self.realtime_outbox
         {
-            if let Some(outbox) = &self.realtime_outbox {
-                outbox.insert_with_executor(&event, &mut **tx).await?;
-            }
+            outbox.insert_with_executor(&event, &mut **tx).await?;
         }
         Ok(())
     }

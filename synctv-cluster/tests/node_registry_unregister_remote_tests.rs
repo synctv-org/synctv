@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
 use synctv_cluster::NodeRegistry;
-use synctv_core_testing::{start_redis_client_url_with_label, RedisContainer};
+use synctv_core_testing::{RedisContainer, start_redis_client_url_with_label};
 
 async fn setup_redis() -> (RedisContainer, redis::Client) {
     let (redis_container, redis_client, _redis_url) =

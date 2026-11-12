@@ -25,7 +25,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use super::{cleanup_ops, FileStorageService, LeaderCheck, RuntimeSettingsStore};
+use super::{FileStorageService, LeaderCheck, RuntimeSettingsStore, cleanup_ops};
 use crate::models::DeletionSource;
 use crate::service::partitioning::u32_to_i32;
 use crate::{InternalExt, Result};

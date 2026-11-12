@@ -24,8 +24,8 @@ use uuid::Uuid;
 
 use crate::models::{MediaId, PlaylistId, RoomId, UserId};
 use crate::{
-    redis_runtime_snapshot, Error, RedisConnectionRuntime, Result, SharedStateMode,
-    SharedStateProfile,
+    Error, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
+    redis_runtime_snapshot,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -1581,16 +1581,13 @@ pub fn version_fence_store_from_shared_state_profile(
                 profile.key_prefix(),
             )))
         }
-        SharedStateMode::SharedBestEffort => {
-            if let Some(runtime) = profile.shared_runtime() {
-                Ok(Arc::new(RedisVersionFenceStore::new(
-                    runtime,
-                    profile.key_prefix(),
-                )))
-            } else {
-                Ok(Arc::new(LocalVersionFenceStore::new()))
-            }
-        }
+        SharedStateMode::SharedBestEffort => match profile.shared_runtime() {
+            Some(runtime) => Ok(Arc::new(RedisVersionFenceStore::new(
+                runtime,
+                profile.key_prefix(),
+            ))),
+            _ => Ok(Arc::new(LocalVersionFenceStore::new())),
+        },
         SharedStateMode::LocalOnly => Ok(Arc::new(LocalVersionFenceStore::new())),
     }
 }
@@ -1673,7 +1670,7 @@ async fn db_version_for_repair(pool: &PgPool, domain: &CacheDomain) -> Option<i6
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_helpers::{failing_redis_runtime, TestOptionExt, TestResultExt};
+    use crate::test_helpers::{TestOptionExt, TestResultExt, failing_redis_runtime};
 
     #[derive(Debug, Default)]
     struct CommitFailureRepairStore {

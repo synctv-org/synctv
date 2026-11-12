@@ -8,6 +8,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use sqlx::PgPool;
 use synctv_core::{
+    Error,
     cache::{CacheDomain, KeyBuilder, LocalVersionFenceStore, UsernameCache, VersionFenceStore},
     models::{
         RoomAdminPermissionBits, RoomMemberPermissionBits, RoomPermission, RoomRole, User, UserId,
@@ -18,9 +19,8 @@ use synctv_core::{
         AdminMemberUpdate, BruteForceProtection, InMemoryTokenBlacklistStore, JwtService,
         RoomService, RoomServiceOptions, UserService,
     },
-    Error,
 };
-use synctv_core_testing::{create_test_pool, TestOptionExt, TestResultExt};
+use synctv_core_testing::{TestOptionExt, TestResultExt, create_test_pool};
 fn make_user_service(pool: &PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).checked("Failed to create JwtService");

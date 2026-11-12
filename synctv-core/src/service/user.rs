@@ -9,14 +9,14 @@ use crate::{
         VersionFenceStore,
     },
     repository::{
-        realtime_outbox::RealtimeOutboxRepository, EmailBindRepository,
-        EmailRegistrationTokenRepository, TotpCredentialRepository, UserEmailRepository,
-        UserPasswordRepository, UserPreferencesRepository, UserRepository,
+        EmailBindRepository, EmailRegistrationTokenRepository, TotpCredentialRepository,
+        UserEmailRepository, UserPasswordRepository, UserPreferencesRepository, UserRepository,
+        realtime_outbox::RealtimeOutboxRepository,
     },
-    service::{file_storage::FileStorageService, PermissionService, RequestRateLimiterService},
     service::{
         BruteForceProtectionService, JwtService, OpaquePasswordService, TokenBlacklistStore,
     },
+    service::{PermissionService, RequestRateLimiterService, file_storage::FileStorageService},
     validation::PasswordComplexityOptions,
 };
 
@@ -197,6 +197,11 @@ pub use session_types::{
 mod tokens;
 mod totp;
 pub use session_stores::{
+    InMemoryLoginSessionStore, InMemoryMfaSessionStore, InMemoryOpaqueRegistrationSessionStore,
+    InMemorySensitiveVerificationSessionStore, LoginSessionStore, MfaSessionStore,
+    OpaqueRegistrationSessionStore, SensitiveVerificationSessionStore,
+};
+pub use session_stores::{
     local_login_session_store, local_mfa_session_store, local_opaque_registration_session_store,
     local_sensitive_verification_session_store,
 };
@@ -204,11 +209,6 @@ pub use session_stores::{
     login_session_store_from_shared_state_profile, mfa_session_store_from_shared_state_profile,
     opaque_registration_session_store_from_shared_state_profile,
     sensitive_verification_session_store_from_shared_state_profile,
-};
-pub use session_stores::{
-    InMemoryLoginSessionStore, InMemoryMfaSessionStore, InMemoryOpaqueRegistrationSessionStore,
-    InMemorySensitiveVerificationSessionStore, LoginSessionStore, MfaSessionStore,
-    OpaqueRegistrationSessionStore, SensitiveVerificationSessionStore,
 };
 pub use totp::{TotpRecoveryCodes, TotpSetup};
 

@@ -1,15 +1,15 @@
 use super::{
-    multipart::{completed_upload_part_manifest_digest, completion_parts_from_session_parts},
     S3CompatibleFileStorageService,
+    multipart::{completed_upload_part_manifest_digest, completion_parts_from_session_parts},
 };
 use crate::{
+    Error, Result,
     models::{CompleteFileUploadSessionResult, FileBlob, FileBlobCompression},
     repository::UpsertFileObject,
     service::file_storage::{
         constant_time_eq, upload_session_object_metadata, upload_session_parts_progress,
         upload_session_policy,
     },
-    Error, Result,
 };
 
 impl S3CompatibleFileStorageService {

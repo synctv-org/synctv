@@ -1,12 +1,12 @@
 use super::*;
 use crate::slice_cache::backend::file_format::{
-    cache_entry_deadline_millis, encode_header, FileEntryHeader, CACHE_FILE_MAGIC,
+    CACHE_FILE_MAGIC, FileEntryHeader, cache_entry_deadline_millis, encode_header,
 };
 use crate::slice_cache::backend::file_index::{FileIndex, FileIndexEntry};
 use bytes::Bytes;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::time::SystemTime;
 use tempfile::TempDir;
 
@@ -251,10 +251,12 @@ async fn test_file_backend_evict_expired() -> TestResult {
     let evicted = backend.evict_expired().await;
     assert_eq!(evicted, 1);
     assert_eq!(backend.entry_count(), 1);
-    assert!(backend
-        .get("fresh_key_0000000000000000000000000000000000000000000000000000000000")
-        .await
-        .is_some());
+    assert!(
+        backend
+            .get("fresh_key_0000000000000000000000000000000000000000000000000000000000")
+            .await
+            .is_some()
+    );
     Ok(())
 }
 
@@ -315,10 +317,12 @@ async fn test_file_backend_evict_to_size() -> TestResult {
         backend.current_size()
     );
 
-    assert!(backend
-        .get("newest_key_0000000000000000000000000000000000000000000000000000000")
-        .await
-        .is_some());
+    assert!(
+        backend
+            .get("newest_key_0000000000000000000000000000000000000000000000000000000")
+            .await
+            .is_some()
+    );
     Ok(())
 }
 

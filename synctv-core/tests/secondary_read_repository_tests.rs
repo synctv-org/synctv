@@ -2,11 +2,11 @@ use chrono::Utc;
 use sqlx::PgPool;
 use synctv_core::{
     models::{
-        room_settings::MaxMembers, AuditAction, AuditTargetType, ChatMessage, ChatMessageSelection,
-        ChatMessageType, ContentReportStatus, ContentReportTarget, CreateContentReport,
-        MyRoomListQuery, PageParams, ReviewStatus, Room, RoomId, RoomListQuery, RoomMember,
-        RoomRole, RoomSettings, RoomStatus, SignupMethod, UpsertRoomCategory, UpsertRoomLabel,
-        User, UserId, UserListQuery,
+        AuditAction, AuditTargetType, ChatMessage, ChatMessageSelection, ChatMessageType,
+        ContentReportStatus, ContentReportTarget, CreateContentReport, MyRoomListQuery, PageParams,
+        ReviewStatus, Room, RoomId, RoomListQuery, RoomMember, RoomRole, RoomSettings, RoomStatus,
+        SignupMethod, UpsertRoomCategory, UpsertRoomLabel, User, UserId, UserListQuery,
+        room_settings::MaxMembers,
     },
     repository::{
         AuditLogQuery, AuditLogRepository, BanRecordListQuery, BanRecordRepository, ChatRepository,
@@ -440,9 +440,11 @@ async fn homepage_room_reads_use_read_pool_while_primary_methods_stay_strongly_c
             .await,
         "read replica categories should load",
     );
-    assert!(categories
-        .iter()
-        .any(|category| category.key == "read-home"));
+    assert!(
+        categories
+            .iter()
+            .any(|category| category.key == "read-home")
+    );
     let labels = ok(
         taxonomy_repo
             .list_labels_eventually_consistent(true, Some(read_category.id))

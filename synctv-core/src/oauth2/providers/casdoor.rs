@@ -4,11 +4,11 @@
 //! configuration boundary while delegating discovery, token validation, and
 //! profile handling to the generic [`super::oidc::OidcProvider`].
 
-use super::oidc::{create_from_config, OidcConfig, OidcProvider};
+use super::oidc::{OidcConfig, OidcProvider, create_from_config};
 use super::validate_required_oauth2_field;
+use crate::Error;
 use crate::oauth2::{OAuth2Authorization, OAuth2AuthorizationMode, OAuth2UserInfo, Provider};
 use crate::service::OAuth2ProviderPrivateConfig;
-use crate::Error;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 

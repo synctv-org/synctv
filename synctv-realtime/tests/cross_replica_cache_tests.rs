@@ -11,18 +11,18 @@ use std::time::Duration;
 
 use chrono::Utc;
 use synctv_core::cache::{CacheInvalidationRuntime, CacheInvalidationService, InvalidationMessage};
-use synctv_core::models::id::{RoomId, UserId};
 use synctv_core::models::RoomRole;
+use synctv_core::models::id::{RoomId, UserId};
 use synctv_core::{DirectRedisConnectionRuntime, RedisConnectionRuntime, SharedStateProfile};
 use synctv_core_testing::redis_connection_manager;
-use synctv_realtime::sync::{
-    build_room_message_runtime, RealtimeConfig, RealtimeEventHandler, RealtimeManager,
-};
 use synctv_realtime::sync::{CacheTarget, RealtimeEvent};
+use synctv_realtime::sync::{
+    RealtimeConfig, RealtimeEventHandler, RealtimeManager, build_room_message_runtime,
+};
 mod integration_test_helpers;
 use integration_test_helpers::{
-    broadcast_until_cache_invalidation, broadcast_until_room_event, create_node, user_actor,
-    TestRedis,
+    TestRedis, broadcast_until_cache_invalidation, broadcast_until_room_event, create_node,
+    user_actor,
 };
 
 fn shared_message_runtime(

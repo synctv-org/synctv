@@ -118,7 +118,7 @@ where
             Ok(None) => return Err("channel closed unexpectedly".into()),
             Err(_error) if tokio::time::Instant::now() < deadline => {}
             Err(error) => {
-                return Err(format!("timeout waiting for {timeout_label} message: {error}").into())
+                return Err(format!("timeout waiting for {timeout_label} message: {error}").into());
             }
         }
     }

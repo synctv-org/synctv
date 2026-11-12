@@ -19,8 +19,8 @@ use tokio::sync::broadcast;
 
 mod integration_test_helpers;
 use integration_test_helpers::{
-    broadcast_until_all_clients_receive, broadcast_until_room_event, create_node_with_prefix,
-    user_actor, TestRedis,
+    TestRedis, broadcast_until_all_clients_receive, broadcast_until_room_event,
+    create_node_with_prefix, user_actor,
 };
 
 async fn wait_for_stream_len(redis_url: &str, stream_key: &str, expected_min_len: usize) {

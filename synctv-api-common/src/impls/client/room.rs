@@ -1,7 +1,7 @@
 //! Room operations: discovery, create, get, join, leave, delete, settings, chat, public settings
 
 use crate::impls::ApiError;
-use futures::{stream, StreamExt as _, TryStreamExt as _};
+use futures::{StreamExt as _, TryStreamExt as _, stream};
 use std::collections::{HashMap, HashSet};
 use synctv_core::models::{
     ChatMentionInput, ChatMessageEvent, ChatMessageType, ChatMessageWithAttachments, ChatPinEvent,
@@ -18,11 +18,11 @@ use super::convert::{
     try_playback_state_to_proto,
 };
 use super::media::{
-    complete_upload_response_fields, complete_upload_session_request,
-    prepare_delete_entries_outbox_fanout, proto_file_range_request, proto_file_upload_range,
-    proto_upload_manifest_parts, required_file_upload_reference, room_cover_object_to_proto,
+    PrepareDeleteEntriesOutboxFanout, complete_upload_response_fields,
+    complete_upload_session_request, prepare_delete_entries_outbox_fanout,
+    proto_file_range_request, proto_file_upload_range, proto_upload_manifest_parts,
+    required_file_upload_reference, room_cover_object_to_proto,
     room_cover_upload_create_result_to_proto, uploaded_parts_response_fields,
-    PrepareDeleteEntriesOutboxFanout,
 };
 use super::{ClientApiImpl, RoomActor};
 
@@ -3239,10 +3239,12 @@ mod tests {
             )
             .await,
         )?;
-        assert!(discovery
-            .room
-            .as_ref()
-            .is_some_and(|room| room.creator_blocked));
+        assert!(
+            discovery
+                .room
+                .as_ref()
+                .is_some_and(|room| room.creator_blocked)
+        );
 
         api_ok(api.leave_room(&member.id, &room_id).await)?;
 
@@ -3259,11 +3261,12 @@ mod tests {
         )?;
         assert_eq!(favorites_after_leave.total, 0);
         assert!(favorites_after_leave.rooms.is_empty());
-        assert!(!api
-            .room_service
-            .is_room_favorited_by_user(&member.id, &room.id)
-            .await
-            .map_err(|error| test_error(error.to_string()))?);
+        assert!(
+            !api.room_service
+                .is_room_favorited_by_user(&member.id, &room.id)
+                .await
+                .map_err(|error| test_error(error.to_string()))?
+        );
         Ok(())
     }
 
@@ -3742,8 +3745,8 @@ mod tests {
     }
 
     #[test]
-    fn build_create_websocket_ticket_request_rejects_proto_valid_but_undecodable_room_id(
-    ) -> TestResult {
+    fn build_create_websocket_ticket_request_rejects_proto_valid_but_undecodable_room_id()
+    -> TestResult {
         let codec = synctv_adapter::PublicIdCodec::plain();
         let error = api_err(build_create_websocket_ticket_request(
             &synctv_proto::client::CreateWebSocketTicketRequest {

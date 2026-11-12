@@ -1,7 +1,7 @@
 use std::{
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
@@ -23,9 +23,9 @@ use synctv_xiu::{
         stream::StreamIdentifier,
         utils::Uuid,
     },
-    webrtc::{create_whep_session, create_whip_session, PeerSession, WebRtcConfig, WebRtcError},
+    webrtc::{PeerSession, WebRtcConfig, WebRtcError, create_whep_session, create_whip_session},
 };
-use tokio::sync::{oneshot, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
@@ -705,14 +705,13 @@ impl WebRtcSessionManager {
             }
         }
         session.stream_guard.lock().take();
-        if let Some(directory) = session_directory {
-            if let Err(error) = directory
+        if let Some(directory) = session_directory
+            && let Err(error) = directory
                 .registry
                 .unregister_webrtc_session(&session_id.to_string(), &directory.node_id)
                 .await
-            {
-                warn!(%session_id, %error, "failed to unregister WebRTC session owner");
-            }
+        {
+            warn!(%session_id, %error, "failed to unregister WebRTC session owner");
         }
     }
 

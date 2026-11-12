@@ -7,16 +7,17 @@ use {
         errors::{SessionError, SessionErrorValue},
     },
     crate::rtmp::{
-        cache::errors::CacheError,
         cache::SplitCache,
+        cache::errors::CacheError,
         chunk::{
+            ChunkInfo,
             define::{chunk_type, csid_type},
             packetizer::ChunkPacketizer,
-            ChunkInfo,
         },
         messages::define::msg_type_id,
     },
     crate::streamhub::{
+        SubscribeWithRollbackError,
         define::{
             FrameData, FrameDataReceiver, FrameDataSender, FrameTrySendError, NotifyInfo,
             PublishType, PublisherInfo, StreamHubEvent, StreamHubEventSender, SubscribeType,
@@ -27,7 +28,6 @@ use {
         stream::StreamIdentifier,
         subscribe_with_rollback_on_timeout,
         utils::Uuid,
-        SubscribeWithRollbackError,
     },
     async_trait::async_trait,
     bytes::BytesMut,
@@ -298,8 +298,8 @@ impl Common {
             value: SessionErrorValue::NoneFrameDataReceiver,
         })?;
         loop {
-            if let Some(data) = receiver.recv().await {
-                match data {
+            match receiver.recv().await {
+                Some(data) => match data {
                     FrameData::Audio { timestamp, data } => {
                         let data_size = data.len();
                         self.send_audio(BytesMut::from(data), timestamp).await?;
@@ -337,12 +337,13 @@ impl Common {
                         self.send_metadata(BytesMut::from(data), timestamp).await?;
                     }
                     FrameData::MediaInfo { .. } => {}
+                },
+                _ => {
+                    // recv() returning None means all senders are dropped -- channel is permanently closed.
+                    return Err(SessionError {
+                        value: SessionErrorValue::NoMediaDataReceived,
+                    });
                 }
-            } else {
-                // recv() returning None means all senders are dropped -- channel is permanently closed.
-                return Err(SessionError {
-                    value: SessionErrorValue::NoMediaDataReceived,
-                });
             }
         }
     }

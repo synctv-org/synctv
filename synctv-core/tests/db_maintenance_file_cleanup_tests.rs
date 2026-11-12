@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use chrono::{Duration, Utc};
 use synctv_core::{
+    Error,
     models::{
         CreateFileUploadSession, FileReferenceTarget, FileUploadSessionCreateResult, NewStoredFile,
         Room, RoomId, RoomStatus, SignupMethod, User, UserId, UserRole, UserStatus,
@@ -13,7 +14,6 @@ use synctv_core::{
         AlwaysLeader, DatabaseMaintenanceOptions, DatabaseMaintenanceService,
         FileStorageCleanupOrigin, FileStorageContext, FileStorageService,
     },
-    Error,
 };
 use synctv_core_testing::{create_test_pool, ensure_chat_partition_for, ok};
 
@@ -173,11 +173,13 @@ async fn old_chat_message_cleanup_deletes_image_objects() {
         "old chat cleanup should succeed",
     );
 
-    assert!(ok(
-        storage.deleted_object_keys.lock(),
-        "deleted object key recorder lock should be acquired",
-    )
-    .is_empty());
+    assert!(
+        ok(
+            storage.deleted_object_keys.lock(),
+            "deleted object key recorder lock should be acquired",
+        )
+        .is_empty()
+    );
     let due = ok(
         FileStorageRepository::new(pool.clone())
             .count_due_cleanup_jobs()
@@ -343,11 +345,13 @@ async fn expired_file_reference_cleanup_releases_reference() {
     );
 
     assert_eq!(released, 1);
-    assert!(ok(
-        storage.deleted_object_keys.lock(),
-        "deleted object key recorder lock should be acquired"
-    )
-    .is_empty());
+    assert!(
+        ok(
+            storage.deleted_object_keys.lock(),
+            "deleted object key recorder lock should be acquired"
+        )
+        .is_empty()
+    );
     let due = ok(
         FileStorageRepository::new(pool.clone())
             .count_due_cleanup_jobs()
@@ -397,11 +401,13 @@ async fn unreferenced_file_cleanup_accepts_long_object_keys() {
     );
 
     assert_eq!(scheduled, 1);
-    assert!(ok(
-        storage.deleted_object_keys.lock(),
-        "deleted object key recorder lock should be acquired"
-    )
-    .is_empty());
+    assert!(
+        ok(
+            storage.deleted_object_keys.lock(),
+            "deleted object key recorder lock should be acquired"
+        )
+        .is_empty()
+    );
     let job = ok(
         sqlx::query!(
             r#"

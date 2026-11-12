@@ -5,8 +5,8 @@
 
 #![allow(clippy::unwrap_used)]
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use synctv_api::extract_client_ip;
 use synctv_api::ApiRuntimeSettings as Config;
+use synctv_api::extract_client_ip;
 
 /// Create a config with the given trusted proxies.
 fn config_with_proxies(proxies: Vec<&str>) -> Config {

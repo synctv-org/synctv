@@ -12,9 +12,9 @@ use super::{
 };
 use crate::flv::define::aac_packet_type;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::sync::{Mutex, broadcast, mpsc};
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 
@@ -257,10 +257,10 @@ impl StreamDataTransceiver {
     ) -> Result<(), StreamHubError> {
         if let Some(val) = data {
             context.stream_handler.save_frame_data(&val)?;
-            if matches!(val, FrameData::Audio { .. } | FrameData::Video { .. }) {
-                if let Some(activity) = &context.publisher_activity {
-                    activity.record();
-                }
+            if matches!(val, FrameData::Audio { .. } | FrameData::Video { .. })
+                && let Some(activity) = &context.publisher_activity
+            {
+                activity.record();
             }
             let current_gen = context.generation.load(Ordering::Acquire);
             if current_gen != *cached_gen {

@@ -1,4 +1,5 @@
 use crate::{
+    Error, Result,
     models::{
         CompleteFileUploadSession, CompleteFileUploadSessionResult, FileMetadata,
         FileObjectDownload, FileRangeRequest, FileReferenceTarget, FileUploadManifestPart,
@@ -6,12 +7,11 @@ use crate::{
         SubmittedFileReference, UserId,
     },
     service::{
-        file_storage::FileStorageContext, playlist_cover_upload_policy, FileStorageCleanupOrigin,
+        FileStorageCleanupOrigin, file_storage::FileStorageContext, playlist_cover_upload_policy,
     },
-    Error, Result,
 };
 
-use super::{ensure_playlist_creator_can_edit, PlaylistService};
+use super::{PlaylistService, ensure_playlist_creator_can_edit};
 
 const PLAYLIST_COVER_REFERENCE_KIND: &str = "playlist_cover";
 
@@ -218,17 +218,16 @@ impl PlaylistService {
             .await?;
         tx.commit().await?;
 
-        if let Some(old_reference) = old_reference {
-            if old_reference.storage_backend != file.storage_backend
-                || old_reference.object_key != file.object_key
-            {
-                storage
-                    .schedule_delete_files(
-                        FileStorageCleanupOrigin::ReferenceReleased,
-                        &[old_reference],
-                    )
-                    .await?;
-            }
+        if let Some(old_reference) = old_reference
+            && (old_reference.storage_backend != file.storage_backend
+                || old_reference.object_key != file.object_key)
+        {
+            storage
+                .schedule_delete_files(
+                    FileStorageCleanupOrigin::ReferenceReleased,
+                    &[old_reference],
+                )
+                .await?;
         }
 
         Ok(updated_playlist)

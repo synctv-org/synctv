@@ -7,8 +7,8 @@ use std::collections::VecDeque;
 use std::future::Future;
 use std::ops::Deref;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 use synctv_core::models::notification::{Notification, NotificationData, NotificationType};
 use synctv_core::models::{
@@ -28,7 +28,7 @@ use synctv_core::service::{
     PermissionService, RateLimitConfig, RateLimiter, RoomService, RoomSettingsService,
 };
 use synctv_core_testing::{
-    create_test_request_rate_limiter, opaque_register_user, TestOptionExt, TestResultExt,
+    TestOptionExt, TestResultExt, create_test_request_rate_limiter, opaque_register_user,
 };
 use synctv_proto::client::server_message::Message;
 use synctv_realtime::fanout::{
@@ -347,15 +347,19 @@ fn core_chat_attachment_to_proto_requires_storage_metadata_and_allows_optional_d
 
     let mut missing_mime_type = attachment.clone();
     missing_mime_type.mime_type = None;
-    assert!(core_chat_attachment_to_proto(&missing_mime_type)
-        .expect_err("missing mime_type should fail")
-        .contains("mime_type"));
+    assert!(
+        core_chat_attachment_to_proto(&missing_mime_type)
+            .expect_err("missing mime_type should fail")
+            .contains("mime_type")
+    );
 
     let mut missing_size = attachment.clone();
     missing_size.size_bytes = None;
-    assert!(core_chat_attachment_to_proto(&missing_size)
-        .expect_err("missing size_bytes should fail")
-        .contains("size_bytes"));
+    assert!(
+        core_chat_attachment_to_proto(&missing_size)
+            .expect_err("missing size_bytes should fail")
+            .contains("size_bytes")
+    );
 
     let mut missing_dimensions = attachment;
     missing_dimensions.width = None;
@@ -2963,10 +2967,12 @@ async fn test_cached_room_subscription_delivers_pre_run_chat_event_after_explici
             .has_chat_events_observation()
             .await
     );
-    assert!(message_sender
-        .sent_messages()
-        .iter()
-        .any(|msg| matches!(msg.message, Some(Message::ResourceObserved(_)))));
+    assert!(
+        message_sender
+            .sent_messages()
+            .iter()
+            .any(|msg| matches!(msg.message, Some(Message::ResourceObserved(_))))
+    );
 
     event_service.broadcast(RealtimeEvent::ChatMessageEvent {
         event_id: "evt-prejoin-window".to_string(),
@@ -3534,10 +3540,12 @@ async fn test_observe_playback_reports_current_playback_with_event_cursor() {
         })
         .checked("observe should send initial playback");
     assert!(changed.event_cursor.is_none());
-    assert!(resource_playback(&ServerMessage {
-        message: Some(Message::ResourceEvent(changed.clone()))
-    })
-    .is_some_and(|playback| playback.media_id == public_media_id()));
+    assert!(
+        resource_playback(&ServerMessage {
+            message: Some(Message::ResourceEvent(changed.clone()))
+        })
+        .is_some_and(|playback| playback.media_id == public_media_id())
+    );
     fixture.shutdown().await;
 }
 
@@ -4408,8 +4416,8 @@ async fn test_playback_auto_advance_subscriber_skips_paused_state() {
 
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers) and waits for observed playback lifecycle tick"]
-async fn test_observed_playback_lifecycle_source_triggers_auto_advance_subscriber_for_observed_room(
-) {
+async fn test_observed_playback_lifecycle_source_triggers_auto_advance_subscriber_for_observed_room()
+ {
     let message_sender = RecordingMessageSender::new();
     let fixture = create_start_handler_fixture(
         "observe_playback_lifecycle_auto_advance",
@@ -5211,10 +5219,12 @@ async fn test_observe_room_settings_without_cursor_sends_current_settings_immedi
     match messages.iter().find_map(resource_room_settings) {
         Some(changed) => {
             assert_eq!(changed.version, 7);
-            assert!(changed
-                .settings
-                .as_ref()
-                .is_some_and(|settings| settings.chat_enabled));
+            assert!(
+                changed
+                    .settings
+                    .as_ref()
+                    .is_some_and(|settings| settings.chat_enabled)
+            );
         }
         None => std::panic::panic_any(format!(
             "expected RoomSettings after observe, got {messages:?}"
@@ -5490,14 +5500,16 @@ async fn test_resource_observations_are_bounded_per_connection() {
             .has_observation("room-settings-over-limit")
             .await
     );
-    assert!(sender
-        .sent_messages()
-        .iter()
-        .filter_map(resource_observe_error)
-        .any(|error| error
-            .error
-            .as_ref()
-            .is_some_and(|error| error.message.contains("maximum per connection"))));
+    assert!(
+        sender
+            .sent_messages()
+            .iter()
+            .filter_map(resource_observe_error)
+            .any(|error| error
+                .error
+                .as_ref()
+                .is_some_and(|error| error.message.contains("maximum per connection")))
+    );
 
     handler
         .handle_client_message(&ClientMessage {
@@ -5636,14 +5648,16 @@ async fn test_observe_playlist_items_requires_inner_request() {
         .checked("invalid observe should send ResourceObserveError without closing");
 
     assert_eq!(snapshot_service.call_count(), 0);
-    assert!(sender
-        .sent_messages()
-        .iter()
-        .filter_map(resource_observe_error)
-        .any(|error| error
-            .error
-            .as_ref()
-            .is_some_and(|error| error.message.contains("playlist_items request"))));
+    assert!(
+        sender
+            .sent_messages()
+            .iter()
+            .filter_map(resource_observe_error)
+            .any(|error| error
+                .error
+                .as_ref()
+                .is_some_and(|error| error.message.contains("playlist_items request")))
+    );
 }
 
 #[tokio::test]
@@ -8160,8 +8174,8 @@ async fn test_guest_chat_with_client_id_is_rejected() {
 
 #[tokio::test]
 #[ignore = "Requires Docker-backed PostgreSQL"]
-async fn test_guest_playlist_observation_is_rejected_even_if_permission_bits_include_browse_library(
-) {
+async fn test_guest_playlist_observation_is_rejected_even_if_permission_bits_include_browse_library()
+ {
     let event_service = test_realtime_manager("guest_playlist_observe_rejected").await;
     let connection_service = test_connection_manager();
     let handler = test_guest_message_handler(
@@ -8494,10 +8508,12 @@ async fn test_room_capability_change_ends_active_voice_and_media_sessions() {
         })
         .await;
 
-    assert!(fixture
-        .connection_service
-        .get_connection(fixture.handler.connection_id.as_str())
-        .is_some_and(|connection| !connection.voice_rtc_joined));
+    assert!(
+        fixture
+            .connection_service
+            .get_connection(fixture.handler.connection_id.as_str())
+            .is_some_and(|connection| !connection.voice_rtc_joined)
+    );
     assert!(fixture.handler.active_media_swarms.lock().is_empty());
     let retry_error = fixture
         .handler
@@ -8569,10 +8585,12 @@ async fn test_permission_revocation_ends_active_voice_and_media_sessions() {
         })
         .await;
 
-    assert!(fixture
-        .connection_service
-        .get_connection(fixture.handler.connection_id.as_str())
-        .is_some_and(|connection| !connection.voice_rtc_joined));
+    assert!(
+        fixture
+            .connection_service
+            .get_connection(fixture.handler.connection_id.as_str())
+            .is_some_and(|connection| !connection.voice_rtc_joined)
+    );
     assert!(fixture.handler.active_media_swarms.lock().is_empty());
     fixture.shutdown().await;
 }
@@ -8631,10 +8649,12 @@ async fn test_room_capability_change_serializes_with_an_in_flight_join() {
     event_task
         .await
         .checked("capability event task should complete");
-    assert!(fixture
-        .connection_service
-        .get_connection(fixture.handler.connection_id.as_str())
-        .is_some_and(|connection| !connection.voice_rtc_joined));
+    assert!(
+        fixture
+            .connection_service
+            .get_connection(fixture.handler.connection_id.as_str())
+            .is_some_and(|connection| !connection.voice_rtc_joined)
+    );
     fixture.shutdown().await;
 }
 
@@ -10913,9 +10933,11 @@ async fn test_runtime_default_permission_revocation_tears_down_rtc_after_cache_i
         })
         .await
         .checked("media swarm join should succeed with default member permissions");
-    assert!(connection_service
-        .get_connection(handler.connection_id.as_str())
-        .is_some_and(|connection| connection.voice_rtc_joined));
+    assert!(
+        connection_service
+            .get_connection(handler.connection_id.as_str())
+            .is_some_and(|connection| connection.voice_rtc_joined)
+    );
     assert!(!handler.active_media_swarms.lock().is_empty());
 
     // Revocation exactly as the admin settings API performs it: persist the

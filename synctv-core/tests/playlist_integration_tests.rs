@@ -13,8 +13,8 @@ use synctv_core::{
     repository::{PlaylistRepository, RoomMemberRepository, RoomRepository, UserRepository},
     service::DeleteEntriesRequest,
 };
-use synctv_core_testing::{create_test_pool, create_test_room_service};
 use synctv_core_testing::{TestOptionExt, TestResultExt};
+use synctv_core_testing::{create_test_pool, create_test_room_service};
 /// Default `PostgreSQL` version for test containers
 fn make_user(username: &str) -> User {
     let now = Utc::now();

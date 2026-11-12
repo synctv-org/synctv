@@ -19,7 +19,7 @@ use std::time::Duration;
 use synctv_core::models::UserId;
 use synctv_core::oauth2::OAuth2AuthorizationMode;
 use synctv_core::service::{
-    local_oauth_state_store, OAuth2Operation, OAuth2State, OAuthStateStore,
+    OAuth2Operation, OAuth2State, OAuthStateStore, local_oauth_state_store,
 };
 
 // Helper functions

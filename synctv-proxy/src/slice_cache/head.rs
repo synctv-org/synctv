@@ -6,8 +6,9 @@ use synctv_common::ExecutionControl;
 use tokio::sync::Mutex;
 
 use crate::{
-    apply_provider_headers, send_head_with_redirect_validation_with_control_and_timeout,
-    send_with_redirect_validation_with_control_and_timeout, ProviderHeaders,
+    ProviderHeaders, apply_provider_headers,
+    send_head_with_redirect_validation_with_control_and_timeout,
+    send_with_redirect_validation_with_control_and_timeout,
 };
 
 use super::etag::CachedResourceMeta;
@@ -235,14 +236,14 @@ pub(super) async fn get_or_fetch_head_resource_with_control(
     request_control: Option<&ExecutionControl>,
     upstream_header_timeout: Option<Duration>,
 ) -> Result<HeadResourceResult, anyhow::Error> {
-    if let Some(meta) = get_resource_meta(ctx.meta, &ctx.meta_key) {
-        if let Some((status, headers)) = cached_head_headers(&meta, range_header, ctx.segment_ttl) {
-            return Ok(HeadResourceResult {
-                status,
-                headers,
-                cache_status: CacheStatus::Hit,
-            });
-        }
+    if let Some(meta) = get_resource_meta(ctx.meta, &ctx.meta_key)
+        && let Some((status, headers)) = cached_head_headers(&meta, range_header, ctx.segment_ttl)
+    {
+        return Ok(HeadResourceResult {
+            status,
+            headers,
+            cache_status: CacheStatus::Hit,
+        });
     }
 
     let _guard = if let Some(control) = request_control {
@@ -259,14 +260,14 @@ pub(super) async fn get_or_fetch_head_resource_with_control(
         ctx.meta_lock.lock().await
     };
 
-    if let Some(meta) = get_resource_meta(ctx.meta, &ctx.meta_key) {
-        if let Some((status, headers)) = cached_head_headers(&meta, range_header, ctx.segment_ttl) {
-            return Ok(HeadResourceResult {
-                status,
-                headers,
-                cache_status: CacheStatus::Hit,
-            });
-        }
+    if let Some(meta) = get_resource_meta(ctx.meta, &ctx.meta_key)
+        && let Some((status, headers)) = cached_head_headers(&meta, range_header, ctx.segment_ttl)
+    {
+        return Ok(HeadResourceResult {
+            status,
+            headers,
+            cache_status: CacheStatus::Hit,
+        });
     }
 
     let mut request = ctx.client.head(url);
@@ -307,11 +308,12 @@ fn get_resource_meta(
     meta: &dashmap::DashMap<String, CachedResourceMeta>,
     meta_key: &str,
 ) -> Option<CachedResourceMeta> {
-    if let Some(mut entry) = meta.get_mut(meta_key) {
-        entry.last_accessed = std::time::SystemTime::now();
-        Some(entry.clone())
-    } else {
-        None
+    match meta.get_mut(meta_key) {
+        Some(mut entry) => {
+            entry.last_accessed = std::time::SystemTime::now();
+            Some(entry.clone())
+        }
+        _ => None,
     }
 }
 

@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use synctv_core::models::{PlaybackKind, RoomId, RoomPlaybackState};
 use synctv_core::provider::ProviderCredentialDependency;
 
-use crate::impls::client::RoomActor;
 use crate::impls::ApiError;
+use crate::impls::client::RoomActor;
 
 #[async_trait]
 pub trait PlaybackService: Send + Sync {

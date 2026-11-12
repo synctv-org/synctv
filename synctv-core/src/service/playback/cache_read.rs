@@ -1,8 +1,8 @@
 use crate::{
+    Error, Result,
     cache::{CloneableError, ConsistencyCoordinator, FenceReadResult, PlaybackStateCache},
     models::{RoomId, RoomPlaybackState},
     service::playback::PlaybackService,
-    Error, Result,
 };
 
 impl PlaybackService {
@@ -40,17 +40,16 @@ impl PlaybackService {
             })
             .await;
 
-        if let Some(l2_cache) = l2_cache {
-            if let Err(error) = l2_cache
+        if let Some(l2_cache) = l2_cache
+            && let Err(error) = l2_cache
                 .set_if_version_at_least(&state.room_id, state.clone())
                 .await
-            {
-                tracing::warn!(
-                    error = %error,
-                    room_id = %state.room_id,
-                    "Failed to update playback state in L2 cache"
-                );
-            }
+        {
+            tracing::warn!(
+                error = %error,
+                room_id = %state.room_id,
+                "Failed to update playback state in L2 cache"
+            );
         }
     }
 
@@ -70,31 +69,31 @@ impl PlaybackService {
             return self.reload_state_from_store(room_id).await;
         }
 
-        if let Some(l2_cache) = self.playback_l2_cache() {
-            if let Some(fence_key) = self.consistency.fence_key(&domain) {
-                let cache_key = room_id.to_string();
-                let l1_value = self.playback_cache.get(&cache_key).await;
-                match l2_cache
-                    .get_by_fence_key_with_l1_value(room_id, &fence_key, l1_value)
-                    .await
-                {
-                    Ok(FenceReadResult::Hit(state)) => {
-                        self.playback_cache.insert(cache_key, state.clone()).await;
-                        return Ok(state);
-                    }
-                    Ok(FenceReadResult::DbFallback) => {
-                        ConsistencyCoordinator::record_db_fallback(&domain, "stale_cache");
-                        return self.reload_state_from_store(room_id).await;
-                    }
-                    Ok(FenceReadResult::Unsupported) => {}
-                    Err(error) => {
-                        tracing::warn!(
-                            room_id = %room_id,
-                            error = %error,
-                            "Playback fence-key cache read failed; falling back to version read"
-                        );
-                        ConsistencyCoordinator::record_db_fallback(&domain, "fence_key_read_error");
-                    }
+        if let Some(l2_cache) = self.playback_l2_cache()
+            && let Some(fence_key) = self.consistency.fence_key(&domain)
+        {
+            let cache_key = room_id.to_string();
+            let l1_value = self.playback_cache.get(&cache_key).await;
+            match l2_cache
+                .get_by_fence_key_with_l1_value(room_id, &fence_key, l1_value)
+                .await
+            {
+                Ok(FenceReadResult::Hit(state)) => {
+                    self.playback_cache.insert(cache_key, state.clone()).await;
+                    return Ok(state);
+                }
+                Ok(FenceReadResult::DbFallback) => {
+                    ConsistencyCoordinator::record_db_fallback(&domain, "stale_cache");
+                    return self.reload_state_from_store(room_id).await;
+                }
+                Ok(FenceReadResult::Unsupported) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        room_id = %room_id,
+                        error = %error,
+                        "Playback fence-key cache read failed; falling back to version read"
+                    );
+                    ConsistencyCoordinator::record_db_fallback(&domain, "fence_key_read_error");
                 }
             }
         }
@@ -117,13 +116,13 @@ impl PlaybackService {
         };
 
         let cache_key = room_id.to_string();
-        if let Some(state) = self.playback_cache.get(&cache_key).await {
-            if state.version >= fence_version {
-                crate::metrics::cache::CACHE_HITS
-                    .with_label_values(&["playback", "l1"])
-                    .inc();
-                return Ok(state);
-            }
+        if let Some(state) = self.playback_cache.get(&cache_key).await
+            && state.version >= fence_version
+        {
+            crate::metrics::cache::CACHE_HITS
+                .with_label_values(&["playback", "l1"])
+                .inc();
+            return Ok(state);
         }
 
         if let Some(l2_cache) = self.playback_l2_cache() {
@@ -166,21 +165,21 @@ impl PlaybackService {
             return Ok(state);
         }
 
-        if let Some(l2_cache) = self.playback_l2_cache() {
-            if let Some(state) = l2_cache.get(room_id).await? {
-                self.playback_cache
-                    .insert(cache_key.clone(), state.clone())
-                    .await;
-                crate::metrics::cache::CACHE_HITS
-                    .with_label_values(&["playback", "l2"])
-                    .inc();
-                tracing::debug!(
-                    room_id = %room_id,
-                    version = state.version,
-                    "Playback state cache hit (L2)"
-                );
-                return Ok(state);
-            }
+        if let Some(l2_cache) = self.playback_l2_cache()
+            && let Some(state) = l2_cache.get(room_id).await?
+        {
+            self.playback_cache
+                .insert(cache_key.clone(), state.clone())
+                .await;
+            crate::metrics::cache::CACHE_HITS
+                .with_label_values(&["playback", "l2"])
+                .inc();
+            tracing::debug!(
+                room_id = %room_id,
+                version = state.version,
+                "Playback state cache hit (L2)"
+            );
+            return Ok(state);
         }
 
         let repo = self.playback_repo.clone();
@@ -202,17 +201,16 @@ impl PlaybackService {
 
                 cache.insert(state.room_id.to_string(), state.clone()).await;
 
-                if let Some(ref l2_cache) = l2_cache {
-                    if let Err(error) = l2_cache
+                if let Some(ref l2_cache) = l2_cache
+                    && let Err(error) = l2_cache
                         .set_if_version_at_least(&state.room_id, state.clone())
                         .await
-                    {
-                        tracing::warn!(
-                            room_id = %state.room_id,
-                            error = %error,
-                            "Failed to set playback state in L2 cache"
-                        );
-                    }
+                {
+                    tracing::warn!(
+                        room_id = %state.room_id,
+                        error = %error,
+                        "Failed to set playback state in L2 cache"
+                    );
                 }
 
                 Ok(state)
@@ -235,14 +233,14 @@ impl PlaybackService {
     pub async fn reload_state_from_store(&self, room_id: &RoomId) -> Result<RoomPlaybackState> {
         let cache_key = room_id.to_string();
         self.playback_cache.invalidate(&cache_key).await;
-        if let Some(l2_cache) = self.playback_l2_cache() {
-            if let Err(error) = l2_cache.invalidate(room_id).await {
-                tracing::warn!(
-                    error = %error,
-                    room_id = %room_id,
-                    "Failed to invalidate playback state from L2 cache before DB reload"
-                );
-            }
+        if let Some(l2_cache) = self.playback_l2_cache()
+            && let Err(error) = l2_cache.invalidate(room_id).await
+        {
+            tracing::warn!(
+                error = %error,
+                room_id = %room_id,
+                "Failed to invalidate playback state from L2 cache before DB reload"
+            );
         }
 
         let state = match self.playback_repo.get(room_id).await? {
@@ -256,31 +254,34 @@ impl PlaybackService {
         self.seed_playback_version_fence_after_reload(room_id, state.version)
             .await;
 
-        if let Some(l2_cache) = self.playback_l2_cache() {
-            match l2_cache
-                .set_if_version_at_least(room_id, state.clone())
-                .await
-            {
-                Ok(true) => {
-                    self.playback_cache.insert(cache_key, state.clone()).await;
-                }
-                Ok(false) => {
-                    tracing::debug!(
-                        room_id = %room_id,
-                        version = state.version,
-                        "Skipped playback cache update after DB reload because L2 has newer state"
-                    );
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        error = %error,
-                        room_id = %room_id,
-                        "Failed to update playback state in L2 cache after DB reload"
-                    );
+        match self.playback_l2_cache() {
+            Some(l2_cache) => {
+                match l2_cache
+                    .set_if_version_at_least(room_id, state.clone())
+                    .await
+                {
+                    Ok(true) => {
+                        self.playback_cache.insert(cache_key, state.clone()).await;
+                    }
+                    Ok(false) => {
+                        tracing::debug!(
+                            room_id = %room_id,
+                            version = state.version,
+                            "Skipped playback cache update after DB reload because L2 has newer state"
+                        );
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %error,
+                            room_id = %room_id,
+                            "Failed to update playback state in L2 cache after DB reload"
+                        );
+                    }
                 }
             }
-        } else {
-            self.playback_cache.insert(cache_key, state.clone()).await;
+            _ => {
+                self.playback_cache.insert(cache_key, state.clone()).await;
+            }
         }
 
         Ok(state)

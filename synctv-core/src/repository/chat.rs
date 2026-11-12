@@ -6,26 +6,26 @@ use serde::Serialize;
 use sqlx::{Executor, PgPool, Postgres, Transaction};
 
 use crate::{
+    Error, Result,
     models::{
-        ChatAttachment, ChatAttachmentKind, ChatEventKind, ChatHistoryCursor, ChatHistoryPage,
-        ChatMention, ChatMentionInput, ChatMessage, ChatMessageContext, ChatMessageEvent,
-        ChatMessageEventLog, ChatMessageOperationKind, ChatMessagePin,
-        ChatMessageReadReceiptMember, ChatMessageReadReceiptUser, ChatMessageReadReceiptsPage,
-        ChatMessageSelection, ChatMessageStatus, ChatMessageType, ChatMessageWithAttachments,
-        ChatMetadata, ChatPinEvent, ChatPinEventKind, ChatPinEventLog, ChatPinnedMessage,
-        ChatPlaybackMessagesQuery, ChatReactionSummary, ChatReactionUser, ChatReactionUsersCursor,
-        ChatReactionUsersPage, ChatReadState, ChatSearchMessagesPage, ChatSearchMessagesQuery,
-        DeletionSource, EventCursor, NewStoredFile, RoomId, SetChatReaction, User, UserId,
         CHAT_ATTACHMENT_FILENAME_MAX_CHARS, CHAT_ATTACHMENT_ID_MAX_CHARS,
         CHAT_CLIENT_MESSAGE_ID_MAX_CHARS, CHAT_CLIENT_OPERATION_ID_MAX_CHARS,
         CHAT_EVENT_ID_MAX_CHARS, CHAT_EVENT_TYPE_MAX_CHARS, CHAT_PIN_NOTE_MAX_CHARS,
-        CHAT_REACTION_KEY_MAX_CHARS, FILE_OBJECT_KEY_MAX_CHARS, FILE_STORAGE_BACKEND_MAX_CHARS,
+        CHAT_REACTION_KEY_MAX_CHARS, ChatAttachment, ChatAttachmentKind, ChatEventKind,
+        ChatHistoryCursor, ChatHistoryPage, ChatMention, ChatMentionInput, ChatMessage,
+        ChatMessageContext, ChatMessageEvent, ChatMessageEventLog, ChatMessageOperationKind,
+        ChatMessagePin, ChatMessageReadReceiptMember, ChatMessageReadReceiptUser,
+        ChatMessageReadReceiptsPage, ChatMessageSelection, ChatMessageStatus, ChatMessageType,
+        ChatMessageWithAttachments, ChatMetadata, ChatPinEvent, ChatPinEventKind, ChatPinEventLog,
+        ChatPinnedMessage, ChatPlaybackMessagesQuery, ChatReactionSummary, ChatReactionUser,
+        ChatReactionUsersCursor, ChatReactionUsersPage, ChatReadState, ChatSearchMessagesPage,
+        ChatSearchMessagesQuery, DeletionSource, EventCursor, FILE_OBJECT_KEY_MAX_CHARS,
+        FILE_STORAGE_BACKEND_MAX_CHARS, NewStoredFile, RoomId, SetChatReaction, User, UserId,
     },
     repository::{
-        pools::RepoPools, room_resource_event::insert_room_resource_event_with_executor,
-        FileStorageRepository, NewRoomResourceEvent, RoomResourceEventScope,
+        FileStorageRepository, NewRoomResourceEvent, RoomResourceEventScope, pools::RepoPools,
+        room_resource_event::insert_room_resource_event_with_executor,
     },
-    Error, Result,
 };
 
 type ChatMessageKey = (i64, DateTime<Utc>);
@@ -589,17 +589,16 @@ impl ChatRepository {
     ) -> Result<IdempotentChatPinEventInsert> {
         validate_optional_text(request.note, "chat pin note", CHAT_PIN_NOTE_MAX_CHARS)?;
         let mut tx = self.pool().begin().await?;
-        if let Some(operation) = request.operation {
-            if let Some(event) = self
+        if let Some(operation) = request.operation
+            && let Some(event) = self
                 .begin_pin_operation_in_tx(&mut tx, request.room_id, request.pinned_by, operation)
                 .await?
-            {
-                tx.commit().await?;
-                return Ok(IdempotentChatPinEventInsert {
-                    event,
-                    inserted: false,
-                });
-            }
+        {
+            tx.commit().await?;
+            return Ok(IdempotentChatPinEventInsert {
+                event,
+                inserted: false,
+            });
         }
 
         let message = self
@@ -759,17 +758,16 @@ impl ChatRepository {
         request: UnpinChatMessageEventRequest<'_>,
     ) -> Result<IdempotentChatPinEventInsert> {
         let mut tx = self.pool().begin().await?;
-        if let Some(operation) = request.operation {
-            if let Some(event) = self
+        if let Some(operation) = request.operation
+            && let Some(event) = self
                 .begin_pin_operation_in_tx(&mut tx, request.room_id, request.unpinned_by, operation)
                 .await?
-            {
-                tx.commit().await?;
-                return Ok(IdempotentChatPinEventInsert {
-                    event,
-                    inserted: false,
-                });
-            }
+        {
+            tx.commit().await?;
+            return Ok(IdempotentChatPinEventInsert {
+                event,
+                inserted: false,
+            });
         }
 
         let message = self
@@ -1101,13 +1099,12 @@ impl ChatRepository {
             .get_by_room_and_id(room_id, message_id)
             .await?
             .ok_or_else(|| Error::NotFound("Message not found".to_string()))?;
-        if let Some(message_user_id) = message.user_id.as_ref() {
-            if self
+        if let Some(message_user_id) = message.user_id.as_ref()
+            && self
                 .is_user_blocked_by(viewer_user_id, message_user_id)
                 .await?
-            {
-                return Err(Error::NotFound("Message not found".to_string()));
-            }
+        {
+            return Err(Error::NotFound("Message not found".to_string()));
         }
         if message.status == ChatMessageStatus::Deleted {
             return Err(Error::Conflict("Message has been deleted".to_string()));
@@ -2925,13 +2922,11 @@ impl ChatRepository {
         };
         if let (Some(viewer_user_id), Some(message_user_id)) =
             (viewer_user_id, anchor.user_id.as_ref())
-        {
-            if self
+            && self
                 .is_user_blocked_by(viewer_user_id, message_user_id)
                 .await?
-            {
-                return Ok(None);
-            }
+        {
+            return Ok(None);
         }
         if anchor.status == ChatMessageStatus::Deleted && !include_deleted {
             return Ok(None);
@@ -3177,13 +3172,11 @@ impl ChatRepository {
         };
         if let (Some(viewer_user_id), Some(message_user_id)) =
             (viewer_user_id, message.user_id.as_ref())
-        {
-            if self
+            && self
                 .is_user_blocked_by(viewer_user_id, message_user_id)
                 .await?
-            {
-                return Ok(None);
-            }
+        {
+            return Ok(None);
         }
         let attachments = if message.status == ChatMessageStatus::Deleted {
             Vec::new()
@@ -3281,8 +3274,8 @@ impl ChatRepository {
         request: EditChatMessageEventRequest<'_>,
     ) -> Result<Option<IdempotentChatEventInsert>> {
         let mut tx = self.pool().begin().await?;
-        if let Some(operation) = request.operation {
-            if let Some(event) = self
+        if let Some(operation) = request.operation
+            && let Some(event) = self
                 .begin_message_operation_in_tx(
                     &mut tx,
                     request.room_id,
@@ -3290,15 +3283,14 @@ impl ChatRepository {
                     operation,
                 )
                 .await?
-            {
-                tx.commit().await?;
-                return Ok(Some(IdempotentChatEventInsert {
-                    event,
-                    inserted: false,
-                    pin_event: None,
-                    deleted_reactions: 0,
-                }));
-            }
+        {
+            tx.commit().await?;
+            return Ok(Some(IdempotentChatEventInsert {
+                event,
+                inserted: false,
+                pin_event: None,
+                deleted_reactions: 0,
+            }));
         }
         let metadata = ChatMetadata::normalized_for_optional_storage(request.metadata.as_ref())?;
         let mut builder = sqlx::QueryBuilder::<Postgres>::new(
@@ -3414,8 +3406,8 @@ impl ChatRepository {
         request: DeleteChatMessageEventRequest<'_>,
     ) -> Result<Option<IdempotentChatEventInsert>> {
         let mut tx = self.pool().begin().await?;
-        if let Some(operation) = request.operation {
-            if let Some(event) = self
+        if let Some(operation) = request.operation
+            && let Some(event) = self
                 .begin_message_operation_in_tx(
                     &mut tx,
                     request.room_id,
@@ -3423,15 +3415,14 @@ impl ChatRepository {
                     operation,
                 )
                 .await?
-            {
-                tx.commit().await?;
-                return Ok(Some(IdempotentChatEventInsert {
-                    event,
-                    inserted: false,
-                    pin_event: None,
-                    deleted_reactions: 0,
-                }));
-            }
+        {
+            tx.commit().await?;
+            return Ok(Some(IdempotentChatEventInsert {
+                event,
+                inserted: false,
+                pin_event: None,
+                deleted_reactions: 0,
+            }));
         }
         let mut builder = sqlx::QueryBuilder::<Postgres>::new(
             r"

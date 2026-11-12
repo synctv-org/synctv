@@ -11,8 +11,8 @@ use synctv_core::{
     },
     repository::{PlaylistRepository, RoomMemberRepository, RoomRepository, UserRepository},
 };
-use synctv_core_testing::create_test_pool;
 use synctv_core_testing::TestResultExt;
+use synctv_core_testing::create_test_pool;
 /// Default `PostgreSQL` version for test containers
 fn make_user(username: &str) -> User {
     let now = Utc::now();
@@ -179,10 +179,12 @@ async fn test_soft_delete_room() {
         .checked("test operation should succeed");
 
     // Room should exist before delete
-    assert!(room_repo
-        .exists(&created.id)
-        .await
-        .checked("test operation should succeed"));
+    assert!(
+        room_repo
+            .exists(&created.id)
+            .await
+            .checked("test operation should succeed")
+    );
 
     // Soft delete
     let deleted = room_repo
@@ -199,10 +201,12 @@ async fn test_soft_delete_room() {
     assert!(fetched.is_none());
 
     // exists should return false
-    assert!(!room_repo
-        .exists(&created.id)
-        .await
-        .checked("test operation should succeed"));
+    assert!(
+        !room_repo
+            .exists(&created.id)
+            .await
+            .checked("test operation should succeed")
+    );
 
     // Double delete should return false (already deleted)
     let deleted_again = room_repo
@@ -236,14 +240,18 @@ async fn test_cascade_delete_user_deletes_rooms() {
         .await
         .checked("test operation should succeed");
 
-    assert!(room_repo
-        .exists(&room1.id)
-        .await
-        .checked("test operation should succeed"));
-    assert!(room_repo
-        .exists(&room2.id)
-        .await
-        .checked("test operation should succeed"));
+    assert!(
+        room_repo
+            .exists(&room1.id)
+            .await
+            .checked("test operation should succeed")
+    );
+    assert!(
+        room_repo
+            .exists(&room2.id)
+            .await
+            .checked("test operation should succeed")
+    );
 
     // Attempting to delete the user while rooms still exist should fail
     // because of ON DELETE RESTRICT on rooms.created_by.
@@ -445,10 +453,12 @@ async fn test_room_ban_status() {
         .checked("test operation should succeed");
 
     assert!(!room.is_banned);
-    assert!(room_repo
-        .is_accessible(&room.id)
-        .await
-        .checked("test operation should succeed"));
+    assert!(
+        room_repo
+            .is_accessible(&room.id)
+            .await
+            .checked("test operation should succeed")
+    );
 
     // Ban the room
     let banned = room_repo
@@ -458,10 +468,12 @@ async fn test_room_ban_status() {
     assert!(banned.is_banned);
 
     // Banned room should not be accessible
-    assert!(!room_repo
-        .is_accessible(&room.id)
-        .await
-        .checked("test operation should succeed"));
+    assert!(
+        !room_repo
+            .is_accessible(&room.id)
+            .await
+            .checked("test operation should succeed")
+    );
 
     // Unban the room
     let unbanned = room_repo
@@ -469,10 +481,12 @@ async fn test_room_ban_status() {
         .await
         .checked("test operation should succeed");
     assert!(!unbanned.is_banned);
-    assert!(room_repo
-        .is_accessible(&room.id)
-        .await
-        .checked("test operation should succeed"));
+    assert!(
+        room_repo
+            .is_accessible(&room.id)
+            .await
+            .checked("test operation should succeed")
+    );
 }
 
 #[tokio::test]

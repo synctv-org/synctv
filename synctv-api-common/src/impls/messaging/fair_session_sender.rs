@@ -26,11 +26,11 @@
 //!   which then reconnects and resumes from its observation cursors.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use prost::Message as _;
-use synctv_proto::client::{resource_event, ServerMessage};
+use synctv_proto::client::{ServerMessage, resource_event};
 
 use super::MessageSender;
 
@@ -1078,9 +1078,9 @@ mod tests {
         }
         assert!(sender.send(control_message()).is_ok()); // queue depth 0
         assert!(sender.send(control_message()).is_ok()); // queue depth 1
-                                                         // Defective source: stale 80 + 2 > 64 finds two messages queued,
-                                                         // evicts one, and fails the session. Fixed source: the lane retains
-                                                         // 6 bytes and the send succeeds.
+        // Defective source: stale 80 + 2 > 64 finds two messages queued,
+        // evicts one, and fails the session. Fixed source: the lane retains
+        // 6 bytes and the send succeeds.
         let third = sender.send(control_message());
         assert!(
             third.is_ok() && !sender.is_failed(),

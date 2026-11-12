@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use sqlx::{Executor, PgPool, Postgres};
 
-use crate::{models::UserId, Result};
+use crate::{Result, models::UserId};
 
 #[derive(Debug, Clone)]
 pub struct TotpCredential {

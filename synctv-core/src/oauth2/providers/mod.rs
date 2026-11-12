@@ -99,13 +99,13 @@ pub(super) fn validate_provider_url(
     let parsed = Url::parse(url)
         .map_err(|err| Error::InvalidInput(format!("{context}: invalid URL: {err}")))?;
 
-    if let Some(acl) = guard.acl() {
-        if acl.is_scheme_allowed(parsed.scheme()).is_denied() {
-            return Err(Error::InvalidInput(format!(
-                "{context}: scheme '{}' is not allowed",
-                parsed.scheme()
-            )));
-        }
+    if let Some(acl) = guard.acl()
+        && acl.is_scheme_allowed(parsed.scheme()).is_denied()
+    {
+        return Err(Error::InvalidInput(format!(
+            "{context}: scheme '{}' is not allowed",
+            parsed.scheme()
+        )));
     }
 
     match parsed.host() {
@@ -132,20 +132,19 @@ pub(super) fn validate_provider_url(
         }
     }
 
-    if let Some(port) = parsed.port_or_known_default() {
-        if let Some(acl) = guard.acl() {
-            if acl.is_port_allowed(port).is_denied() {
-                let port_allowed_for_ip = match parsed.host() {
-                    Some(Host::Ipv4(ip)) => !guard.is_port_blocked_for_ip(port, &ip.into()),
-                    Some(Host::Ipv6(ip)) => !guard.is_port_blocked_for_ip(port, &ip.into()),
-                    _ => false,
-                };
-                if !port_allowed_for_ip {
-                    return Err(Error::InvalidInput(format!(
-                        "{context}: port '{port}' is not allowed"
-                    )));
-                }
-            }
+    if let Some(port) = parsed.port_or_known_default()
+        && let Some(acl) = guard.acl()
+        && acl.is_port_allowed(port).is_denied()
+    {
+        let port_allowed_for_ip = match parsed.host() {
+            Some(Host::Ipv4(ip)) => !guard.is_port_blocked_for_ip(port, &ip.into()),
+            Some(Host::Ipv6(ip)) => !guard.is_port_blocked_for_ip(port, &ip.into()),
+            _ => false,
+        };
+        if !port_allowed_for_ip {
+            return Err(Error::InvalidInput(format!(
+                "{context}: port '{port}' is not allowed"
+            )));
         }
     }
 
@@ -305,8 +304,8 @@ mod tests {
     use super::*;
     use crate::test_helpers::TestResultExt;
     use oauth2::{
-        basic::BasicClient, AuthUrl, AuthorizationCode, ClientId, ClientSecret, RedirectUrl,
-        TokenUrl,
+        AuthUrl, AuthorizationCode, ClientId, ClientSecret, RedirectUrl, TokenUrl,
+        basic::BasicClient,
     };
     use std::io::ErrorKind;
     use tokio::time::Duration;

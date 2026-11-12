@@ -1,4 +1,4 @@
-use synctv_adapter::error::{classified_error_to_tonic_status, ClassifiedError, ErrorKind};
+use synctv_adapter::error::{ClassifiedError, ErrorKind, classified_error_to_tonic_status};
 use tonic::Status;
 
 pub(crate) fn map_api_error(error: &impl ClassifiedError) -> Status {

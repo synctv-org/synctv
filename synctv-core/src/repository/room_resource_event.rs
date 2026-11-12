@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
 use crate::{
-    models::{ChatPinEvent, DeletionSource, EventCursor, RealtimeEvent, RoomId},
     Error, Result,
+    models::{ChatPinEvent, DeletionSource, EventCursor, RealtimeEvent, RoomId},
 };
 
 const ROOM_RESOURCE_EVENT_ID_MAX_CHARS: usize = 128;

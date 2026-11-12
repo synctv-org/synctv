@@ -263,14 +263,18 @@ async fn explicit_publish_key_types_enforce_their_lifecycle() {
         ),
         "single-use key should generate",
     );
-    assert!(service
-        .validate_publish_key(&single_use.token)
-        .await
-        .is_ok());
-    assert!(service
-        .validate_publish_key(&single_use.token)
-        .await
-        .is_err());
+    assert!(
+        service
+            .validate_publish_key(&single_use.token)
+            .await
+            .is_ok()
+    );
+    assert!(
+        service
+            .validate_publish_key(&single_use.token)
+            .await
+            .is_err()
+    );
 
     let expiring = ok(
         service.generate_publish_key_with_options(
@@ -330,9 +334,11 @@ fn publish_key_options_reject_inconsistent_expiration() {
             expires_at: Some(now + 3600),
         },
     ] {
-        assert!(service
-            .generate_publish_key_with_options(&room_id, &media_id, &user_id, options)
-            .is_err());
+        assert!(
+            service
+                .generate_publish_key_with_options(&room_id, &media_id, &user_id, options)
+                .is_err()
+        );
     }
 }
 

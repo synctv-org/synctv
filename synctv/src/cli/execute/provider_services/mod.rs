@@ -1,7 +1,7 @@
 use super::*;
 
 macro_rules! resolve_provider {
-    ($command:expr, $variant:path, $provider:ident, $wrapper:ident, $method:ident) => {
+    ($command:expr_2021, $variant:path, $provider:ident, $wrapper:ident, $method:ident) => {
         match $command.command {
             $variant(args) => provider_call!(
                 args,

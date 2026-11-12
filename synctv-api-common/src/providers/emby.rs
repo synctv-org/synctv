@@ -14,12 +14,12 @@ use synctv_proto::providers::emby::{
     MediaItem,
 };
 use synctv_proto::source_config::{
-    emby_playlist_source_config, media_source_config, playlist_source_config,
     EmbyCollectionsPlaylistSource, EmbyContinueWatchingPlaylistSource,
     EmbyFavoriteItemsPlaylistSource, EmbyFavoritePeoplePlaylistSource, EmbyFolderPlaylistSource,
     EmbyGenreItemsPlaylistSource, EmbyGenresPlaylistSource, EmbyMediaSourceConfig,
     EmbyNextUpPlaylistSource, EmbyPersonItemsPlaylistSource, EmbyPlaylistSourceConfig,
-    EmbyPlaylistsPlaylistSource, EmbyRecentlyAddedPlaylistSource,
+    EmbyPlaylistsPlaylistSource, EmbyRecentlyAddedPlaylistSource, emby_playlist_source_config,
+    media_source_config, playlist_source_config,
 };
 use synctv_realtime::fanout::RealtimeEventService;
 

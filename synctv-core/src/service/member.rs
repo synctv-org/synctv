@@ -4,16 +4,16 @@
 //! and role management with Allow/Deny permission pattern.
 
 use crate::{
+    Error, Result,
     cache::CacheInvalidationRuntime,
     models::{
         AddMemberOptions, AuditAction, AuditDetails, AuditTargetType, PageParams, RoomId,
         RoomMember, RoomMemberWithUser, RoomRole, UserId,
     },
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository, UserRepository},
+    service::PermissionService,
     service::audit::{AuditEventParams, AuditService},
     service::notification::{NotificationService, PermissionChangedNotification},
-    service::PermissionService,
-    Error, Result,
 };
 
 use std::sync::Arc;
@@ -191,8 +191,8 @@ impl MemberService {
         target_id: Option<String>,
         details: AuditDetails,
     ) {
-        if let Some(ref audit) = self.audit_service {
-            if let Err(e) = audit
+        if let Some(ref audit) = self.audit_service
+            && let Err(e) = audit
                 .log(AuditEventParams {
                     actor_id: actor_id.to_string(),
                     actor_username: actor_username.to_string(),
@@ -204,9 +204,8 @@ impl MemberService {
                     user_agent: None,
                 })
                 .await
-            {
-                tracing::warn!(error = %e, "Failed to write audit log from MemberService");
-            }
+        {
+            tracing::warn!(error = %e, "Failed to write audit log from MemberService");
         }
     }
 
@@ -458,14 +457,14 @@ impl MemberService {
         // are used when recalculating the user's effective permissions.
         // This is necessary because the permission calculation depends on both
         // the member's role AND the room's role-specific permission settings.
-        if let Some(ref invalidation) = self.cache_invalidation {
-            if let Err(e) = invalidation.invalidate_room_settings(&room_id).await {
-                tracing::warn!(
-                    error = %e,
-                    room_id = %room_id,
-                    "Failed to broadcast room settings cache invalidation after role change"
-                );
-            }
+        if let Some(ref invalidation) = self.cache_invalidation
+            && let Err(e) = invalidation.invalidate_room_settings(&room_id).await
+        {
+            tracing::warn!(
+                error = %e,
+                room_id = %room_id,
+                "Failed to broadcast room settings cache invalidation after role change"
+            );
         }
 
         // Audit log

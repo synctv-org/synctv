@@ -3,10 +3,10 @@ use std::collections::HashSet;
 use sqlx::{Postgres, Transaction};
 
 use crate::{
+    Error, Result,
     models::{SignupMethod, User, UserAuthFactors, UserId},
     repository::UserOAuthProviderRepository,
     service::{EmailOutboxService, UserService},
-    Error, Result,
 };
 
 impl UserService {
@@ -254,12 +254,12 @@ impl UserService {
 
         self.validate_email_whitelist_policy(&email)?;
 
-        if let Some(existing) = self.user_email_repository.get_by_email(&email).await? {
-            if existing.user.id != *user_id {
-                return Err(Error::AlreadyExists(
-                    synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
-                ));
-            }
+        if let Some(existing) = self.user_email_repository.get_by_email(&email).await?
+            && existing.user.id != *user_id
+        {
+            return Err(Error::AlreadyExists(
+                synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
+            ));
         }
 
         Ok(email)

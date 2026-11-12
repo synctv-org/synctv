@@ -5,9 +5,9 @@
 use chrono::Utc;
 use sqlx::PgPool;
 use synctv_core::{
+    Error,
     models::{Room, RoomId, RoomSettings, RoomStatus, User, UserId, UserRole, UserStatus},
     repository::{RoomRepository, RoomSettingsRepository, UserRepository},
-    Error,
 };
 use synctv_core_testing::{create_test_pool, ok};
 fn make_user(username: &str) -> User {

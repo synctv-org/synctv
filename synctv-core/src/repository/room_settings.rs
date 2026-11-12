@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use sqlx::PgPool;
 
 use crate::{
+    Error, Result,
     models::{RoomId, RoomSettings},
     repository::pools::RepoPools,
-    Error, Result,
 };
 
 #[derive(Clone)]

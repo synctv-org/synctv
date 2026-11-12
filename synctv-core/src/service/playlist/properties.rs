@@ -1,13 +1,13 @@
 use crate::{
+    Error, Result,
     models::{
         Playlist, PlaylistBrowseAccessMode, PlaylistId, PlaylistSourceConfig, RoomId, UserId,
     },
     service::{optimistic_retry, provider_binding::provider_instance_name_for_source_update},
-    Error, Result,
 };
 
 use super::{
-    ensure_playlist_creator_can_edit, PlaylistService, RealtimeOutboxPlaylistEventFactory,
+    PlaylistService, RealtimeOutboxPlaylistEventFactory, ensure_playlist_creator_can_edit,
 };
 
 /// Request to set playlist properties

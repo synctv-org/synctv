@@ -14,8 +14,8 @@ pub use publisher_manager::{
     PublisherControlHandle, PublisherStopOutcome, PublisherStopRequest, StreamLifecycleEvent,
 };
 pub use registry::{
-    RegistryConnectionRuntime, StreamGeneration, WebRtcSessionKind, WebRtcSessionOwner,
-    PUBLISHER_TTL_SECS,
+    PUBLISHER_TTL_SECS, RegistryConnectionRuntime, StreamGeneration, WebRtcSessionKind,
+    WebRtcSessionOwner,
 };
 pub use registry_trait::{
     ActiveStreamGeneration, LeaseRefreshOutcome, StreamGenerationRegistration, StreamRegistryTrait,

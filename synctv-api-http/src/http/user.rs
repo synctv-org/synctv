@@ -1,14 +1,14 @@
 //! User management HTTP handlers
 
 use axum::{
+    Json,
     body::Bytes,
     extract::{Path, State},
-    http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode},
+    http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
-    Json,
 };
 
-use super::{middleware::RequestMetadata, validation::ProtoQuery, AppResult, AppState};
+use super::{AppResult, AppState, middleware::RequestMetadata, validation::ProtoQuery};
 use synctv_api_common::impls::EndpointRateLimitCategory;
 use synctv_proto::client::User;
 use synctv_proto::client::{

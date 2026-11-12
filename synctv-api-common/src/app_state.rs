@@ -220,8 +220,8 @@ impl AppState {
 /// gRPC on the shared API port. The HTTP/3 bootstrap appends WebTransport when
 /// the QUIC listener binds.
 #[must_use]
-pub fn default_realtime_transport_advertisement(
-) -> Vec<synctv_proto::client::RealtimeTransportCapability> {
+pub fn default_realtime_transport_advertisement()
+-> Vec<synctv_proto::client::RealtimeTransportCapability> {
     use synctv_proto::client::RealtimeTransportKind;
     [
         (RealtimeTransportKind::WebSocket, "/ws/rooms/{roomId}"),

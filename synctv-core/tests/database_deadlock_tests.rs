@@ -10,7 +10,7 @@ use synctv_core::{
     models::{Room, RoomId, RoomMember, RoomRole, SignupMethod, User, UserId, UserStatus},
     repository::{RoomMemberRepository, RoomRepository, UserRepository},
 };
-use synctv_core_testing::{create_test_database_with_options_and_label, ok, TestDatabase};
+use synctv_core_testing::{TestDatabase, create_test_database_with_options_and_label, ok};
 use tokio::sync::Barrier;
 
 async fn create_test_pool() -> TestDatabase {

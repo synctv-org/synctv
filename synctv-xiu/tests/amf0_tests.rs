@@ -5,9 +5,9 @@
 
 #![allow(clippy::unwrap_used)]
 use synctv_xiu::bytesio::bytes_reader::BytesReader;
+use synctv_xiu::flv::amf0::Amf0ValueType;
 use synctv_xiu::flv::amf0::amf0_reader::Amf0Reader;
 use synctv_xiu::flv::amf0::amf0_writer::Amf0Writer;
-use synctv_xiu::flv::amf0::Amf0ValueType;
 
 /// Helper: write a value with `Amf0Writer`, then read it back with `Amf0Reader`.
 fn roundtrip(value: &Amf0ValueType) -> Amf0ValueType {

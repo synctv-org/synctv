@@ -133,7 +133,10 @@ pub async fn init_webrtc(config: &Config) -> WebRTCComponents {
             if synctv_core::service::validate_external_addr(&candidate).is_ok() {
                 candidate
             } else {
-                info!("advertise_host '{}' is not a routable external IP, attempting cloud metadata detection...", advertise);
+                info!(
+                    "advertise_host '{}' is not a routable external IP, attempting cloud metadata detection...",
+                    advertise
+                );
                 if let Some(ip) = resolve_external_ip().await {
                     format!("{ip}:{}", config.webrtc.stun_port)
                 } else {

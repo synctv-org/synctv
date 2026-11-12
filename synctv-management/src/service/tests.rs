@@ -4,8 +4,8 @@ use futures::TryStreamExt;
 use std::borrow::Cow;
 use synctv_adapter::error::{ClassifiedError, ErrorKind};
 use synctv_core::service::{
-    evict_expired_response_from_nodes, purge_response_from_nodes, validate_slice_cache_selection,
     SliceCacheEvictExpiredNodeResult, SliceCacheNodeFailure, SliceCachePurgeNodeResult,
+    evict_expired_response_from_nodes, purge_response_from_nodes, validate_slice_cache_selection,
 };
 use tonic::Code;
 
@@ -127,8 +127,8 @@ fn parse_shutdown_mode_rejects_unknown_value() {
 }
 
 #[tokio::test]
-async fn stop_server_stream_ends_at_finalizing_without_duplicate_shutdown_requested(
-) -> Result<(), tonic::Status> {
+async fn stop_server_stream_ends_at_finalizing_without_duplicate_shutdown_requested()
+-> Result<(), tonic::Status> {
     let controller = ManagementLifecycleController::new();
     let subscription = controller.subscribe();
     let requested_event = controller.request_shutdown(ShutdownMode::Graceful);

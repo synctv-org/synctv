@@ -134,12 +134,16 @@ async fn test_user_provider_credential_storage_keeps_alist_metadata_plaintext() 
     assert_eq!(stored_json["type"], "alist");
     assert_eq!(stored_json["host"], "https://alist.example.com");
     assert_eq!(stored_json["username"], "alice");
-    assert!(stored_json["password"]
-        .as_str()
-        .is_some_and(|value| value.starts_with("enc:")));
-    assert!(stored_json["otpSecret"]
-        .as_str()
-        .is_some_and(|value| value.starts_with("enc:")));
+    assert!(
+        stored_json["password"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("enc:"))
+    );
+    assert!(
+        stored_json["otpSecret"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("enc:"))
+    );
 
     let decrypted = ok(
         decrypt_test_credential(Some(&encryption), "alist", &stored),
@@ -220,9 +224,11 @@ async fn test_user_provider_credential_storage_encrypts_cloudreve_password() {
     assert_eq!(stored_json["type"], "cloudreve");
     assert_eq!(stored_json["host"], "https://cloudreve.example.com");
     assert_eq!(stored_json["email"], "alice@example.com");
-    assert!(stored_json["password"]
-        .as_str()
-        .is_some_and(|value| value.starts_with("enc:")));
+    assert!(
+        stored_json["password"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("enc:"))
+    );
     assert_ne!(stored_json["password"], "secret-password");
 
     let decrypted = ok(
@@ -266,9 +272,11 @@ async fn test_user_provider_credential_storage_encrypts_twitch_session() {
     assert_eq!(stored_json["type"], "twitch");
     assert_eq!(stored_json["login"], "synctv");
     for field in ["authToken", "deviceId", "clientIntegrity"] {
-        assert!(stored_json[field]
-            .as_str()
-            .is_some_and(|value| value.starts_with("enc:")));
+        assert!(
+            stored_json[field]
+                .as_str()
+                .is_some_and(|value| value.starts_with("enc:"))
+        );
     }
 
     let decrypted = ok(
@@ -318,9 +326,11 @@ async fn test_user_provider_credential_storage_encrypts_qnap_secrets() {
     );
     assert_eq!(json["type"], "qnap");
     for field in ["password", "sid"] {
-        assert!(json[field]
-            .as_str()
-            .is_some_and(|value| value.starts_with("enc:")));
+        assert!(
+            json[field]
+                .as_str()
+                .is_some_and(|value| value.starts_with("enc:"))
+        );
     }
     let decrypted = ok(
         decrypt_test_credential(Some(&encryption), "qnap", &stored),

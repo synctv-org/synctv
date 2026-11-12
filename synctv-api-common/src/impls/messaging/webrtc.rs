@@ -4,7 +4,7 @@ use synctv_realtime::fanout::RealtimeDeliveryRequirement;
 use synctv_realtime::sync::{RealtimeEvent, VoiceRtcJoinOutcome, WebRTCSignalKind};
 
 use super::{
-    is_private_ice_candidate_ip, StreamMessageHandler, MAX_ICE_CANDIDATE_SIZE, MAX_SDP_SIZE,
+    MAX_ICE_CANDIDATE_SIZE, MAX_SDP_SIZE, StreamMessageHandler, is_private_ice_candidate_ip,
 };
 
 const MAX_MEDIA_SWARM_ID_BYTES: usize = 128;
@@ -592,8 +592,8 @@ impl StreamMessageHandler {
         peers: Vec<super::MediaSwarmPeer>,
     ) -> Result<(), String> {
         use synctv_proto::client::{
-            resource_event::Payload, server_message::Message, web_rtc_event::Event, ResourceEvent,
-            ServerMessage, WebRtcEvent, WebRtcMediaSwarmPeer, WebRtcMediaSwarmPeers,
+            ResourceEvent, ServerMessage, WebRtcEvent, WebRtcMediaSwarmPeer, WebRtcMediaSwarmPeers,
+            resource_event::Payload, server_message::Message, web_rtc_event::Event,
         };
         self.sender.send(ServerMessage {
             message: Some(Message::ResourceEvent(ResourceEvent {
@@ -763,15 +763,14 @@ impl StreamMessageHandler {
         };
         if voice_chat_active
             && !(settings.voice_chat_enabled.0 && permissions.has(RoomPermission::USE_VOICE_CHAT))
+            && let Err(error) = self.leave_webrtc_voice_session().await
         {
-            if let Err(error) = self.leave_webrtc_voice_session().await {
-                tracing::warn!(
-                    room_id = %self.room_id,
-                    connection_id = %self.connection_id,
-                    error = %error,
-                    "Failed to leave voice chat during RTC revalidation"
-                );
-            }
+            tracing::warn!(
+                room_id = %self.room_id,
+                connection_id = %self.connection_id,
+                error = %error,
+                "Failed to leave voice chat during RTC revalidation"
+            );
         }
         if p2p_media_active
             && !(settings.p2p_media_enabled.0 && permissions.has(RoomPermission::USE_P2P_MEDIA))
@@ -812,15 +811,16 @@ impl StreamMessageHandler {
         else {
             return;
         };
-        if voice_chat_active && !voice_chat_allowed {
-            if let Err(error) = self.leave_webrtc_voice_session().await {
-                tracing::warn!(
-                    room_id = %self.room_id,
-                    connection_id = %self.connection_id,
-                    error = %error,
-                    "Failed to leave voice chat after RTC access changed"
-                );
-            }
+        if voice_chat_active
+            && !voice_chat_allowed
+            && let Err(error) = self.leave_webrtc_voice_session().await
+        {
+            tracing::warn!(
+                room_id = %self.room_id,
+                connection_id = %self.connection_id,
+                error = %error,
+                "Failed to leave voice chat after RTC access changed"
+            );
         }
         if p2p_media_active && !p2p_media_allowed {
             self.leave_all_media_swarms().await;

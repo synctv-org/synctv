@@ -8,7 +8,7 @@ use url::Url;
 use super::types::{
     QnapHardwareTranscode, QnapList, QnapLogin, QnapShare, QnapStatus, QnapTranscodeResolution,
 };
-use crate::{fetch_json, ProviderClientError, PROVIDER_USER_AGENT};
+use crate::{PROVIDER_USER_AGENT, ProviderClientError, fetch_json};
 
 #[derive(Clone)]
 pub struct QnapClient {

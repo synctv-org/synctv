@@ -51,15 +51,15 @@ fn build_url_from_split_parts(
         return String::new();
     }
 
-    if let Some(username) = username {
-        if url.set_username(username).is_err() {
-            return String::new();
-        }
+    if let Some(username) = username
+        && url.set_username(username).is_err()
+    {
+        return String::new();
     }
-    if let Some(password) = password {
-        if url.set_password(Some(password)).is_err() {
-            return String::new();
-        }
+    if let Some(password) = password
+        && url.set_password(Some(password)).is_err()
+    {
+        return String::new();
     }
     if let Some(path_segment) = path_segment {
         let Ok(mut segments) = url.path_segments_mut() else {

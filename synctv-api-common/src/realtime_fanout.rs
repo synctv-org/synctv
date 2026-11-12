@@ -5,7 +5,7 @@ use synctv_realtime::fanout::RealtimeEventService;
 use synctv_realtime::sync::{PublishRequest, RealtimeEvent};
 
 pub use synctv_realtime::fanout::{
-    publish_best_effort, PreparedOutboxFanout, PreparedRealtimeFanoutPlan, RealtimeFanoutService,
+    PreparedOutboxFanout, PreparedRealtimeFanoutPlan, RealtimeFanoutService, publish_best_effort,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -140,10 +140,10 @@ impl RealtimeFanoutService for OutboxRealtimeFanoutService {
 }
 
 pub fn broadcast_event_locally(event_service: &dyn RealtimeEventService, event: &RealtimeEvent) {
-    if event.delivers_to_room_channel() {
-        if let Some(room_id) = event.room_id() {
-            event_service.broadcast_local(room_id, event);
-        }
+    if event.delivers_to_room_channel()
+        && let Some(room_id) = event.room_id()
+    {
+        event_service.broadcast_local(room_id, event);
     }
     if event.delivers_to_admin_channel() {
         event_service.broadcast_admin_local(event);
@@ -266,9 +266,9 @@ impl RealtimeFanoutService for ChannelRealtimeFanoutService {
 #[cfg(test)]
 mod tests {
     use super::{
-        broadcast_event_locally, disabled_realtime_fanout_service, is_admin_channel_event,
-        local_realtime_fanout_service, publish_best_effort, PreparedOutboxFanout,
-        PreparedRealtimeFanoutPlan,
+        PreparedOutboxFanout, PreparedRealtimeFanoutPlan, broadcast_event_locally,
+        disabled_realtime_fanout_service, is_admin_channel_event, local_realtime_fanout_service,
+        publish_best_effort,
     };
     use crate::test_support::RecordingRealtimeEventService;
     use std::sync::atomic::Ordering;

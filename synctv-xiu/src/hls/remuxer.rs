@@ -6,17 +6,18 @@
 // - Generates M3U8 dynamically in memory, no file writes
 
 use crate::flv::{
-    define::{frame_type, AvcCodecId, FlvData, SoundFormat},
+    define::{AvcCodecId, FlvData, SoundFormat, frame_type},
     demuxer::{FlvAudioTagDemuxer, FlvVideoTagDemuxer},
 };
 use crate::hls::playlist::{HlsPlaylist, SegmentInfo};
 use crate::hls::segment_manager::SegmentManager;
 use crate::mpegts::{
-    define::{epsi_stream_type, MPEG_FLAG_IDR_FRAME},
+    define::{MPEG_FLAG_IDR_FRAME, epsi_stream_type},
     ts::TsMuxer,
 };
 use crate::storage::HlsStorage;
 use crate::streamhub::{
+    SubscribeWithRollbackError,
     define::{
         BroadcastEvent, BroadcastEventReceiver, FrameData, FrameDataReceiver, NotifyInfo,
         StreamHubEvent, StreamHubEventSender, SubscribeType, SubscriberInfo,
@@ -25,7 +26,6 @@ use crate::streamhub::{
     stream::StreamIdentifier,
     subscribe_with_rollback_on_timeout,
     utils::Uuid,
-    SubscribeWithRollbackError,
 };
 use bytes::{Bytes, BytesMut};
 use dashmap::DashMap;
@@ -242,11 +242,10 @@ impl CustomHlsRemuxer {
                            }
             // Reap completed handler tasks without blocking
                            Some(result) = self.handler_tasks.join_next(), if !self.handler_tasks.is_empty() => {
-                               if let Err(e) = result {
-                                   if !e.is_cancelled() {
+                               if let Err(e) = result
+                                   && !e.is_cancelled() {
                                        tracing::error!("HLS stream handler task panicked: {}", e);
                                    }
-                               }
                                continue;
                            }
                            result = self.client_event_consumer.recv() => {
@@ -473,15 +472,15 @@ impl Drop for StreamRegistryGuard {
             return;
         }
         // Only remove if the entry still belongs to this handler
-        if let Some(entry) = self.registry.get(&self.key) {
-            if entry.read().generation_id == self.generation_id {
-                drop(entry);
-                self.registry.remove(&self.key);
-                tracing::warn!(
-                    "StreamRegistryGuard: removed registry entry for {} on panic/early-return",
-                    self.key
-                );
-            }
+        if let Some(entry) = self.registry.get(&self.key)
+            && entry.read().generation_id == self.generation_id
+        {
+            drop(entry);
+            self.registry.remove(&self.key);
+            tracing::warn!(
+                "StreamRegistryGuard: removed registry entry for {} on panic/early-return",
+                self.key
+            );
         }
     }
 }
@@ -613,14 +612,14 @@ impl StreamHandler {
         let grace = self.segment_manager.final_playlist_grace();
         tokio::spawn(async move {
             tokio::time::sleep(grace).await;
-            if let Some(entry) = registry.get(&registry_key) {
-                if entry.read().generation_id == generation_id {
-                    drop(entry);
-                    registry.remove(&registry_key);
-                    tracing::debug!(
-                        "HLS registry cleanup for {app_name}/{stream_name}: ended generation expired"
-                    );
-                }
+            if let Some(entry) = registry.get(&registry_key)
+                && entry.read().generation_id == generation_id
+            {
+                drop(entry);
+                registry.remove(&registry_key);
+                tracing::debug!(
+                    "HLS registry cleanup for {app_name}/{stream_name}: ended generation expired"
+                );
             }
         });
 
@@ -1010,7 +1009,10 @@ impl StreamProcessor {
         if previous_dts > 0 && dts < previous_dts - DTS_REGRESSION_THRESHOLD_MS {
             tracing::warn!(
                 "DTS regression detected for {}/{}: last_dts={}, current_dts={} — marking discontinuity",
-                self.app_name, self.stream_name, previous_dts, dts
+                self.app_name,
+                self.stream_name,
+                previous_dts,
+                dts
             );
             self.discontinuity_pending = true;
         }
@@ -1335,15 +1337,19 @@ mod tests {
         let names = {
             let state = state.read();
             assert_eq!(state.playlist.segments.len(), 2);
-            assert!(state
-                .playlist
-                .generate_m3u8(std::string::ToString::to_string)
-                .contains("#EXT-X-ENDLIST"));
-            assert!(state
-                .playlist
-                .segments
-                .iter()
-                .all(|segment| segment.duration_ms > 0 && segment.duration_ms < 20_000));
+            assert!(
+                state
+                    .playlist
+                    .generate_m3u8(std::string::ToString::to_string)
+                    .contains("#EXT-X-ENDLIST")
+            );
+            assert!(
+                state
+                    .playlist
+                    .segments
+                    .iter()
+                    .all(|segment| segment.duration_ms > 0 && segment.duration_ms < 20_000)
+            );
             state
                 .playlist
                 .segments
@@ -1380,16 +1386,20 @@ mod tests {
             .expect("final segment");
 
         let state = state.read();
-        assert!(state
-            .playlist
-            .generate_m3u8(std::string::ToString::to_string)
-            .contains("#EXT-X-ENDLIST"));
+        assert!(
+            state
+                .playlist
+                .generate_m3u8(std::string::ToString::to_string)
+                .contains("#EXT-X-ENDLIST")
+        );
         assert!(state.playlist.segments.len() >= 2);
-        assert!(state
-            .playlist
-            .segments
-            .iter()
-            .skip(1)
-            .any(|segment| segment.discontinuity));
+        assert!(
+            state
+                .playlist
+                .segments
+                .iter()
+                .skip(1)
+                .any(|segment| segment.discontinuity)
+        );
     }
 }

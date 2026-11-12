@@ -1,10 +1,10 @@
 use crate::{
+    Error, Result,
     models::{
         AuditAction, AuditDetails, AuditTargetType, RoomAdminPermissionBits,
         RoomGuestPermissionBits, RoomId, RoomMember, RoomMemberPermissionBits, RoomRole, UserId,
     },
-    service::{optimistic_retry, AdminMemberUpdate, PermissionWriteFence},
-    Error, Result,
+    service::{AdminMemberUpdate, PermissionWriteFence, optimistic_retry},
 };
 
 use super::MemberService;
@@ -410,14 +410,14 @@ impl MemberService {
                 .invalidate_committed_member_write_cache(&room_id, &target_user_id)
                 .await;
 
-            if let Some(ref invalidation) = self.cache_invalidation {
-                if let Err(error) = invalidation.invalidate_room_settings(&room_id).await {
-                    tracing::warn!(
-                        error = %error,
-                        room_id = %room_id,
-                        "Failed to broadcast room settings cache invalidation after admin role change"
-                    );
-                }
+            if let Some(ref invalidation) = self.cache_invalidation
+                && let Err(error) = invalidation.invalidate_room_settings(&room_id).await
+            {
+                tracing::warn!(
+                    error = %error,
+                    room_id = %room_id,
+                    "Failed to broadcast room settings cache invalidation after admin role change"
+                );
             }
 
             self.audit_log(

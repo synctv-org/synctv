@@ -5,11 +5,11 @@
 //!
 //! Design reference: external design doc 19-configuration-management.md §6.3
 
-use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
+use dashmap::mapref::entry::Entry;
 use sqlx::PgPool;
 use std::sync::Arc;
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{Mutex, broadcast};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
@@ -265,10 +265,10 @@ impl SettingsService {
                 }
             };
 
-            if let Some(setting) = self.runtime_cache.get_l1(&cache_key).await {
-                if i64::from(setting.version) >= fence_version {
-                    return Ok(setting);
-                }
+            if let Some(setting) = self.runtime_cache.get_l1(&cache_key).await
+                && i64::from(setting.version) >= fence_version
+            {
+                return Ok(setting);
             }
 
             match self.runtime_cache.get_l2(&cache_key).await {
@@ -874,8 +874,8 @@ fn group_name_from_setting_key(key: &str) -> String {
 mod tests {
     use super::*;
     use crate::cache::{
-        consistency::VersionFenceState, CacheDomain, LocalVersionFenceStore,
-        VersionFenceReservation, VersionFenceStore,
+        CacheDomain, LocalVersionFenceStore, VersionFenceReservation, VersionFenceStore,
+        consistency::VersionFenceState,
     };
     use crate::models::settings::RuntimeSetting;
     use std::sync::atomic::{AtomicUsize, Ordering};

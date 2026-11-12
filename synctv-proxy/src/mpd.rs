@@ -161,15 +161,13 @@ where
                     }
                 }
                 writer.write_event(Event::End(end.into_owned()))?;
-                if context.name == "BaseURL" {
-                    if let (Some(parent), Some(base_url)) =
+                if context.name == "BaseURL"
+                    && let (Some(parent), Some(base_url)) =
                         (contexts.last_mut(), context.first_base_url)
-                    {
-                        if parent.first_base_url.is_none() {
-                            parent.descendant_base = base_url.clone();
-                            parent.first_base_url = Some(base_url);
-                        }
-                    }
+                    && parent.first_base_url.is_none()
+                {
+                    parent.descendant_base = base_url.clone();
+                    parent.first_base_url = Some(base_url);
                 }
             }
             Event::Eof => break,

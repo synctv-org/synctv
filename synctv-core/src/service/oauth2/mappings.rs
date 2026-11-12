@@ -1,7 +1,7 @@
 use crate::{
-    models::{oauth2_client::OAuth2Provider, UserId},
-    service::{oauth2::OAuth2Service, oauth2::OAuth2UserInfo, OAuth2SignupPolicy},
     Result,
+    models::{UserId, oauth2_client::OAuth2Provider},
+    service::{OAuth2SignupPolicy, oauth2::OAuth2Service, oauth2::OAuth2UserInfo},
 };
 
 impl OAuth2Service {

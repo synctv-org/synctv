@@ -26,18 +26,19 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use synctv_media_providers::circuit_breaker::CircuitBreaker;
 use synctv_media_providers::grpc::{
+    AlistService as AlistGrpcService, BilibiliService, EmbyService,
     alist::alist_server::AlistServer, bilibili::bilibili_server::BilibiliServer,
-    emby::emby_server::EmbyServer, AlistService as AlistGrpcService, BilibiliService, EmbyService,
+    emby::emby_server::EmbyServer,
 };
 use tonic::codec::CompressionEncoding;
 use tonic::codegen::http::{HeaderMap, Response as HttpResponse};
 use tonic::metadata::MetadataMap;
-use tonic::service::interceptor::InterceptedService;
 use tonic::service::LayerExt as _;
+use tonic::service::interceptor::InterceptedService;
 use tonic::transport::Server;
 use tonic::{Code, Request, Status};
 use tower::{Layer, Service};
-use tracing::{info, warn, Level};
+use tracing::{Level, info, warn};
 
 const PROVIDER_GRPC_MESSAGE_SIZE_LIMIT: usize = 4 * 1024 * 1024;
 const PROVIDER_GRPC_FRAME_SIZE_LIMIT: u32 = 4 * 1024 * 1024;
@@ -467,8 +468,8 @@ mod tests {
     }
 
     #[test]
-    fn circuit_breaker_treats_backend_failure_codes_as_failures(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn circuit_breaker_treats_backend_failure_codes_as_failures()
+    -> Result<(), Box<dyn std::error::Error>> {
         for code in ["2", "4", "10", "13", "14", "15"] {
             let headers = grpc_headers(Some(code))?;
             assert!(

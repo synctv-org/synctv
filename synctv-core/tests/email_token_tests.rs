@@ -155,10 +155,12 @@ async fn test_validate_and_consume_valid_token() {
         .await
         .checked("test operation should succeed");
     assert!(consumed.is_some(), "Valid token should be consumed");
-    assert!(consumed
-        .checked("test operation should succeed")
-        .used_at
-        .is_some());
+    assert!(
+        consumed
+            .checked("test operation should succeed")
+            .used_at
+            .is_some()
+    );
 
     // Consuming again should return None (already used)
     let consumed_again = token_repo
@@ -559,10 +561,12 @@ async fn test_generate_token_invalidates_previous_tokens_same_type() {
         .await
         .checked("test operation should succeed");
 
-    assert!(token_service
-        .is_token_active(&first_token, &user.id, EmailTokenType::PasswordReset)
-        .await
-        .checked("first token active state should load"));
+    assert!(
+        token_service
+            .is_token_active(&first_token, &user.id, EmailTokenType::PasswordReset)
+            .await
+            .checked("first token active state should load")
+    );
 
     // First token should be valid
     let result = token_service
@@ -579,14 +583,18 @@ async fn test_generate_token_invalidates_previous_tokens_same_type() {
         .await
         .checked("test operation should succeed");
 
-    assert!(!token_service
-        .is_token_active(&first_token, &user.id, EmailTokenType::PasswordReset)
-        .await
-        .checked("superseded token active state should load"));
-    assert!(token_service
-        .is_token_active(&second_token, &user.id, EmailTokenType::PasswordReset)
-        .await
-        .checked("replacement token active state should load"));
+    assert!(
+        !token_service
+            .is_token_active(&first_token, &user.id, EmailTokenType::PasswordReset)
+            .await
+            .checked("superseded token active state should load")
+    );
+    assert!(
+        token_service
+            .is_token_active(&second_token, &user.id, EmailTokenType::PasswordReset)
+            .await
+            .checked("replacement token active state should load")
+    );
 
     // Second token should be valid
     let result = token_service

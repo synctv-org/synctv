@@ -18,7 +18,7 @@ pub(super) fn resolve_ssrf_validated_address(
     address_overrides: Arc<HashMap<String, SocketAddr>>,
     uri: &TransportUri,
     guard: &SsrfGuard,
-) -> impl Future<Output = std::io::Result<(String, SocketAddr)>> + Send {
+) -> impl Future<Output = std::io::Result<(String, SocketAddr)>> + Send + use<> {
     let uri = uri.clone();
     let guard = guard.clone();
     async move {

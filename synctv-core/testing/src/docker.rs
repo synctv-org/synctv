@@ -7,9 +7,9 @@ use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use sha2::{Digest as _, Sha256};
+use testcontainers::GenericImage;
 use testcontainers::core::client::docker_client_instance;
 use testcontainers::runners::AsyncRunner;
-use testcontainers::GenericImage;
 use tokio::sync::{Semaphore, SemaphorePermit};
 
 const DOCKER_CLI_INSPECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -604,10 +604,10 @@ pub(crate) fn candidate_endpoints_for_host(
         Some(IpAddr::V4(_)) => {
             if let Some(port) = ipv4_port {
                 push_candidate(&mut candidates, host.to_string(), port);
-                if host.starts_with("127.") {
-                    if let Some(local_ipv4) = local_ipv4.as_ref() {
-                        push_candidate(&mut candidates, local_ipv4.clone(), port);
-                    }
+                if host.starts_with("127.")
+                    && let Some(local_ipv4) = local_ipv4.as_ref()
+                {
+                    push_candidate(&mut candidates, local_ipv4.clone(), port);
                 }
             }
             if let Some(port) = ipv6_port.filter(|port| Some(*port) != ipv4_port) {
@@ -636,10 +636,10 @@ pub(crate) fn candidate_endpoints_for_host(
                     host.to_string()
                 };
                 push_candidate(&mut candidates, ipv4_host, port);
-                if host == "localhost" {
-                    if let Some(local_ipv4) = local_ipv4.as_ref() {
-                        push_candidate(&mut candidates, local_ipv4.clone(), port);
-                    }
+                if host == "localhost"
+                    && let Some(local_ipv4) = local_ipv4.as_ref()
+                {
+                    push_candidate(&mut candidates, local_ipv4.clone(), port);
                 }
             }
             if let Some(port) =
@@ -725,14 +725,16 @@ pub(crate) async fn acquire_docker_slot(
     let local_permit = serializer.acquire().await.expect(closed_message);
     let prefix = name.to_string();
 
-    let process_lock = tokio::task::spawn_blocking(move || loop {
-        for slot in 0..slots {
-            let slot_name = format!("{prefix}-slot-{slot}");
-            if let Some(lock) = ProcessLock::try_acquire(&slot_name) {
-                return lock;
+    let process_lock = tokio::task::spawn_blocking(move || {
+        loop {
+            for slot in 0..slots {
+                let slot_name = format!("{prefix}-slot-{slot}");
+                if let Some(lock) = ProcessLock::try_acquire(&slot_name) {
+                    return lock;
+                }
             }
+            std::thread::sleep(Duration::from_millis(100));
         }
-        std::thread::sleep(Duration::from_millis(100));
     })
     .await
     .expect(panic_message);

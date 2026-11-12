@@ -17,13 +17,13 @@ use std::hint::black_box;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
-use criterion::{criterion_group, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group};
 use sqlx::PgPool;
 use synctv_core::{
     models::{
-        id::PlaylistId, media::Media, playlist::Playlist, MediaId, PageParams, Room, RoomId,
-        RoomListQuery, RoomMember, RoomRole, RoomStatus, SourceProvider, User, UserId, UserRole,
-        UserStatus,
+        MediaId, PageParams, Room, RoomId, RoomListQuery, RoomMember, RoomRole, RoomStatus,
+        SourceProvider, User, UserId, UserRole, UserStatus, id::PlaylistId, media::Media,
+        playlist::Playlist,
     },
     repository::{
         MediaRepository, PlaylistRepository, RoomMemberRepository, RoomRepository, UserRepository,

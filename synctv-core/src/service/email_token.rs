@@ -15,10 +15,10 @@ use synctv_common::ExecutionControl;
 use tracing::{debug, info, warn};
 
 use crate::{
+    Clock, Error, Result, SystemClock,
     models::UserId,
     repository::EmailTokenRepository,
     service::{EmailOutboxService, RateLimitError, RequestRateLimiterService},
-    Clock, Error, Result, SystemClock,
 };
 
 use crate::models::EmailTokenType;

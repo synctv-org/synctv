@@ -1,6 +1,6 @@
 use crate::{
-    models::{RoomId, UserId},
     Result,
+    models::{RoomId, UserId},
 };
 
 use super::{RealtimeOutboxPermissionChangedEventFactory, RoomService};

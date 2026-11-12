@@ -1,9 +1,9 @@
-use futures::future::BoxFuture;
 use futures::FutureExt;
+use futures::future::BoxFuture;
 use std::{future::Future, sync::Arc};
 use synctv_core::provider::ExecutionControl;
 
-use super::{middleware::RequestMetadata, AppError, AppState};
+use super::{AppError, AppState, middleware::RequestMetadata};
 use synctv_api_common::impls::admin::{RequestContext, ValidatedAdmin};
 use synctv_api_common::impls::{AdminApiImpl, ApiError, RequestMetadata as ImplRequestMetadata};
 use synctv_api_common::providers::ProviderCommonApiImpl;

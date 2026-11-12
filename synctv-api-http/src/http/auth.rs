@@ -1,6 +1,6 @@
 use axum::{
-    extract::{FromRequest, FromRequestParts, Request, State},
     Json,
+    extract::{FromRequest, FromRequestParts, Request, State},
 };
 use serde::de::DeserializeOwned;
 
@@ -1121,11 +1121,11 @@ pub async fn logout(
 mod tests {
     use super::*;
     use axum::{
-        body::{to_bytes, Body},
+        Router,
+        body::{Body, to_bytes},
         http::{Request, StatusCode},
         response::IntoResponse,
         routing::post,
-        Router,
     };
     use tower::ServiceExt;
 

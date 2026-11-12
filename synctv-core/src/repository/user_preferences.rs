@@ -1,11 +1,11 @@
 use sqlx::PgPool;
 
 use crate::{
+    Error, Result,
     models::{
         RoomSettings, UserAuthFactors, UserId, UserNotificationPreferences, UserPreferences,
         UserPreferencesUpdate,
     },
-    Error, Result,
 };
 
 #[derive(Clone)]

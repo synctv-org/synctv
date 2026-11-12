@@ -1575,16 +1575,18 @@ mod tests {
         let mut first = None;
         let mut found_current = false;
 
-        assert!(TwitchProvider::scan_ordered_page(
-            vec![
-                item(TwitchTargetKind::Video, "1"),
-                item(TwitchTargetKind::Video, "2"),
-            ],
-            &target,
-            &mut first,
-            &mut found_current,
-        )
-        .is_none());
+        assert!(
+            TwitchProvider::scan_ordered_page(
+                vec![
+                    item(TwitchTargetKind::Video, "1"),
+                    item(TwitchTargetKind::Video, "2"),
+                ],
+                &target,
+                &mut first,
+                &mut found_current,
+            )
+            .is_none()
+        );
         assert!(found_current);
 
         let next = TwitchProvider::scan_ordered_page(
@@ -1609,26 +1611,30 @@ mod tests {
         let mut first = None;
         let mut found_current = false;
 
-        assert!(TwitchProvider::scan_ordered_page(
-            vec![
-                item(TwitchTargetKind::Clip, "1"),
-                item(TwitchTargetKind::Clip, "2"),
-            ],
-            &target,
-            &mut first,
-            &mut found_current,
-        )
-        .is_none());
-        assert!(TwitchProvider::scan_ordered_page(
-            vec![
-                item(TwitchTargetKind::Clip, "3"),
-                item(TwitchTargetKind::Clip, "4"),
-            ],
-            &target,
-            &mut first,
-            &mut found_current,
-        )
-        .is_none());
+        assert!(
+            TwitchProvider::scan_ordered_page(
+                vec![
+                    item(TwitchTargetKind::Clip, "1"),
+                    item(TwitchTargetKind::Clip, "2"),
+                ],
+                &target,
+                &mut first,
+                &mut found_current,
+            )
+            .is_none()
+        );
+        assert!(
+            TwitchProvider::scan_ordered_page(
+                vec![
+                    item(TwitchTargetKind::Clip, "3"),
+                    item(TwitchTargetKind::Clip, "4"),
+                ],
+                &target,
+                &mut first,
+                &mut found_current,
+            )
+            .is_none()
+        );
         assert!(found_current);
         assert_eq!(
             first
@@ -1784,10 +1790,12 @@ mod tests {
             .expect("test operation should succeed");
         assert_eq!(source.medias.len(), 2);
         assert_eq!(source.default_media_index, Some(0));
-        assert!(source
-            .medias
-            .iter()
-            .all(|media| media.p2p_swarm_id.is_none()));
+        assert!(
+            source
+                .medias
+                .iter()
+                .all(|media| media.p2p_swarm_id.is_none())
+        );
         assert!(source.danmakus[0].p2p_swarm_id.is_none());
         assert!(matches!(
             source.medias[0].provider,
@@ -1803,10 +1811,12 @@ mod tests {
             .playback_infos
             .get("hls")
             .expect("test operation should succeed");
-        assert!(source
-            .medias
-            .iter()
-            .all(|media| media.p2p_swarm_id.is_none()));
+        assert!(
+            source
+                .medias
+                .iter()
+                .all(|media| media.p2p_swarm_id.is_none())
+        );
         assert!(source.danmakus[0].p2p_swarm_id.is_none());
         assert!(matches!(
             source.medias[0].provider,

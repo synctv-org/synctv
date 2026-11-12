@@ -9,10 +9,10 @@ use crate::{
     api::{livestream::LiveStreamingInfrastructure, tracker::StreamTracker},
     error::StreamResult,
     livestream::{
+        CleanupConfig, SegmentManager,
         external_publish_manager::ExternalPublishManager,
         pull_manager::PullStreamManager,
         webrtc_session_manager::{WebRtcSessionConfig, WebRtcSessionManager},
-        CleanupConfig, SegmentManager,
     },
     relay::{
         publisher_manager::{
@@ -22,17 +22,17 @@ use crate::{
     },
 };
 use dashmap::DashMap;
+use std::sync::Arc;
 #[cfg(test)]
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use synctv_common::ssrf::SsrfGuard;
 use synctv_core::service::LeaderCheck;
-use synctv_xiu::hls::{segment_manager::CleanupAuthority, CustomHlsRemuxer, StreamRegistry};
+use synctv_xiu::hls::{CustomHlsRemuxer, StreamRegistry, segment_manager::CleanupAuthority};
 use synctv_xiu::rtmp::auth::AuthCallback;
 use synctv_xiu::storage::{FileStorage, HlsStorage, MemoryStorage, S3Config, S3Storage};
 use synctv_xiu::streamhub::StreamsHub;
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::{AbortHandle, JoinHandle};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
@@ -463,14 +463,13 @@ impl LivestreamHandle {
             webrtc_session_manager.shutdown().await;
             pull_manager.stop_all().await;
             external_publish_manager.stop_all().await;
-            if !node_id.is_empty() {
-                if let Err(error) = registry
+            if !node_id.is_empty()
+                && let Err(error) = registry
                     .deactivate_all_generations_for_node_preserving_hls(&node_id)
                     .await
                 {
                     warn!(node_id = %node_id, %error, "Failed to preserve local HLS generations during force shutdown");
                 }
-            }
         })
         .is_none()
         {
@@ -484,22 +483,25 @@ impl LivestreamHandle {
             return;
         }
 
-        if let Err(e) = self
+        match self
             .infrastructure
             .registry
             .deactivate_all_generations_for_node_preserving_hls(&self.infrastructure.local_node_id)
             .await
         {
-            warn!(
-                node_id = %self.infrastructure.local_node_id,
-                error = %e,
-                "Failed to cleanup local publisher registrations during shutdown"
-            );
-        } else {
-            info!(
-                node_id = %self.infrastructure.local_node_id,
-                "Cleaned up local publisher registrations during shutdown"
-            );
+            Err(e) => {
+                warn!(
+                    node_id = %self.infrastructure.local_node_id,
+                    error = %e,
+                    "Failed to cleanup local publisher registrations during shutdown"
+                );
+            }
+            _ => {
+                info!(
+                    node_id = %self.infrastructure.local_node_id,
+                    "Cleaned up local publisher registrations during shutdown"
+                );
+            }
         }
 
         self.infrastructure.user_stream_tracker.clear();
@@ -653,7 +655,7 @@ impl LivestreamHandle {
     /// handlers a chance to consume UnPublish and mark the final playlist before
     /// aborting the remaining tasks.
     pub async fn shutdown_force(&mut self) {
-        use tokio::time::{timeout, Duration};
+        use tokio::time::{Duration, timeout};
 
         self.reregister_cancel_token.cancel();
         if timeout(Duration::from_millis(100), &mut self.reregister_task_handle)
@@ -1389,7 +1391,7 @@ mod tests {
     use synctv_core_testing::RtmpPublisher;
     use tempfile::tempdir;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     type TestResult = anyhow::Result<()>;
 
@@ -2132,9 +2134,11 @@ mod tests {
                 .is_stream_active("room-active-shutdown", "media-active-shutdown")
                 .await?
         );
-        assert!(tracker
-            .get_stream_user("room-active-shutdown", "media-active-shutdown")
-            .is_none());
+        assert!(
+            tracker
+                .get_stream_user("room-active-shutdown", "media-active-shutdown")
+                .is_none()
+        );
         let hls_registry = handle
             .infrastructure
             .hls_stream_registry
@@ -2156,8 +2160,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_streamhub_failure_closes_sessions_cleans_state_and_accepts_reconnect(
-    ) -> TestResult {
+    async fn test_streamhub_failure_closes_sessions_cleans_state_and_accepts_reconnect()
+    -> TestResult {
         let registry = Arc::new(TestStreamRegistry::new());
         let tracker = test_tracker();
         let (listener, local_addr) = bind_local_listener().await?;
@@ -2379,10 +2383,10 @@ mod tests {
     #[tokio::test]
     async fn transcode_rung_serves_flv_and_hls_from_live_source() -> TestResult {
         use crate::{
+            FlvStreamingApi, HlsStreamingApi,
             livestream::transcode::{
                 FfmpegWorkerConfig, TranscodePreset, WorkerConfig, WorkerEngine,
             },
-            FlvStreamingApi, HlsStreamingApi,
         };
 
         const ROOM: &str = "room-tc";
@@ -2578,10 +2582,9 @@ mod tests {
                 )
                 .await
                 .map_err(|error| anyhow::anyhow!("rung HLS playlist: {error}"))?
+                    && playlist.contains("#EXTINF:")
                 {
-                    if playlist.contains("#EXTINF:") {
-                        return Ok::<_, anyhow::Error>(playlist);
-                    }
+                    return Ok::<_, anyhow::Error>(playlist);
                 }
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }

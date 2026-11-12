@@ -9,9 +9,9 @@
 //! registry recovers, the monitor resumes normal-interval checks.
 
 use async_trait::async_trait;
-use futures::{stream, StreamExt as _};
-use std::sync::atomic::{AtomicU32, Ordering};
+use futures::{StreamExt as _, stream};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::interval;

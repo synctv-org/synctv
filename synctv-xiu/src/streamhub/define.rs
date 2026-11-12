@@ -9,12 +9,12 @@ use {
     super::utils::Uuid,
     async_trait::async_trait,
     bytes::Bytes,
-    serde::ser::SerializeStruct,
     serde::Serialize,
     serde::Serializer,
+    serde::ser::SerializeStruct,
     std::fmt,
     std::sync::Arc,
-    tokio::sync::{broadcast, mpsc, oneshot, OwnedSemaphorePermit, Semaphore},
+    tokio::sync::{OwnedSemaphorePermit, Semaphore, broadcast, mpsc, oneshot},
 };
 
 /// How a consumer subscribes to a stream in `StreamsHub`.

@@ -1,7 +1,7 @@
 use crate::{PublicIdCodec, PublicIdType};
 use synctv_proto::client as client_proto;
 
-use crate::{source_config::media_source_config_from_proto, AdapterError, AdapterResult};
+use crate::{AdapterError, AdapterResult, source_config::media_source_config_from_proto};
 
 pub const DEFAULT_MEDIA_TITLE: &str = "Unknown";
 

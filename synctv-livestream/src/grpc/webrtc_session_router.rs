@@ -1,12 +1,12 @@
 use std::time::Duration;
 
-use tonic::{codec::CompressionEncoding, metadata::MetadataValue, Request};
+use tonic::{Request, codec::CompressionEncoding, metadata::MetadataValue};
 
 use super::{
     connection_pool::GrpcConnectionPool,
     proto::{
-        stream_relay_service_client::StreamRelayServiceClient, DeleteWebRtcSessionRequest,
-        WebRtcSessionKind as ProtoWebRtcSessionKind,
+        DeleteWebRtcSessionRequest, WebRtcSessionKind as ProtoWebRtcSessionKind,
+        stream_relay_service_client::StreamRelayServiceClient,
     },
 };
 use crate::{
@@ -177,13 +177,13 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio_stream::wrappers::TcpListenerStream;
     use tokio_util::sync::CancellationToken;
-    use tonic::{codec::CompressionEncoding, transport::Server, Response, Status};
+    use tonic::{Response, Status, codec::CompressionEncoding, transport::Server};
 
     use super::*;
     use crate::grpc::proto::{
-        stream_relay_service_server::{StreamRelayService, StreamRelayServiceServer},
         DeleteWebRtcSessionResponse, GetHlsPlaylistRequest, GetHlsPlaylistResponse,
         GetHlsSegmentRequest, GetHlsSegmentResponse, PullRtmpStreamRequest, RtmpPacket, RtpPacket,
+        stream_relay_service_server::{StreamRelayService, StreamRelayServiceServer},
     };
 
     type RtmpStream =

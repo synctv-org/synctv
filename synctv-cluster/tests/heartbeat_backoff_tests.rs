@@ -7,11 +7,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 use synctv_core_testing::{
-    redis_multiplexed_connection, start_redis_client_url_with_label, RedisContainer,
+    RedisContainer, redis_multiplexed_connection, start_redis_client_url_with_label,
 };
 
-use synctv_cluster::discovery::node_registry::NodeRegistry;
 use synctv_cluster::HeartbeatResult;
+use synctv_cluster::discovery::node_registry::NodeRegistry;
 
 /// Helper to create a Redis container and client.
 async fn setup_redis() -> (RedisContainer, redis::Client, String) {

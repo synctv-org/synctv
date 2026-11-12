@@ -2,10 +2,10 @@
 //!
 //! Endpoints that can be accessed without authentication.
 
-use axum::{extract::State, response::Json, routing::get, Router};
+use axum::{Router, extract::State, response::Json, routing::get};
 
 use crate::http::{
-    error::map_api_error, middleware::RequestMetadata, validation::ProtoQuery, AppState,
+    AppState, error::map_api_error, middleware::RequestMetadata, validation::ProtoQuery,
 };
 use synctv_api_common::impls::EndpointRateLimitCategory;
 use synctv_proto::client::{

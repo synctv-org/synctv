@@ -13,6 +13,7 @@ use tracing::{debug, info};
 use synctv_adapter::PublicIdCodec;
 use synctv_core::service::{ChatService, OnlinePresenceService, RoomService, UserService};
 
+use crate::FILE_DESCRIPTOR_SET;
 use crate::admin_runtime::AdminRuntime;
 use crate::lifecycle::ManagementLifecycleController;
 use crate::proto::management_service_server::ManagementServiceServer;
@@ -23,7 +24,6 @@ use crate::provider_runtime::{
     YoutubeRuntime,
 };
 use crate::service::{ManagementServiceDependencies, ManagementServiceImpl};
-use crate::FILE_DESCRIPTOR_SET;
 use synctv_realtime::fanout::{
     MembershipEventFanoutService, RealtimeFanoutService, RoomCacheFanoutService,
 };
@@ -434,13 +434,13 @@ fn restrict_management_unix_socket_permissions(path: &Path) -> anyhow::Result<()
 
 #[cfg(unix)]
 fn cleanup_management_unix_socket(path: &str) {
-    if let Err(error) = std::fs::remove_file(path) {
-        if error.kind() != std::io::ErrorKind::NotFound {
-            warn!(
-                "Failed to remove management unix socket {}: {error}",
-                absolute_display_path(Path::new(path))
-            );
-        }
+    if let Err(error) = std::fs::remove_file(path)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        warn!(
+            "Failed to remove management unix socket {}: {error}",
+            absolute_display_path(Path::new(path))
+        );
     }
 }
 
@@ -453,8 +453,8 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tonic::transport::Server;
-    use tonic_health::pb::health_client::HealthClient;
     use tonic_health::pb::HealthCheckRequest;
+    use tonic_health::pb::health_client::HealthClient;
 
     #[cfg(unix)]
     struct TempDirGuard {
@@ -498,8 +498,8 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn prepare_management_unix_socket_restricts_parent_directory_permissions(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn prepare_management_unix_socket_restricts_parent_directory_permissions()
+    -> Result<(), Box<dyn std::error::Error>> {
         let temp_dir = TempDirGuard::new("parent-perms")?;
         let runtime_dir = temp_dir.path().join("management-runtime");
         let socket_path = runtime_dir.join("synctv.sock");
@@ -518,8 +518,8 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn prepare_management_unix_socket_preserves_existing_parent_directory_permissions(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn prepare_management_unix_socket_preserves_existing_parent_directory_permissions()
+    -> Result<(), Box<dyn std::error::Error>> {
         let temp_dir = TempDirGuard::new("existing-parent-perms")?;
         let runtime_dir = temp_dir.path().join("preexisting-runtime");
         std::fs::create_dir_all(&runtime_dir)?;
@@ -562,8 +562,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn management_health_service_remains_accessible_without_management_auth(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    async fn management_health_service_remains_accessible_without_management_auth()
+    -> Result<(), Box<dyn std::error::Error>> {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
 

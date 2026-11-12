@@ -34,30 +34,30 @@ pub(crate) mod webtransport;
 
 use crate::providers;
 use axum::{
+    Router,
     body::Body,
-    http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode},
+    http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header},
     middleware as axum_middleware,
     response::IntoResponse,
     routing::{get, post},
-    Router,
 };
 #[cfg(not(any(feature = "web-ui", feature = "web-ui-dynamic")))]
 use axum::{extract::State, response::Redirect};
 use futures::StreamExt;
 use std::sync::{Arc, LazyLock};
 use tower_http::compression::{
-    predicate::{DefaultPredicate, Predicate},
     CompressionLayer,
+    predicate::{DefaultPredicate, Predicate},
 };
 use tower_http::cors::CorsLayer;
 use tower_http::on_early_drop::{EarlyDropsAsFailures, OnEarlyDropLayer};
 use tower_http::trace::DefaultOnFailure;
 
 pub use auth::extract_client_ip;
-pub use error::{map_api_error, AppError, AppResult};
+pub use error::{AppError, AppResult, map_api_error};
 pub use health::{create_health_router, create_metrics_router, liveness_check};
 pub use middleware::{hsts_header, security_headers_middleware};
-pub use websocket::{websocket_handler, AuthMethod};
+pub use websocket::{AuthMethod, websocket_handler};
 
 pub(crate) fn reject_duplicate_header(headers: &HeaderMap, name: &HeaderName) -> AppResult<()> {
     let mut values = headers.get_all(name).iter();
@@ -264,7 +264,7 @@ static X_FORWARDED_PROTO: LazyLock<HeaderName> =
     LazyLock::new(|| HeaderName::from_static("x-forwarded-proto"));
 
 pub use synctv_api_common::app_state::{
-    build_app_state, AppState, ProxyCacheLifecycleRuntime, RouterOptions,
+    AppState, ProxyCacheLifecycleRuntime, RouterOptions, build_app_state,
 };
 
 pub fn create_router_from_options(options: RouterOptions) -> anyhow::Result<axum::Router> {

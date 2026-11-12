@@ -1,5 +1,5 @@
-use futures::future::BoxFuture;
 use futures::FutureExt;
+use futures::future::BoxFuture;
 use std::future::Future;
 use std::net::IpAddr;
 use std::sync::Arc;

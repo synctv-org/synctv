@@ -4,10 +4,10 @@ use sqlx::PgPool;
 use tracing::info;
 
 use synctv_core::{
+    Error, Result,
     models::{SignupMethod, User, UserRole},
     repository::{PasswordCredentialMaterial, UserPasswordRepository, UserRepository},
     service::OpaquePasswordService,
-    Error, Result,
 };
 
 const KNOWN_DEV_ROOT_PASSWORDS: &[&str] = &["Rootpasswd1234567890!", "DevRootPass12345"];
@@ -195,9 +195,13 @@ mod tests {
 
     #[test]
     fn bootstrap_exists_value_accepts_scalar() {
-        assert!(bootstrap_exists_value(Some(true), "administrator user")
-            .checked("operation should succeed"));
-        assert!(!bootstrap_exists_value(Some(false), "administrator user")
-            .checked("operation should succeed"));
+        assert!(
+            bootstrap_exists_value(Some(true), "administrator user")
+                .checked("operation should succeed")
+        );
+        assert!(
+            !bootstrap_exists_value(Some(false), "administrator user")
+                .checked("operation should succeed")
+        );
     }
 }

@@ -5,9 +5,9 @@
 
 use chrono::Utc;
 use synctv_core::{
+    Error,
     models::{Playlist, PlaylistId, Room, RoomId, RoomStatus, User, UserId, UserRole, UserStatus},
     repository::{PlaylistRepository, RoomRepository, UserRepository},
-    Error,
 };
 use synctv_core_testing::{create_test_pool, ok, some};
 

@@ -8,8 +8,8 @@ use synctv_proto::playback_provider::cctv::{
 use tonic::{Request, Response, Status};
 
 use super::{
-    execute_playback_provider_stream, grpc_request_metadata, GrpcResponseStream,
-    PlaybackProviderGrpcState,
+    GrpcResponseStream, PlaybackProviderGrpcState, execute_playback_provider_stream,
+    grpc_request_metadata,
 };
 
 #[derive(Clone)]

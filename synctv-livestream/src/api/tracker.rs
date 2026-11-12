@@ -163,14 +163,13 @@ impl StreamTracker {
         // If another user was publishing this exact stream, remove them first.
         let previous_user = inner.by_stream.remove(&sk);
         let is_new_stream = previous_user.is_none();
-        if let Some(old_user) = previous_user {
-            if old_user != user_id {
-                if let Some(user_set) = inner.by_user.get_mut(&old_user) {
-                    user_set.remove(&sk);
-                    if user_set.is_empty() {
-                        inner.by_user.remove(&old_user);
-                    }
-                }
+        if let Some(old_user) = previous_user
+            && old_user != user_id
+            && let Some(user_set) = inner.by_user.get_mut(&old_user)
+        {
+            user_set.remove(&sk);
+            if user_set.is_empty() {
+                inner.by_user.remove(&old_user);
             }
         }
 

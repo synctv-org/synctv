@@ -74,26 +74,31 @@ struct EnvVarGuard {
     previous: Option<String>,
 }
 
+// Every use of this guard is serialized behind `acquire_env_test_lock()`,
+// so the environment mutations are race-free; `set_var`/`remove_var` are
+// `unsafe` under the 2024 edition.
+#[allow(unsafe_code)]
 impl EnvVarGuard {
     fn set(key: &'static str, value: impl Into<String>) -> Self {
         let previous = std::env::var(key).ok();
-        std::env::set_var(key, value.into());
+        unsafe { std::env::set_var(key, value.into()) };
         Self { key, previous }
     }
 
     fn remove(key: &'static str) -> Self {
         let previous = std::env::var(key).ok();
-        std::env::remove_var(key);
+        unsafe { std::env::remove_var(key) };
         Self { key, previous }
     }
 }
 
+#[allow(unsafe_code)]
 impl Drop for EnvVarGuard {
     fn drop(&mut self) {
         if let Some(value) = self.previous.take() {
-            std::env::set_var(self.key, value);
+            unsafe { std::env::set_var(self.key, value) };
         } else {
-            std::env::remove_var(self.key);
+            unsafe { std::env::remove_var(self.key) };
         }
     }
 }
@@ -5312,13 +5317,15 @@ fn settings_update_parser_accepts_field_mask_clear_request() {
         r#"{"settings":{"email":{}},"updateMask":"email.smtpProxy"}"#,
     )
     .expect("settings clear request should parse");
-    assert!(request
-        .settings
-        .expect("settings")
-        .email
-        .expect("email")
-        .smtp_proxy
-        .is_none());
+    assert!(
+        request
+            .settings
+            .expect("settings")
+            .email
+            .expect("email")
+            .smtp_proxy
+            .is_none()
+    );
     assert_eq!(
         request.update_mask.expect("update mask").paths,
         ["email.smtp_proxy"]
@@ -6208,9 +6215,11 @@ fn render_human_output_uses_camel_case_for_slice_cache_responses() {
     );
     assert_eq!(rendered_stats["failures"][0]["nodeId"], "node-b");
     assert!(rendered_stats["nodes"][0].get("node_id").is_none());
-    assert!(rendered_stats["nodes"][0]["config"]
-        .get("engine_enabled")
-        .is_none());
+    assert!(
+        rendered_stats["nodes"][0]["config"]
+            .get("engine_enabled")
+            .is_none()
+    );
     assert_eq!(rendered_purge["removedEntries"], 7);
     assert_eq!(rendered_purge["freedBytes"], 8192);
     assert!(rendered_purge.get("removed_entries").is_none());
@@ -6254,9 +6263,11 @@ fn render_human_output_uses_proto_json_for_admin_settings() {
 
     assert_eq!(rendered_room["roomCreation"]["enabled"], true);
     assert_eq!(rendered_room["roomCreation"]["passwordPolicy"], 2);
-    assert!(rendered_room["roomCreation"]
-        .get("password_policy")
-        .is_none());
+    assert!(
+        rendered_room["roomCreation"]
+            .get("password_policy")
+            .is_none()
+    );
     assert_eq!(
         rendered_oauth2["oauth2"]["providers"][0]["name"],
         "github-main"
@@ -6669,16 +6680,16 @@ fn format_management_status_error_keeps_service_unavailable_context() {
     );
 
     assert_eq!(
-            error.to_string(),
-            "management list active streams failed: service unavailable: live streaming backend unavailable"
-        );
+        error.to_string(),
+        "management list active streams failed: service unavailable: live streaming backend unavailable"
+    );
 }
 
 #[test]
 fn stop_stream_disconnect_is_treated_as_success_after_finalizing() {
     let error = anyhow::anyhow!(
-            "code: 'Unknown error', message: \"h2 protocol error: error reading a body from connection\""
-        );
+        "code: 'Unknown error', message: \"h2 protocol error: error reading a body from connection\""
+    );
 
     assert!(stop_stream_disconnect_can_be_treated_as_success(
         Some(management_proto::StopServerStage::Finalizing),

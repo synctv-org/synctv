@@ -5,7 +5,7 @@ use super::types::VideoInfoResponse;
 use super::{
     CctvChapter, CctvMedia, CctvMetadata, CctvPlayback, CctvResource, CctvStream, CctvStreamKind,
 };
-use crate::{fetch_json, text_with_limit, ProviderClientError, PROVIDER_USER_AGENT};
+use crate::{PROVIDER_USER_AGENT, ProviderClientError, fetch_json, text_with_limit};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CctvEndpoints {
@@ -187,19 +187,18 @@ fn streams(response: &VideoInfoResponse, protected: bool) -> Vec<CctvStream> {
                 kind: CctvStreamKind::VideoHls,
             });
         }
-        if let Some(manifest) = &response.manifest {
-            if let Some(url) = manifest
+        if let Some(manifest) = &response.manifest
+            && let Some(url) = manifest
                 .hls_audio_url
                 .as_deref()
                 .or(manifest.audio_mp3.as_deref())
                 .and_then(normalize_http_url)
-            {
-                streams.push(CctvStream {
-                    name: "Audio".to_string(),
-                    url,
-                    kind: CctvStreamKind::AudioHls,
-                });
-            }
+        {
+            streams.push(CctvStream {
+                name: "Audio".to_string(),
+                url,
+                kind: CctvStreamKind::AudioHls,
+            });
         }
     }
     if let Some(video) = &response.video {

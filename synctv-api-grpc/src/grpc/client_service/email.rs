@@ -1,11 +1,11 @@
 use tonic::{Request, Response, Status};
 
-use super::{map_api_error, ClientServiceImpl};
+use super::{ClientServiceImpl, map_api_error};
 use synctv_api_common::impls::EndpointRateLimitCategory;
 use synctv_proto::client::{
-    email_service_server::EmailService, ConfirmPasswordResetResponse,
-    FinishOpaquePasswordResetRequest, RequestPasswordResetRequest, RequestPasswordResetResponse,
-    StartOpaquePasswordResetRequest, StartOpaquePasswordResetResponse,
+    ConfirmPasswordResetResponse, FinishOpaquePasswordResetRequest, RequestPasswordResetRequest,
+    RequestPasswordResetResponse, StartOpaquePasswordResetRequest,
+    StartOpaquePasswordResetResponse, email_service_server::EmailService,
 };
 
 // Delegates to shared EmailApiImpl to avoid duplicating logic with HTTP handlers.

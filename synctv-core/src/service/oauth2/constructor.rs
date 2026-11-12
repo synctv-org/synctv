@@ -7,12 +7,12 @@ use tokio::sync::RwLock;
 use tracing::{debug, info};
 
 use crate::{
+    Error, Result,
     repository::UserOAuthProviderRepository,
     service::oauth2::{
-        OAuth2Service, OAuth2ServiceRuntime, OAuth2State, OAuthStateStore,
-        OAUTH2_STATE_TTL_SECONDS, OAUTH2_STATE_TTL_SECONDS_I64,
+        OAUTH2_STATE_TTL_SECONDS, OAUTH2_STATE_TTL_SECONDS_I64, OAuth2Service,
+        OAuth2ServiceRuntime, OAuth2State, OAuthStateStore,
     },
-    Error, Result,
 };
 
 impl OAuth2Service {

@@ -1,10 +1,10 @@
 use super::{
-    apply_global_layers, build_app_state, build_cors_layer, optional_header_str,
-    register_all_routes, required_header_str, start_proxy_cache_lifecycle, RouterOptions,
+    RouterOptions, apply_global_layers, build_app_state, build_cors_layer, optional_header_str,
+    register_all_routes, required_header_str, start_proxy_cache_lifecycle,
 };
 use axum::body::Body;
-use axum::http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode};
-use axum::{routing::get, Router};
+use axum::http::{HeaderMap, HeaderValue, Request, Response, StatusCode, header};
+use axum::{Router, routing::get};
 use bytes::Bytes;
 use futures::StreamExt;
 use http_body_util::BodyExt as _;
@@ -2976,10 +2976,12 @@ async fn application_compression_is_enabled_without_compressing_media_responses(
         )?)
         .await,
     )?;
-    assert!(flv_response
-        .headers()
-        .get(header::CONTENT_ENCODING)
-        .is_none());
+    assert!(
+        flv_response
+            .headers()
+            .get(header::CONTENT_ENCODING)
+            .is_none()
+    );
     Ok(())
 }
 
@@ -3300,28 +3302,28 @@ async fn test_openapi_json_route_is_available() -> TestResult {
     assert!(json["paths"]["/api/providers/rtmp/rooms/{roomId}/publish-key/{mediaId}"].is_null());
     assert!(json["paths"]["/api/providers/rtmp/rooms/{roomId}/info/{mediaId}"].is_null());
     assert_eq!(
-        json["paths"]["/api/providers/alist/login"]["post"]["responses"]["200"]["content"]
-            ["application/json"]["schema"]["$ref"],
+        json["paths"]["/api/providers/alist/login"]["post"]["responses"]["200"]["content"]["application/json"]
+            ["schema"]["$ref"],
         "#/components/schemas/synctv_provider_alist_LoginResponse"
     );
     assert_eq!(
-        json["paths"]["/api/providers/emby/list"]["post"]["responses"]["200"]["content"]
-            ["application/json"]["schema"]["$ref"],
+        json["paths"]["/api/providers/emby/list"]["post"]["responses"]["200"]["content"]["application/json"]
+            ["schema"]["$ref"],
         "#/components/schemas/synctv_provider_emby_ListResponse"
     );
     assert_eq!(
-        json["paths"]["/api/providers/bilibili/login/qr/check"]["post"]["responses"]["200"]
-            ["content"]["application/json"]["schema"]["$ref"],
+        json["paths"]["/api/providers/bilibili/login/qr/check"]["post"]["responses"]["200"]["content"]
+            ["application/json"]["schema"]["$ref"],
         "#/components/schemas/synctv_provider_bilibili_QRStatusResponse"
     );
     assert_eq!(
-        json["paths"]["/api/providers/bilibili/parse"]["post"]["responses"]["200"]["content"]
-            ["application/json"]["schema"]["$ref"],
+        json["paths"]["/api/providers/bilibili/parse"]["post"]["responses"]["200"]["content"]["application/json"]
+            ["schema"]["$ref"],
         "#/components/schemas/synctv_provider_bilibili_ParseResponse"
     );
     assert_eq!(
-        json["components"]["schemas"]["synctv_provider_bilibili_ParseRequest"]["properties"]
-            ["shared"]["type"],
+        json["components"]["schemas"]["synctv_provider_bilibili_ParseRequest"]["properties"]["shared"]
+            ["type"],
         "boolean"
     );
     for (schema, removed_property) in [
@@ -3357,18 +3359,18 @@ async fn test_openapi_json_route_is_available() -> TestResult {
         "Bilibili parse candidates should use the shared discovered-source contract"
     );
     assert_eq!(
-        json["paths"]["/api/user"]["patch"]["responses"]["200"]["content"]["application/json"]
-            ["schema"]["$ref"],
+        json["paths"]["/api/user"]["patch"]["responses"]["200"]["content"]["application/json"]["schema"]
+            ["$ref"],
         "#/components/schemas/synctv_client_User"
     );
     assert_eq!(
-        json["paths"]["/api/tickets"]["post"]["responses"]["200"]["content"]["application/json"]
-            ["schema"]["$ref"],
+        json["paths"]["/api/tickets"]["post"]["responses"]["200"]["content"]["application/json"]["schema"]
+            ["$ref"],
         "#/components/schemas/synctv_client_CreateWebSocketTicketResponse"
     );
     assert_eq!(
-        json["paths"]["/api/rooms/{roomId}/webrtc/ice-servers"]["get"]["responses"]["200"]
-            ["content"]["application/json"]["schema"]["$ref"],
+        json["paths"]["/api/rooms/{roomId}/webrtc/ice-servers"]["get"]["responses"]["200"]["content"]
+            ["application/json"]["schema"]["$ref"],
         "#/components/schemas/synctv_client_GetIceServersResponse"
     );
 
@@ -3640,8 +3642,8 @@ async fn test_ticket_route_fails_closed_when_websocket_runtime_is_unavailable() 
 
 #[tokio::test]
 #[ignore = "Requires Docker-backed PostgreSQL"]
-async fn test_websocket_route_fails_closed_when_runtime_is_unavailable_before_upgrade_checks(
-) -> TestResult {
+async fn test_websocket_route_fails_closed_when_runtime_is_unavailable_before_upgrade_checks()
+-> TestResult {
     let state = test_app_state();
     let app = register_all_routes().with_state(state);
 
@@ -3759,7 +3761,10 @@ async fn test_optional_user_execution_rejects_invalid_authorization_header() -> 
         };
 
     assert!(
-        matches!(err.classify(), synctv_api_common::impls::ErrorKind::Unauthenticated),
+        matches!(
+            err.classify(),
+            synctv_api_common::impls::ErrorKind::Unauthenticated
+        ),
         "strict optional-auth execution must reject invalid bearer headers instead of downgrading to anonymous",
     );
     Ok(())

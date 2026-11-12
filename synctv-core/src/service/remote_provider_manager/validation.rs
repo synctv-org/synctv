@@ -1,5 +1,5 @@
 use super::RemoteProviderManager;
-use crate::models::{validate_provider_instance_name, ProviderInstance};
+use crate::models::{ProviderInstance, validate_provider_instance_name};
 use synctv_media_providers::remote_transport::{
     required_auth_secret, validate_auth_secret, validate_endpoint_ssrf,
 };

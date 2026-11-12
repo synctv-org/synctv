@@ -13,8 +13,8 @@ use synctv_core::models::id::{MediaId, RoomId, UserId};
 use synctv_realtime::sync::RealtimeEvent;
 mod integration_test_helpers;
 use integration_test_helpers::{
-    broadcast_until_admin_event, broadcast_until_room_event, create_node, user_actor, wait_until,
-    TestRedis,
+    TestRedis, broadcast_until_admin_event, broadcast_until_room_event, create_node, user_actor,
+    wait_until,
 };
 
 #[tokio::test]

@@ -10,7 +10,7 @@ pub(crate) mod proto {
     ));
 }
 
-pub use chat::{watch_danmaku, DouyinDanmakuStream};
+pub use chat::{DouyinDanmakuStream, watch_danmaku};
 pub use client::{DouyinClient, DouyinEndpoints};
 pub use types::{
     DouyinAuthor, DouyinDanmakuEvent, DouyinImage, DouyinListItem, DouyinListPage, DouyinMedia,

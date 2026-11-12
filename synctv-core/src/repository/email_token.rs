@@ -1,8 +1,8 @@
 //! Email token repository for database operations
 
 use crate::{
-    models::{EmailTokenType, UserId},
     Error, Result,
+    models::{EmailTokenType, UserId},
 };
 use chrono::Utc;
 use sha2::{Digest, Sha256};

@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 
 use tracing::{error, warn};
 

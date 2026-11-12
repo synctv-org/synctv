@@ -274,13 +274,13 @@ impl UsernameValidator {
         }
 
         // Cannot start with special character
-        if let Some(first_char) = username.chars().next() {
-            if first_char == '_' || first_char == '-' {
-                return Err(ValidationError::Field {
-                    field: "username".to_string(),
-                    message: "cannot start with underscore or hyphen".to_string(),
-                });
-            }
+        if let Some(first_char) = username.chars().next()
+            && (first_char == '_' || first_char == '-')
+        {
+            return Err(ValidationError::Field {
+                field: "username".to_string(),
+                message: "cannot start with underscore or hyphen".to_string(),
+            });
         }
 
         // Check reserved usernames (case-insensitive)
@@ -708,17 +708,23 @@ mod tests {
         let two_chars = "\u{4f60}\u{597d}";
         assert!(UsernameValidator::new().validate(two_chars).is_err());
         assert!(validate_room_password_for_set(two_chars).is_err());
-        assert!(RoomNameValidator::new()
-            .with_length(3, ROOM_NAME_MAX)
-            .validate(two_chars)
-            .is_err());
-        assert!(PasswordValidator::new()
-            .validate("Aa1\u{4f60}\u{597d}")
-            .is_err());
+        assert!(
+            RoomNameValidator::new()
+                .with_length(3, ROOM_NAME_MAX)
+                .validate(two_chars)
+                .is_err()
+        );
+        assert!(
+            PasswordValidator::new()
+                .validate("Aa1\u{4f60}\u{597d}")
+                .is_err()
+        );
 
-        assert!(UsernameValidator::new()
-            .validate("\u{4f60}\u{597d}\u{5417}")
-            .is_ok());
+        assert!(
+            UsernameValidator::new()
+                .validate("\u{4f60}\u{597d}\u{5417}")
+                .is_ok()
+        );
         assert!(validate_room_password_for_set("\u{4f60}\u{597d}\u{5417}\u{ff1f}").is_ok());
     }
 
@@ -935,9 +941,11 @@ mod tests {
 
         let zxcvbn_validator = PasswordValidator::new().with_zxcvbn(true, 3);
         assert!(zxcvbn_validator.validate("Password123").is_err());
-        assert!(zxcvbn_validator
-            .validate("CorrectHorseBatteryStaple123")
-            .is_ok());
+        assert!(
+            zxcvbn_validator
+                .validate("CorrectHorseBatteryStaple123")
+                .is_ok()
+        );
     }
 
     #[test]

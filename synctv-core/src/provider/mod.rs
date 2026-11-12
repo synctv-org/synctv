@@ -61,14 +61,14 @@ pub use context::{ProviderActor, ProviderContext, ProviderCredentialPolicy};
 pub use error::ProviderError;
 pub(crate) use p2p_media::provider_p2p_swarm_id;
 pub use p2p_media::{
-    playback_danmaku_p2p_delivery, playback_media_p2p_delivery, playback_subtitle_p2p_delivery,
-    P2pResourceDelivery,
+    P2pResourceDelivery, playback_danmaku_p2p_delivery, playback_media_p2p_delivery,
+    playback_subtitle_p2p_delivery,
 };
 pub use playback_profile::{
-    PlaybackAudioCapability, PlaybackAudioCodec, PlaybackClientEnvironment, PlaybackClientProfile,
-    PlaybackContainer, PlaybackLiveTransport, PlaybackMediaCapability, PlaybackMediaPipeline,
-    PlaybackMediaTransport, PlaybackStreamPreference, PlaybackSubtitlePreference,
-    PlaybackVideoCodec, CURRENT_PLAYBACK_CLIENT_PROFILE_VERSION,
+    CURRENT_PLAYBACK_CLIENT_PROFILE_VERSION, PlaybackAudioCapability, PlaybackAudioCodec,
+    PlaybackClientEnvironment, PlaybackClientProfile, PlaybackContainer, PlaybackLiveTransport,
+    PlaybackMediaCapability, PlaybackMediaPipeline, PlaybackMediaTransport,
+    PlaybackStreamPreference, PlaybackSubtitlePreference, PlaybackVideoCodec,
 };
 pub use playback_transport::{
     HlsResourceRequest, LiveFlvAccess, PlaybackResourceProxyStrategy, PlaybackTransportAction,
@@ -450,7 +450,7 @@ pub(crate) fn build_proxy_playback_info_for_client(
 use crate::models::media::{
     PlaybackDanmaku, PlaybackMedia, PlaybackMediaProvider, PlaybackRtmpMedia, PlaybackSubtitle,
 };
-use crate::models::{normalize_provider_instance_name, MediaId, RoomId};
+use crate::models::{MediaId, RoomId, normalize_provider_instance_name};
 use sha2::{Digest, Sha256};
 use std::future::Future;
 
@@ -869,7 +869,9 @@ enum ProviderPlaybackFillError {
     CredentialNotFound(String),
     #[error("Credential expired: {0}")]
     CredentialExpired(String),
-    #[error("Credential encryption required for sensitive provider '{0}'. Configure credential_encryption in server settings.")]
+    #[error(
+        "Credential encryption required for sensitive provider '{0}'. Configure credential_encryption in server settings."
+    )]
     EncryptionRequired(&'static str),
     #[error("Route registration failed: {0}")]
     RouteRegistrationFailed(String),
@@ -1143,26 +1145,23 @@ pub(crate) fn url_expiration_timestamp(value: &str) -> Option<i64> {
         ]
         .iter()
         .any(|key| query.contains_key(*key))
-    {
-        if let Some(expires_at) = query
+        && let Some(expires_at) = query
             .get("expires")
             .and_then(|value| value.parse::<i64>().ok())
             .filter(|expires_at| *expires_at > 0)
-        {
-            candidates.push(expires_at);
-        }
+    {
+        candidates.push(expires_at);
     }
 
     // Azure SAS pairs the RFC3339 `se` timestamp with `sig`.
-    if query.contains_key("sig") {
-        if let Some(expires_at) = query
+    if query.contains_key("sig")
+        && let Some(expires_at) = query
             .get("se")
             .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
             .map(|expires_at| expires_at.timestamp())
             .filter(|expires_at| *expires_at > 0)
-        {
-            candidates.push(expires_at);
-        }
+    {
+        candidates.push(expires_at);
     }
 
     // V4 signatures express expiry as signing time plus a relative TTL.
@@ -1480,10 +1479,10 @@ impl ProviderSourceCoverCache {
             }
         };
 
-        if lock.is_some() {
-            if let Some(cached) = self.get_l2(store.as_ref(), &l1_key, cache_key).await {
-                return Ok(cached);
-            }
+        if lock.is_some()
+            && let Some(cached) = self.get_l2(store.as_ref(), &l1_key, cache_key).await
+        {
+            return Ok(cached);
         }
 
         let singleflight_key = format!("{provider_name}:{cache_key}");
@@ -1628,16 +1627,16 @@ where
         }
     };
 
-    if lock.is_some() {
-        if let Some(cached) = read_fresh_versioned_playback(store.as_ref(), cache_key).await {
-            return build_cached_versioned_playback_response(
-                cached,
-                provider_name,
-                ctx,
-                mark_provider_resources,
-            )
-            .await;
-        }
+    if lock.is_some()
+        && let Some(cached) = read_fresh_versioned_playback(store.as_ref(), cache_key).await
+    {
+        return build_cached_versioned_playback_response(
+            cached,
+            provider_name,
+            ctx,
+            mark_provider_resources,
+        )
+        .await;
     }
 
     let singleflight_key = format!("{provider_name}:{cache_key}");
@@ -2485,11 +2484,13 @@ mod playback_transport_expiry_tests {
         assert_eq!(second_context.playback_generation, 12);
         assert!(!second_context.is_playing);
         assert_eq!(second_context.resource_owner_id, Some(second_owner_id));
-        assert!(store
-            .get::<VersionedPlayback>("v:cached-version")
-            .await
-            .expect("old mapping lookup should succeed")
-            .is_none());
+        assert!(
+            store
+                .get::<VersionedPlayback>("v:cached-version")
+                .await
+                .expect("old mapping lookup should succeed")
+                .is_none()
+        );
     }
 
     #[test]
@@ -2654,8 +2655,8 @@ mod playback_transport_expiry_tests {
 #[cfg(test)]
 mod source_cover_cache_tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn test_context(store: Arc<dyn ProviderStore>) -> ProviderContext<'static> {
         ProviderContext::new("source-cover-cache-test", ProviderActor::System).with_store(store)

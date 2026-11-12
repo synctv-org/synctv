@@ -1,6 +1,6 @@
 use crate::{
-    models::{Playlist, PlaylistId, RoomId, UserId},
     Error, Result,
+    models::{Playlist, PlaylistId, RoomId, UserId},
 };
 
 use super::{PlaylistService, RealtimeOutboxPlaylistEventFactory};

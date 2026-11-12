@@ -6,15 +6,15 @@
 //! Emby credentials server-side.
 
 use axum::{
+    Json, Router,
     extract::{Path, Query, State},
     routing::{get, post},
-    Json, Router,
 };
 use futures::FutureExt;
 use serde::Deserialize;
 
 use crate::http::{
-    error::map_api_error, middleware::RequestMetadata, validation::ProtoQuery, AppResult, AppState,
+    AppResult, AppState, error::map_api_error, middleware::RequestMetadata, validation::ProtoQuery,
 };
 use synctv_api_common::impls::EndpointRateLimitCategory;
 use synctv_proto::providers::common::ProviderInstanceQuery;
@@ -441,7 +441,7 @@ mod tests {
             other => {
                 return Err(test_error(format!(
                     "expected FetchAndForward, got {other:?}"
-                )))
+                )));
             }
         }
         Ok(())
@@ -471,7 +471,7 @@ mod tests {
             other => {
                 return Err(test_error(format!(
                     "expected FetchAndForward, got {other:?}"
-                )))
+                )));
             }
         }
         Ok(())

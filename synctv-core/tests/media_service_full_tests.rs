@@ -9,6 +9,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use sqlx::PgPool;
 use synctv_core::{
+    Error,
     cache::{KeyBuilder, UsernameCache},
     credential_encryption::CredentialEncryption,
     models::{
@@ -23,7 +24,6 @@ use synctv_core::{
         EditMediaRequest, InMemoryTokenBlacklistStore, JwtService, ProvidersManager,
         RemoteProviderManager, RoomService, RoomServiceOptions, UserService,
     },
-    Error,
 };
 use synctv_core_testing::create_test_pool;
 use synctv_core_testing::{TestOptionExt, TestResultExt};
@@ -618,8 +618,8 @@ async fn test_create_dynamic_playlist_with_credential_backed_provider_without_re
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_list_dynamic_playlist_items_with_credential_backed_provider_without_repo_fails_closed(
-) {
+async fn test_list_dynamic_playlist_items_with_credential_backed_provider_without_repo_fails_closed()
+ {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
@@ -1642,11 +1642,13 @@ async fn test_move_media_to_another_playlist_appends_by_default() {
     let moved_item = &moved[0];
     assert_eq!(moved_item.playlist_id.as_ref(), Some(&dst.id));
     assert!(moved_item.position > existing.position);
-    assert!(media_repo
-        .get_by_playlist(&src.id)
-        .await
-        .checked("test operation should succeed")
-        .is_empty());
+    assert!(
+        media_repo
+            .get_by_playlist(&src.id)
+            .await
+            .checked("test operation should succeed")
+            .is_empty()
+    );
 
     let moved_to_root = room_service
         .media_service()
@@ -1792,9 +1794,11 @@ async fn test_move_all_media_from_scope_to_playlist_preserves_source_order() {
         .map(|item| item.name)
         .collect();
     assert_eq!(dst_names, vec!["A".to_string(), "B".to_string()]);
-    assert!(media_repo
-        .get_by_playlist(&src.id)
-        .await
-        .checked("test operation should succeed")
-        .is_empty());
+    assert!(
+        media_repo
+            .get_by_playlist(&src.id)
+            .await
+            .checked("test operation should succeed")
+            .is_empty()
+    );
 }

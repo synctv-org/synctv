@@ -9,32 +9,32 @@
 use std::{
     collections::BTreeMap,
     sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use bytes::Bytes;
-use ffmpeg_next::{codec, encoder, format, media, Rational};
+use ffmpeg_next::{Rational, codec, encoder, format, media};
 use ffmpeg_sys_next as _;
-use rust_h265::{parse_annex_b as parse_hevc_annex_b, Decoder as HevcDecoder, PixelData};
+use rust_h265::{Decoder as HevcDecoder, PixelData, parse_annex_b as parse_hevc_annex_b};
 use rusty_aac::{
-    audio_specific_config_bytes, parse_audio_specific_config, AacDecoder, AacEncoder,
-    AacEncoderConfig,
+    AacDecoder, AacEncoder, AacEncoderConfig, audio_specific_config_bytes,
+    parse_audio_specific_config,
 };
 use rusty_h264::{Decoder as AvcDecoder, Encoder as AvcEncoder, EncoderConfig, YuvFrame};
-use synctv_core_testing::{aac_test_tag, avc_test_tag, RtmpMediaType, RtmpPlayer, RtmpPublisher};
+use synctv_core_testing::{RtmpMediaType, RtmpPlayer, RtmpPublisher, aac_test_tag, avc_test_tag};
 use synctv_xiu::{
     hls::{
-        generation_registry_key, CleanupConfig, CustomHlsRemuxer, SegmentManager, StreamRegistry,
+        CleanupConfig, CustomHlsRemuxer, SegmentManager, StreamRegistry, generation_registry_key,
     },
     httpflv::HttpFlvSession,
     storage::{FileStorage, HlsStorage, MemoryStorage},
-    streamhub::{define::STREAM_HUB_EVENT_CHANNEL_CAPACITY, utils::Uuid, StreamsHub},
+    streamhub::{StreamsHub, define::STREAM_HUB_EVENT_CHANNEL_CAPACITY, utils::Uuid},
 };
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
@@ -190,15 +190,16 @@ fn ffmpeg_publish(
             packet.set_position(-1);
             packet.set_stream(usize::try_from(mapped_index)?);
             packet.write(&mut output)?;
-            if video_packets_written >= 4 && (!needs_audio || audio_started) {
-                if let Some(ready) = ready.take() {
-                    let _ = ready.send(());
-                    release_media
-                        .take()
-                        .context("FFmpeg media release receiver disappeared")?
-                        .blocking_recv()?;
-                    media_released = true;
-                }
+            if video_packets_written >= 4
+                && (!needs_audio || audio_started)
+                && let Some(ready) = ready.take()
+            {
+                let _ = ready.send(());
+                release_media
+                    .take()
+                    .context("FFmpeg media release receiver disappeared")?
+                    .blocking_recv()?;
+                media_released = true;
             }
             if media_released {
                 std::thread::sleep(Duration::from_millis(10));
@@ -255,9 +256,9 @@ async fn ffmpeg_cli_publish(
         .stderr(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .kill_on_drop(true);
-    let mut child = command.spawn().with_context(|| {
-        "failed to start the ffmpeg CLI publisher; install ffmpeg on PATH to run this test"
-    })?;
+    let mut child = command.spawn().with_context(
+        || "failed to start the ffmpeg CLI publisher; install ffmpeg on PATH to run this test",
+    )?;
     let mut stdin = child.stdin.take().expect("ffmpeg stdin piped");
     let mut stderr = child.stderr.take().expect("ffmpeg stderr piped");
     let (stderr_tail_tx, stderr_tail_rx) = tokio::sync::oneshot::channel::<String>();
@@ -2081,9 +2082,11 @@ async fn real_avc_aac_rtmp_pipeline_is_decodable_through_play_flv_and_hls() -> R
         "HLS AVC decoded {} frames",
         decoded_video.len()
     );
-    anyhow::ensure!(decoded_video
-        .iter()
-        .all(|frame| frame.width == 32 && frame.height == 32));
+    anyhow::ensure!(
+        decoded_video
+            .iter()
+            .all(|frame| frame.width == 32 && frame.height == 32)
+    );
     let (audio_samples, non_silent) = decode_adts_stream(&hls_audio)?;
     anyhow::ensure!(audio_samples > 0 && non_silent, "HLS AAC decoded no audio");
 
@@ -2213,12 +2216,16 @@ async fn real_hevc_rtmp_pipeline_is_decodable_through_play_flv_and_hls() -> Resu
         publisher.send_raw_video(timestamp, &unit.flv_tag).await?;
     }
     let played = player_task.await??;
-    anyhow::ensure!(played
-        .iter()
-        .any(|message| message.payload == video.sequence_header));
-    anyhow::ensure!(played
-        .iter()
-        .any(|message| message.payload == video.access_units[0].flv_tag));
+    anyhow::ensure!(
+        played
+            .iter()
+            .any(|message| message.payload == video.sequence_header)
+    );
+    anyhow::ensure!(
+        played
+            .iter()
+            .any(|message| message.payload == video.access_units[0].flv_tag)
+    );
     publisher.close();
 
     let segments = wait_for_ended_segments(&server, &state).await?;
@@ -2616,11 +2623,11 @@ async fn interleaved_audio_does_not_corrupt_video_format3_extended_timestamp() -
             .await
             .context("timed out waiting for interleaved RTMP frame")?
             .context("direct RTMP frame subscription closed")?;
-        if let synctv_xiu::streamhub::define::FrameData::Video { timestamp, data } = frame {
-            if timestamp == 0x0200_0000 {
-                assert_eq!(data, expected);
-                break;
-            }
+        if let synctv_xiu::streamhub::define::FrameData::Video { timestamp, data } = frame
+            && timestamp == 0x0200_0000
+        {
+            assert_eq!(data, expected);
+            break;
         }
         assert!(
             Instant::now() < deadline,
@@ -2742,10 +2749,12 @@ async fn abrupt_rtmp_disconnect_finishes_hls_and_allows_fenced_republish() -> Re
     // client process being killed while HLS and direct subscribers are active.
     first.abort().await?;
     wait_for_generation_end(&first_state).await;
-    assert!(first_state
-        .read()
-        .generate_m3u8(|name| format!("/hls/{name}.ts"))
-        .contains("#EXT-X-ENDLIST"));
+    assert!(
+        first_state
+            .read()
+            .generate_m3u8(|name| format!("/hls/{name}.ts"))
+            .contains("#EXT-X-ENDLIST")
+    );
 
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
@@ -2773,10 +2782,10 @@ async fn abrupt_rtmp_disconnect_finishes_hls_and_allows_fenced_republish() -> Re
             .await
             .context("replacement publisher media timed out")?
             .context("replacement publisher subscriber closed")?;
-        if let synctv_xiu::streamhub::define::FrameData::Video { data, .. } = frame {
-            if data.windows(3).any(|window| window == [0xfa, 0xce, 0xb0]) {
-                break;
-            }
+        if let synctv_xiu::streamhub::define::FrameData::Video { data, .. } = frame
+            && data.windows(3).any(|window| window == [0xfa, 0xce, 0xb0])
+        {
+            break;
         }
     }
     assert_ne!(replacement_state.read().generation_id, first_generation_id);
@@ -2934,18 +2943,26 @@ async fn concurrent_distinct_rtmp_stream_keys_keep_media_isolated() -> Result<()
         anyhow::bail!("second RTMP source delivered a non-video frame")
     };
 
-    assert!(first_data
-        .windows(3)
-        .any(|window| window == [0x11, 0x22, 0x33]));
-    assert!(!first_data
-        .windows(3)
-        .any(|window| window == [0xaa, 0xbb, 0xcc]));
-    assert!(second_data
-        .windows(3)
-        .any(|window| window == [0xaa, 0xbb, 0xcc]));
-    assert!(!second_data
-        .windows(3)
-        .any(|window| window == [0x11, 0x22, 0x33]));
+    assert!(
+        first_data
+            .windows(3)
+            .any(|window| window == [0x11, 0x22, 0x33])
+    );
+    assert!(
+        !first_data
+            .windows(3)
+            .any(|window| window == [0xaa, 0xbb, 0xcc])
+    );
+    assert!(
+        second_data
+            .windows(3)
+            .any(|window| window == [0xaa, 0xbb, 0xcc])
+    );
+    assert!(
+        !second_data
+            .windows(3)
+            .any(|window| window == [0x11, 0x22, 0x33])
+    );
 
     first.close();
     second.close();
@@ -3369,9 +3386,11 @@ async fn slow_http_flv_subscriber_isolated_from_healthy_subscriber() -> Result<(
         .await
         .context("slow HTTP-FLV subscriber was not disconnected")??
         .expect_err("slow HTTP-FLV subscriber should exceed its drop threshold");
-    assert!(slow_error
-        .to_string()
-        .contains("Slow subscriber disconnected"));
+    assert!(
+        slow_error
+            .to_string()
+            .contains("Slow subscriber disconnected")
+    );
 
     let marker = [0x17, 0x01, 0, 0, 0, 0, 0, 0, 4, 0x65, 0xde, 0xad, 0xbe];
     publisher.send_raw_video(12_000, &marker).await?;
@@ -3663,11 +3682,11 @@ async fn real_hevc_rtsp_rtp_pipeline_is_decodable_through_flv_and_hls() -> Resul
     let mut rtsp_video = fixture.decoder_config_annex_b.clone();
     let mut rtsp_frame_count = 0_usize;
     while let Some(frame) = session.next_frame().await? {
-        if let synctv_xiu::streamhub::define::FrameData::Video { data, .. } = &frame {
-            if data.get(1) == Some(&1) {
-                rtsp_video.extend_from_slice(&avcc_payload_to_annex_b(data)?);
-                rtsp_frame_count += 1;
-            }
+        if let synctv_xiu::streamhub::define::FrameData::Video { data, .. } = &frame
+            && data.get(1) == Some(&1)
+        {
+            rtsp_video.extend_from_slice(&avcc_payload_to_annex_b(data)?);
+            rtsp_frame_count += 1;
         }
         frame_sender
             .send(frame)

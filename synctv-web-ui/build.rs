@@ -2,11 +2,11 @@
 mod build_support;
 
 use build_support::{
-    build_fingerprint, collect_files, ensure_disjoint_directories, hash_files, load_config,
-    prepare_git_source, project_watch_directories, resolve_path, FlutterBuild, WebUiSource,
+    FlutterBuild, WebUiSource, build_fingerprint, collect_files, ensure_disjoint_directories,
+    hash_files, load_config, prepare_git_source, project_watch_directories, resolve_path,
 };
-use flate2::write::GzEncoder;
 use flate2::Compression;
+use flate2::write::GzEncoder;
 use sha2::{Digest, Sha256};
 use std::env;
 use std::ffi::{OsStr, OsString};

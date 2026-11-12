@@ -3,7 +3,7 @@
 //! This is the full HTTP client implementation.
 //! Both gRPC server and local usage call this service.
 
-use super::{client::EmbyClient, types::UserInfo, EmbyError};
+use super::{EmbyError, client::EmbyClient, types::UserInfo};
 use crate::transport_dto::emby::{
     DeleteActiveEncodingsReq, Empty, FsListReq, FsListResp, GetItemReq, GetItemsReq, GetItemsResp,
     Item, LoginReq, LoginResp, LogoutReq, MeReq, MeResp, PlaybackInfoReq, PlaybackInfoResp,

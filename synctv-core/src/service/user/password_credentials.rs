@@ -1,10 +1,10 @@
 use sqlx::{Postgres, Transaction};
 
 use crate::{
+    Error, Result,
     models::{User, UserId},
     repository::PasswordCredentialMaterial,
     service::UserService,
-    Error, Result,
 };
 
 mod opaque;

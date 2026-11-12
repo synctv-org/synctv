@@ -1,13 +1,13 @@
 use crate::{
+    Error, Result,
     models::{
         AuditAction, AuditDetails, AuditTargetType, Room, RoomId, RoomMember, RoomRole, UserId,
     },
-    Error, Result,
 };
 
 use super::{
-    member_role_policy::validate_add_member_role, outbox::MemberJoinedEffectsRequest,
     RealtimeOutboxPermissionChangedEventFactory, RoomService,
+    member_role_policy::validate_add_member_role, outbox::MemberJoinedEffectsRequest,
 };
 
 struct AddActiveMemberTxRequest<'a> {

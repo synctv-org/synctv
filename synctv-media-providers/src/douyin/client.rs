@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use reqwest::header::{COOKIE, ORIGIN, REFERER, USER_AGENT};
 use reqwest::Url;
+use reqwest::header::{COOKIE, ORIGIN, REFERER, USER_AGENT};
 use serde_json::json;
 use tokio::sync::OnceCell;
 
@@ -18,7 +18,7 @@ use super::{
     DouyinAuthor, DouyinImage, DouyinListItem, DouyinListPage, DouyinMedia, DouyinMediaKind,
     DouyinMetadata, DouyinResource, DouyinSession, DouyinStreamFormat, DouyinVariant,
 };
-use crate::{fetch_json, ProviderClientError, PROVIDER_USER_AGENT};
+use crate::{PROVIDER_USER_AGENT, ProviderClientError, fetch_json};
 
 const DOUYIN_ORIGIN: &str = "https://www.douyin.com";
 const DOUYIN_LIVE_ORIGIN: &str = "https://live.douyin.com";
@@ -537,28 +537,28 @@ fn media_from_aweme(aweme: &Aweme) -> Result<DouyinMedia, ProviderClientError> {
             });
         }
     }
-    if variants.is_empty() {
-        if let Some(address) = &video.play_addr {
-            variants.extend(address.url_list.iter().map(|url| {
-                DouyinVariant {
-                    url: https_url(url),
-                    format: DouyinStreamFormat::Mp4,
-                    quality: "default".to_string(),
-                    codec: None,
-                    width: address.width.or(video.width),
-                    height: address.height.or(video.height),
-                    fps: None,
-                    bitrate: address
-                        .data_size
-                        .zip(video.duration)
-                        .and_then(|(size, duration)| {
-                            (duration > 0).then_some(size.saturating_mul(8_000) / duration)
-                        }),
-                    audio_only: false,
-                    headers_required: true,
-                }
-            }));
-        }
+    if variants.is_empty()
+        && let Some(address) = &video.play_addr
+    {
+        variants.extend(address.url_list.iter().map(|url| {
+            DouyinVariant {
+                url: https_url(url),
+                format: DouyinStreamFormat::Mp4,
+                quality: "default".to_string(),
+                codec: None,
+                width: address.width.or(video.width),
+                height: address.height.or(video.height),
+                fps: None,
+                bitrate: address
+                    .data_size
+                    .zip(video.duration)
+                    .and_then(|(size, duration)| {
+                        (duration > 0).then_some(size.saturating_mul(8_000) / duration)
+                    }),
+                audio_only: false,
+                headers_required: true,
+            }
+        }));
     }
     if variants.is_empty() {
         return Err(ProviderClientError::Api {
@@ -1140,10 +1140,12 @@ mod tests {
         assert!(media.metadata.is_live);
         assert_eq!(media.room_id.as_deref(), Some("9988"));
         assert_eq!(media.variants.len(), 6);
-        assert!(media
-            .variants
-            .iter()
-            .any(|variant| variant.format == DouyinStreamFormat::Dash));
+        assert!(
+            media
+                .variants
+                .iter()
+                .any(|variant| variant.format == DouyinStreamFormat::Dash)
+        );
         assert!(media.variants.iter().all(|variant| variant.fps == Some(60)));
     }
 }

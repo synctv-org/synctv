@@ -4,11 +4,11 @@
 
 use super::{query_builder::ilike_contains_pattern, required_count, sqlx_types::ProviderTypeName};
 use crate::{
-    models::{
-        normalize_provider_instance_name, Playlist, PlaylistBrowseAccessMode, PlaylistId,
-        PlaylistListQuery, PlaylistSourceConfig, RoomId, SourceProvider,
-    },
     Result,
+    models::{
+        Playlist, PlaylistBrowseAccessMode, PlaylistId, PlaylistListQuery, PlaylistSourceConfig,
+        RoomId, SourceProvider, normalize_provider_instance_name,
+    },
 };
 use sqlx::PgPool;
 
@@ -225,14 +225,14 @@ impl PlaylistRepository {
             }
         }
 
-        if let Some(search) = &query.search {
-            if let Some(pattern) = ilike_contains_pattern(search) {
-                builder.push(" AND (p.name ILIKE ");
-                builder.push_bind(pattern.clone());
-                builder.push(" ESCAPE '\\' OR p.description ILIKE ");
-                builder.push_bind(pattern);
-                builder.push(" ESCAPE '\\')");
-            }
+        if let Some(search) = &query.search
+            && let Some(pattern) = ilike_contains_pattern(search)
+        {
+            builder.push(" AND (p.name ILIKE ");
+            builder.push_bind(pattern.clone());
+            builder.push(" ESCAPE '\\' OR p.description ILIKE ");
+            builder.push_bind(pattern);
+            builder.push(" ESCAPE '\\')");
         }
         if let Some(source_provider) = &query.source_provider {
             builder.push(" AND p.source_provider = ");

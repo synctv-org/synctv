@@ -689,8 +689,8 @@ impl ShutdownHook for RoomSettingsServiceShutdownHook {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[tokio::test]
     async fn test_budget_per_item_divides_evenly() {

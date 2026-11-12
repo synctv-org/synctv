@@ -560,30 +560,29 @@ impl TieredTokenBlacklistStore {
 #[async_trait]
 impl TokenBlacklistStore for TieredTokenBlacklistStore {
     async fn is_blacklisted_checked(&self, key: &str) -> Result<bool> {
-        if let Some((is_bl, expiry)) = self.l1_blacklist.get(key).await {
-            if Instant::now() < expiry {
-                return Ok(is_bl);
-            }
-            // Expired entry; fall through to L2/PG
+        if let Some((is_bl, expiry)) = self.l1_blacklist.get(key).await
+            && Instant::now() < expiry
+        {
+            return Ok(is_bl);
         }
+        // Expired entry; fall through to L2/PG
 
         if let Some(mut conn) = self.redis_conn_snapshot().await {
             let redis_key = self.bl_key(key);
             if let Some(Some(val)) = self
                 .redis_get_string(&mut conn, &redis_key, "checked blacklist lookup")
                 .await
+                && let Some(is_bl) = parse_l2_blacklist_value(key, &val)
             {
-                if let Some(is_bl) = parse_l2_blacklist_value(key, &val) {
-                    let l1_ttl = if is_bl {
-                        L1_POSITIVE_TTL
-                    } else {
-                        L1_NEGATIVE_TTL
-                    };
-                    self.l1_blacklist
-                        .insert(key.to_string(), (is_bl, Instant::now() + l1_ttl))
-                        .await;
-                    return Ok(is_bl);
-                }
+                let l1_ttl = if is_bl {
+                    L1_POSITIVE_TTL
+                } else {
+                    L1_NEGATIVE_TTL
+                };
+                self.l1_blacklist
+                    .insert(key.to_string(), (is_bl, Instant::now() + l1_ttl))
+                    .await;
+                return Ok(is_bl);
             }
         }
 
@@ -725,10 +724,10 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
     }
 
     async fn get_family_revoked_at_checked(&self, key: &str) -> Result<Option<i64>> {
-        if let Some((cached_val, expiry)) = self.l1_family.get(key).await {
-            if Instant::now() < expiry {
-                return Ok(cached_val);
-            }
+        if let Some((cached_val, expiry)) = self.l1_family.get(key).await
+            && Instant::now() < expiry
+        {
+            return Ok(cached_val);
         }
 
         if let Some(mut conn) = self.redis_conn_snapshot().await {

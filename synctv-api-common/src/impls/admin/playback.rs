@@ -6,13 +6,13 @@ use synctv_core::{
 };
 
 use super::{
-    playback_client_profile_from_proto, playback_expires_at,
-    playback_generation_error_allows_state_only, playback_snapshot_error_indicates_stale_state,
-    provider_playback_info_to_model, public_id_encode_error, try_playback_state_to_proto,
-    try_playback_to_proto, AdminApiImpl, ApiError, PlaybackFanoutActor,
-    ProviderPlaybackLifecycleApi, RequestContext, LOCAL_MANAGEMENT_ACTOR_USER_ID,
+    AdminApiImpl, ApiError, LOCAL_MANAGEMENT_ACTOR_USER_ID, PlaybackFanoutActor,
+    ProviderPlaybackLifecycleApi, RequestContext, playback_client_profile_from_proto,
+    playback_expires_at, playback_generation_error_allows_state_only,
+    playback_snapshot_error_indicates_stale_state, provider_playback_info_to_model,
+    public_id_encode_error, try_playback_state_to_proto, try_playback_to_proto,
 };
-use crate::impls::client::convert::{dynamic_playlist_source_fields, PlaybackHttpSigningContext};
+use crate::impls::client::convert::{PlaybackHttpSigningContext, dynamic_playlist_source_fields};
 use crate::impls::playback::normalized_provider_duration;
 
 struct DynamicPlaylistPlaybackRequest<'a> {
@@ -372,32 +372,28 @@ impl AdminApiImpl {
     ) -> Result<UserId, ApiError> {
         let mut candidate_ids = Vec::new();
 
-        if let Some(media_id) = state.playing_media_id.as_ref() {
-            if let Some(media) = self
+        if let Some(media_id) = state.playing_media_id.as_ref()
+            && let Some(media) = self
                 .room_service
                 .media_service()
                 .get_room_media(room_id, media_id)
                 .await
                 .map_err(ApiError::from)?
-            {
-                if let Some(creator_id) = media.creator_id {
-                    candidate_ids.push(creator_id);
-                }
-            }
+            && let Some(creator_id) = media.creator_id
+        {
+            candidate_ids.push(creator_id);
         }
 
-        if let Some(playlist_id) = state.playing_playlist_id.as_ref() {
-            if let Some(playlist) = self
+        if let Some(playlist_id) = state.playing_playlist_id.as_ref()
+            && let Some(playlist) = self
                 .room_service
                 .playlist_service()
                 .get_room_playlist(room_id, playlist_id)
                 .await
                 .map_err(ApiError::from)?
-            {
-                if let Some(creator_id) = playlist.creator_id {
-                    candidate_ids.push(creator_id);
-                }
-            }
+            && let Some(creator_id) = playlist.creator_id
+        {
+            candidate_ids.push(creator_id);
         }
 
         let room = self

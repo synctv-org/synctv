@@ -12,11 +12,11 @@
 //! DNS provides faster detection of newly-scaled pods; Redis provides the
 //! NodeRegistry, HealthMonitor, and LoadBalancer infrastructure.
 
-use futures::{stream, StreamExt as _};
+use futures::{StreamExt as _, stream};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tokio::time::{interval, Duration};
+use tokio::time::{Duration, interval};
 use tokio_util::sync::CancellationToken;
 
 use super::node_registry::NodeInfo;
@@ -384,8 +384,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_refresh_loop_stops_when_parent_shutdown_token_is_cancelled(
-    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    async fn test_refresh_loop_stops_when_parent_shutdown_token_is_cancelled()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let disc = K8sDnsDiscovery::new(
             "test.default.svc.cluster.local".to_string(),
             8080,
@@ -402,8 +402,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_refresh_loop_waits_for_first_interval_before_refreshing(
-    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    async fn test_refresh_loop_waits_for_first_interval_before_refreshing()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let disc = K8sDnsDiscovery::new("localhost".to_string(), 8080, "10.0.0.1".to_string());
         let shutdown_token = CancellationToken::new();
 
@@ -422,8 +422,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_sync_verified_peers_uses_probed_node_id_in_registry_local_cache(
-    ) -> crate::Result<()> {
+    async fn test_sync_verified_peers_uses_probed_node_id_in_registry_local_cache()
+    -> crate::Result<()> {
         let registry = make_registry()?;
         let disc = K8sDnsDiscovery::new(
             "test.default.svc.cluster.local".to_string(),
@@ -474,8 +474,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_sync_verified_peers_does_not_remove_real_node_entry_after_dns_disappears(
-    ) -> crate::Result<()> {
+    async fn test_sync_verified_peers_does_not_remove_real_node_entry_after_dns_disappears()
+    -> crate::Result<()> {
         let registry = make_registry()?;
         let disc = K8sDnsDiscovery::new(
             "test.default.svc.cluster.local".to_string(),
@@ -505,8 +505,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_sync_verified_peers_refreshes_transient_entry_when_address_changes(
-    ) -> crate::Result<()> {
+    async fn test_sync_verified_peers_refreshes_transient_entry_when_address_changes()
+    -> crate::Result<()> {
         let registry = make_registry()?;
         let disc = K8sDnsDiscovery::new(
             "test.default.svc.cluster.local".to_string(),

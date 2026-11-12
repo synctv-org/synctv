@@ -65,12 +65,12 @@ pub fn normalize_static_peer_address(
         peer_address.rsplit_once(':').map(|(_, port)| port)
     };
 
-    if let Some(port) = explicit_port {
-        if !matches!(port.parse::<u16>(), Ok(1..=u16::MAX)) {
-            return Err(crate::Error::Configuration(format!(
-                "invalid static peer address '{peer_address}': port must be between 1 and 65535"
-            )));
-        }
+    if let Some(port) = explicit_port
+        && !matches!(port.parse::<u16>(), Ok(1..=u16::MAX))
+    {
+        return Err(crate::Error::Configuration(format!(
+            "invalid static peer address '{peer_address}': port must be between 1 and 65535"
+        )));
     }
 
     Ok(if explicit_port.is_some() {

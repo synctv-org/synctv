@@ -2,6 +2,7 @@ use sqlx::{Postgres, Transaction};
 use webauthn_rs::prelude::Passkey;
 
 use crate::{
+    Error, Result,
     models::oauth2_client::OAuth2UserInfo,
     models::{OpaquePasswordRecord, SignupMethod, User, UserId},
     repository::{
@@ -9,7 +10,6 @@ use crate::{
         WebAuthnCredentialRepository,
     },
     service::UserService,
-    Error, Result,
 };
 
 use super::super::registration_types::PendingRegistrationCredential;

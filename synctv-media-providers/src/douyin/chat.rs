@@ -9,13 +9,13 @@ use prost::Message as _;
 use reqwest::header::{COOKIE, ORIGIN, REFERER, USER_AGENT};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 use super::proto::{ChatMessage, ControlMessage, PushFrame, Response};
 use super::sign::{generate_x_bogus, md5_hex};
 use super::{DouyinDanmakuEvent, DouyinSession};
-use crate::{ProviderClientError, PROVIDER_USER_AGENT};
+use crate::{PROVIDER_USER_AGENT, ProviderClientError};
 
 const HOSTS: [&str; 3] = [
     "wss://webcast100-ws-web-lq.douyin.com/webcast/im/push/v2/",
@@ -112,11 +112,10 @@ pub async fn watch_danmaku(
                     };
                     match decode_frame(&data) {
                         Ok((events, ack)) => {
-                            if let Some(ack) = ack {
-                                if writer.send(Message::Binary(ack.into())).await.is_err() {
+                            if let Some(ack) = ack
+                                && writer.send(Message::Binary(ack.into())).await.is_err() {
                                     break;
                                 }
-                            }
                             for event in events {
                                 if sender.send(Ok(event)).await.is_err() {
                                     return;
@@ -199,42 +198,42 @@ fn decode_frame(
     for message in response.messages {
         match message.method.as_str() {
             "WebcastChatMessage" => {
-                if let Ok(chat) = ChatMessage::decode(message.payload.as_slice()) {
-                    if !chat.content.is_empty() {
-                        let user = chat.user.unwrap_or_default();
-                        let common = chat.common.unwrap_or_default();
-                        let sent_at_ms = if chat.event_time > 0 {
-                            Some(chat.event_time.saturating_mul(1_000))
-                        } else if common.create_time > 0 {
-                            Some(common.create_time)
-                        } else {
-                            None
-                        };
-                        let color = chat
-                            .rtf_content_v2
-                            .and_then(|text| text.default_format)
-                            .or_else(|| chat.rtf_content.and_then(|text| text.default_format))
-                            .map(|format| format.color)
-                            .filter(|color| !color.is_empty());
-                        events.push(DouyinDanmakuEvent::Chat {
-                            id: common.msg_id.to_string(),
-                            user_id: user.id.to_string(),
-                            user_name: user.nickname,
-                            text: chat.content,
-                            color,
-                            sent_at_ms,
-                        });
-                    }
+                if let Ok(chat) = ChatMessage::decode(message.payload.as_slice())
+                    && !chat.content.is_empty()
+                {
+                    let user = chat.user.unwrap_or_default();
+                    let common = chat.common.unwrap_or_default();
+                    let sent_at_ms = if chat.event_time > 0 {
+                        Some(chat.event_time.saturating_mul(1_000))
+                    } else if common.create_time > 0 {
+                        Some(common.create_time)
+                    } else {
+                        None
+                    };
+                    let color = chat
+                        .rtf_content_v2
+                        .and_then(|text| text.default_format)
+                        .or_else(|| chat.rtf_content.and_then(|text| text.default_format))
+                        .map(|format| format.color)
+                        .filter(|color| !color.is_empty());
+                    events.push(DouyinDanmakuEvent::Chat {
+                        id: common.msg_id.to_string(),
+                        user_id: user.id.to_string(),
+                        user_name: user.nickname,
+                        text: chat.content,
+                        color,
+                        sent_at_ms,
+                    });
                 }
             }
             "WebcastControlMessage" => {
-                if let Ok(control) = ControlMessage::decode(message.payload.as_slice()) {
-                    if control.action == 3 {
-                        events.push(DouyinDanmakuEvent::StreamClosed {
-                            action: control.action,
-                            message: (!control.tips.trim().is_empty()).then_some(control.tips),
-                        });
-                    }
+                if let Ok(control) = ControlMessage::decode(message.payload.as_slice())
+                    && control.action == 3
+                {
+                    events.push(DouyinDanmakuEvent::StreamClosed {
+                        action: control.action,
+                        message: (!control.tips.trim().is_empty()).then_some(control.tips),
+                    });
                 }
             }
             _ => {}
@@ -269,8 +268,8 @@ fn user_unique_id() -> String {
 mod tests {
     use std::io::Write;
 
-    use flate2::write::GzEncoder;
     use flate2::Compression;
+    use flate2::write::GzEncoder;
 
     use super::super::proto::{Common, Message as ProtoMessage, Text, TextFormat, User};
     use super::*;

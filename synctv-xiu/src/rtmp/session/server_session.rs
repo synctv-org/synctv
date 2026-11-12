@@ -297,7 +297,7 @@ impl ServerSession {
                     Err(_) => {
                         return Err(SessionError {
                             value: super::errors::SessionErrorValue::Timeout,
-                        })
+                        });
                     }
                 };
             bytes_len += self.bytesio_data.len();
@@ -1056,8 +1056,8 @@ mod tests {
     use bytes::{Bytes, BytesMut};
     use std::collections::VecDeque;
     use std::sync::{
-        atomic::{AtomicUsize, Ordering},
         Mutex as StdMutex,
+        atomic::{AtomicUsize, Ordering},
     };
     use tokio::time::timeout;
 

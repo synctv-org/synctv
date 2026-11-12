@@ -6,16 +6,16 @@
 //!
 use chrono::Utc;
 use synctv_core::{
+    Error,
     models::{
         AddMemberOptions, MyRoomListQuery, MyRoomListSortBy, PageParams, Room, RoomId, RoomMember,
         RoomRole, RoomStatus, SortDirection, User, UserId, UserRole, UserStatus,
     },
     repository::{
-        room_member::KickCooldownInsert, RoomMemberRepository, RoomRepository, UserRepository,
+        RoomMemberRepository, RoomRepository, UserRepository, room_member::KickCooldownInsert,
     },
-    Error,
 };
-use synctv_core_testing::{create_test_pool, TestOptionExt, TestResultExt};
+use synctv_core_testing::{TestOptionExt, TestResultExt, create_test_pool};
 
 fn make_user(username: &str) -> User {
     let now = Utc::now();
@@ -219,15 +219,17 @@ async fn test_record_visit_deduplicates_and_drives_room_sorting() {
     }
 
     let first_visit = Utc::now() - chrono::Duration::hours(1);
-    assert!(member_repo
-        .record_visit(
-            &frequent_room.id,
-            &visitor.id,
-            first_visit - chrono::Duration::minutes(30),
-            first_visit,
-        )
-        .await
-        .checked("first visit should be recorded"));
+    assert!(
+        member_repo
+            .record_visit(
+                &frequent_room.id,
+                &visitor.id,
+                first_visit - chrono::Duration::minutes(30),
+                first_visit,
+            )
+            .await
+            .checked("first visit should be recorded")
+    );
 
     let duplicate_visit = first_visit + chrono::Duration::minutes(5);
     member_repo
@@ -617,11 +619,13 @@ async fn test_kick_with_role_check_creator_can_kick_admin() {
         .checked("test operation should succeed");
 
     assert!(kicked);
-    assert!(member_repo
-        .get_any(&room.id, &admin_user.id)
-        .await
-        .checked("test operation should succeed")
-        .is_none());
+    assert!(
+        member_repo
+            .get_any(&room.id, &admin_user.id)
+            .await
+            .checked("test operation should succeed")
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -856,10 +860,12 @@ async fn test_grant_permission_atomic_removed_member_returns_not_found() {
         .checked("test operation should succeed");
 
     // Remove the member
-    assert!(member_repo
-        .remove(&room.id, &user.id)
-        .await
-        .checked("test operation should succeed"));
+    assert!(
+        member_repo
+            .remove(&room.id, &user.id)
+            .await
+            .checked("test operation should succeed")
+    );
 
     // Attempting to grant on removed member should return NotFound
     let err = member_repo

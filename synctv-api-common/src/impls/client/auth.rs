@@ -1,7 +1,7 @@
 //! Auth operations: register, login, `refresh_token`
 
-use super::convert::try_user_to_proto;
 use super::ClientApiImpl;
+use super::convert::try_user_to_proto;
 use crate::impls::ApiError;
 use std::future::Future;
 use std::net::IpAddr;
@@ -985,14 +985,14 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        nonnegative_token_ttl_seconds, registration_outcome_to_proto, revoke_logout_token_in_order,
-        revoke_session_for_logout, validate_direct_password_registration_request,
-        validate_opaque_registration_request, LogoutToken,
+        LogoutToken, nonnegative_token_ttl_seconds, registration_outcome_to_proto,
+        revoke_logout_token_in_order, revoke_session_for_logout,
+        validate_direct_password_registration_request, validate_opaque_registration_request,
     };
     use crate::impls::ApiError;
     use std::sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     };
     use synctv_core::{
         models::{User, UserId},

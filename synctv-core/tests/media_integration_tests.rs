@@ -14,7 +14,7 @@ use synctv_core::{
     service::DeleteEntriesRequest,
 };
 use synctv_core_testing::{
-    create_test_pool, create_test_room_service, TestContainer, TestOptionExt, TestResultExt,
+    TestContainer, TestOptionExt, TestResultExt, create_test_pool, create_test_room_service,
 };
 
 fn assert_f64_eq(actual: f64, expected: f64) {
@@ -584,21 +584,27 @@ async fn test_media_batch_delete() {
     assert_eq!(deleted_count, 2);
 
     // Only m3 should remain
-    assert!(media_repo
-        .get_by_id(&m1.id)
-        .await
-        .checked("test operation should succeed")
-        .is_none());
-    assert!(media_repo
-        .get_by_id(&m2.id)
-        .await
-        .checked("test operation should succeed")
-        .is_none());
-    assert!(media_repo
-        .get_by_id(&m3.id)
-        .await
-        .checked("test operation should succeed")
-        .is_some());
+    assert!(
+        media_repo
+            .get_by_id(&m1.id)
+            .await
+            .checked("test operation should succeed")
+            .is_none()
+    );
+    assert!(
+        media_repo
+            .get_by_id(&m2.id)
+            .await
+            .checked("test operation should succeed")
+            .is_none()
+    );
+    assert!(
+        media_repo
+            .get_by_id(&m3.id)
+            .await
+            .checked("test operation should succeed")
+            .is_some()
+    );
 }
 
 // Append-position helper tests

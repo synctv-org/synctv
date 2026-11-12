@@ -67,10 +67,12 @@ async fn moderation_job_releases_each_incomplete_page_and_keeps_actor_snapshot()
     progress.message_cursor = cursor;
     progress.deleted_messages = 100;
     progress.deleted_reactions = 100;
-    assert!(repository
-        .update_progress(&progress, "worker-1")
-        .await
-        .expect("incomplete progress should be persisted"));
+    assert!(
+        repository
+            .update_progress(&progress, "worker-1")
+            .await
+            .expect("incomplete progress should be persisted")
+    );
 
     let pending = repository
         .get("moderation-state-machine")
@@ -102,10 +104,12 @@ async fn moderation_job_releases_each_incomplete_page_and_keeps_actor_snapshot()
     completed_progress.snapshot_at = reclaimed.snapshot_at + chrono::Duration::seconds(1);
     completed_progress.explicit_message_done = true;
     completed_progress.ban_done = true;
-    assert!(repository
-        .update_progress(&completed_progress, "worker-2")
-        .await
-        .expect("completion progress should be persisted"));
+    assert!(
+        repository
+            .update_progress(&completed_progress, "worker-2")
+            .await
+            .expect("completion progress should be persisted")
+    );
     let persisted = repository
         .get("moderation-state-machine")
         .await
@@ -113,10 +117,12 @@ async fn moderation_job_releases_each_incomplete_page_and_keeps_actor_snapshot()
         .expect("job should exist");
     assert_eq!(persisted.snapshot_at, completed_progress.snapshot_at);
     completed_progress.lock_version += 1;
-    assert!(repository
-        .mark_completed(&completed_progress, "worker-2", 100, 100)
-        .await
-        .expect("job should complete"));
+    assert!(
+        repository
+            .mark_completed(&completed_progress, "worker-2", 100, 100)
+            .await
+            .expect("job should complete")
+    );
 }
 
 #[tokio::test]
@@ -519,14 +525,18 @@ async fn terminal_job_cleanup_preserves_recent_jobs() {
             .expect("expired jobs should be deleted"),
         1
     );
-    assert!(repository
-        .get("expired-terminal-job")
-        .await
-        .expect("expired job lookup should succeed")
-        .is_none());
-    assert!(repository
-        .get("recent-terminal-job")
-        .await
-        .expect("recent job lookup should succeed")
-        .is_some());
+    assert!(
+        repository
+            .get("expired-terminal-job")
+            .await
+            .expect("expired job lookup should succeed")
+            .is_none()
+    );
+    assert!(
+        repository
+            .get("recent-terminal-job")
+            .await
+            .expect("recent job lookup should succeed")
+            .is_some()
+    );
 }

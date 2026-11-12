@@ -19,6 +19,7 @@ use sqlx::PgPool;
 use std::collections::BTreeMap;
 use synctv_common::ssrf::SsrfGuard;
 use synctv_core::{
+    Error,
     cache::{CacheL2Backend, KeyBuilder, UsernameCache},
     models::{OAuth2Provider, SignupMethod, User, UserId},
     repository::{
@@ -26,17 +27,16 @@ use synctv_core::{
         UserOAuthProviderRepository, UserPasswordRepository, UserRepository,
     },
     service::{
-        local_oauth_state_store, AccountRegistrationOutcome, AuthFactorMethod, AuthenticatedLogin,
-        BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, OAuth2GithubProviderConfig,
+        AccountRegistrationOutcome, AuthFactorMethod, AuthenticatedLogin, BruteForceProtection,
+        InMemoryTokenBlacklistStore, JwtService, OAuth2GithubProviderConfig,
         OAuth2GoogleProviderConfig, OAuth2LinkResult, OAuth2ProviderConfig, OAuth2ProviderConfigs,
         OAuth2ProviderPrivateConfig, OAuth2Service, OAuth2ServiceRuntime, OpaquePasswordService,
         RateLimiter, RuntimeSettingsStore, SettingsService, TokenBlacklistStore,
-        TokenCredentialBinding, UserService,
+        TokenCredentialBinding, UserService, local_oauth_state_store,
     },
-    Error,
 };
 use synctv_core_testing::{
-    create_test_pool, opaque_login_user, opaque_register_user, TestOptionExt, TestResultExt,
+    TestOptionExt, TestResultExt, create_test_pool, opaque_login_user, opaque_register_user,
 };
 
 struct TestOpaqueCipherSuite;

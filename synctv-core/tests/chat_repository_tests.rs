@@ -7,9 +7,10 @@ use chrono::{Duration, Utc};
 use sqlx::PgPool;
 use synctv_core::{
     models::{
-        try_hash_playback_target, ChatMessage, ChatMessageSelection, ChatMessageType, ChatMetadata,
+        ChatMessage, ChatMessageSelection, ChatMessageType, ChatMetadata,
         ChatPlaybackMessagesQuery, ChatPlaybackMetadata, ChatUserMetadata, MediaId, PlaylistId,
         ProviderTarget, Room, RoomId, RoomStatus, User, UserId, UserRole, UserStatus,
+        try_hash_playback_target,
     },
     repository::{ChatRepository, RoomRepository, UserRepository},
 };
@@ -826,7 +827,9 @@ async fn test_cleanup_old_messages_partition_pruning_detailed() {
     // The query should NOT do a sequential scan on all partitions
     // With proper created_at filter, PostgreSQL can prune old partitions
     assert!(
-        !plan_str.to_lowercase().contains("seq scan on chat_messages"),
+        !plan_str
+            .to_lowercase()
+            .contains("seq scan on chat_messages"),
         "Query should not perform sequential scan on chat_messages (indicates missing partition pruning)"
     );
 

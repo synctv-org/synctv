@@ -3,15 +3,15 @@ use sha2::{Digest, Sha256};
 
 use super::S3CompatibleFileStorageService;
 use crate::{
+    Error, Result,
     models::{
         FileBlob, FileBlobCompression, FileByteRange, FileMetadata, FileObjectDownload,
         FileObjectMetadata, FileOwnershipProofRange, GetFileObject,
     },
     repository::UpsertFileObject,
     service::file_storage::{
-        decode_file_object_key, encode_file_object_key, payload_len_i64, FileObjectReader,
+        FileObjectReader, decode_file_object_key, encode_file_object_key, payload_len_i64,
     },
-    Error, Result,
 };
 
 impl S3CompatibleFileStorageService {

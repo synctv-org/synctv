@@ -29,8 +29,8 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use synctv_common::ssrf::SsrfGuard;
 use synctv_common::ExecutionControl;
+use synctv_common::ssrf::SsrfGuard;
 #[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots"))]
 use tonic::transport::{
     Certificate as TransportCertificate, ClientTlsConfig as TransportTlsConfig,

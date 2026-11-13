@@ -3,8 +3,8 @@ schema-version = 1
 [source]
 kind = "git"
 repository = "https://github.com/synctv-org/synctv-app.git"
-revision = "d2a51cf77ec1e44052f519f9cd22dd8590fa9254"
-commit = "d2a51cf77ec1e44052f519f9cd22dd8590fa9254"
+revision = "1ed8bbe861ed80af18eb58cb140ec58770f42030"
+commit = "1ed8bbe861ed80af18eb58cb140ec58770f42030"
 
 [build]
 flutter = "flutter"

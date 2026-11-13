@@ -1,5 +1,5 @@
 const defaultRepository = 'synctv-org/synctv';
-const defaultAppVersion = '1.0.14';
+const defaultAppVersion = '1.0.15';
 
 function readEnv(name: string): string | undefined {
   const value = process.env[name]?.trim();

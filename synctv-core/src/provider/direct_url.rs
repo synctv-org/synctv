@@ -1962,4 +1962,30 @@ mod tests {
             "unexpected error: {error}"
         );
     }
+
+    #[test]
+    fn validate_source_url_blocks_bracketed_ipv6_literals() {
+        // Regression (synctv-org/synctv#547): `Url::host_str()` serializes
+        // IPv6 hosts with brackets, which used to skip the IP deny list.
+        let guard = synctv_common::ssrf::SsrfGuard::strict_policy();
+
+        for blocked in [
+            "http://[::1]/favicon.ico",
+            "http://[fd00:5744::1]/favicon.ico",
+            "http://[::ffff:127.0.0.1]/favicon.ico",
+            "http://[::ffff:a9fe:a9fe]/favicon.ico",
+            "http://[64:ff9b::a9fe:a9fe]/favicon.ico",
+        ] {
+            let error = DirectUrlProvider::validate_source_url(blocked, &guard)
+                .expect_err("bracketed IPv6 literal should fail DirectUrl validation");
+
+            assert!(
+                matches!(error, ProviderError::InvalidConfig(ref message) if message.contains("blocked by SSRF policy")),
+                "unexpected error for {blocked}: {error}"
+            );
+        }
+
+        DirectUrlProvider::validate_source_url("http://[2606:4700:4700::1111]/video.mp4", &guard)
+            .expect("public IPv6 literal should pass DirectUrl validation");
+    }
 }

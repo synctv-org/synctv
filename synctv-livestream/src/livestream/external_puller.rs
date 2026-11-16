@@ -329,7 +329,7 @@ impl ExternalStreamPuller {
                 .validate_url_target_with_default_port(host, port, default_port)
                 .map_err(|error| anyhow::anyhow!("SSRF protection blocked URL: {error}"))?;
 
-            if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+            if let Some(ip) = synctv_common::ssrf::host_ip(host) {
                 resolved_addr = Some(std::net::SocketAddr::new(ip, port));
             } else {
                 // Hostname - resolve and check all IPs
@@ -1181,7 +1181,7 @@ fn build_pinned_http_client(
         .pool_max_idle_per_host(100)
         .pool_idle_timeout(std::time::Duration::from_secs(30));
 
-    if host.parse::<std::net::IpAddr>().is_err() {
+    if synctv_common::ssrf::host_ip(host).is_none() {
         builder = builder.resolve(host.to_string(), resolved_addr);
     }
 

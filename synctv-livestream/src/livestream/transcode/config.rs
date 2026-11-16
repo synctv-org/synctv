@@ -115,8 +115,9 @@ impl Default for FfmpegWorkerConfig {
 pub struct TranscodePreset {
     /// Short label exposed to viewers, e.g. `480p`.
     pub name: String,
-    /// Output height; width follows the source aspect ratio. Rungs at or
-    /// above the source resolution are skipped per stream.
+    /// Output height; width follows the source aspect ratio. Rungs that
+    /// neither step below the source height nor cap a higher source frame
+    /// rate are skipped per stream.
     pub height: u32,
     /// Target video bitrate in kbps.
     pub video_kbps: u32,

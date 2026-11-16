@@ -109,6 +109,8 @@ struct SourceState {
     rungs: HashMap<String, RungState>,
     /// `width`/`height` observed in the source `onMetaData`, when seen.
     source_resolution: Option<(u32, u32)>,
+    /// `framerate` observed in the source `onMetaData`, when published.
+    source_frame_rate: Option<f64>,
 }
 
 struct ManagerInner {
@@ -272,9 +274,11 @@ impl TranscodeManager {
     }
 
     /// The configured rungs worth offering for one source, best-first:
-    /// strictly below the source resolution once it is known, and without
-    /// rungs this node already knows the source cannot provide (a verdict
-    /// from an earlier scheduling attempt on this node).
+    /// without rungs that would only re-encode at the source's own quality
+    /// (no resolution step-down and no frame-rate cap) once the source
+    /// metadata is known, and without rungs this node already knows the
+    /// source cannot provide (a verdict from an earlier scheduling attempt
+    /// on this node).
     #[must_use]
     pub fn eligible_presets(&self, room_id: &str, media_id: &str) -> Vec<&TranscodePreset> {
         let state = self.inner.state.lock().expect("transcode state poisoned");
@@ -598,27 +602,34 @@ async fn scheduler_tick(inner: &Arc<ManagerInner>) {
         return;
     };
     // Watch the subscription's metadata so failed picks and future picks can
-    // skip rungs at or above the source resolution.
+    // skip rungs that would only re-encode at the source's own quality.
+    // `onMetaData` carries resolution and frame rate in one tag, so both
+    // slots fill together; exit once either is observed.
     {
         let inner = Arc::clone(inner);
         let key = (room_id.clone(), media_id.clone());
-        let slot = Arc::clone(&input.source_resolution);
+        let resolution_slot = Arc::clone(&input.source_resolution);
+        let frame_rate_slot = Arc::clone(&input.source_frame_rate);
         tokio::spawn(async move {
             loop {
-                let resolution = {
-                    let slot = slot.lock().expect("resolution slot poisoned");
-                    *slot
+                let (resolution, frame_rate) = {
+                    let resolution = *resolution_slot.lock().expect("resolution slot poisoned");
+                    let frame_rate = *frame_rate_slot.lock().expect("frame-rate slot poisoned");
+                    (resolution, frame_rate)
                 };
-                match resolution {
-                    Some(resolution) => {
-                        let mut state = inner.state.lock().expect("transcode state poisoned");
-                        if let Some(source) = state.get_mut(&key) {
+                if resolution.is_some() || frame_rate.is_some() {
+                    let mut state = inner.state.lock().expect("transcode state poisoned");
+                    if let Some(source) = state.get_mut(&key) {
+                        if let Some(resolution) = resolution {
                             source.source_resolution = Some(resolution);
                         }
-                        return;
+                        if let Some(frame_rate) = frame_rate {
+                            source.source_frame_rate = Some(frame_rate);
+                        }
                     }
-                    None => tokio::time::sleep(Duration::from_millis(200)).await,
+                    return;
                 }
+                tokio::time::sleep(Duration::from_millis(200)).await;
             }
         });
     }
@@ -776,12 +787,9 @@ fn eligible_presets_for<'a>(
     let Some(source) = source else {
         return presets.iter().collect();
     };
-    let max_height = source
-        .source_resolution
-        .map_or(u32::MAX, |(_, height)| height);
     presets
         .iter()
-        .filter(|preset| preset.height < max_height)
+        .filter(|preset| !rung_reencodes_same_quality(preset, source))
         .filter(|preset| {
             source
                 .rungs
@@ -791,9 +799,28 @@ fn eligible_presets_for<'a>(
         .collect()
 }
 
+/// True when the rung would only re-encode at the source's own quality: its
+/// height does not step below the source height and its frame-rate ceiling
+/// does not cap a higher source frame rate. Either alone makes the rung
+/// worth running: a same-height rung can still halve the frame rate of a
+/// 1080p60 source for bandwidth-constrained viewers.
+fn rung_reencodes_same_quality(preset: &TranscodePreset, source: &SourceState) -> bool {
+    let height_pointless = source
+        .source_resolution
+        .is_some_and(|(_, height)| preset.height >= height);
+    // An unknown source frame rate is treated as already within the ceiling;
+    // fractional rates (29.97, 59.94) round to their nominal values.
+    let fps_pointless = source.source_frame_rate.is_none_or(|fps| {
+        let nominal = fps.round();
+        nominal.is_finite() && nominal <= f64::from(preset.max_fps)
+    });
+    height_pointless && fps_pointless
+}
+
 /// Choose the rung with the most waiting viewers among the schedulable
 /// ones: not already running, not permanently unsupported, not in the
-/// failure cooldown, and strictly below the source resolution (when known).
+/// failure cooldown, and not one that would only re-encode at the source's
+/// own quality.
 fn pick_most_demanded<'a>(
     sources: &'a HashMap<SourceKey, SourceState>,
     presets: &[TranscodePreset],
@@ -801,11 +828,6 @@ fn pick_most_demanded<'a>(
 ) -> Option<(&'a SourceKey, &'a str, u32)> {
     let mut best: Option<(&SourceKey, &str, u32)> = None;
     for (key, source) in sources {
-        // Skip rungs at or above the source resolution: they would only
-        // re-encode at the source's own quality.
-        let min_height = source
-            .source_resolution
-            .map_or(u32::MAX, |(_, height)| height);
         for (rung, rung_state) in &source.rungs {
             if rung_state.running.is_some()
                 || rung_state.unsupported.is_some()
@@ -822,7 +844,7 @@ fn pick_most_demanded<'a>(
             let Some(preset) = presets.iter().find(|p| &p.name == rung) else {
                 continue;
             };
-            if preset.height >= min_height {
+            if rung_reencodes_same_quality(preset, source) {
                 continue;
             }
             let demand = rung_state.waiting_viewers;
@@ -884,32 +906,62 @@ async fn subscribe_source_frames(
     Some(TranscodeInput {
         frames,
         source_resolution: Arc::new(std::sync::Mutex::new(None)),
+        source_frame_rate: Arc::new(std::sync::Mutex::new(None)),
     })
 }
 
-/// Parse `width`/`height` out of an `onMetaData` FLV script tag body.
+/// Fields of interest parsed out of an `onMetaData` FLV script tag body.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct SourceMetadata {
+    pub resolution: Option<(u32, u32)>,
+    pub frame_rate: Option<f64>,
+}
+
+/// Parse `width`/`height`/`framerate` out of an `onMetaData` FLV script tag
+/// body. Each field is optional on its own; encoders publish the frame rate
+/// under either the `framerate` or `frame_rate` key.
 #[must_use]
-pub(crate) fn parse_metadata_resolution(data: &[u8]) -> Option<(u32, u32)> {
+pub(crate) fn parse_source_metadata(data: &[u8]) -> SourceMetadata {
     use synctv_xiu::bytesio::bytes_reader::BytesReader;
     use synctv_xiu::flv::amf0::{Amf0ValueType, amf0_reader::Amf0Reader};
 
-    let mut reader = Amf0Reader::new(BytesReader::new(bytes::BytesMut::from(data)));
-    let values = reader.read_all().ok()?;
-    let map = values.iter().find_map(|value| match value {
-        Amf0ValueType::EcmaArray(map) | Amf0ValueType::Object(map) => Some(map),
-        _ => None,
-    })?;
-    let number = |key: &str| -> Option<u32> {
+    let map = Amf0Reader::new(BytesReader::new(bytes::BytesMut::from(data)))
+        .read_all()
+        .ok()
+        .and_then(|values| {
+            values.iter().find_map(|value| match value {
+                Amf0ValueType::EcmaArray(map) | Amf0ValueType::Object(map) => Some(map.clone()),
+                _ => None,
+            })
+        });
+    let Some(map) = map else {
+        return SourceMetadata::default();
+    };
+    let number = |key: &str| -> Option<f64> {
         match map.get(key)? {
-            Amf0ValueType::Number(value) if *value >= 1.0 && *value <= f64::from(u32::MAX) => {
-                // Range-checked above; fractional metadata floors.
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                Some(*value as u32)
-            }
+            Amf0ValueType::Number(value) => Some(*value),
             _ => None,
         }
     };
-    Some((number("width")?, number("height")?))
+    let resolution = match (number("width"), number("height")) {
+        (Some(width), Some(height))
+            if (1.0..=f64::from(u32::MAX)).contains(&width)
+                && (1.0..=f64::from(u32::MAX)).contains(&height) =>
+        {
+            // Range-checked above; fractional metadata floors.
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            Some((width as u32, height as u32))
+        }
+        _ => None,
+    };
+    // Sensible frame-rate envelope; rejects junk like 0 or -1 metadata.
+    let frame_rate = number("framerate")
+        .or_else(|| number("frame_rate"))
+        .filter(|fps| (0.0..=240.0).contains(fps) && *fps > 0.0);
+    SourceMetadata {
+        resolution,
+        frame_rate,
+    }
 }
 
 #[cfg(test)]

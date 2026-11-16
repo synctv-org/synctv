@@ -116,6 +116,7 @@ impl TranscodeWorker for FfmpegWorker {
         let TranscodeInput {
             mut frames,
             source_resolution,
+            source_frame_rate,
         } = input;
         let mut command = tokio::process::Command::new(&self.binary);
         command
@@ -132,6 +133,7 @@ impl TranscodeWorker for FfmpegWorker {
                     TranscodeInput {
                         frames,
                         source_resolution,
+                        source_frame_rate,
                     },
                 ));
             }
@@ -162,11 +164,19 @@ impl TranscodeWorker for FfmpegWorker {
                 };
                 match &frame {
                     FrameData::MetaData { data, .. } => {
-                        if let Some(resolution) = super::parse_metadata_resolution(data) {
+                        let metadata = super::parse_source_metadata(data);
+                        if let Some(resolution) = metadata.resolution {
                             let mut slot =
                                 source_resolution.lock().expect("resolution slot poisoned");
                             if slot.is_none() {
                                 *slot = Some(resolution);
+                            }
+                        }
+                        if let Some(frame_rate) = metadata.frame_rate {
+                            let mut slot =
+                                source_frame_rate.lock().expect("frame-rate slot poisoned");
+                            if slot.is_none() {
+                                *slot = Some(frame_rate);
                             }
                         }
                     }
@@ -323,8 +333,21 @@ fn build_ffmpeg_args(job: &TranscodeJob) -> Vec<String> {
         "-map",
         "0:a?",
         // Never upscale: cap the output height at the source height.
+        // Frame rate is a ceiling enforced by timestamp gaps, never a
+        // target: a frame is kept only when at least 1/fps seconds passed
+        // since the previously kept frame, so a faster source is dropped
+        // down to the ceiling while a slower source (e.g. 24 fps film)
+        // passes through untouched — frames are never duplicated. The
+        // 100µs epsilon rescues float equality when the gap is an exact
+        // multiple of the frame interval (e.g. 60 vs 30); it stays far
+        // below any real frame interval (≥ 1/120 s). Timestamps are kept
+        // variable-frame-rate (`-fps_mode vfr` below), which preserves the
+        // source timing of whatever frames survive.
         "-vf",
-        &format!("scale=w=-2:h='min({height},ih)':flags=bicubic,fps=fps={fps}"),
+        &format!(
+            "scale=w=-2:h='min({height},ih)':flags=bicubic,\
+             select='isnan(prev_selected_t)+gte(t-prev_selected_t,1/{fps}-0.0001)'"
+        ),
         "-c:v",
         "libx264",
         "-preset",
@@ -341,7 +364,9 @@ fn build_ffmpeg_args(job: &TranscodeJob) -> Vec<String> {
         &format!("{max_rate}k"),
         "-bufsize",
         &format!("{buf_size}k"),
-        // Fixed 2-second GOP so HLS segments cut cleanly on keyframes.
+        // Fixed 2-second GOP at the ceiling rate so HLS segments cut
+        // cleanly on keyframes; a passthrough source below the ceiling
+        // stretches the GOP duration proportionally.
         "-g",
         &gop.to_string(),
         "-keyint_min",
@@ -356,6 +381,11 @@ fn build_ffmpeg_args(job: &TranscodeJob) -> Vec<String> {
         "44100",
         "-ac",
         "2",
+        // Keep the variable frame rate produced by the timestamp-gap
+        // selection; a CFR mode would re-time frames and duplicate to fill
+        // gaps, which the frame-rate ceiling must never do.
+        "-fps_mode",
+        "vfr",
         // Output: FLV on stdout.
         "-f",
         "flv",
@@ -500,11 +530,94 @@ mod tests {
         let args = build_ffmpeg_args(&job);
         let joined = args.join(" ");
         assert!(joined.contains("min(480,ih)"), "{joined}");
-        assert!(joined.contains("fps=fps=30"), "{joined}");
+        // The frame rate is a ceiling enforced by timestamp gaps, never a
+        // target: only frames arriving faster than 1/30 s apart are
+        // dropped, and slower sources pass through without duplication.
+        assert!(
+            joined.contains("select='isnan(prev_selected_t)+gte(t-prev_selected_t,1/30-0.0001)'"),
+            "{joined}"
+        );
+        assert!(joined.contains("-fps_mode vfr"), "{joined}");
         assert!(joined.contains("-g 60"), "{joined}");
         assert!(joined.contains("-b:v 1000k"), "{joined}");
         assert!(joined.contains("-b:a 64k"), "{joined}");
         assert!(joined.ends_with("pipe:1"));
+    }
+
+    /// Runs the exact `-vf` value produced by [`build_ffmpeg_args`] through a
+    /// local ffmpeg binary and counts output frames, so the shipped filter
+    /// expression is verified against real filter behavior.
+    #[test]
+    fn fps_filter_expression_caps_without_duplicating() {
+        let Some(ffmpeg) = local_ffmpeg() else {
+            eprintln!("skipping: ffmpeg binary not found on PATH");
+            return;
+        };
+        let job = TranscodeJob {
+            room_id: "room".to_string(),
+            media_id: "media".to_string(),
+            preset: preset_480p(),
+        };
+        let args = build_ffmpeg_args(&job);
+        let vf_index = args
+            .iter()
+            .position(|arg| arg == "-vf")
+            .expect("-vf present");
+        let vf = &args[vf_index + 1];
+        let fps_mode_index = args
+            .iter()
+            .position(|arg| arg == "-fps_mode")
+            .expect("-fps_mode present");
+        let fps_mode = args[fps_mode_index + 1].clone();
+
+        let run = |input_rate: u32| -> u64 {
+            let output = std::process::Command::new(&ffmpeg)
+                .args([
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    &format!("testsrc2=size=320x240:rate={input_rate}"),
+                    "-t",
+                    "2",
+                    "-vf",
+                    vf,
+                    "-fps_mode",
+                    &fps_mode,
+                    "-f",
+                    "rawvideo",
+                    "-pix_fmt",
+                    "gray",
+                    "pipe:1",
+                ])
+                .output()
+                .expect("ffmpeg runs");
+            assert!(
+                output.status.success(),
+                "ffmpeg failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            u64::try_from(output.stdout.len() / (320 * 240)).expect("frame count fits u64")
+        };
+
+        // 60 fps in 2 s: capped to 30 fps -> 60 frames.
+        let frames = run(60);
+        assert!((58..=62).contains(&frames), "60fps -> {frames} frames");
+        // 30 fps in 2 s: already at the ceiling -> 60 frames, untouched.
+        let frames = run(30);
+        assert!((58..=62).contains(&frames), "30fps -> {frames} frames");
+        // 24 fps in 2 s: untouched (48 frames), NOT duplicated to 60.
+        let frames = run(24);
+        assert!((46..=50).contains(&frames), "24fps -> {frames} frames");
+    }
+
+    fn local_ffmpeg() -> Option<std::path::PathBuf> {
+        let path = std::env::var("PATH").ok()?;
+        std::env::split_paths(&path)
+            .map(|directory| directory.join("ffmpeg"))
+            .find(|candidate| candidate.is_file())
     }
 
     #[test]

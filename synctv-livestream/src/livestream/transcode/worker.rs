@@ -56,13 +56,17 @@ pub struct TranscodeJobHandle {
 }
 
 /// Input side handed to a worker: a subscription of the source stream's
-/// FLV-format frames plus the stream's first metadata (used to skip rungs at
-/// or above the source resolution before the job is even submitted).
+/// FLV-format frames plus the stream's first metadata (used to skip rungs
+/// that would only re-encode at the source's own quality before the job is
+/// even submitted).
 pub struct TranscodeInput {
     /// FLV-format frames of the source stream.
     pub frames: FrameDataReceiver,
     /// `width`/`height` parsed from the source `onMetaData`, when observed.
     pub source_resolution: Arc<std::sync::Mutex<Option<(u32, u32)>>>,
+    /// `framerate` parsed from the source `onMetaData`, when published by
+    /// the encoder.
+    pub source_frame_rate: Arc<std::sync::Mutex<Option<f64>>>,
 }
 
 /// A transcode engine. Implementations own their capacity policy and expose

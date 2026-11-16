@@ -32,7 +32,7 @@ pub fn validate_endpoint_ssrf(
         )));
     }
 
-    if let Ok(ip) = host.parse::<std::net::IpAddr>()
+    if let Some(ip) = synctv_common::ssrf::host_ip(host)
         && guard.is_ip_blocked(&ip)
     {
         return Err(ProviderClientError::InvalidConfig(format!(

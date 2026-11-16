@@ -236,6 +236,22 @@ fn normalize_host(host: &str) -> String {
     host.trim_end_matches('.').to_ascii_lowercase()
 }
 
+/// Classify a URL host string as an IP literal.
+///
+/// `Url::host_str()` serializes IPv6 hosts with their brackets (e.g.
+/// `"[::1]"`), which `str::parse::<IpAddr>()` rejects. Treating that parse
+/// failure as "this is a hostname" lets bracketed IPv6 literals skip the IP
+/// deny list entirely, so every host-classification decision must go through
+/// this helper instead of calling `parse` directly.
+#[must_use]
+pub fn host_ip(host: &str) -> Option<IpAddr> {
+    let trimmed = host
+        .strip_prefix('[')
+        .and_then(|stripped| stripped.strip_suffix(']'))
+        .unwrap_or(host);
+    trimmed.parse().ok()
+}
+
 fn parse_builtin_cidr(range: &str) -> Result<IpNet, String> {
     range
         .parse()
@@ -288,6 +304,14 @@ impl SsrfPolicy {
 
     fn is_host_blocked(&self, host: &str) -> bool {
         if self.deny_all {
+            return true;
+        }
+
+        // Brackets and colons never appear in a DNS name; they only occur in
+        // IP-literal spellings. Anything still reaching the hostname policy
+        // with those characters is a malformed literal, and denying it keeps
+        // standalone `is_host_blocked` callers fail-closed.
+        if host.contains(['[', ']', ':']) {
             return true;
         }
 
@@ -475,7 +499,7 @@ impl SsrfGuard {
         port: u16,
         default_port: Option<u16>,
     ) -> Result<(), SsrfTargetError> {
-        if let Ok(ip) = host.parse::<IpAddr>() {
+        if let Some(ip) = host_ip(host) {
             if self.is_ip_blocked(&ip) {
                 return Err(SsrfTargetError::BlockedIp(ip));
             }
@@ -1081,6 +1105,71 @@ mod tests {
             guard.validate_url_target("127.0.0.1", 80),
             Err(SsrfTargetError::BlockedIp(IpAddr::V4(Ipv4Addr::LOCALHOST)))
         );
+    }
+
+    #[test]
+    fn test_host_ip_classifies_bracketed_url_hosts() {
+        // `Url::host_str()` serializes IPv6 hosts with brackets.
+        assert_eq!(host_ip("[::1]"), Some(IpAddr::V6(Ipv6Addr::LOCALHOST)));
+        assert_eq!(host_ip("127.0.0.1"), Some(IpAddr::V4(Ipv4Addr::LOCALHOST)));
+        assert_eq!(host_ip("::1"), Some(IpAddr::V6(Ipv6Addr::LOCALHOST)));
+        assert_eq!(host_ip("example.com"), None);
+        // Malformed literals must not classify as IPs.
+        assert_eq!(host_ip("[::1"), None);
+        assert_eq!(host_ip("[example.com]"), None);
+    }
+
+    #[test]
+    fn test_validate_url_target_blocks_bracketed_ipv6_literals() {
+        let guard = SsrfGuard::strict_policy();
+
+        // Regression (synctv-org/synctv#547): bracketed IPv6 spellings used
+        // to fall into the hostname branch and skip the IP deny list.
+        for blocked in [
+            "[::1]",
+            "[fd00:5744::1]",
+            "[fe80::1]",
+            "[::ffff:127.0.0.1]",
+            "[::ffff:a9fe:a9fe]",   // IPv4-mapped metadata service
+            "[64:ff9b::a9fe:a9fe]", // NAT64 metadata service
+        ] {
+            assert_eq!(
+                guard.validate_url_target(blocked, 80),
+                Err(SsrfTargetError::BlockedIp(
+                    host_ip(blocked).expect("probe must classify as IP")
+                )),
+                "{blocked} must be blocked as an IP literal"
+            );
+        }
+
+        // Public IPv6 literals stay reachable on default ports.
+        assert_eq!(
+            guard.validate_url_target("[2606:4700:4700::1111]", 80),
+            Ok(())
+        );
+        assert_eq!(
+            guard.validate_url_target("[2606:4700:4700::1111]", 443),
+            Ok(())
+        );
+        // ... and keep the non-default-port policy for public IPs.
+        assert_eq!(
+            guard.validate_url_target("[2606:4700:4700::1111]", 18000),
+            Err(SsrfTargetError::BlockedPort { port: 18000 })
+        );
+    }
+
+    #[test]
+    fn test_is_host_blocked_denies_malformed_ip_literal_strings() {
+        let guard = SsrfGuard::strict_policy();
+
+        // Strings that cannot be DNS names never reach hostname policy.
+        assert!(guard.is_host_blocked("[::1"));
+        assert!(guard.is_host_blocked("[::1]"));
+        assert!(guard.is_host_blocked("::1"));
+        assert!(guard.is_host_blocked("exam:ple.com"));
+        // Real hostnames keep their allow/deny semantics.
+        assert!(guard.is_host_blocked("localhost"));
+        assert!(!guard.is_host_blocked("example.com"));
     }
 
     #[tokio::test]

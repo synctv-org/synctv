@@ -251,6 +251,34 @@ fn test_proxy_ssrf_allows_hostname_default_ports() -> TestResult {
 }
 
 #[test]
+fn test_proxy_ssrf_rejects_bracketed_ipv6_literals() -> TestResult {
+    // Regression (synctv-org/synctv#547): `Url::host_str()` serializes IPv6
+    // hosts as "[...]", which used to miss the IP deny list.
+    for blocked in [
+        "https://[::1]/favicon.ico",
+        "https://[fd00:5744::1]/favicon.ico",
+        "https://[::ffff:127.0.0.1]/favicon.ico",
+        "https://[::ffff:a9fe:a9fe]/favicon.ico",
+        "https://[64:ff9b::a9fe:a9fe]/favicon.ico",
+    ] {
+        let url = url::Url::parse(blocked)?;
+        let err = validate_target_url_against_ssrf(
+            &url,
+            &synctv_common::ssrf::SsrfGuard::strict_policy(),
+        )
+        .expect_err("strict SSRF policy should reject bracketed IPv6 literals");
+        assert!(
+            err.to_string().contains("blocked by SSRF policy"),
+            "unexpected SSRF error for {blocked}: {err}"
+        );
+    }
+
+    let public = url::Url::parse("https://[2606:4700:4700::1111]/video.mp4")?;
+    validate_target_url_against_ssrf(&public, &synctv_common::ssrf::SsrfGuard::strict_policy())?;
+    Ok(())
+}
+
+#[test]
 fn test_proxy_error_kind_mapping() {
     assert_eq!(
         ProxyError::Cancelled("x".into()).kind(),

@@ -119,7 +119,11 @@ pub struct TranscodePreset {
     /// neither step below the source height nor cap a higher source frame
     /// rate are skipped per stream.
     pub height: u32,
-    /// Target video bitrate in kbps.
+    /// Reference video bitrate in kbps for this tier at a 16:9 output and
+    /// the `max_fps` ceiling, matching how published ladders quote rates.
+    /// The worker scales it to the actual output: proportionally fewer bits
+    /// for smaller pixel counts (vertical sources) or lower frame rates,
+    /// and up to 2x for wider-than-16:9 outputs.
     pub video_kbps: u32,
     /// Target audio bitrate in kbps.
     pub audio_kbps: u32,

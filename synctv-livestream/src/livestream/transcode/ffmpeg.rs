@@ -82,6 +82,12 @@ fn resolve_binary(name: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
+/// How long the worker waits for the source's first `onMetaData` before
+/// falling back to tier-default encoding parameters. The tag is the first
+/// FLV tag of a live stream, so this wait ends within milliseconds in
+/// practice; only metadata-less sources pay the full wait.
+const SOURCE_METADATA_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
 impl TranscodeWorker for FfmpegWorker {
     fn name(&self) -> &'static str {
         "ffmpeg"
@@ -111,190 +117,193 @@ impl TranscodeWorker for FfmpegWorker {
             return Err((TranscodeError::CapacityExhausted, input));
         };
 
-        // Destructure before spawning: a spawn failure must hand the input
-        // back to the scheduler intact for the next worker.
+        let binary = self.binary.clone();
+        // Destructure before spawning: everything after this point belongs
+        // to the orchestrator task; only an immediate rejection above hands
+        // the input back untouched.
         let TranscodeInput {
             mut frames,
             source_resolution,
             source_frame_rate,
         } = input;
-        let mut command = tokio::process::Command::new(&self.binary);
-        command
-            .args(build_ffmpeg_args(&job))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        let mut child = match command.spawn() {
-            Ok(child) => child,
-            Err(error) => {
-                return Err((
-                    TranscodeError::Failed(format!("failed to spawn ffmpeg: {error}")),
-                    TranscodeInput {
-                        frames,
-                        source_resolution,
-                        source_frame_rate,
-                    },
-                ));
-            }
-        };
 
-        let mut stdin = child.stdin.take().expect("ffmpeg stdin piped");
-        let mut stdout = child.stdout.take().expect("ffmpeg stdout piped");
-        let mut stderr = child.stderr.take().expect("ffmpeg stderr piped");
-
-        let cancel = CancellationToken::new();
         let (output_tx, output_rx) = mpsc::channel::<FrameData>(OUTPUT_CHANNEL_CAPACITY);
         let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        let cancel = CancellationToken::new();
         let stderr_tail = Arc::new(Mutex::new(Vec::new()));
 
-        // stdin pump: FLV-mux the source frames into ffmpeg.
-        let stdin_cancel = cancel.clone();
+        // Orchestrator: wait for the source's first metadata (buffering the
+        // frames that arrive meanwhile), then spawn ffmpeg sized to the
+        // actual source shape and run the stdio pumps. Failures past this
+        // point surface through the `done` channel, not `start`.
+        let orchestrator_cancel = cancel.clone();
         tokio::spawn(async move {
+            let (buffered, metadata) = wait_for_source_metadata(
+                &mut frames,
+                &source_resolution,
+                &source_frame_rate,
+                SOURCE_METADATA_WAIT,
+                &orchestrator_cancel,
+            )
+            .await;
+            if orchestrator_cancel.is_cancelled() {
+                let _ = done_tx.send(Ok(()));
+                return;
+            }
+
+            let args = build_ffmpeg_args(&job, &metadata);
+            let mut command = tokio::process::Command::new(&binary);
+            command
+                .args(args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true);
+            let mut child = match command.spawn() {
+                Ok(child) => child,
+                Err(error) => {
+                    let _ = done_tx.send(Err(TranscodeError::Failed(format!(
+                        "failed to spawn ffmpeg: {error}"
+                    ))));
+                    return;
+                }
+            };
+
+            let mut stdin = child.stdin.take().expect("ffmpeg stdin piped");
+            let mut stdout = child.stdout.take().expect("ffmpeg stdout piped");
+            let mut stderr = child.stderr.take().expect("ffmpeg stderr piped");
+
+            // stdout pump: demux ffmpeg's FLV output back into frames.
+            let stdout_cancel = orchestrator_cancel.clone();
+            let stdout_output = output_tx.clone();
+            tokio::spawn(async move {
+                let mut demuxer = FlvIncrementalDemuxer::default();
+                let mut buffer = BytesMut::new();
+                let mut chunk = vec![0u8; 64 * 1024];
+                loop {
+                    let read = tokio::select! {
+                        () = stdout_cancel.cancelled() => break,
+                        read = stdout.read(&mut chunk) => match read {
+                            Ok(0) | Err(_) => break,
+                            Ok(read) => read,
+                        },
+                    };
+                    if buffer.len() + read > MAX_FLV_BUFFER_SIZE {
+                        warn!("ffmpeg stdout exceeded FLV buffer limit");
+                        break;
+                    }
+                    buffer.extend_from_slice(&chunk[..read]);
+                    while let Some(frame) = demuxer.next_tag(&mut buffer) {
+                        if stdout_output.send(frame).await.is_err() {
+                            // Consumer gone; the publisher side ends the job.
+                            return;
+                        }
+                    }
+                }
+            });
+
+            // stderr: keep a bounded tail for failure diagnostics and surface
+            // complete lines live, so an input ffmpeg cannot decode is visible
+            // while the job runs instead of only after it exits.
+            let stderr_cancel = orchestrator_cancel.clone();
+            let stderr_tail_writer = Arc::clone(&stderr_tail);
+            tokio::spawn(async move {
+                let mut tail = Vec::new();
+                let mut partial_line = Vec::new();
+                let mut chunk = [0u8; 4 * 1024];
+                loop {
+                    let read = tokio::select! {
+                        () = stderr_cancel.cancelled() => break,
+                        read = stderr.read(&mut chunk) => match read {
+                            Ok(0) | Err(_) => break,
+                            Ok(read) => read,
+                        },
+                    };
+                    if tail.len() + read > STDERR_TAIL_BYTES {
+                        let overflow = tail.len() + read - STDERR_TAIL_BYTES;
+                        tail.drain(..overflow.min(tail.len()));
+                    }
+                    tail.extend_from_slice(&chunk[..read]);
+                    stderr_tail_writer
+                        .lock()
+                        .expect("stderr tail poisoned")
+                        .clone_from(&tail);
+                    partial_line.extend_from_slice(&chunk[..read]);
+                    while let Some(newline) = partial_line.iter().position(|byte| *byte == b'\n') {
+                        let line: Vec<u8> = partial_line.drain(..=newline).collect();
+                        let line = String::from_utf8_lossy(&line);
+                        let line = line.trim_end();
+                        if !line.is_empty() {
+                            debug!(target: "synctv::ffmpeg", "{line}");
+                        }
+                    }
+                }
+                let leftover = String::from_utf8_lossy(&partial_line);
+                let leftover = leftover.trim_end();
+                if !leftover.is_empty() {
+                    debug!(target: "synctv::ffmpeg", "{leftover}");
+                }
+            });
+
+            // watcher: await the process and produce the job outcome. Holding
+            // `permit` here ties the capacity slot to the job's lifetime.
+            let watcher_cancel = orchestrator_cancel.clone();
+            tokio::spawn(async move {
+                let _permit = permit;
+                let cancelled_upfront = watcher_cancel.is_cancelled();
+                let status = tokio::select! {
+                    status = child.wait() => status,
+                    () = watcher_cancel.cancelled() => {
+                        let _ = child.start_kill();
+                        let _ = child.wait().await;
+                        let _ = done_tx.send(Ok(()));
+                        return;
+                    }
+                };
+                let outcome = match status {
+                    Ok(status) if status.success() || cancelled_upfront => Ok(()),
+                    Ok(status) => {
+                        let tail_bytes = stderr_tail.lock().expect("stderr tail poisoned");
+                        let tail = String::from_utf8_lossy(&tail_bytes);
+                        let tail = tail.trim();
+                        let detail = if tail.is_empty() {
+                            format!("ffmpeg exited with {status}")
+                        } else {
+                            format!("ffmpeg exited with {status}: {tail}")
+                        };
+                        Err(TranscodeError::Failed(detail))
+                    }
+                    Err(error) => Err(TranscodeError::Failed(format!(
+                        "failed to wait for ffmpeg: {error}"
+                    ))),
+                };
+                let _ = done_tx.send(outcome);
+            });
+
+            // stdin pump (inline): FLV-mux the buffered prefix and the source
+            // frames that keep arriving into ffmpeg's stdin.
             if stdin.write_all(FLV_HEADER).await.is_err() {
                 return;
             }
+            for frame in &buffered {
+                if write_flv_tag(&mut stdin, frame).await.is_err() {
+                    return;
+                }
+            }
             loop {
                 let frame = tokio::select! {
-                    () = stdin_cancel.cancelled() => break,
+                    () = orchestrator_cancel.cancelled() => break,
                     frame = frames.recv() => match frame {
                         Some(frame) => frame,
                         None => break,
                     },
                 };
-                match &frame {
-                    FrameData::MetaData { data, .. } => {
-                        let metadata = super::parse_source_metadata(data);
-                        if let Some(resolution) = metadata.resolution {
-                            let mut slot =
-                                source_resolution.lock().expect("resolution slot poisoned");
-                            if slot.is_none() {
-                                *slot = Some(resolution);
-                            }
-                        }
-                        if let Some(frame_rate) = metadata.frame_rate {
-                            let mut slot =
-                                source_frame_rate.lock().expect("frame-rate slot poisoned");
-                            if slot.is_none() {
-                                *slot = Some(frame_rate);
-                            }
-                        }
-                    }
-                    FrameData::MediaInfo { .. } => continue,
-                    FrameData::Video { .. } | FrameData::Audio { .. } => {}
-                }
                 if write_flv_tag(&mut stdin, &frame).await.is_err() {
                     break;
                 }
             }
             // Closing stdin lets ffmpeg finish its output and exit cleanly.
             let _ = stdin.shutdown().await;
-        });
-
-        // stdout pump: demux ffmpeg's FLV output back into frames.
-        let stdout_cancel = cancel.clone();
-        tokio::spawn(async move {
-            let mut demuxer = FlvIncrementalDemuxer::default();
-            let mut buffer = BytesMut::new();
-            let mut chunk = vec![0u8; 64 * 1024];
-            loop {
-                let read = tokio::select! {
-                    () = stdout_cancel.cancelled() => break,
-                    read = stdout.read(&mut chunk) => match read {
-                        Ok(0) | Err(_) => break,
-                        Ok(read) => read,
-                    },
-                };
-                if buffer.len() + read > MAX_FLV_BUFFER_SIZE {
-                    warn!("ffmpeg stdout exceeded FLV buffer limit");
-                    break;
-                }
-                buffer.extend_from_slice(&chunk[..read]);
-                while let Some(frame) = demuxer.next_tag(&mut buffer) {
-                    if output_tx.send(frame).await.is_err() {
-                        // Consumer gone; the publisher side ends the job.
-                        return;
-                    }
-                }
-            }
-        });
-
-        // stderr: keep a bounded tail for failure diagnostics and surface
-        // complete lines live, so an input ffmpeg cannot decode is visible
-        // while the job runs instead of only after it exits.
-        let stderr_cancel = cancel.clone();
-        let stderr_tail_writer = Arc::clone(&stderr_tail);
-        tokio::spawn(async move {
-            let mut tail = Vec::new();
-            let mut partial_line = Vec::new();
-            let mut chunk = [0u8; 4 * 1024];
-            loop {
-                let read = tokio::select! {
-                    () = stderr_cancel.cancelled() => break,
-                    read = stderr.read(&mut chunk) => match read {
-                        Ok(0) | Err(_) => break,
-                        Ok(read) => read,
-                    },
-                };
-                if tail.len() + read > STDERR_TAIL_BYTES {
-                    let overflow = tail.len() + read - STDERR_TAIL_BYTES;
-                    tail.drain(..overflow.min(tail.len()));
-                }
-                tail.extend_from_slice(&chunk[..read]);
-                stderr_tail_writer
-                    .lock()
-                    .expect("stderr tail poisoned")
-                    .clone_from(&tail);
-                partial_line.extend_from_slice(&chunk[..read]);
-                while let Some(newline) = partial_line.iter().position(|byte| *byte == b'\n') {
-                    let line: Vec<u8> = partial_line.drain(..=newline).collect();
-                    let line = String::from_utf8_lossy(&line);
-                    let line = line.trim_end();
-                    if !line.is_empty() {
-                        debug!(target: "synctv::ffmpeg", "{line}");
-                    }
-                }
-            }
-            let leftover = String::from_utf8_lossy(&partial_line);
-            let leftover = leftover.trim_end();
-            if !leftover.is_empty() {
-                debug!(target: "synctv::ffmpeg", "{leftover}");
-            }
-        });
-
-        // watcher: await the process and produce the job outcome. Holding
-        // `permit` here ties the capacity slot to the job's lifetime.
-        let watcher_cancel = cancel.clone();
-        tokio::spawn(async move {
-            let _permit = permit;
-            let cancelled_upfront = watcher_cancel.is_cancelled();
-            let status = tokio::select! {
-                status = child.wait() => status,
-                () = watcher_cancel.cancelled() => {
-                    let _ = child.start_kill();
-                    let _ = child.wait().await;
-                    let _ = done_tx.send(Ok(()));
-                    return;
-                }
-            };
-            let outcome = match status {
-                Ok(status) if status.success() || cancelled_upfront => Ok(()),
-                Ok(status) => {
-                    let tail_bytes = stderr_tail.lock().expect("stderr tail poisoned");
-                    let tail = String::from_utf8_lossy(&tail_bytes);
-                    let tail = tail.trim();
-                    let detail = if tail.is_empty() {
-                        format!("ffmpeg exited with {status}")
-                    } else {
-                        format!("ffmpeg exited with {status}: {tail}")
-                    };
-                    Err(TranscodeError::Failed(detail))
-                }
-                Err(error) => Err(TranscodeError::Failed(format!(
-                    "failed to wait for ffmpeg: {error}"
-                ))),
-            };
-            let _ = done_tx.send(outcome);
         });
 
         Ok((
@@ -307,13 +316,64 @@ impl TranscodeWorker for FfmpegWorker {
     }
 }
 
+/// Wait (bounded) for the source's first `onMetaData`, buffering the frames
+/// that arrive meanwhile so nothing is lost while ffmpeg is not yet running.
+///
+/// `onMetaData` carries everything the encoder publishes in a single tag, so
+/// the wait ends at the first metadata frame; sources without the tag fall
+/// through to the deadline and the rung encodes with tier defaults. The
+/// parsed values are also written into the shared slots so the manager's
+/// metadata watcher records them for future eligibility decisions.
+async fn wait_for_source_metadata(
+    frames: &mut synctv_xiu::streamhub::define::FrameDataReceiver,
+    resolution_slot: &Arc<Mutex<Option<(u32, u32)>>>,
+    frame_rate_slot: &Arc<Mutex<Option<f64>>>,
+    deadline: std::time::Duration,
+    cancel: &CancellationToken,
+) -> (Vec<FrameData>, super::SourceMetadata) {
+    let mut buffered = Vec::new();
+    let mut metadata = super::SourceMetadata::default();
+    let sleep = tokio::time::sleep(deadline);
+    tokio::pin!(sleep);
+    loop {
+        tokio::select! {
+            () = cancel.cancelled() => break,
+            () = &mut sleep => break,
+            frame = frames.recv() => match frame {
+                None => break,
+                Some(FrameData::MetaData { data, timestamp }) => {
+                    metadata = super::parse_source_metadata(&data);
+                    if let Some(resolution) = metadata.resolution {
+                        *resolution_slot.lock().expect("resolution slot poisoned") = Some(resolution);
+                    }
+                    if let Some(frame_rate) = metadata.frame_rate {
+                        *frame_rate_slot.lock().expect("frame-rate slot poisoned") = Some(frame_rate);
+                    }
+                    buffered.push(FrameData::MetaData { data, timestamp });
+                    break;
+                }
+                Some(frame) => buffered.push(frame),
+            },
+        }
+    }
+    (buffered, metadata)
+}
+
 /// ffmpeg invocation for one rung: FLV in on stdin, scaled/re-encoded FLV
 /// out on stdout.
-fn build_ffmpeg_args(job: &TranscodeJob) -> Vec<String> {
+///
+/// `metadata` is the source's `onMetaData` when it was observed in time.
+/// The frame-rate ceiling and the never-upscale scale filter already adapt
+/// to any source shape; the metadata additionally lets the video bitrate
+/// track the actual output: `video_kbps` is the reference bitrate for the
+/// tier at a 16:9 output and the `max_fps` ceiling, and it is scaled
+/// proportionally for other pixel counts (vertical, ultrawide, non-standard
+/// sizes) and lower frame rates.
+fn build_ffmpeg_args(job: &TranscodeJob, metadata: &super::SourceMetadata) -> Vec<String> {
     let preset = &job.preset;
     let height = preset.height;
     let fps = preset.max_fps;
-    let video_kbps = preset.video_kbps;
+    let video_kbps = effective_video_kbps(preset, metadata);
     let max_rate = video_kbps + video_kbps / 4;
     let buf_size = video_kbps * 2;
     let gop = (fps * 2).max(2);
@@ -396,6 +456,49 @@ fn build_ffmpeg_args(job: &TranscodeJob) -> Vec<String> {
     .into_iter()
     .map(str::to_string)
     .collect()
+}
+
+/// The tier's video bitrate adjusted to the actual output shape.
+///
+/// `video_kbps` is the reference for the tier's height at 16:9 and at the
+/// `max_fps` ceiling (matching common published ladders, which are quoted
+/// per resolution and frame rate). The factor scales with the actual output
+/// pixel count — vertical and ultrawide sources get proportionally less or
+/// more than a 16:9 frame — and with the output frame rate relative to the
+/// ceiling, since the ceiling only drops frames and a slower source needs
+/// proportionally fewer bits. A floor of 64 kbps keeps extreme shapes
+/// watchable.
+fn effective_video_kbps(
+    preset: &super::config::TranscodePreset,
+    metadata: &super::SourceMetadata,
+) -> u32 {
+    let mut factor = 1.0_f64;
+
+    if let Some((source_width, source_height)) = metadata.resolution {
+        let output_height = f64::from(preset.height.min(source_height));
+        let output_width = output_height * f64::from(source_width) / f64::from(source_height);
+        let reference = f64::from(preset.height) * f64::from(preset.height) * 16.0 / 9.0;
+        let pixel_ratio = output_width * output_height / reference;
+        factor *= pixel_ratio.clamp(0.25, 2.0);
+    }
+
+    if let Some(frame_rate) = metadata
+        .frame_rate
+        .filter(|rate| rate.is_finite() && *rate > 0.0)
+    {
+        let capped = frame_rate.round().min(f64::from(preset.max_fps));
+        let fps_ratio = capped / f64::from(preset.max_fps);
+        factor *= fps_ratio.clamp(0.5, 1.0);
+    }
+
+    // Range-checked by the clamp; the tier itself is validated to
+    // 1..=100000 kbps and the factor is clamped to [0.125, 2].
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    {
+        ((f64::from(preset.video_kbps) * factor)
+            .round()
+            .clamp(64.0, 100_000.0)) as u32
+    }
 }
 
 /// Write one frame as an FLV tag (header + body + previous-tag size).
@@ -527,7 +630,7 @@ mod tests {
             media_id: "media".to_string(),
             preset: preset_480p(),
         };
-        let args = build_ffmpeg_args(&job);
+        let args = build_ffmpeg_args(&job, &super::super::SourceMetadata::default());
         let joined = args.join(" ");
         assert!(joined.contains("min(480,ih)"), "{joined}");
         // The frame rate is a ceiling enforced by timestamp gaps, never a
@@ -558,7 +661,7 @@ mod tests {
             media_id: "media".to_string(),
             preset: preset_480p(),
         };
-        let args = build_ffmpeg_args(&job);
+        let args = build_ffmpeg_args(&job, &super::super::SourceMetadata::default());
         let vf_index = args
             .iter()
             .position(|arg| arg == "-vf")
@@ -674,6 +777,214 @@ mod tests {
         };
         assert_eq!(timestamp, 0x0102_0304);
         assert_eq!(data.as_ref(), frame_data(&frame).as_ref());
+    }
+
+    #[test]
+    fn effective_bitrate_tracks_output_shape_and_frame_rate() {
+        use super::super::SourceMetadata;
+
+        let preset = preset_480p();
+        // No metadata: the tier reference bitrate is used verbatim.
+        assert_eq!(
+            effective_video_kbps(&preset, &SourceMetadata::default()),
+            1000
+        );
+
+        // A 16:9 source lands exactly on the reference frame.
+        let meta = SourceMetadata {
+            resolution: Some((1920, 1080)),
+            frame_rate: Some(30.0),
+        };
+        assert_eq!(effective_video_kbps(&preset, &meta), 1000);
+
+        // A higher-than-ceiling frame rate caps at the ceiling: reference.
+        let meta = SourceMetadata {
+            resolution: Some((1920, 1080)),
+            frame_rate: Some(60.0),
+        };
+        assert_eq!(effective_video_kbps(&preset, &meta), 1000);
+
+        // A 24 fps source below the ceiling gets proportionally fewer bits.
+        let meta = SourceMetadata {
+            resolution: Some((1920, 1080)),
+            frame_rate: Some(24.0),
+        };
+        assert_eq!(effective_video_kbps(&preset, &meta), 800);
+
+        // Vertical 1080x1920 at a 480p tier: ~0.32 of the reference pixels.
+        let meta = SourceMetadata {
+            resolution: Some((1080, 1920)),
+            frame_rate: Some(30.0),
+        };
+        assert_eq!(effective_video_kbps(&preset, &meta), 316);
+
+        // Ultrawide 2560x1080 at a 720p tier: ~1.33x of the reference pixels.
+        let meta = SourceMetadata {
+            resolution: Some((2560, 1080)),
+            frame_rate: Some(30.0),
+        };
+        let ultrawide_preset = super::super::config::TranscodePreset {
+            name: "720p".to_string(),
+            height: 720,
+            video_kbps: 2500,
+            audio_kbps: 96,
+            max_fps: 30,
+        };
+        assert_eq!(effective_video_kbps(&ultrawide_preset, &meta), 3333);
+
+        // Both dimensions combine: vertical 24 fps at ~0.32 pixels and 0.8
+        // frame rate, with the 0.5 frame-rate floor never undercut.
+        let meta = SourceMetadata {
+            resolution: Some((1080, 1920)),
+            frame_rate: Some(24.0),
+        };
+        assert_eq!(effective_video_kbps(&preset, &meta), 253);
+    }
+
+    #[test]
+    fn effective_bitrate_floors_extreme_shapes() {
+        use super::super::SourceMetadata;
+        // A 1:12 sliver of a frame bottoms out at the pixel-count clamp.
+        let preset = preset_480p();
+        let meta = SourceMetadata {
+            resolution: Some((160, 1920)),
+            frame_rate: Some(30.0),
+        };
+        assert_eq!(effective_video_kbps(&preset, &meta), 250);
+
+        // A tiny configured bitrate with a full-width frame reaches the
+        // absolute 64 kbps floor only after every factor.
+        let tiny = super::super::config::TranscodePreset {
+            name: "tiny".to_string(),
+            height: 480,
+            video_kbps: 200,
+            audio_kbps: 32,
+            max_fps: 30,
+        };
+        let meta = SourceMetadata {
+            resolution: Some((854, 480)),
+            frame_rate: Some(24.0),
+        };
+        // 200 * 1.0 (16:9) * 0.8 (24/30) = 160 stays above the floor...
+        assert_eq!(effective_video_kbps(&tiny, &meta), 160);
+        let meta = SourceMetadata {
+            resolution: Some((854, 480)),
+            frame_rate: Some(6.0),
+        };
+        // ...while 200 * 0.5 (frame-rate floor) = 100 stays above it too;
+        // only a preset below 128 kbps can reach it at 16:9.
+        assert_eq!(effective_video_kbps(&tiny, &meta), 100);
+        let sliver = super::super::config::TranscodePreset {
+            video_kbps: 100,
+            ..tiny
+        };
+        let meta = SourceMetadata {
+            resolution: Some((160, 1920)),
+            frame_rate: Some(6.0),
+        };
+        // 100 * 0.25 (pixel clamp) * 0.5 (fps floor) = 12.5 -> floor 64.
+        assert_eq!(effective_video_kbps(&sliver, &meta), 64);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn metadata_wait_returns_first_onmetadata_and_fills_slots() {
+        use synctv_xiu::streamhub::define::FrameDataReceiver;
+
+        let (meta_tx, frames) = tokio::sync::mpsc::unbounded_channel();
+        let mut frames = FrameDataReceiver::Unbounded(frames);
+        let resolution_slot = Arc::new(Mutex::new(None));
+        let frame_rate_slot = Arc::new(Mutex::new(None));
+        let cancel = CancellationToken::new();
+
+        // One video tag before the metadata must be buffered, not lost.
+        meta_tx
+            .send(FrameData::Video {
+                timestamp: 40,
+                data: bytes::Bytes::from_static(&[0x17, 0x01]),
+            })
+            .expect("send");
+        let metadata_body = metadata_onbody(1920.0, 1080.0, Some(60.0));
+        meta_tx
+            .send(FrameData::MetaData {
+                timestamp: 0,
+                data: metadata_body.clone(),
+            })
+            .expect("send");
+
+        let (buffered, metadata) = wait_for_source_metadata(
+            &mut frames,
+            &resolution_slot,
+            &frame_rate_slot,
+            std::time::Duration::from_secs(2),
+            &cancel,
+        )
+        .await;
+
+        assert_eq!(
+            metadata,
+            super::super::SourceMetadata {
+                resolution: Some((1920, 1080)),
+                frame_rate: Some(60.0),
+            }
+        );
+        assert_eq!(*resolution_slot.lock().expect("slot"), Some((1920, 1080)));
+        assert_eq!(*frame_rate_slot.lock().expect("slot"), Some(60.0));
+        assert_eq!(buffered.len(), 2, "video prefix + metadata tag");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn metadata_wait_times_out_and_buffers_frames() {
+        use synctv_xiu::streamhub::define::FrameDataReceiver;
+
+        let (meta_tx, frames) = tokio::sync::mpsc::unbounded_channel();
+        let mut frames = FrameDataReceiver::Unbounded(frames);
+        let resolution_slot = Arc::new(Mutex::new(None));
+        let frame_rate_slot = Arc::new(Mutex::new(None));
+        let cancel = CancellationToken::new();
+
+        // Only video tags: no metadata ever arrives. The paused clock
+        // fast-forwards through the deadline.
+        for timestamp in [0, 40, 80] {
+            meta_tx
+                .send(FrameData::Video {
+                    timestamp,
+                    data: bytes::Bytes::from_static(&[0x17, 0x01]),
+                })
+                .expect("send");
+        }
+
+        let (buffered, metadata) = wait_for_source_metadata(
+            &mut frames,
+            &resolution_slot,
+            &frame_rate_slot,
+            std::time::Duration::from_secs(2),
+            &cancel,
+        )
+        .await;
+
+        assert_eq!(metadata, super::super::SourceMetadata::default());
+        assert_eq!(buffered.len(), 3, "the deadline buffers every frame");
+    }
+
+    /// Serialize a minimal onMetaData body with the given dimensions and
+    /// optional frame rate, the way the RTMP message path delivers it.
+    fn metadata_onbody(width: f64, height: f64, frame_rate: Option<f64>) -> bytes::Bytes {
+        use synctv_xiu::flv::amf0::{Amf0ValueType, amf0_writer::Amf0Writer};
+
+        let mut properties = indexmap::IndexMap::new();
+        properties.insert("width".to_string(), Amf0ValueType::Number(width));
+        properties.insert("height".to_string(), Amf0ValueType::Number(height));
+        if let Some(frame_rate) = frame_rate {
+            properties.insert("framerate".to_string(), Amf0ValueType::Number(frame_rate));
+        }
+        let mut writer = Amf0Writer::new();
+        writer
+            .write_string(&"onMetaData".to_string())
+            .expect("AMF0 string writes");
+        writer
+            .write_eacm_array(&properties)
+            .expect("AMF0 array writes");
+        writer.extract_current_bytes().freeze()
     }
 
     fn frame_data(frame: &FrameData) -> bytes::Bytes {

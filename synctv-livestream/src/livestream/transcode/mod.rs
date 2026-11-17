@@ -447,6 +447,65 @@ impl TranscodeManager {
     pub fn note_source_ended(&self, room_id: &str, media_id: &str) {
         self.inner.clear_source(room_id, media_id);
     }
+
+    /// Record that a source stream has started publishing on this node:
+    /// drop the previous session's metadata while keeping rung demand, so
+    /// eligibility is decided from this session's `onMetaData` and not from
+    /// whatever an earlier publish negotiated. Encoders restart the stream
+    /// (new RTMP session, new metadata) to change output parameters; a
+    /// shorter stream at 720p followed by a longer one at 1080p60 must not
+    /// have its rungs judged against the 720p session forever.
+    pub fn note_source_started(&self, room_id: &str, media_id: &str) {
+        let mut state = self.inner.state.lock().expect("transcode state poisoned");
+        if let Some(source) = state.get_mut(&(room_id.to_string(), media_id.to_string())) {
+            source.source_resolution = None;
+            source.source_frame_rate = None;
+            source.source_video_bitrate_kbps = None;
+        }
+        drop(state);
+        self.inner.schedule_wake.notify_one();
+    }
+
+    /// Consume hub publish lifecycle events to keep per-source session state
+    /// honest. A source end cancels its rungs and drops its bookkeeping; a
+    /// source start clears stale metadata from a previous session. Rung
+    /// publications carry the rung stream name, which never matches a
+    /// source's `(room, media)` key, so they land as harmless no-ops.
+    pub fn spawn_lifecycle_watcher(
+        self: &Arc<Self>,
+        mut events: synctv_xiu::streamhub::define::BroadcastEventReceiver,
+    ) -> tokio::task::JoinHandle<()> {
+        use synctv_xiu::streamhub::define::BroadcastEvent;
+
+        let manager = Arc::clone(self);
+        tokio::spawn(async move {
+            loop {
+                match events.recv().await {
+                    Ok(BroadcastEvent::Publish { identifier, .. }) => {
+                        let StreamIdentifier::Rtmp {
+                            app_name,
+                            stream_name,
+                        } = identifier;
+                        manager.note_source_started(&app_name, &stream_name);
+                    }
+                    Ok(BroadcastEvent::UnPublish { identifier, .. }) => {
+                        let StreamIdentifier::Rtmp {
+                            app_name,
+                            stream_name,
+                        } = identifier;
+                        manager.note_source_ended(&app_name, &stream_name);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                        warn!(
+                            count,
+                            "Transcode lifecycle watcher lagged; stale source metadata may persist until the next pick refreshes it"
+                        );
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        })
+    }
 }
 
 impl ManagerInner {

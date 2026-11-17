@@ -6,7 +6,7 @@
 // - Generates M3U8 dynamically in memory, no file writes
 
 use crate::flv::{
-    define::{AvcCodecId, FlvData, SoundFormat, frame_type},
+    define::{AvcCodecId, FlvData, SoundFormat, avc_packet_type, frame_type},
     demuxer::{FlvAudioTagDemuxer, FlvVideoTagDemuxer},
 };
 use crate::hls::playlist::{HlsPlaylist, SegmentInfo};
@@ -793,6 +793,13 @@ struct StreamProcessor {
     /// This is set when frames are dropped (buffer overflow, timestamp issues)
     /// so that HLS players know to reset their PTS decoder.
     discontinuity_pending: bool,
+
+    /// The most recent video sequence header tag. Publishers may legally
+    /// re-send one mid-stream (e.g. ffmpeg-based senders changing
+    /// resolution without reconnecting); identical re-sends are common
+    /// (some encoders repeat the header per keyframe) and must not
+    /// trigger anything.
+    last_video_sequence_header: Option<Bytes>,
 }
 
 impl StreamProcessor {
@@ -834,6 +841,7 @@ impl StreamProcessor {
             last_pts: 0,
             timestamp_unwrapper: TimestampUnwrapper::default(),
             discontinuity_pending,
+            last_video_sequence_header: None,
         })
     }
 
@@ -906,6 +914,33 @@ impl StreamProcessor {
                 let detected_codec = data.first().map(|header| header & 0x0f).filter(|codec| {
                     *codec == AvcCodecId::H264 as u8 || *codec == AvcCodecId::HEVC as u8
                 });
+                // A re-sent video sequence header whose bytes changed means
+                // the publisher switched decoder parameters (e.g.
+                // resolution) without reconnecting. Cut the current segment
+                // and mark a discontinuity so HLS players reinitialize at
+                // the next segment instead of feeding the new parameter
+                // sets into the old decoder state. Identical re-sends (some
+                // encoders repeat the header per keyframe) change nothing.
+                if detected_codec.is_some()
+                    && data.len() > 1
+                    && data[1] == avc_packet_type::AVC_SEQHDR
+                {
+                    let header = data.clone().freeze();
+                    if self
+                        .last_video_sequence_header
+                        .as_ref()
+                        .is_some_and(|previous| previous != &header)
+                    {
+                        tracing::warn!(
+                            "Video sequence header changed mid-stream for {}/{}; marking HLS discontinuity",
+                            self.app_name,
+                            self.stream_name
+                        );
+                        let dts = i64::from(timestamp) + timestamp_offset;
+                        self.prepare_track_change(dts).await?;
+                    }
+                    self.last_video_sequence_header = Some(header);
+                }
                 let video_data = self.video_demuxer.demux(timestamp, data).map_err(|e| {
                     HlsRemuxerError::DemuxError(format!("Video demux error: {e:?}"))
                 })?;
@@ -1299,6 +1334,91 @@ mod tests {
         assert_eq!(unwrapper.unwrap(10), RTMP_TIMESTAMP_MODULUS_MS + 10);
         assert_eq!(unwrapper.unwrap(u32::MAX - 5), i64::from(u32::MAX) - 5);
         assert_eq!(unwrapper.unwrap(20), RTMP_TIMESTAMP_MODULUS_MS + 20);
+    }
+
+    // Real x264 baseline AVCDecoderConfigurationRecords (extracted from
+    // ffmpeg-produced FLV sequence headers) for two different resolutions.
+    const SPS_320X240: &[u8] = &[
+        0x01, 0x42, 0xc0, 0x0b, 0xff, 0xe1, 0x00, 0x18, 0x67, 0x42, 0xc0, 0x0b, 0xd9, 0x01, 0x41,
+        0xfb, 0x01, 0x10, 0x00, 0x00, 0x03, 0x00, 0x10, 0x00, 0x00, 0x03, 0x01, 0x40, 0xf1, 0x42,
+        0xa4, 0x80, 0x01, 0x00, 0x05, 0x68, 0xcb, 0x83, 0xcb, 0x20,
+    ];
+    const SPS_640X480: &[u8] = &[
+        0x01, 0x42, 0xc0, 0x16, 0xff, 0xe1, 0x00, 0x18, 0x67, 0x42, 0xc0, 0x16, 0xd9, 0x00, 0xa0,
+        0x3d, 0xb0, 0x11, 0x00, 0x00, 0x03, 0x00, 0x01, 0x00, 0x00, 0x03, 0x00, 0x14, 0x0f, 0x16,
+        0x2e, 0x48, 0x01, 0x00, 0x05, 0x68, 0xcb, 0x83, 0xcb, 0x20,
+    ];
+
+    fn video_sequence(config: &[u8]) -> FlvData {
+        let mut data = BytesMut::from(&[0x17, 0x00, 0x00, 0x00, 0x00][..]);
+        data.extend_from_slice(config);
+        FlvData::Video { timestamp: 0, data }
+    }
+
+    #[tokio::test]
+    async fn changed_video_sequence_header_marks_hls_discontinuity() {
+        let (mut processor, state, _storage) = processor();
+
+        // Initial parameters, then some content in the muxer.
+        processor
+            .process_flv_data(video_sequence(SPS_320X240))
+            .await
+            .expect("initial sequence header");
+        processor
+            .process_flv_data(aac_sequence(0))
+            .await
+            .expect("AAC sequence header");
+        processor
+            .process_flv_data(aac_frame(1_000))
+            .await
+            .expect("AAC frame");
+
+        // Identical re-sends (encoders repeat the header per keyframe)
+        // must not cut the segment.
+        processor
+            .process_flv_data(video_sequence(SPS_320X240))
+            .await
+            .expect("duplicate sequence header");
+
+        // A different sequence header: the publisher changed resolution
+        // mid-stream. The current segment is cut and the next one is
+        // marked as a discontinuity.
+        let mut changed = video_sequence(SPS_640X480);
+        let FlvData::Video { timestamp, .. } = &mut changed else {
+            unreachable!("constructed above");
+        };
+        *timestamp = 2_000;
+        processor
+            .process_flv_data(changed)
+            .await
+            .expect("changed sequence header");
+        assert!(
+            processor.discontinuity_pending,
+            "a changed sequence header raises the discontinuity flag"
+        );
+
+        processor
+            .process_flv_data(aac_frame(3_000))
+            .await
+            .expect("post-change AAC frame");
+        processor
+            .flush_remaining_segment()
+            .await
+            .expect("final segment");
+
+        let state = state.read();
+        assert_eq!(state.playlist.segments.len(), 2);
+        assert!(!state.playlist.segments[0].discontinuity);
+        assert!(
+            state.playlist.segments[1].discontinuity,
+            "the segment after the parameter change carries the discontinuity cue"
+        );
+        assert!(
+            state
+                .playlist
+                .generate_m3u8(std::string::ToString::to_string)
+                .contains("#EXT-X-DISCONTINUITY")
+        );
     }
 
     #[tokio::test]

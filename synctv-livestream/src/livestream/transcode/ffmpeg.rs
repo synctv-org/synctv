@@ -388,7 +388,18 @@ fn build_ffmpeg_args(job: &TranscodeJob, metadata: &super::SourceMetadata) -> Ve
         "-hide_banner",
         "-loglevel",
         "warning",
-        // Input: the source stream's FLV frames on stdin.
+        // Input: the source stream's FLV frames on stdin. `find_stream_info`
+        // on a live pipe never concludes on its own: the FLV script-data
+        // stream (the `onMetaData` tag) reports no codec parameters, so the
+        // default analysis window burns its full five seconds of realtime
+        // input before the first frame is encoded. A/V parameters come from
+        // the sequence headers within the first packets; 100ms of budget
+        // bounds rung startup latency (measured: 1.67s -> 0.15s on an A/V
+        // source, and a short video-only source would otherwise produce no
+        // output at all before it ends) while leaving room for an audio
+        // sequence header that trails the video one by a few milliseconds.
+        "-analyzeduration",
+        "100000",
         "-f",
         "flv",
         "-i",
@@ -403,16 +414,20 @@ fn build_ffmpeg_args(job: &TranscodeJob, metadata: &super::SourceMetadata) -> Ve
         // target: a frame is kept only when at least 1/fps seconds passed
         // since the previously kept frame, so a faster source is dropped
         // down to the ceiling while a slower source (e.g. 24 fps film)
-        // passes through untouched — frames are never duplicated. The
-        // 100µs epsilon rescues float equality when the gap is an exact
-        // multiple of the frame interval (e.g. 60 vs 30); it stays far
-        // below any real frame interval (≥ 1/120 s). Timestamps are kept
-        // variable-frame-rate (`-fps_mode vfr` below), which preserves the
-        // source timing of whatever frames survive.
+        // passes through untouched — frames are never duplicated. The 1ms
+        // epsilon rescues sources sitting exactly at the ceiling whose
+        // container timestamps are rounded to whole milliseconds (a 24 fps
+        // source carries 41/42 ms gaps against a 41.67 ms threshold; 100µs
+        // let a third of those frames drop). One millisecond stays an order
+        // of magnitude below any real frame interval (≥ 1/120 s) and cannot
+        // weaken a genuine cap (e.g. 60→30 compares 16.7 ms gaps against a
+        // 32.3 ms threshold). Timestamps are kept variable-frame-rate
+        // (`-fps_mode vfr` below), which preserves the source timing of
+        // whatever frames survive.
         "-vf",
         &format!(
             "scale=w=-2:h='min({height},ih)':flags=bicubic,\
-             select='isnan(prev_selected_t)+gte(t-prev_selected_t,1/{fps}-0.0001)'"
+             select='isnan(prev_selected_t)+gte(t-prev_selected_t,1/{fps}-0.001)'"
         ),
         "-c:v",
         "libx264",
@@ -600,9 +615,12 @@ mod tests {
         // target: only frames arriving faster than 1/30 s apart are
         // dropped, and slower sources pass through without duplication.
         assert!(
-            joined.contains("select='isnan(prev_selected_t)+gte(t-prev_selected_t,1/30-0.0001)'"),
+            joined.contains("select='isnan(prev_selected_t)+gte(t-prev_selected_t,1/30-0.001)'"),
             "{joined}"
         );
+        // Live-pipe input analysis must be bounded or the first frame of a
+        // rung waits out the default five-second window.
+        assert!(joined.contains("-analyzeduration 100000"), "{joined}");
         assert!(joined.contains("-fps_mode vfr"), "{joined}");
         assert!(joined.contains("-g 60"), "{joined}");
         assert!(joined.contains("-b:v 1000k"), "{joined}");

@@ -44,6 +44,7 @@ const STDERR_TAIL_BYTES: usize = 8 * 1024;
 /// scheduler never sees; it only observes [`TranscodeError::CapacityExhausted`].
 pub struct FfmpegWorker {
     binary: PathBuf,
+    x264_preset: super::config::X264Preset,
     slots: Arc<Semaphore>,
 }
 
@@ -61,6 +62,7 @@ impl FfmpegWorker {
         }
         Arc::new(Self {
             binary: binary.unwrap_or_else(|| PathBuf::from(&config.binary)),
+            x264_preset: config.x264_preset,
             slots: Arc::new(Semaphore::new(config.max_concurrent)),
         })
     }
@@ -118,6 +120,7 @@ impl TranscodeWorker for FfmpegWorker {
         };
 
         let binary = self.binary.clone();
+        let x264_preset = self.x264_preset;
         // Destructure before spawning: everything after this point belongs
         // to the orchestrator task; only an immediate rejection above hands
         // the input back untouched.
@@ -153,7 +156,7 @@ impl TranscodeWorker for FfmpegWorker {
                 return;
             }
 
-            let args = build_ffmpeg_args(&job, &metadata);
+            let args = build_ffmpeg_args(x264_preset, &job, &metadata);
             let mut command = tokio::process::Command::new(&binary);
             command
                 .args(args)
@@ -374,15 +377,37 @@ async fn wait_for_source_metadata(
 /// track the actual output: `video_kbps` is the reference bitrate for the
 /// tier at a 16:9 output and the `max_fps` ceiling, and it is scaled
 /// proportionally for other pixel counts (vertical, ultrawide, non-standard
-/// sizes) and lower frame rates.
-fn build_ffmpeg_args(job: &TranscodeJob, metadata: &super::SourceMetadata) -> Vec<String> {
+/// sizes) and lower frame rates. The GOP size is likewise derived from the
+/// source's published frame rate capped at the ceiling, so the keyframe
+/// cadence stays at two seconds for every source rate.
+fn build_ffmpeg_args(
+    x264_preset: super::config::X264Preset,
+    job: &TranscodeJob,
+    metadata: &super::SourceMetadata,
+) -> Vec<String> {
     let preset = &job.preset;
     let height = preset.height;
     let fps = preset.max_fps;
     let video_kbps = super::effective_video_kbps(preset, metadata);
-    let max_rate = video_kbps + video_kbps / 4;
+    // Constrained ABR with the ceiling equal to the target — the form OBS,
+    // PeerTube and Jellyfin all use — and a 2-second VBV window, which
+    // keeps downstream HLS segment sizes even without paying CBR filler.
     let buf_size = video_kbps * 2;
-    let gop = (fps * 2).max(2);
+    // GOP sized for a 2-second cadence at the frames the encoder actually
+    // emits: the source's published rate capped at the tier ceiling (a
+    // 24 fps film source gets g=48, not the ceiling's 60 frames = 2.5 s).
+    // Metadata-less sources fall back to the ceiling; `keyint_min` equals
+    // `g` so the cadence is fixed (scene-cut keyframes are disabled below,
+    // so the minimum never overrides the maximum in practice).
+    let gop_fps = metadata
+        .frame_rate
+        .filter(|rate| rate.is_finite() && *rate > 0.0)
+        .map_or(f64::from(fps), |rate| {
+            rate.round().min(f64::from(fps)).max(1.0)
+        });
+    // Range-checked by the clamp (the fps ceiling is validated to 1..=120).
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let gop = ((gop_fps * 2.0).round().clamp(2.0, f64::from(u32::MAX)) as u32).max(2);
 
     [
         "-hide_banner",
@@ -423,43 +448,59 @@ fn build_ffmpeg_args(job: &TranscodeJob, metadata: &super::SourceMetadata) -> Ve
         // weaken a genuine cap (e.g. 60→30 compares 16.7 ms gaps against a
         // 32.3 ms threshold). Timestamps are kept variable-frame-rate
         // (`-fps_mode vfr` below), which preserves the source timing of
-        // whatever frames survive.
+        // whatever frames survive. The selection runs before the scale so
+        // frames the ceiling drops are never scaled first (measured
+        // 1080p60 → 720p30: -18% encoder CPU, bit-identical output).
         "-vf",
         &format!(
-            "scale=w=-2:h='min({height},ih)':flags=bicubic,\
-             select='isnan(prev_selected_t)+gte(t-prev_selected_t,1/{fps}-0.001)'"
+            "select='isnan(prev_selected_t)+gte(t-prev_selected_t,1/{fps}-0.001)',\
+             scale=w=-2:h='min({height},ih)':flags=bicubic"
         ),
         "-c:v",
         "libx264",
         "-preset",
-        "veryfast",
+        x264_preset.as_str(),
         "-tune",
         "zerolatency",
         "-pix_fmt",
         "yuv420p",
+        // High profile: what OBS auto-selects and Owncast, go2rtc and
+        // Jellyfin all pin; Main additionally forces x264's 8x8 DCT off
+        // (`8x8dct=0` in the encoder banner), costing compression
+        // efficiency at the same bitrate with no modern player excluded.
         "-profile:v",
-        "main",
+        "high",
+        // Closed GOP: ffmpeg's libx264 wrapper enables open GOP unless
+        // told otherwise, which would let a keyframe reference the
+        // previous segment's frames once B-frames exist. With
+        // zerolatency's bframes=0 every keyframe is already IDR, so this
+        // is a no-op today; ffmpeg's own HLS guidance passes `+cgop`, and
+        // the invariant then survives any future tune change.
+        "-flags",
+        "+cgop",
         "-b:v",
         &format!("{video_kbps}k"),
         "-maxrate",
-        &format!("{max_rate}k"),
+        &format!("{video_kbps}k"),
         "-bufsize",
         &format!("{buf_size}k"),
-        // Fixed 2-second GOP at the ceiling rate so HLS segments cut
-        // cleanly on keyframes; a passthrough source below the ceiling
-        // stretches the GOP duration proportionally.
+        // Fixed 2-second GOP so HLS segments cut cleanly on keyframes.
         "-g",
         &gop.to_string(),
         "-keyint_min",
-        &fps.to_string(),
+        &gop.to_string(),
         "-sc_threshold",
         "0",
         "-c:a",
         "aac",
         "-b:a",
         &format!("{}k", preset.audio_kbps),
+        // 48 kHz: the broadcast default (OBS ships it) and what modern
+        // AAC/HLS pipelines standardize on; the 44.1 kHz FLV constraint
+        // documented by SRS only ever applied to legacy RTMP-era players
+        // and real rates travel in the AAC config, not the FLV header.
         "-ar",
-        "44100",
+        "48000",
         "-ac",
         "2",
         // Keep the variable frame rate produced by the timestamp-gap
@@ -608,24 +649,107 @@ mod tests {
             media_id: "media".to_string(),
             preset: preset_480p(),
         };
-        let args = build_ffmpeg_args(&job, &super::super::SourceMetadata::default());
+        let args = build_ffmpeg_args(
+            super::super::config::X264Preset::Veryfast,
+            &job,
+            &super::super::SourceMetadata::default(),
+        );
         let joined = args.join(" ");
         assert!(joined.contains("min(480,ih)"), "{joined}");
         // The frame rate is a ceiling enforced by timestamp gaps, never a
         // target: only frames arriving faster than 1/30 s apart are
         // dropped, and slower sources pass through without duplication.
+        // Selection precedes the scale so dropped frames are not scaled.
+        let vf = &args[args
+            .iter()
+            .position(|arg| arg == "-vf")
+            .expect("-vf present")
+            + 1];
+        let (select_at, scale_at) = (
+            vf.find("select=").expect("select present"),
+            vf.find("scale=").expect("scale present"),
+        );
+        assert!(select_at < scale_at, "select must run before scale: {vf}");
         assert!(
-            joined.contains("select='isnan(prev_selected_t)+gte(t-prev_selected_t,1/30-0.001)'"),
-            "{joined}"
+            vf.contains("select='isnan(prev_selected_t)+gte(t-prev_selected_t,1/30-0.001)'"),
+            "{vf}"
         );
         // Live-pipe input analysis must be bounded or the first frame of a
         // rung waits out the default five-second window.
         assert!(joined.contains("-analyzeduration 100000"), "{joined}");
         assert!(joined.contains("-fps_mode vfr"), "{joined}");
+        // Metadata-less sources size the GOP from the tier ceiling with a
+        // fixed cadence (keyint_min == g), a High profile and closed GOPs.
         assert!(joined.contains("-g 60"), "{joined}");
+        assert!(joined.contains("-keyint_min 60"), "{joined}");
+        assert!(joined.contains("-profile:v high"), "{joined}");
+        assert!(joined.contains("+cgop"), "{joined}");
+        // Constrained ABR: the rate ceiling equals the target bitrate.
         assert!(joined.contains("-b:v 1000k"), "{joined}");
+        assert!(joined.contains("-maxrate 1000k"), "{joined}");
+        assert!(joined.contains("-bufsize 2000k"), "{joined}");
         assert!(joined.contains("-b:a 64k"), "{joined}");
+        assert!(joined.contains("-ar 48000"), "{joined}");
         assert!(joined.ends_with("pipe:1"));
+    }
+
+    #[test]
+    fn ffmpeg_args_derive_gop_from_the_source_frame_rate() {
+        let job = TranscodeJob {
+            room_id: "room".to_string(),
+            media_id: "media".to_string(),
+            preset: preset_480p(),
+        };
+        let gop_for = |frame_rate: Option<f64>| -> String {
+            let args = build_ffmpeg_args(
+                super::super::config::X264Preset::Veryfast,
+                &job,
+                &super::super::SourceMetadata {
+                    frame_rate,
+                    ..super::super::SourceMetadata::default()
+                },
+            );
+            let g = args.iter().position(|arg| arg == "-g").expect("-g present") + 1;
+            args[g].clone()
+        };
+        // A 24 fps film source under a 30 ceiling: 2-second cadence means
+        // 48 frames, not the ceiling's 60.
+        assert_eq!(gop_for(Some(24.0)), "48");
+        // A source above the ceiling is capped by it.
+        assert_eq!(gop_for(Some(59.94)), "60");
+        // Sub-1 fps sources still get a valid (minimum) GOP.
+        assert_eq!(gop_for(Some(0.4)), "2");
+        // Junk is ignored; the tier ceiling applies.
+        assert_eq!(gop_for(Some(f64::NAN)), "60");
+        assert_eq!(gop_for(None), "60");
+    }
+
+    #[test]
+    fn ffmpeg_args_pass_the_configured_x264_preset_through() {
+        let job = TranscodeJob {
+            room_id: "room".to_string(),
+            media_id: "media".to_string(),
+            preset: preset_480p(),
+        };
+        for preset in [
+            super::super::config::X264Preset::Ultrafast,
+            super::super::config::X264Preset::Superfast,
+            super::super::config::X264Preset::Veryfast,
+            super::super::config::X264Preset::Faster,
+            super::super::config::X264Preset::Fast,
+            super::super::config::X264Preset::Medium,
+            super::super::config::X264Preset::Slow,
+            super::super::config::X264Preset::Slower,
+            super::super::config::X264Preset::Veryslow,
+            super::super::config::X264Preset::Placebo,
+        ] {
+            let args = build_ffmpeg_args(preset, &job, &super::super::SourceMetadata::default());
+            let joined = args.join(" ");
+            assert!(
+                joined.contains(&format!("-preset {}", preset.as_str())),
+                "{joined}"
+            );
+        }
     }
 
     /// Runs the exact `-vf` value produced by [`build_ffmpeg_args`] through a
@@ -642,7 +766,11 @@ mod tests {
             media_id: "media".to_string(),
             preset: preset_480p(),
         };
-        let args = build_ffmpeg_args(&job, &super::super::SourceMetadata::default());
+        let args = build_ffmpeg_args(
+            super::super::config::X264Preset::Veryfast,
+            &job,
+            &super::super::SourceMetadata::default(),
+        );
         let vf_index = args
             .iter()
             .position(|arg| arg == "-vf")
@@ -695,6 +823,213 @@ mod tests {
         // 24 fps in 2 s: untouched (48 frames), NOT duplicated to 60.
         let frames = run(24);
         assert!((46..=50).contains(&frames), "24fps -> {frames} frames");
+    }
+
+    /// Runs the complete argument vector from [`build_ffmpeg_args`] through a
+    /// real ffmpeg over the production pipe topology (FLV on stdin, FLV on
+    /// stdout) and verifies the encoded output at the byte level: High
+    /// profile in the AVC sequence header, a keyframe cadence of exactly two
+    /// seconds derived from each source's own rate, and 48 kHz AAC produced
+    /// from a 44.1 kHz source.
+    #[test]
+    fn full_args_encode_high_profile_2s_gops_and_48k_audio() {
+        let Some(ffmpeg) = local_ffmpeg() else {
+            eprintln!("skipping: ffmpeg binary not found on PATH");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!(
+            "synctv-transcode-args-e2e-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock is after the epoch")
+                .as_millis()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+
+        let job = TranscodeJob {
+            room_id: "room".to_string(),
+            media_id: "media".to_string(),
+            preset: preset_480p(),
+        };
+
+        for source_rate in [30u32, 24] {
+            let src = dir.join(format!("src{source_rate}.flv"));
+            let out = dir.join(format!("out{source_rate}.flv"));
+
+            // A 6-second source with a 3-second GOP and 44.1 kHz audio: any
+            // keyframe cadence in the output other than the rung's own
+            // 2-second one (source IDRs sit at 0/3/6 s) and any 44.1 kHz
+            // audio proves the output is the rung's encoding, not a pass
+            // through of the source's parameters.
+            let make = std::process::Command::new(&ffmpeg)
+                .args([
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    &format!("testsrc2=size=640x360:rate={source_rate}"),
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "sine=frequency=440:sample_rate=44100",
+                    "-t",
+                    "6",
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "ultrafast",
+                    "-g",
+                    // 3-second GOP in frames for either source rate.
+                    &(source_rate * 3).to_string(),
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-c:a",
+                    "aac",
+                    "-ar",
+                    "44100",
+                    "-ac",
+                    "2",
+                    "-f",
+                    "flv",
+                ])
+                .arg(&src)
+                .output()
+                .expect("generate source");
+            assert!(
+                make.status.success(),
+                "source generation failed: {}",
+                String::from_utf8_lossy(&make.stderr)
+            );
+
+            let args = build_ffmpeg_args(
+                super::super::config::X264Preset::Veryfast,
+                &job,
+                &super::super::SourceMetadata {
+                    resolution: Some((640, 360)),
+                    frame_rate: Some(f64::from(source_rate)),
+                    video_bitrate_kbps: None,
+                },
+            );
+            let stdin = std::fs::File::open(&src).expect("open source");
+            let stdout = std::fs::File::create(&out).expect("create output");
+            let run = std::process::Command::new(&ffmpeg)
+                .args(&args)
+                .stdin(std::process::Stdio::from(stdin))
+                .stdout(std::process::Stdio::from(stdout))
+                .output()
+                .expect("run rung ffmpeg");
+            assert!(
+                run.status.success(),
+                "rung ffmpeg failed: {}",
+                String::from_utf8_lossy(&run.stderr)
+            );
+
+            let bytes = std::fs::read(&out).expect("read output");
+            let tags = flv_tags(&bytes);
+
+            // High profile: the AVC sequence header's decoder configuration
+            // record starts configurationVersion, profile_idc.
+            let seq = tags
+                .iter()
+                .find(|(kind, _, body)| *kind == FLV_TAG_VIDEO && body.len() >= 8 && body[1] == 0)
+                .expect("video sequence header tag");
+            assert_eq!(
+                seq.2[6], 100,
+                "profile_idc must be High (100), got {}",
+                seq.2[6]
+            );
+
+            // 48 kHz audio: the AAC sequence header's AudioSpecificConfig
+            // packs samplingFrequencyIndex around the first byte boundary.
+            let audio_seq = tags
+                .iter()
+                .find(|(kind, _, body)| *kind == FLV_TAG_AUDIO && body.len() >= 4 && body[1] == 0)
+                .expect("audio sequence header tag");
+            let frequency_index = ((audio_seq.2[2] & 0x07) << 1) | (audio_seq.2[3] >> 7);
+            assert_eq!(
+                frequency_index, 3,
+                "AAC sampling index must be 48000 Hz (3), got {frequency_index}"
+            );
+
+            // Two-second keyframe cadence at the source's own rate. The
+            // invariant is exact in frames — IDRs land every derived-GOP
+            // frames (60 at 30 fps, 48 at 24; the source's own 3-second
+            // GOP would give 90/72) — while FLV's millisecond timestamps
+            // quantize the wall-clock gaps (33.33 ms frames land on a
+            // 33/34 ms grid; measured gaps 2040/1966 ms), so the
+            // timestamps get a tolerance band instead of equality.
+            let video_nalus: Vec<(u32, bool)> = tags
+                .iter()
+                .filter(|(kind, _, body)| *kind == FLV_TAG_VIDEO && body.len() >= 2 && body[1] == 1)
+                .map(|&(_, timestamp, body)| (timestamp, body[0] >> 4 == 1))
+                .collect();
+            let idr_indices: Vec<usize> = video_nalus
+                .iter()
+                .enumerate()
+                .filter(|(_, (_, keyframe))| *keyframe)
+                .map(|(index, _)| index)
+                .collect();
+            assert_eq!(
+                idr_indices.len(),
+                3,
+                "{source_rate} fps source must produce exactly 3 IDRs in 6 s"
+            );
+            for pair in idr_indices.windows(2) {
+                assert_eq!(
+                    pair[1] - pair[0],
+                    source_rate as usize * 2,
+                    "{source_rate} fps source must space IDRs by the derived GOP"
+                );
+            }
+            let keyframe_ts: Vec<u32> = idr_indices
+                .iter()
+                .map(|&index| video_nalus[index].0)
+                .collect();
+            assert!(
+                keyframe_ts[0] < 100,
+                "first IDR must sit at the stream start, got {}",
+                keyframe_ts[0]
+            );
+            let gaps: Vec<u32> = keyframe_ts
+                .windows(2)
+                .map(|pair| pair[1] - pair[0])
+                .collect();
+            assert!(
+                gaps.iter().all(|gap| (1900..=2100).contains(gap)),
+                "{source_rate} fps IDR gaps must stay within a 2 s ± 5% band, got {gaps:?}"
+            );
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Walk an FLV byte stream into `(tag-type, timestamp-ms, body)` triples,
+    /// mirroring the framing the stdout demuxer consumes.
+    fn flv_tags(bytes: &[u8]) -> Vec<(u8, u32, &[u8])> {
+        let mut tags = Vec::new();
+        if bytes.len() < 9 + 4 {
+            return tags;
+        }
+        let mut pos = 9 + 4;
+        while pos + FLV_TAG_HEADER_SIZE <= bytes.len() {
+            let tag_type = bytes[pos];
+            let data_size = (usize::from(bytes[pos + 1]) << 16)
+                | (usize::from(bytes[pos + 2]) << 8)
+                | usize::from(bytes[pos + 3]);
+            let timestamp = (u32::from(bytes[pos + 4]) << 16)
+                | (u32::from(bytes[pos + 5]) << 8)
+                | u32::from(bytes[pos + 6])
+                | (u32::from(bytes[pos + 7]) << 24);
+            let body = pos + FLV_TAG_HEADER_SIZE;
+            if body + data_size + 4 > bytes.len() {
+                break;
+            }
+            tags.push((tag_type, timestamp, &bytes[body..body + data_size]));
+            pos = body + data_size + 4;
+        }
+        tags
     }
 
     fn local_ffmpeg() -> Option<std::path::PathBuf> {

@@ -111,6 +111,8 @@ struct SourceState {
     source_resolution: Option<(u32, u32)>,
     /// `framerate` observed in the source `onMetaData`, when published.
     source_frame_rate: Option<f64>,
+    /// `videodatarate` observed in the source `onMetaData`, when published.
+    source_video_bitrate_kbps: Option<u32>,
 }
 
 struct ManagerInner {
@@ -610,14 +612,16 @@ async fn scheduler_tick(inner: &Arc<ManagerInner>) {
         let key = (room_id.clone(), media_id.clone());
         let resolution_slot = Arc::clone(&input.source_resolution);
         let frame_rate_slot = Arc::clone(&input.source_frame_rate);
+        let video_bitrate_slot = Arc::clone(&input.source_video_bitrate_kbps);
         tokio::spawn(async move {
             loop {
-                let (resolution, frame_rate) = {
+                let (resolution, frame_rate, video_bitrate) = {
                     let resolution = *resolution_slot.lock().expect("resolution slot poisoned");
                     let frame_rate = *frame_rate_slot.lock().expect("frame-rate slot poisoned");
-                    (resolution, frame_rate)
+                    let video_bitrate = *video_bitrate_slot.lock().expect("bitrate slot poisoned");
+                    (resolution, frame_rate, video_bitrate)
                 };
-                if resolution.is_some() || frame_rate.is_some() {
+                if resolution.is_some() || frame_rate.is_some() || video_bitrate.is_some() {
                     let mut state = inner.state.lock().expect("transcode state poisoned");
                     if let Some(source) = state.get_mut(&key) {
                         if let Some(resolution) = resolution {
@@ -625,6 +629,9 @@ async fn scheduler_tick(inner: &Arc<ManagerInner>) {
                         }
                         if let Some(frame_rate) = frame_rate {
                             source.source_frame_rate = Some(frame_rate);
+                        }
+                        if let Some(video_bitrate) = video_bitrate {
+                            source.source_video_bitrate_kbps = Some(video_bitrate);
                         }
                     }
                     return;
@@ -799,12 +806,73 @@ fn eligible_presets_for<'a>(
         .collect()
 }
 
+/// The tier's video bitrate adjusted to the actual output shape.
+///
+/// `video_kbps` is the reference for the tier's height at 16:9 and at the
+/// `max_fps` ceiling (matching common published ladders, which are quoted
+/// per resolution and frame rate). The factor scales with the actual output
+/// pixel count and with the output frame rate relative to the ceiling. This
+/// is what the ffmpeg worker passes as `-maxrate`/`-bufsize` and what the
+/// scheduler's bitrate gate compares against the source's own published
+/// bitrate.
+pub(crate) fn effective_video_kbps(preset: &TranscodePreset, metadata: &SourceMetadata) -> u32 {
+    let mut factor = 1.0_f64;
+
+    if let Some((source_width, source_height)) = metadata.resolution {
+        let output_height = f64::from(preset.height.min(source_height));
+        let output_width = output_height * f64::from(source_width) / f64::from(source_height);
+        let reference = f64::from(preset.height) * f64::from(preset.height) * 16.0 / 9.0;
+        let pixel_ratio = output_width * output_height / reference;
+        factor *= pixel_ratio.clamp(0.25, 2.0);
+    }
+
+    if let Some(frame_rate) = metadata
+        .frame_rate
+        .filter(|rate| rate.is_finite() && *rate > 0.0)
+    {
+        let capped = frame_rate.round().min(f64::from(preset.max_fps));
+        let fps_ratio = capped / f64::from(preset.max_fps);
+        factor *= fps_ratio.clamp(0.5, 1.0);
+    }
+
+    // Range-checked by the clamp; the tier itself is validated to
+    // 1..=100000 kbps and the factor is clamped to [0.125, 2].
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    {
+        ((f64::from(preset.video_kbps) * factor)
+            .round()
+            .clamp(64.0, 100_000.0)) as u32
+    }
+}
+
 /// True when the rung would only re-encode at the source's own quality: its
-/// height does not step below the source height and its frame-rate ceiling
-/// does not cap a higher source frame rate. Either alone makes the rung
-/// worth running: a same-height rung can still halve the frame rate of a
-/// 1080p60 source for bandwidth-constrained viewers.
+/// effective bitrate is not below the source's published bitrate, or (when
+/// no bitrate is published) its height does not step below the source height
+/// and its frame-rate ceiling does not cap a higher source frame rate. Any
+/// one genuine improvement alone makes the rung worth running: a same-height
+/// rung can still halve the frame rate of a 1080p60 source.
 fn rung_reencodes_same_quality(preset: &TranscodePreset, source: &SourceState) -> bool {
+    // Bitrate gate (when the source publishes one): a rung exists to reduce
+    // the data rate. A rung whose effective bitrate is not strictly below
+    // the source's cannot improve on the original - re-encoding only adds
+    // generation loss - and up-transcoding a starved source (e.g. a
+    // high-resolution, high-framerate, near-zero-bitrate stream) would
+    // amplify it into every rung at full ladder bitrates, which is exactly
+    // the shape an abusive publish takes.
+    if let Some(source_kbps) = source.source_video_bitrate_kbps {
+        let effective = effective_video_kbps(
+            preset,
+            &SourceMetadata {
+                resolution: source.source_resolution,
+                frame_rate: source.source_frame_rate,
+                video_bitrate_kbps: None,
+            },
+        );
+        if effective >= source_kbps {
+            return true;
+        }
+    }
+
     let height_pointless = source
         .source_resolution
         .is_some_and(|(_, height)| preset.height >= height);
@@ -907,6 +975,7 @@ async fn subscribe_source_frames(
         frames,
         source_resolution: Arc::new(std::sync::Mutex::new(None)),
         source_frame_rate: Arc::new(std::sync::Mutex::new(None)),
+        source_video_bitrate_kbps: Arc::new(std::sync::Mutex::new(None)),
     })
 }
 
@@ -915,6 +984,7 @@ async fn subscribe_source_frames(
 pub(crate) struct SourceMetadata {
     pub resolution: Option<(u32, u32)>,
     pub frame_rate: Option<f64>,
+    pub video_bitrate_kbps: Option<u32>,
 }
 
 /// Parse `width`/`height`/`framerate` out of an `onMetaData` FLV script tag
@@ -958,9 +1028,17 @@ pub(crate) fn parse_source_metadata(data: &[u8]) -> SourceMetadata {
     let frame_rate = number("framerate")
         .or_else(|| number("frame_rate"))
         .filter(|fps| (0.0..=240.0).contains(fps) && *fps > 0.0);
+    // `videodatarate` is the RTMP/OBS convention for the source's video
+    // bitrate in kbps; bounded to the same envelope the preset validator
+    // uses.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let video_bitrate_kbps = number("videodatarate")
+        .filter(|kbps| (1.0..=100_000.0).contains(kbps))
+        .map(|kbps| kbps.round() as u32);
     SourceMetadata {
         resolution,
         frame_rate,
+        video_bitrate_kbps,
     }
 }
 

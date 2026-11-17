@@ -163,7 +163,6 @@ toml.workspace = true
 serde.workspace = true
 tempfile.workspace = true
 url.workspace = true
-rustls-pemfile.workspace = true
 reqwest.workspace = true
 
 # Logging

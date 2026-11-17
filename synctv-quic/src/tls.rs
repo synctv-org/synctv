@@ -2,6 +2,9 @@
 
 use std::sync::Arc;
 
+use rustls::pki_types::pem::{Error as PemError, PemObject};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+
 /// Returns the process-wide rustls crypto provider, installing the one
 /// selected by this crate's TLS feature when none is installed yet. Builds
 /// that link both providers (e.g. test clients) cannot rely on rustls'
@@ -51,17 +54,20 @@ pub async fn load_tls_server_config(
         cert_pem.map_err(|error| anyhow::anyhow!("failed to read {cert_path}: {error}"))?;
     let key_pem = key_pem.map_err(|error| anyhow::anyhow!("failed to read {key_path}: {error}"))?;
 
-    let mut cert_reader = std::io::BufReader::new(cert_pem.as_slice());
-    let cert_chain = rustls_pemfile::certs(&mut cert_reader)
+    let cert_chain = CertificateDer::pem_slice_iter(cert_pem.as_slice())
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| anyhow::anyhow!("failed to parse {cert_path}: {error}"))?;
     if cert_chain.is_empty() {
         anyhow::bail!("no PEM certificates found in {cert_path}");
     }
 
-    let private_key = rustls_pemfile::private_key(&mut std::io::BufReader::new(key_pem.as_slice()))
-        .map_err(|error| anyhow::anyhow!("failed to parse {key_path}: {error}"))?
-        .ok_or_else(|| anyhow::anyhow!("no supported PEM private key found in {key_path}"))?;
+    let private_key = PrivateKeyDer::from_pem_slice(key_pem.as_slice()).map_err(|error| {
+        if matches!(error, PemError::NoItemsFound) {
+            anyhow::anyhow!("no supported PEM private key found in {key_path}")
+        } else {
+            anyhow::anyhow!("failed to parse {key_path}: {error}")
+        }
+    })?;
 
     let config = server_config_builder()
         .with_no_client_auth()
@@ -84,7 +90,7 @@ pub async fn certificate_hash_base64(cert_path: &str) -> anyhow::Result<String> 
     let pem = tokio::fs::read(cert_path)
         .await
         .map_err(|error| anyhow::anyhow!("failed to read {cert_path}: {error}"))?;
-    let der = rustls_pemfile::certs(&mut std::io::BufReader::new(pem.as_slice()))
+    let der = CertificateDer::pem_slice_iter(pem.as_slice())
         .next()
         .transpose()
         .map_err(|error| anyhow::anyhow!("failed to parse {cert_path}: {error}"))?
@@ -136,26 +142,66 @@ pub fn generate_self_signed_config() -> (rustls::ServerConfig, Vec<u8>) {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn certificate_hash_matches_the_der_encoding() {
-        use base64::Engine as _;
-        use sha2::Digest as _;
-
+    fn temp_test_dir(prefix: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "synctv-quic-tls-test-{}",
+            "synctv-quic-tls-test-{prefix}-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("system clock is after the epoch")
                 .as_millis()
         ));
         std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
 
+    fn self_signed_pem() -> (rcgen::Certificate, rcgen::KeyPair) {
         let mut params =
             rcgen::CertificateParams::new(vec!["localhost".to_string()]).expect("params");
         params.not_before = time::OffsetDateTime::now_utc() - time::Duration::days(1);
         params.not_after = time::OffsetDateTime::now_utc() + time::Duration::days(13);
         let key_pair = rcgen::KeyPair::generate().expect("key pair");
         let cert = params.self_signed(&key_pair).expect("cert");
+        (cert, key_pair)
+    }
+
+    #[tokio::test]
+    async fn load_tls_server_config_accepts_pem_files() {
+        let dir = temp_test_dir("load");
+        let (cert, key_pair) = self_signed_pem();
+        let cert_path = dir.join("cert.pem");
+        let key_path = dir.join("key.pem");
+        std::fs::write(&cert_path, cert.pem()).expect("write cert pem");
+        std::fs::write(&key_path, key_pair.serialize_pem()).expect("write key pem");
+
+        let config = load_tls_server_config(
+            cert_path.to_str().expect("utf8 path"),
+            key_path.to_str().expect("utf8 path"),
+        )
+        .await
+        .expect("load config");
+        assert!(!config.alpn_protocols.is_empty(), "HTTP/3 ALPN is set");
+
+        let error = load_tls_server_config(
+            cert_path.to_str().expect("utf8 path"),
+            cert_path.to_str().expect("utf8 path"),
+        )
+        .await
+        .expect_err("a certificate is not a private key");
+        assert!(
+            error.to_string().contains("no supported PEM private key"),
+            "got: {error}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn certificate_hash_matches_the_der_encoding() {
+        use base64::Engine as _;
+        use sha2::Digest as _;
+
+        let dir = temp_test_dir("hash");
+        let (cert, _key_pair) = self_signed_pem();
         let cert_path = dir.join("cert.pem");
         std::fs::write(&cert_path, cert.pem()).expect("write pem");
 

@@ -9,9 +9,10 @@ use async_trait::async_trait;
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioIo, TokioTimer};
 use reqwest::Client;
+use rustls::pki_types::pem::{Error as PemError, PemObject};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use std::collections::{HashSet, VecDeque};
 use std::future::Future;
-use std::io::BufReader;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -864,7 +865,7 @@ async fn load_metrics_tls_server_config(
         )
     })?;
 
-    let cert_chain = rustls_pemfile::certs(&mut BufReader::new(cert_pem.as_slice()))
+    let cert_chain = CertificateDer::pem_slice_iter(cert_pem.as_slice())
         .collect::<Result<Vec<_>, _>>()
         .with_context(|| {
             format!(
@@ -879,19 +880,19 @@ async fn load_metrics_tls_server_config(
         );
     }
 
-    let private_key = rustls_pemfile::private_key(&mut BufReader::new(key_pem.as_slice()))
-        .with_context(|| {
-            format!(
-                "failed to parse metrics TLS private key {}",
-                absolute_display_path(std::path::Path::new(&tls.key_path))
-            )
-        })?
-        .ok_or_else(|| {
+    let private_key = PrivateKeyDer::from_pem_slice(key_pem.as_slice()).map_err(|error| {
+        if matches!(error, PemError::NoItemsFound) {
             anyhow::anyhow!(
                 "metrics TLS private key {} did not contain a supported PEM private key",
                 absolute_display_path(std::path::Path::new(&tls.key_path))
             )
-        })?;
+        } else {
+            anyhow::anyhow!(
+                "failed to parse metrics TLS private key {}: {error}",
+                absolute_display_path(std::path::Path::new(&tls.key_path))
+            )
+        }
+    })?;
 
     rustls::ServerConfig::builder()
         .with_no_client_auth()

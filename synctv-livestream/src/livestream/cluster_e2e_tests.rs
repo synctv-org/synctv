@@ -640,6 +640,7 @@ async fn two_nodes_relay_transcode_rung_and_remote_demand_falls_back() -> Result
             engine: WorkerEngine::Ffmpeg(FfmpegWorkerConfig {
                 max_concurrent: 1,
                 binary: "ffmpeg".to_string(),
+                x264_preset: Default::default(),
             }),
         }],
         presets: vec![

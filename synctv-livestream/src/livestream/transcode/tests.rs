@@ -529,6 +529,7 @@ fn lifecycle_test_manager() -> std::sync::Arc<super::TranscodeManager> {
             engine: super::WorkerEngine::Ffmpeg(super::FfmpegWorkerConfig {
                 max_concurrent: 1,
                 binary: "ffmpeg".to_string(),
+                x264_preset: Default::default(),
             }),
         }],
         presets: vec![preset("1080p", 1080), preset("480p", 480)],
@@ -546,6 +547,7 @@ fn lifecycle_test_manager() -> std::sync::Arc<super::TranscodeManager> {
         vec![super::FfmpegWorker::new(&super::FfmpegWorkerConfig {
             max_concurrent: 1,
             binary: "ffmpeg".to_string(),
+            x264_preset: Default::default(),
         })],
         std::sync::Arc::new(InMemoryStreamRegistry::new()),
         event_tx,

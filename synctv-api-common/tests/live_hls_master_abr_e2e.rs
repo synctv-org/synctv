@@ -99,6 +99,7 @@ fn config(rtmp_address: std::net::SocketAddr) -> LivestreamConfig {
                 engine: WorkerEngine::Ffmpeg(FfmpegWorkerConfig {
                     max_concurrent: 1,
                     binary: "ffmpeg".to_string(),
+                    x264_preset: Default::default(),
                 }),
             }],
             presets: vec![TranscodePreset {

@@ -125,6 +125,7 @@ impl TranscodeWorker for FfmpegWorker {
             mut frames,
             source_resolution,
             source_frame_rate,
+            source_video_bitrate_kbps,
         } = input;
 
         let (output_tx, output_rx) = mpsc::channel::<FrameData>(OUTPUT_CHANNEL_CAPACITY);
@@ -142,6 +143,7 @@ impl TranscodeWorker for FfmpegWorker {
                 &mut frames,
                 &source_resolution,
                 &source_frame_rate,
+                &source_video_bitrate_kbps,
                 SOURCE_METADATA_WAIT,
                 &orchestrator_cancel,
             )
@@ -328,6 +330,7 @@ async fn wait_for_source_metadata(
     frames: &mut synctv_xiu::streamhub::define::FrameDataReceiver,
     resolution_slot: &Arc<Mutex<Option<(u32, u32)>>>,
     frame_rate_slot: &Arc<Mutex<Option<f64>>>,
+    video_bitrate_slot: &Arc<Mutex<Option<u32>>>,
     deadline: std::time::Duration,
     cancel: &CancellationToken,
 ) -> (Vec<FrameData>, super::SourceMetadata) {
@@ -348,6 +351,9 @@ async fn wait_for_source_metadata(
                     }
                     if let Some(frame_rate) = metadata.frame_rate {
                         *frame_rate_slot.lock().expect("frame-rate slot poisoned") = Some(frame_rate);
+                    }
+                    if let Some(video_bitrate) = metadata.video_bitrate_kbps {
+                        *video_bitrate_slot.lock().expect("bitrate slot poisoned") = Some(video_bitrate);
                     }
                     buffered.push(FrameData::MetaData { data, timestamp });
                     break;
@@ -373,7 +379,7 @@ fn build_ffmpeg_args(job: &TranscodeJob, metadata: &super::SourceMetadata) -> Ve
     let preset = &job.preset;
     let height = preset.height;
     let fps = preset.max_fps;
-    let video_kbps = effective_video_kbps(preset, metadata);
+    let video_kbps = super::effective_video_kbps(preset, metadata);
     let max_rate = video_kbps + video_kbps / 4;
     let buf_size = video_kbps * 2;
     let gop = (fps * 2).max(2);
@@ -456,49 +462,6 @@ fn build_ffmpeg_args(job: &TranscodeJob, metadata: &super::SourceMetadata) -> Ve
     .into_iter()
     .map(str::to_string)
     .collect()
-}
-
-/// The tier's video bitrate adjusted to the actual output shape.
-///
-/// `video_kbps` is the reference for the tier's height at 16:9 and at the
-/// `max_fps` ceiling (matching common published ladders, which are quoted
-/// per resolution and frame rate). The factor scales with the actual output
-/// pixel count — vertical and ultrawide sources get proportionally less or
-/// more than a 16:9 frame — and with the output frame rate relative to the
-/// ceiling, since the ceiling only drops frames and a slower source needs
-/// proportionally fewer bits. A floor of 64 kbps keeps extreme shapes
-/// watchable.
-fn effective_video_kbps(
-    preset: &super::config::TranscodePreset,
-    metadata: &super::SourceMetadata,
-) -> u32 {
-    let mut factor = 1.0_f64;
-
-    if let Some((source_width, source_height)) = metadata.resolution {
-        let output_height = f64::from(preset.height.min(source_height));
-        let output_width = output_height * f64::from(source_width) / f64::from(source_height);
-        let reference = f64::from(preset.height) * f64::from(preset.height) * 16.0 / 9.0;
-        let pixel_ratio = output_width * output_height / reference;
-        factor *= pixel_ratio.clamp(0.25, 2.0);
-    }
-
-    if let Some(frame_rate) = metadata
-        .frame_rate
-        .filter(|rate| rate.is_finite() && *rate > 0.0)
-    {
-        let capped = frame_rate.round().min(f64::from(preset.max_fps));
-        let fps_ratio = capped / f64::from(preset.max_fps);
-        factor *= fps_ratio.clamp(0.5, 1.0);
-    }
-
-    // Range-checked by the clamp; the tier itself is validated to
-    // 1..=100000 kbps and the factor is clamped to [0.125, 2].
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    {
-        ((f64::from(preset.video_kbps) * factor)
-            .round()
-            .clamp(64.0, 100_000.0)) as u32
-    }
 }
 
 /// Write one frame as an FLV tag (header + body + previous-tag size).
@@ -786,7 +749,7 @@ mod tests {
         let preset = preset_480p();
         // No metadata: the tier reference bitrate is used verbatim.
         assert_eq!(
-            effective_video_kbps(&preset, &SourceMetadata::default()),
+            super::super::effective_video_kbps(&preset, &SourceMetadata::default()),
             1000
         );
 
@@ -794,34 +757,39 @@ mod tests {
         let meta = SourceMetadata {
             resolution: Some((1920, 1080)),
             frame_rate: Some(30.0),
+            video_bitrate_kbps: None,
         };
-        assert_eq!(effective_video_kbps(&preset, &meta), 1000);
+        assert_eq!(super::super::effective_video_kbps(&preset, &meta), 1000);
 
         // A higher-than-ceiling frame rate caps at the ceiling: reference.
         let meta = SourceMetadata {
             resolution: Some((1920, 1080)),
             frame_rate: Some(60.0),
+            video_bitrate_kbps: None,
         };
-        assert_eq!(effective_video_kbps(&preset, &meta), 1000);
+        assert_eq!(super::super::effective_video_kbps(&preset, &meta), 1000);
 
         // A 24 fps source below the ceiling gets proportionally fewer bits.
         let meta = SourceMetadata {
             resolution: Some((1920, 1080)),
             frame_rate: Some(24.0),
+            video_bitrate_kbps: None,
         };
-        assert_eq!(effective_video_kbps(&preset, &meta), 800);
+        assert_eq!(super::super::effective_video_kbps(&preset, &meta), 800);
 
         // Vertical 1080x1920 at a 480p tier: ~0.32 of the reference pixels.
         let meta = SourceMetadata {
             resolution: Some((1080, 1920)),
             frame_rate: Some(30.0),
+            video_bitrate_kbps: None,
         };
-        assert_eq!(effective_video_kbps(&preset, &meta), 316);
+        assert_eq!(super::super::effective_video_kbps(&preset, &meta), 316);
 
         // Ultrawide 2560x1080 at a 720p tier: ~1.33x of the reference pixels.
         let meta = SourceMetadata {
             resolution: Some((2560, 1080)),
             frame_rate: Some(30.0),
+            video_bitrate_kbps: None,
         };
         let ultrawide_preset = super::super::config::TranscodePreset {
             name: "720p".to_string(),
@@ -830,15 +798,19 @@ mod tests {
             audio_kbps: 96,
             max_fps: 30,
         };
-        assert_eq!(effective_video_kbps(&ultrawide_preset, &meta), 3333);
+        assert_eq!(
+            super::super::effective_video_kbps(&ultrawide_preset, &meta),
+            3333
+        );
 
         // Both dimensions combine: vertical 24 fps at ~0.32 pixels and 0.8
         // frame rate, with the 0.5 frame-rate floor never undercut.
         let meta = SourceMetadata {
             resolution: Some((1080, 1920)),
             frame_rate: Some(24.0),
+            video_bitrate_kbps: None,
         };
-        assert_eq!(effective_video_kbps(&preset, &meta), 253);
+        assert_eq!(super::super::effective_video_kbps(&preset, &meta), 253);
     }
 
     #[test]
@@ -849,8 +821,9 @@ mod tests {
         let meta = SourceMetadata {
             resolution: Some((160, 1920)),
             frame_rate: Some(30.0),
+            video_bitrate_kbps: None,
         };
-        assert_eq!(effective_video_kbps(&preset, &meta), 250);
+        assert_eq!(super::super::effective_video_kbps(&preset, &meta), 250);
 
         // A tiny configured bitrate with a full-width frame reaches the
         // absolute 64 kbps floor only after every factor.
@@ -864,16 +837,18 @@ mod tests {
         let meta = SourceMetadata {
             resolution: Some((854, 480)),
             frame_rate: Some(24.0),
+            video_bitrate_kbps: None,
         };
         // 200 * 1.0 (16:9) * 0.8 (24/30) = 160 stays above the floor...
-        assert_eq!(effective_video_kbps(&tiny, &meta), 160);
+        assert_eq!(super::super::effective_video_kbps(&tiny, &meta), 160);
         let meta = SourceMetadata {
             resolution: Some((854, 480)),
             frame_rate: Some(6.0),
+            video_bitrate_kbps: None,
         };
         // ...while 200 * 0.5 (frame-rate floor) = 100 stays above it too;
         // only a preset below 128 kbps can reach it at 16:9.
-        assert_eq!(effective_video_kbps(&tiny, &meta), 100);
+        assert_eq!(super::super::effective_video_kbps(&tiny, &meta), 100);
         let sliver = super::super::config::TranscodePreset {
             video_kbps: 100,
             ..tiny
@@ -881,9 +856,10 @@ mod tests {
         let meta = SourceMetadata {
             resolution: Some((160, 1920)),
             frame_rate: Some(6.0),
+            video_bitrate_kbps: None,
         };
         // 100 * 0.25 (pixel clamp) * 0.5 (fps floor) = 12.5 -> floor 64.
-        assert_eq!(effective_video_kbps(&sliver, &meta), 64);
+        assert_eq!(super::super::effective_video_kbps(&sliver, &meta), 64);
     }
 
     #[tokio::test(start_paused = true)]
@@ -894,6 +870,7 @@ mod tests {
         let mut frames = FrameDataReceiver::Unbounded(frames);
         let resolution_slot = Arc::new(Mutex::new(None));
         let frame_rate_slot = Arc::new(Mutex::new(None));
+        let video_bitrate_slot = Arc::new(Mutex::new(None));
         let cancel = CancellationToken::new();
 
         // One video tag before the metadata must be buffered, not lost.
@@ -903,7 +880,7 @@ mod tests {
                 data: bytes::Bytes::from_static(&[0x17, 0x01]),
             })
             .expect("send");
-        let metadata_body = metadata_onbody(1920.0, 1080.0, Some(60.0));
+        let metadata_body = metadata_onbody(1920.0, 1080.0, Some(60.0), Some(4500.0));
         meta_tx
             .send(FrameData::MetaData {
                 timestamp: 0,
@@ -915,6 +892,7 @@ mod tests {
             &mut frames,
             &resolution_slot,
             &frame_rate_slot,
+            &video_bitrate_slot,
             std::time::Duration::from_secs(2),
             &cancel,
         )
@@ -925,10 +903,12 @@ mod tests {
             super::super::SourceMetadata {
                 resolution: Some((1920, 1080)),
                 frame_rate: Some(60.0),
+                video_bitrate_kbps: Some(4500),
             }
         );
         assert_eq!(*resolution_slot.lock().expect("slot"), Some((1920, 1080)));
         assert_eq!(*frame_rate_slot.lock().expect("slot"), Some(60.0));
+        assert_eq!(*video_bitrate_slot.lock().expect("slot"), Some(4500));
         assert_eq!(buffered.len(), 2, "video prefix + metadata tag");
     }
 
@@ -940,6 +920,7 @@ mod tests {
         let mut frames = FrameDataReceiver::Unbounded(frames);
         let resolution_slot = Arc::new(Mutex::new(None));
         let frame_rate_slot = Arc::new(Mutex::new(None));
+        let video_bitrate_slot = Arc::new(Mutex::new(None));
         let cancel = CancellationToken::new();
 
         // Only video tags: no metadata ever arrives. The paused clock
@@ -957,6 +938,7 @@ mod tests {
             &mut frames,
             &resolution_slot,
             &frame_rate_slot,
+            &video_bitrate_slot,
             std::time::Duration::from_secs(2),
             &cancel,
         )
@@ -968,7 +950,12 @@ mod tests {
 
     /// Serialize a minimal onMetaData body with the given dimensions and
     /// optional frame rate, the way the RTMP message path delivers it.
-    fn metadata_onbody(width: f64, height: f64, frame_rate: Option<f64>) -> bytes::Bytes {
+    fn metadata_onbody(
+        width: f64,
+        height: f64,
+        frame_rate: Option<f64>,
+        video_bitrate: Option<f64>,
+    ) -> bytes::Bytes {
         use synctv_xiu::flv::amf0::{Amf0ValueType, amf0_writer::Amf0Writer};
 
         let mut properties = indexmap::IndexMap::new();
@@ -976,6 +963,12 @@ mod tests {
         properties.insert("height".to_string(), Amf0ValueType::Number(height));
         if let Some(frame_rate) = frame_rate {
             properties.insert("framerate".to_string(), Amf0ValueType::Number(frame_rate));
+        }
+        if let Some(video_bitrate) = video_bitrate {
+            properties.insert(
+                "videodatarate".to_string(),
+                Amf0ValueType::Number(video_bitrate),
+            );
         }
         let mut writer = Amf0Writer::new();
         writer

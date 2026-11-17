@@ -67,6 +67,9 @@ pub struct TranscodeInput {
     /// `framerate` parsed from the source `onMetaData`, when published by
     /// the encoder.
     pub source_frame_rate: Arc<std::sync::Mutex<Option<f64>>>,
+    /// `videodatarate` parsed from the source `onMetaData`, when published
+    /// by the encoder.
+    pub source_video_bitrate_kbps: Arc<std::sync::Mutex<Option<u32>>>,
 }
 
 /// A transcode engine. Implementations own their capacity policy and expose

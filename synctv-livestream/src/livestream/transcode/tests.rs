@@ -46,6 +46,7 @@ fn sources(entries: SourceEntries) -> HashMap<(String, String), SourceState> {
                     rungs: rungs.into_iter().collect(),
                     source_resolution: None,
                     source_frame_rate: None,
+                    source_video_bitrate_kbps: None,
                 },
             )
         })
@@ -258,6 +259,7 @@ fn metadata_parses_real_amf_ecma_array() {
         super::SourceMetadata {
             resolution: Some((1920, 1080)),
             frame_rate: Some(60.0),
+            video_bitrate_kbps: None,
         }
     );
 
@@ -284,6 +286,7 @@ fn metadata_parses_real_amf_ecma_array() {
         super::SourceMetadata {
             resolution: Some((1280, 720)),
             frame_rate: Some(59.94),
+            video_bitrate_kbps: None,
         }
     );
 
@@ -304,6 +307,7 @@ fn metadata_parses_real_amf_ecma_array() {
         super::SourceMetadata {
             resolution: Some((1280, 720)),
             frame_rate: None,
+            video_bitrate_kbps: None,
         }
     );
 }
@@ -333,6 +337,7 @@ fn eligible_presets_filter_by_resolution_and_verdicts() {
         rungs: HashMap::new(),
         source_resolution: Some((1280, 720)),
         source_frame_rate: None,
+        source_video_bitrate_kbps: None,
     };
     state.rungs.insert(
         "480p".to_string(),
@@ -386,4 +391,128 @@ fn eligible_presets_filter_by_resolution_and_verdicts() {
     state.source_frame_rate = Some(24.0);
     let offered = eligible_presets_for(&presets, Some(&state));
     assert_eq!(offered.len(), 0, "no rung improves on a 480p24 source");
+}
+
+#[test]
+fn metadata_parses_videodatarate_and_rejects_junk() {
+    let body = |props: Vec<(&str, Amf0ValueType)>| -> bytes::Bytes {
+        let mut properties = IndexMap::new();
+        for (key, value) in props {
+            properties.insert(key.to_string(), value);
+        }
+        let mut writer = Amf0Writer::new();
+        writer
+            .write_string(&"onMetaData".to_string())
+            .expect("AMF0 string writes into an in-memory buffer");
+        writer
+            .write_eacm_array(&properties)
+            .expect("AMF0 array writes into an in-memory buffer");
+        writer.extract_current_bytes().freeze()
+    };
+
+    assert_eq!(
+        parse_source_metadata(&body(vec![
+            ("width", Amf0ValueType::Number(1920.0)),
+            ("height", Amf0ValueType::Number(1080.0)),
+            ("videodatarate", Amf0ValueType::Number(8000.4)),
+        ]))
+        .video_bitrate_kbps,
+        Some(8000)
+    );
+
+    // Out-of-envelope values are dropped rather than trusted.
+    for junk in [0.0, -5.0, 100_001.0] {
+        assert_eq!(
+            parse_source_metadata(&body(vec![
+                ("width", Amf0ValueType::Number(1920.0)),
+                ("height", Amf0ValueType::Number(1080.0)),
+                ("videodatarate", Amf0ValueType::Number(junk)),
+            ]))
+            .video_bitrate_kbps,
+            None
+        );
+    }
+}
+
+#[test]
+fn pick_skips_every_rung_when_source_bitrate_is_starved() {
+    use super::eligible_presets_for;
+
+    // The abusive shape: 1080p60 metadata with a near-zero video bitrate.
+    // Every ladder rung would encode at a higher bitrate than the source
+    // publishes, amplifying the stream; the scheduler must pick nothing.
+    let presets = vec![
+        preset("1080p", 1080),
+        preset("720p", 720),
+        preset("480p", 480),
+    ];
+    let mut sources = sources(vec![(
+        ("room".to_string(), "media".to_string()),
+        vec![
+            ("1080p".to_string(), waiting(RungState::default(), 9)),
+            ("720p".to_string(), waiting(RungState::default(), 5)),
+            ("480p".to_string(), waiting(RungState::default(), 1)),
+        ],
+    )]);
+    let source = sources
+        .get_mut(&("room".to_string(), "media".to_string()))
+        .expect("source exists");
+    source.source_resolution = Some((1920, 1080));
+    source.source_frame_rate = Some(60.0);
+    source.source_video_bitrate_kbps = Some(100);
+
+    assert!(pick_most_demanded(&sources, &presets, Instant::now()).is_none());
+    let offered = eligible_presets_for(
+        &presets,
+        sources.get(&("room".to_string(), "media".to_string())),
+    );
+    assert_eq!(
+        offered.len(),
+        0,
+        "no rung may up-transcode a starved source"
+    );
+}
+
+#[test]
+fn bitrate_gate_skips_rungs_at_or_above_source_bitrate() {
+    use super::eligible_presets_for;
+
+    // Without source dimensions the rung encodes at its reference bitrate:
+    // 480p x 1000 kbps. An equal source bitrate leaves nothing to gain.
+    let presets = vec![preset("480p", 480)];
+    let mut state = SourceState {
+        rungs: HashMap::new(),
+        source_resolution: None,
+        source_frame_rate: None,
+        source_video_bitrate_kbps: Some(1000),
+    };
+    assert_eq!(eligible_presets_for(&presets, Some(&state)).len(), 0);
+
+    // One kbps below the rung: it genuinely reduces the data rate again.
+    state.source_video_bitrate_kbps = Some(1001);
+    assert_eq!(eligible_presets_for(&presets, Some(&state)).len(), 1);
+}
+
+#[test]
+fn bitrate_gate_keeps_the_ladder_for_a_healthy_source() {
+    use super::eligible_presets_for;
+
+    // A real 1080p60 publish at 8000 kbps: every rung still encodes at a
+    // lower effective bitrate, so the whole ladder stays offered.
+    let presets = vec![
+        preset("1080p", 1080),
+        preset("720p", 720),
+        preset("480p", 480),
+    ];
+    let state = SourceState {
+        rungs: HashMap::new(),
+        source_resolution: Some((1920, 1080)),
+        source_frame_rate: Some(60.0),
+        source_video_bitrate_kbps: Some(8000),
+    };
+    assert_eq!(
+        eligible_presets_for(&presets, Some(&state)).len(),
+        3,
+        "every rung steps the data rate down"
+    );
 }

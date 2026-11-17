@@ -431,6 +431,9 @@ pub struct LivestreamHandle {
     hls_remuxer_handle: JoinHandle<()>,
     publisher_manager: Arc<PublisherManager>,
     publisher_manager_handle: JoinHandle<()>,
+    /// Transcode publish-lifecycle watcher; `None` when transcoding is
+    /// disabled. Tracked to prevent task leaks on shutdown.
+    transcode_lifecycle_handle: Option<JoinHandle<()>>,
     /// Inner re-registration task spawned inside `publisher_manager_handle`.
     /// Must be tracked separately to prevent task leaks on shutdown.
     reregister_task_handle: JoinHandle<()>,
@@ -517,6 +520,9 @@ impl LivestreamHandle {
         self.reregister_cancel_token.cancel();
         self.reregister_task_handle.abort();
         self.publisher_manager_handle.abort();
+        if let Some(handle) = &self.transcode_lifecycle_handle {
+            handle.abort();
+        }
         // Cancel HLS tasks (remuxer and cleanup)
         self.hls_shutdown_token.cancel();
         self.hls_cleanup_handle.abort();
@@ -604,6 +610,11 @@ impl LivestreamHandle {
         // 5. Abort publisher manager event loop after maintenance has stopped.
         abort_and_log_join("publisher manager", &mut self.publisher_manager_handle).await;
         info!("Publisher manager stopped");
+
+        // 5a. Abort the transcode lifecycle watcher with the event loops.
+        if let Some(mut handle) = self.transcode_lifecycle_handle.take() {
+            abort_and_log_join("transcode lifecycle watcher", &mut handle).await;
+        }
 
         // 6. Stop HLS tasks gracefully. The remuxer requests generation-aware
         // UnPublish events and waits for handlers to flush.
@@ -698,6 +709,9 @@ impl LivestreamHandle {
             .shutdown_maintenance(Duration::from_millis(200))
             .await;
         abort_and_log_join("publisher manager", &mut self.publisher_manager_handle).await;
+        if let Some(mut handle) = self.transcode_lifecycle_handle.take() {
+            abort_and_log_join("transcode lifecycle watcher", &mut handle).await;
+        }
 
         self.hls_shutdown_token.cancel();
         if timeout(Duration::from_millis(300), &mut self.hls_remuxer_handle)
@@ -944,6 +958,9 @@ impl LivestreamServer {
         // external channel on each hub (re)start cycle.
         let (external_broadcast_tx, _) =
             tokio::sync::broadcast::channel::<synctv_xiu::streamhub::define::BroadcastEvent>(1000);
+        // The hub supervision task below takes the sender; keep a clone for
+        // late subscribers (transcode lifecycle watcher).
+        let external_broadcast_tx_for_transcode = external_broadcast_tx.clone();
         let broadcast_receiver = external_broadcast_tx.subscribe();
         let hls_broadcast_receiver = external_broadcast_tx.subscribe();
         let hls_hub_event_sender = streams_hub.get_hub_event_sender();
@@ -1338,6 +1355,14 @@ impl LivestreamServer {
                 self.config.cluster_address.clone(),
             )
         });
+        // Reset the transcode scheduler's per-source session state on hub
+        // publish lifecycle events: encoders restart the stream (a fresh
+        // RTMP session with fresh `onMetaData`) to change resolution, frame
+        // rate, or bitrate, and rung eligibility must follow each session's
+        // own metadata instead of the previous session's.
+        let transcode_lifecycle_handle = transcode_manager.as_ref().map(|manager| {
+            manager.spawn_lifecycle_watcher(external_broadcast_tx_for_transcode.subscribe())
+        });
         let infrastructure = Arc::new(
             LiveStreamingInfrastructure::from_parts(
                 self.publisher_registry,
@@ -1369,6 +1394,7 @@ impl LivestreamServer {
             hls_remuxer_handle,
             publisher_manager,
             publisher_manager_handle,
+            transcode_lifecycle_handle,
             reregister_task_handle,
             reregister_cancel_token,
             hls_shutdown_token,
@@ -2678,6 +2704,413 @@ mod tests {
             "rung generation must leave the registry after the source ends"
         );
 
+        assert!(handle.shutdown_graceful(3).await);
+        Ok(())
+    }
+
+    /// A publisher that changes resolution mid-connection (320x240 →
+    /// 640x480 via an in-band SPS change, no reconnect — what ffmpeg-based
+    /// pushers emit when their input changes size) must not kill the
+    /// transcoded rung: ffmpeg reinitializes its decoder and keeps encoding
+    /// at the session-start output size, and the rung keeps serving.
+    #[tokio::test]
+    async fn transcode_rung_survives_midstream_resolution_change() -> TestResult {
+        use crate::{
+            FlvStreamingApi,
+            livestream::transcode::{
+                FfmpegWorkerConfig, TranscodePreset, WorkerConfig, WorkerEngine,
+            },
+        };
+
+        const ROOM: &str = "room-midstream";
+        const MEDIA: &str = "1001";
+        const RUNG: &str = "360p";
+
+        anyhow::ensure!(
+            std::process::Command::new("ffmpeg")
+                .arg("-version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success()),
+            "this test requires a host ffmpeg binary"
+        );
+
+        // Two real encodes at different resolutions, concatenated onto one
+        // timeline: pushing the concatenation with `-c copy` changes the
+        // SPS in-band on a single RTMP connection.
+        let dir = tempdir()?;
+        let raw_small = dir.path().join("small.264");
+        let raw_large = dir.path().join("large.264");
+        for (output, size) in [(&raw_small, "320x240"), (&raw_large, "640x480")] {
+            let status = tokio::process::Command::new("ffmpeg")
+                .args([
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    &format!("testsrc2=size={size}:rate=24"),
+                    "-t",
+                    "3",
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "ultrafast",
+                    "-g",
+                    "24",
+                    "-profile:v",
+                    "baseline",
+                    "-pix_fmt",
+                    "yuv420p",
+                ])
+                .arg(output)
+                .status()
+                .await?;
+            anyhow::ensure!(status.success(), "probe encode at {size} failed");
+        }
+        let mixed = dir.path().join("mixed.264");
+        let mut concatenated = std::fs::read(&raw_small)?;
+        concatenated.extend_from_slice(&std::fs::read(&raw_large)?);
+        std::fs::write(&mixed, concatenated)?;
+
+        let registry = Arc::new(TestStreamRegistry::new());
+        let (listener, local_addr) = bind_local_listener().await?;
+        let mut config = config_for_rtmp_addr(local_addr);
+        config.transcode = crate::livestream::transcode::TranscodeConfig {
+            enabled: true,
+            workers: vec![WorkerConfig {
+                name: None,
+                priority: 100,
+                engine: WorkerEngine::Ffmpeg(FfmpegWorkerConfig {
+                    max_concurrent: 1,
+                    binary: "ffmpeg".to_string(),
+                }),
+            }],
+            presets: vec![TranscodePreset {
+                name: RUNG.to_string(),
+                height: 360,
+                video_kbps: 400,
+                audio_kbps: 64,
+                max_fps: 30,
+            }],
+        };
+        assert!(
+            config.transcode.validate().is_empty(),
+            "test transcode config must validate"
+        );
+
+        let auth: Arc<dyn AuthCallback> = Arc::new(RegistryAuth {
+            registry: Arc::clone(&registry),
+            user_id: "user-midstream".to_string(),
+            cluster_address: "127.0.0.1:0".to_string(),
+        });
+        let server = LivestreamServer::new(config, registry.clone(), test_tracker())
+            .with_auth(auth)
+            .with_rtmp_listener(listener);
+        let mut handle = server.start()?;
+        let infrastructure = Arc::clone(&handle.infrastructure);
+
+        let mut publisher = tokio::process::Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-re",
+                "-f",
+                "h264",
+                "-i",
+                &mixed.display().to_string(),
+                "-c",
+                "copy",
+                "-f",
+                "flv",
+                &format!("rtmp://{local_addr}/{ROOM}/{MEDIA}"),
+            ])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()?;
+
+        timeout(Duration::from_secs(10), async {
+            loop {
+                if registry
+                    .get_active_generation(ROOM, MEDIA)
+                    .await
+                    .is_ok_and(|generation| generation.is_some())
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .map_err(|_| test_error("midstream source publisher did not register"))?;
+
+        let rung_media_id = format!("{MEDIA}-{RUNG}");
+        let flv_result = timeout(
+            Duration::from_secs(20),
+            FlvStreamingApi::create_session_with_pull(&infrastructure, ROOM, &rung_media_id, None),
+        )
+        .await
+        .map_err(|_| test_error("rung FLV session did not start in time"))??;
+        let (mut rung_flv, flv_guards) = flv_result;
+
+        // Let the whole six seconds play out, then drain until the rung's
+        // output ends with the source.
+        let _ = timeout(Duration::from_secs(30), publisher.wait()).await;
+        let mut saw_header = false;
+        let mut video_timestamps_ms = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        while tokio::time::Instant::now() < deadline {
+            let Ok(Some(Ok(chunk))) = timeout(Duration::from_secs(3), rung_flv.recv()).await else {
+                break;
+            };
+            saw_header |= chunk.starts_with(b"FLV");
+            if chunk.first() == Some(&9) && chunk.len() >= 11 {
+                let timestamp_ms =
+                    (u32::from(chunk[4]) << 16) | (u32::from(chunk[5]) << 8) | u32::from(chunk[6]);
+                video_timestamps_ms.push(timestamp_ms);
+            }
+        }
+
+        anyhow::ensure!(saw_header, "rung FLV stream lacked its header");
+        anyhow::ensure!(
+            video_timestamps_ms.len() >= 40,
+            "rung emitted only {} video tags; the mid-stream resolution change killed it",
+            video_timestamps_ms.len()
+        );
+        let post_switch = video_timestamps_ms.iter().filter(|ts| **ts >= 3000).count();
+        anyhow::ensure!(
+            post_switch >= 15,
+            "only {post_switch} video tags after the 3s resolution switch; the rung stopped serving new content"
+        );
+        let last = video_timestamps_ms.last().copied().unwrap_or(0);
+        anyhow::ensure!(
+            last >= 4500,
+            "rung output stopped at {last}ms of a 6s stream"
+        );
+
+        drop(flv_guards);
+        drop(rung_flv);
+        let _ = publisher.start_kill();
+        let _ = publisher.wait().await;
+        assert!(handle.shutdown_graceful(3).await);
+        Ok(())
+    }
+
+    /// OBS changes resolution/frame rate by stopping the stream and
+    /// restarting it (a fresh RTMP session with fresh `onMetaData`). A rung
+    /// correctly withheld during a 720p24 session (1080p30 would only
+    /// re-encode at the source's own quality) must become schedulable when
+    /// the publisher returns as 1080p60: the new session's metadata
+    /// replaces the previous session's instead of starving the demand.
+    #[tokio::test]
+    async fn transcode_rung_eligibility_resets_on_publisher_restart() -> TestResult {
+        use crate::{
+            FlvStreamingApi,
+            livestream::transcode::{
+                FfmpegWorkerConfig, TranscodePreset, WorkerConfig, WorkerEngine,
+            },
+        };
+
+        async fn wait_registered(
+            registry: &Arc<TestStreamRegistry>,
+            room: &str,
+            media: &str,
+            want: bool,
+        ) -> anyhow::Result<()> {
+            timeout(Duration::from_secs(10), async {
+                loop {
+                    let registered = registry
+                        .get_active_generation(room, media)
+                        .await
+                        .is_ok_and(|generation| generation.is_some());
+                    if registered == want {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            })
+            .await
+            .map_err(|_| test_error("source registration state did not settle"))?;
+            Ok(())
+        }
+
+        const ROOM: &str = "room-restart";
+        const MEDIA: &str = "1001";
+
+        anyhow::ensure!(
+            std::process::Command::new("ffmpeg")
+                .arg("-version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success()),
+            "this test requires a host ffmpeg binary"
+        );
+
+        let registry = Arc::new(TestStreamRegistry::new());
+        let (listener, local_addr) = bind_local_listener().await?;
+        let mut config = config_for_rtmp_addr(local_addr);
+        config.transcode = crate::livestream::transcode::TranscodeConfig {
+            enabled: true,
+            workers: vec![WorkerConfig {
+                name: None,
+                priority: 100,
+                engine: WorkerEngine::Ffmpeg(FfmpegWorkerConfig {
+                    max_concurrent: 1,
+                    binary: "ffmpeg".to_string(),
+                }),
+            }],
+            presets: vec![
+                TranscodePreset {
+                    name: "1080p".to_string(),
+                    height: 1080,
+                    video_kbps: 2500,
+                    audio_kbps: 64,
+                    max_fps: 30,
+                },
+                TranscodePreset {
+                    name: "480p".to_string(),
+                    height: 480,
+                    video_kbps: 600,
+                    audio_kbps: 64,
+                    max_fps: 30,
+                },
+            ],
+        };
+        assert!(
+            config.transcode.validate().is_empty(),
+            "test transcode config must validate"
+        );
+
+        let auth: Arc<dyn AuthCallback> = Arc::new(RegistryAuth {
+            registry: Arc::clone(&registry),
+            user_id: "user-restart".to_string(),
+            cluster_address: "127.0.0.1:0".to_string(),
+        });
+        let server = LivestreamServer::new(config, registry.clone(), test_tracker())
+            .with_auth(auth)
+            .with_rtmp_listener(listener);
+        let mut handle = server.start()?;
+        let infrastructure = Arc::clone(&handle.infrastructure);
+
+        let spawn_publisher = |size: &str, rate: u32, seconds: &str| {
+            tokio::process::Command::new("ffmpeg")
+                .args([
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-re",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    &format!("testsrc2=size={size}:rate={rate}"),
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "sine=frequency=440:sample_rate=44100",
+                    "-t",
+                    seconds,
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "ultrafast",
+                    "-g",
+                    "48",
+                    "-profile:v",
+                    "baseline",
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    "64k",
+                    "-f",
+                    "flv",
+                    &format!("rtmp://{local_addr}/{ROOM}/{MEDIA}"),
+                ])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+        };
+
+        // Session one: 720p24. Demanding the 480p rung forces a scheduler
+        // pick, which records this session's metadata.
+        let mut publisher = spawn_publisher("1280x720", 24, "5")?;
+        wait_registered(&registry, ROOM, MEDIA, true).await?;
+
+        let first = timeout(
+            Duration::from_secs(20),
+            FlvStreamingApi::create_session_with_pull(
+                &infrastructure,
+                ROOM,
+                &format!("{MEDIA}-480p"),
+                None,
+            ),
+        )
+        .await
+        .map_err(|_| test_error("first session 480p rung did not start"))??;
+        let (first_flv, first_guards) = first;
+        drop(first_guards);
+        drop(first_flv);
+
+        // End session one; the recorded 720p metadata is exactly the stale
+        // state that used to starve the next session's rungs.
+        let _ = publisher.start_kill();
+        let _ = publisher.wait().await;
+        wait_registered(&registry, ROOM, MEDIA, false).await?;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Session two: OBS-style restart at 1080p60. The 1080p30 rung now
+        // caps the frame rate and must come live.
+        let mut publisher = spawn_publisher("1920x1080", 60, "10")?;
+        wait_registered(&registry, ROOM, MEDIA, true).await?;
+
+        let second = timeout(
+            Duration::from_secs(30),
+            FlvStreamingApi::create_session_with_pull(
+                &infrastructure,
+                ROOM,
+                &format!("{MEDIA}-1080p"),
+                None,
+            ),
+        )
+        .await
+        .map_err(|_| {
+            test_error(
+                "1080p rung never became schedulable after the publisher restarted at 1080p60",
+            )
+        })??;
+        let (mut second_flv, second_guards) = second;
+
+        let mut saw_header = false;
+        let mut saw_video = false;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+        while tokio::time::Instant::now() < deadline && !(saw_header && saw_video) {
+            let chunk = timeout(
+                deadline.saturating_duration_since(tokio::time::Instant::now()),
+                second_flv.recv(),
+            )
+            .await
+            .map_err(|_| test_error("timed out waiting for 1080p rung FLV data"))?
+            .ok_or_else(|| test_error("1080p rung FLV stream ended early"))??;
+            saw_header |= chunk.starts_with(b"FLV");
+            saw_video |= chunk.first() == Some(&9);
+        }
+        anyhow::ensure!(
+            saw_header && saw_video,
+            "1080p rung FLV lacked header or video tags"
+        );
+
+        drop(second_guards);
+        drop(second_flv);
+        let _ = publisher.start_kill();
+        let _ = publisher.wait().await;
         assert!(handle.shutdown_graceful(3).await);
         Ok(())
     }

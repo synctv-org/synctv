@@ -516,3 +516,201 @@ fn bitrate_gate_keeps_the_ladder_for_a_healthy_source() {
         "every rung steps the data rate down"
     );
 }
+
+fn lifecycle_test_manager() -> std::sync::Arc<super::TranscodeManager> {
+    use crate::relay::in_memory_registry::InMemoryStreamRegistry;
+    use synctv_xiu::streamhub::define::StreamHubEventSender;
+
+    let config = super::TranscodeConfig {
+        enabled: true,
+        workers: vec![super::WorkerConfig {
+            name: None,
+            priority: 100,
+            engine: super::WorkerEngine::Ffmpeg(super::FfmpegWorkerConfig {
+                max_concurrent: 1,
+                binary: "ffmpeg".to_string(),
+            }),
+        }],
+        presets: vec![preset("1080p", 1080), preset("480p", 480)],
+    };
+    assert!(config.validate().is_empty());
+    let (event_tx, _event_rx): (
+        StreamHubEventSender,
+        tokio::sync::mpsc::Receiver<synctv_xiu::streamhub::define::StreamHubEvent>,
+    ) = tokio::sync::mpsc::channel(1);
+    // No runtime here, so `TranscodeManager::new` skips its scheduler loop;
+    // the lifecycle methods under test are synchronous. The event channel
+    // has no receiver: nothing in these tests reaches the hub.
+    super::TranscodeManager::new(
+        config,
+        vec![super::FfmpegWorker::new(&super::FfmpegWorkerConfig {
+            max_concurrent: 1,
+            binary: "ffmpeg".to_string(),
+        })],
+        std::sync::Arc::new(InMemoryStreamRegistry::new()),
+        event_tx,
+        "node".to_string(),
+        "127.0.0.1:1935".to_string(),
+    )
+}
+
+fn seed_lifecycle_source(manager: &super::TranscodeManager) {
+    let mut state = manager
+        .inner
+        .state
+        .lock()
+        .expect("transcode state poisoned");
+    state.insert(
+        ("room".to_string(), "media".to_string()),
+        SourceState {
+            rungs: [("1080p".to_string(), waiting(RungState::default(), 2))]
+                .into_iter()
+                .collect(),
+            // A previous 720p session's metadata.
+            source_resolution: Some((1280, 720)),
+            source_frame_rate: Some(30.0),
+            source_video_bitrate_kbps: Some(2500),
+        },
+    );
+}
+
+#[test]
+fn source_restart_resets_stale_session_metadata_but_keeps_demand() {
+    let manager = lifecycle_test_manager();
+    seed_lifecycle_source(&manager);
+
+    // The stale 720p session blocks the 1080p rung: a fresh 1080p60
+    // publish must not be judged against the earlier session's metadata.
+    assert!(
+        !manager
+            .eligible_presets("room", "media")
+            .iter()
+            .any(|p| p.name == "1080p")
+    );
+
+    manager.note_source_started("room", "media");
+
+    {
+        let state = manager
+            .inner
+            .state
+            .lock()
+            .expect("transcode state poisoned");
+        let source = state
+            .get(&("room".to_string(), "media".to_string()))
+            .expect("source entry survives a restart");
+        assert_eq!(source.source_resolution, None);
+        assert_eq!(source.source_frame_rate, None);
+        assert_eq!(source.source_video_bitrate_kbps, None);
+        assert_eq!(
+            source.rungs.get("1080p").map(|r| r.waiting_viewers),
+            Some(2),
+            "waiting demand carries into the new session"
+        );
+    }
+    assert!(
+        manager
+            .eligible_presets("room", "media")
+            .iter()
+            .any(|p| p.name == "1080p")
+    );
+
+    manager.note_source_ended("room", "media");
+    let state = manager
+        .inner
+        .state
+        .lock()
+        .expect("transcode state poisoned");
+    assert!(
+        !state.contains_key(&("room".to_string(), "media".to_string())),
+        "source end drops the bookkeeping entirely"
+    );
+}
+
+#[tokio::test]
+async fn lifecycle_watcher_follows_hub_publish_events() {
+    use synctv_xiu::streamhub::define::{BroadcastEvent, PublishType};
+
+    let manager = lifecycle_test_manager();
+    seed_lifecycle_source(&manager);
+    // This test runs inside a Tokio runtime, so the manager's scheduler is
+    // live: zero out the seeded demand so a wake cannot try to subscribe to
+    // a source that is not in the (absent) hub and legitimately clear the
+    // entry under test.
+    {
+        let mut state = manager
+            .inner
+            .state
+            .lock()
+            .expect("transcode state poisoned");
+        state
+            .get_mut(&("room".to_string(), "media".to_string()))
+            .expect("seeded source")
+            .rungs
+            .get_mut("1080p")
+            .expect("seeded rung")
+            .waiting_viewers = 0;
+    }
+
+    let (events_tx, events_rx) = tokio::sync::broadcast::channel::<BroadcastEvent>(8);
+    let watcher = manager.spawn_lifecycle_watcher(events_rx);
+
+    let identifier = |stream_name: &str| synctv_xiu::streamhub::stream::StreamIdentifier::Rtmp {
+        app_name: "room".to_string(),
+        stream_name: stream_name.to_string(),
+    };
+
+    // A new publish session resets the stale metadata...
+    events_tx
+        .send(BroadcastEvent::Publish {
+            identifier: identifier("media"),
+            pub_type: PublishType::RtmpPush,
+            generation_id: Uuid::new(),
+        })
+        .expect("send publish");
+    // ...while rung publications are no-ops on unrelated keys.
+    events_tx
+        .send(BroadcastEvent::Publish {
+            identifier: identifier("media-480p"),
+            pub_type: PublishType::Transcode,
+            generation_id: Uuid::new(),
+        })
+        .expect("send rung publish");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    {
+        let state = manager
+            .inner
+            .state
+            .lock()
+            .expect("transcode state poisoned");
+        assert_eq!(state.len(), 1, "rung publications create no source state");
+        let source = state
+            .get(&("room".to_string(), "media".to_string()))
+            .expect("source entry kept");
+        assert_eq!(source.source_resolution, None);
+        assert_eq!(source.source_video_bitrate_kbps, None);
+    }
+
+    events_tx
+        .send(BroadcastEvent::UnPublish {
+            identifier: identifier("media"),
+            generation_id: Uuid::new(),
+        })
+        .expect("send unpublish");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    {
+        let state = manager
+            .inner
+            .state
+            .lock()
+            .expect("transcode state poisoned");
+        assert!(
+            !state.contains_key(&("room".to_string(), "media".to_string())),
+            "source unpublish clears the source state"
+        );
+    }
+
+    watcher.abort();
+}

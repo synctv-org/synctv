@@ -82,7 +82,7 @@ unnecessary_wraps = "allow"
 
 [workspace.dependencies]
 ffmpeg-next = { version = "=9.0.0", default-features = false, features = ["build", "format"] }
-ffmpeg-sys-next = { version = "=9.0.1", features = ["build-portable"] }
+ffmpeg-sys-next = { version = "=9.1.1", features = ["build-portable"] }
 # Async Runtime
 tokio = { version = "=1.54.1", features = [
     "rt-multi-thread",
@@ -112,8 +112,8 @@ tonic-health = "=0.14.9"
 tonic-types = "=0.14.9"
 tonic-prost = "=0.14.9"
 tonic-prost-build = "=0.14.9"
-prost = "=0.14.4"
-prost-types = "=0.14.4"
+prost = "=0.14.6"
+prost-types = "=0.14.6"
 prost-reflect = { version = "=0.16.5", features = ["derive"] }
 prost-reflect-build = "=0.16.1"
 prost-protovalidate = "=0.6.1"
@@ -166,7 +166,7 @@ sqlx = { version = "=0.9.0", default-features = false, features = [
 ] }
 
 # Redis
-redis = { version = "=1.8.1", default-features = false, features = [
+redis = { version = "=1.8.2", default-features = false, features = [
     "tokio-comp",
     "connection-manager",
     "streams",
@@ -236,9 +236,9 @@ rtc = "=0.21.1"
 sdp = "=0.17.3"
 opus = "=0.4.0"
 fdk-aac = "=0.8.0"
-retina = "=0.4.21"
+retina = "=0.4.22"
 rust_h265 = "=0.4.1"
-rusty_aac = { version = "=2.0.1", default-features = false }
+rusty_aac = { version = "=2.0.2", default-features = false }
 rusty_h264 = "=0.17.2"
 
 # Object Storage
@@ -295,7 +295,7 @@ html-escape = "=0.3.1"
 rsntp = "=4.1.2"
 
 # Kubernetes (in-cluster client for leader election & service discovery)
-kube = { version = "=5.0.0", default-features = false, features = ["client", "gzip"] }
+kube = { version = "=5.1.0", default-features = false, features = ["client", "gzip"] }
 # kube 5 requires k8s-openapi 0.29.
 k8s-openapi = { version = "=0.29.0", features = ["latest"] }
 
@@ -307,7 +307,7 @@ hyper-util = { version = "=0.1.21", default-features = false, features = ["tokio
 # Networking
 ipnet = "=2.12.2"
 tokio-socks = "=0.5.3"
-webpki-roots = "=1.0.11"
+webpki-roots = "=1.0.12"
 
 # Email
 lettre = { version = "=0.11.23", default-features = false, features = [
@@ -325,12 +325,12 @@ handlebars = { version = "=6.4.4", features = ["no_logging"] }
 # Compression
 flate2 = { version = "=1.1.11", default-features = false, features = ["zlib-rs"] }
 brotli = "=9.1.1"
-lz4_flex = { version = "=0.14.0", default-features = false, features = [
+lz4_flex = { version = "=0.14.1", default-features = false, features = [
     "alloc",
     "safe-encode",
     "safe-decode",
 ] }
-zstd = { version = "=0.14.3", default-features = false }
+zstd = { version = "=0.14.4", default-features = false }
 image = { version = "=0.25.10", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 symphonia = { version = "=0.6.1", default-features = false, features = ["opt-simd", "all-formats", "aac", "flac", "mp3", "vorbis"] }
 

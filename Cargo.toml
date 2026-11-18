@@ -310,7 +310,7 @@ tokio-socks = "=0.5.3"
 webpki-roots = "=1.0.11"
 
 # Email
-lettre = { version = "=0.11.23", default-features = false, features = [
+lettre = { version = "=0.11.24", default-features = false, features = [
     "tokio1-rustls",
     "rustls-no-provider",
     "webpki-roots",

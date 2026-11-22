@@ -7,8 +7,8 @@ use super::{
     RealtimeOutboxPermissionChangedEventFactory, RoomService,
     member_role_policy::{
         validate_admin_override_bits, validate_creator_member_role_update,
-        validate_member_permission_override_channel, validate_override_bits_for_role,
-        validate_role_can_be_assigned,
+        validate_member_permission_override_channel, validate_member_permission_update_actor,
+        validate_override_bits_for_role, validate_role_can_be_assigned,
     },
     member_update_execution::MemberUpdateExecutionRequest,
 };
@@ -69,17 +69,39 @@ impl RoomService {
             )?;
         }
 
+        let room = if role.is_some() || apply_permission_update {
+            Some(
+                self.room_repo
+                    .get_by_id(&room_id)
+                    .await?
+                    .ok_or_else(|| Error::NotFound("Room not found".to_string()))?,
+            )
+        } else {
+            None
+        };
+
         if let Some(new_role) = role {
             validate_role_can_be_assigned(new_role)?;
-            let room = self
-                .room_repo
-                .get_by_id(&room_id)
-                .await?
-                .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
-            validate_creator_member_role_update(&room, &actor_id, &target_user_id)?;
+            let room = room.as_ref().ok_or_else(|| {
+                Error::Internal("Room snapshot missing for role update".to_string())
+            })?;
+            validate_creator_member_role_update(room, &actor_id, &target_user_id)?;
         }
 
         if apply_permission_update {
+            let room = room.as_ref().ok_or_else(|| {
+                Error::Internal("Room snapshot missing for permission update".to_string())
+            })?;
+            // A permission holder may neither edit their own overrides nor
+            // touch an elevated member's; both are creator-conferred.
+            let target_is_elevated = matches!(current.role, RoomRole::Admin | RoomRole::Creator)
+                || matches!(effective_role, RoomRole::Admin | RoomRole::Creator);
+            validate_member_permission_update_actor(
+                room,
+                &actor_id,
+                &target_user_id,
+                target_is_elevated,
+            )?;
             validate_member_permission_override_channel(
                 effective_is_admin,
                 added_permissions,

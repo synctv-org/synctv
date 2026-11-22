@@ -6,7 +6,10 @@ use crate::{
 
 use super::{
     RealtimeOutboxPermissionChangedEventFactory, RoomService,
-    member_role_policy::validate_override_bits_for_role, permission_writes::PermissionWriteParams,
+    member_role_policy::{
+        validate_member_permission_update_actor, validate_override_bits_for_role,
+    },
+    permission_writes::PermissionWriteParams,
 };
 
 impl RoomService {
@@ -72,6 +75,17 @@ impl RoomService {
                     .ok_or_else(|| {
                         Error::NotFound("User is not a member of this room".to_string())
                     })?;
+                let room = self
+                    .room_repo
+                    .get_by_id(&room_id)
+                    .await?
+                    .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
+                validate_member_permission_update_actor(
+                    &room,
+                    &granter_id,
+                    &target_user_id,
+                    matches!(member.role, RoomRole::Admin | RoomRole::Creator),
+                )?;
                 validate_override_bits_for_role(
                     member.role,
                     added_permissions,

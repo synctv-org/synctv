@@ -62,6 +62,31 @@ pub(in crate::service::room) fn validate_admin_member_role_update(
     Ok(())
 }
 
+/// Permission overrides are creator-conferred like the roles they attach to:
+/// nobody may write their own overrides (the self-edit kick already follows),
+/// and overrides on elevated members (admin or creator) are writable only by
+/// the room creator. Mirrors the strict-outranking rule of kick.
+pub(in crate::service) fn validate_member_permission_update_actor(
+    room: &Room,
+    actor_id: &UserId,
+    target_user_id: &UserId,
+    target_is_elevated: bool,
+) -> Result<()> {
+    if actor_id == target_user_id {
+        return Err(Error::Authorization(
+            "Cannot change your own member permissions".to_string(),
+        ));
+    }
+
+    if target_is_elevated && room.created_by != *actor_id {
+        return Err(Error::Authorization(
+            "Only room creator can change permissions of elevated members".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
 pub(in crate::service::room) fn validate_admin_override_bits(
     admin_added_permissions: u64,
     admin_removed_permissions: u64,
@@ -126,4 +151,44 @@ pub(in crate::service::room) fn validate_member_permission_override_channel(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_member_permission_update_actor;
+    use crate::{Error, models::UserId, test_helpers::RoomFixture};
+
+    #[test]
+    fn member_permission_update_rejects_self_edit() {
+        let creator = UserId::new();
+        let admin = UserId::new();
+        let room = RoomFixture::new().with_owner(creator).build();
+
+        assert!(matches!(
+            validate_member_permission_update_actor(&room, &admin, &admin, true),
+            Err(Error::Authorization(_))
+        ));
+        assert!(matches!(
+            validate_member_permission_update_actor(&room, &creator, &creator, true),
+            Err(Error::Authorization(_))
+        ));
+    }
+
+    #[test]
+    fn member_permission_update_on_elevated_target_requires_creator() {
+        let creator = UserId::new();
+        let admin = UserId::new();
+        let other_admin = UserId::new();
+        let member = UserId::new();
+        let room = RoomFixture::new().with_owner(creator).build();
+
+        assert!(matches!(
+            validate_member_permission_update_actor(&room, &admin, &other_admin, true),
+            Err(Error::Authorization(_))
+        ));
+        assert!(validate_member_permission_update_actor(&room, &admin, &creator, true).is_err());
+        assert!(validate_member_permission_update_actor(&room, &creator, &admin, true).is_ok());
+        // Non-elevated targets remain manageable by any permission holder.
+        assert!(validate_member_permission_update_actor(&room, &admin, &member, false).is_ok());
+    }
 }

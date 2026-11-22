@@ -8,12 +8,40 @@ use crate::{
 };
 
 use super::MemberService;
+use crate::service::room::validate_member_permission_update_actor;
 use std::future::Future;
 
 impl MemberService {
     pub(super) const MAX_RETRIES: u32 = 3;
     pub(super) const PERMISSION_UPDATE_MAX_RETRIES: u32 = 8;
     pub(super) const BACKOFF_BASE_MS: u64 = 5;
+
+    /// Permission overrides follow the same actor policy as the room outbox
+    /// path: nobody writes their own overrides, and elevated members (admin
+    /// or creator) are writable only by the room creator.
+    async fn ensure_permission_update_actor_allowed(
+        &self,
+        room_id: &RoomId,
+        granter_id: &UserId,
+        target_user_id: &UserId,
+    ) -> Result<()> {
+        let member = self
+            .member_repo
+            .get(room_id, target_user_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("User is not a member of this room".to_string()))?;
+        let room = self
+            .room_repo
+            .get_by_id(room_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
+        validate_member_permission_update_actor(
+            &room,
+            granter_id,
+            target_user_id,
+            matches!(member.role, RoomRole::Admin | RoomRole::Creator),
+        )
+    }
 
     const fn uses_admin_overrides(role: RoomRole) -> bool {
         matches!(role, RoomRole::Admin)
@@ -190,6 +218,8 @@ impl MemberService {
                 &granter_id,
                 crate::models::RoomPermission::MANAGE_MEMBER_PERMISSIONS,
             )
+            .await?;
+        self.ensure_permission_update_actor_allowed(&room_id, &granter_id, &target_user_id)
             .await?;
         let granter_username = self.lookup_username(&granter_id).await?;
 
@@ -564,6 +594,8 @@ impl MemberService {
                 crate::models::RoomPermission::MANAGE_MEMBER_PERMISSIONS,
             )
             .await?;
+        self.ensure_permission_update_actor_allowed(&room_id, &granter_id, &target_user_id)
+            .await?;
         let granter_username = self.lookup_username(&granter_id).await?;
 
         let updated_member = optimistic_retry::retry_with_optimistic_lock(
@@ -668,6 +700,8 @@ impl MemberService {
                 crate::models::RoomPermission::MANAGE_MEMBER_PERMISSIONS,
             )
             .await?;
+        self.ensure_permission_update_actor_allowed(&room_id, &granter_id, &target_user_id)
+            .await?;
         let granter_username = self.lookup_username(&granter_id).await?;
 
         let updated_member = optimistic_retry::retry_with_optimistic_lock(
@@ -770,6 +804,8 @@ impl MemberService {
                 &granter_id,
                 crate::models::RoomPermission::MANAGE_MEMBER_PERMISSIONS,
             )
+            .await?;
+        self.ensure_permission_update_actor_allowed(&room_id, &granter_id, &target_user_id)
             .await?;
 
         let updated_member = optimistic_retry::retry_with_optimistic_lock(

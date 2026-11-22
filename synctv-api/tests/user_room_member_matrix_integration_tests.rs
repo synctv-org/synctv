@@ -1294,3 +1294,124 @@ async fn test_join_room_rejects_banned_rooms() {
         "join_room must reject banned rooms explicitly, got: {error:?}"
     );
 }
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_admin_cannot_escalate_via_member_permission_update_api() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+
+    let user_service = Arc::new(make_user_service(&pool));
+    let room_service = Arc::new(
+        RoomService::new_for_tests(pool.clone(), (*user_service).clone())
+            .expect("room service should build"),
+    );
+    let client_api = make_client_api(user_service, room_service.clone());
+
+    let owner = user_repo
+        .create(&make_user(
+            "escalation_owner",
+            UserRole::User,
+            UserStatus::Active,
+        ))
+        .await
+        .unwrap();
+    let admin = user_repo
+        .create(&make_user(
+            "escalation_admin",
+            UserRole::User,
+            UserStatus::Active,
+        ))
+        .await
+        .unwrap();
+    let other_admin = user_repo
+        .create(&make_user(
+            "escalation_other_admin",
+            UserRole::User,
+            UserStatus::Active,
+        ))
+        .await
+        .unwrap();
+
+    let room = room_service
+        .create_room(
+            "Escalation Guard Room".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    room_service
+        .add_member(room.id, owner.id, admin.id, RoomRole::Admin, false)
+        .await
+        .unwrap();
+    room_service
+        .add_member(room.id, owner.id, other_admin.id, RoomRole::Admin, false)
+        .await
+        .unwrap();
+
+    let codec = public_id_codec();
+    let room_public_id = codec.encode_room_id(room.id).unwrap();
+    let admin_public_id = codec.encode_user_id(admin.id).unwrap();
+    let other_admin_public_id = codec.encode_user_id(other_admin.id).unwrap();
+
+    // Admin self-granting the owner-only DELETE_ROOM bit must be rejected.
+    let self_grant = client_api
+        .update_member_permissions(
+            &admin.id,
+            &room_public_id,
+            synctv_proto::client::UpdateMemberPermissionsRequest {
+                user_id: admin_public_id.clone(),
+                role: synctv_proto::common::RoomMemberRole::Unspecified as i32,
+                added_permissions: 0,
+                removed_permissions: 0,
+                admin_added_permissions: RoomAdminPermissionBits::DELETE_ROOM,
+                admin_removed_permissions: 0,
+            },
+        )
+        .await;
+    assert!(
+        matches!(&self_grant, Err(ApiError::Authorization(message)) if message.contains("own member permissions")),
+        "admin self-granting DELETE_ROOM must be rejected, got: {self_grant:?}"
+    );
+
+    // Admin stripping a peer admin's permissions must be rejected.
+    let strip_peer = client_api
+        .update_member_permissions(
+            &admin.id,
+            &room_public_id,
+            synctv_proto::client::UpdateMemberPermissionsRequest {
+                user_id: other_admin_public_id,
+                role: synctv_proto::common::RoomMemberRole::Unspecified as i32,
+                added_permissions: 0,
+                removed_permissions: 0,
+                admin_added_permissions: 0,
+                admin_removed_permissions: RoomAdminPermissionBits::ALL,
+            },
+        )
+        .await;
+    assert!(
+        matches!(&strip_peer, Err(ApiError::Authorization(message)) if message.contains("Only room creator")),
+        "admin stripping another admin must be rejected, got: {strip_peer:?}"
+    );
+
+    // The room creator delegating DELETE_ROOM to an admin stays legitimate.
+    client_api
+        .update_member_permissions(
+            &owner.id,
+            &room_public_id,
+            synctv_proto::client::UpdateMemberPermissionsRequest {
+                user_id: admin_public_id,
+                role: synctv_proto::common::RoomMemberRole::Unspecified as i32,
+                added_permissions: 0,
+                removed_permissions: 0,
+                admin_added_permissions: RoomAdminPermissionBits::DELETE_ROOM,
+                admin_removed_permissions: 0,
+            },
+        )
+        .await
+        .unwrap();
+    room_service.delete_room(room.id, admin.id).await.unwrap();
+}

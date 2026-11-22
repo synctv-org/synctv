@@ -40,7 +40,8 @@ impl RoomService {
         self.validate_room_settings(&settings)?;
 
         // Verify room exists
-        self.room_repo
+        let room = self
+            .room_repo
             .get_by_id(&room_id)
             .await?
             .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
@@ -50,6 +51,7 @@ impl RoomService {
         let settings_clone = settings.clone();
         let room_settings_repo = self.room_settings_repo.clone();
         let audit_service = self.audit_service.clone();
+        let room_created_by = room.created_by;
 
         let (previous_settings, updated_settings, updated_version) =
             optimistic_retry::retry_with_optimistic_lock_timeout(
@@ -65,6 +67,21 @@ impl RoomService {
                     async move {
                         let (current, version) =
                             room_settings_repo.get_with_version(&room_id).await?;
+                        // The admin permission baseline is creator-conferred,
+                        // like admin overrides: an admin holding
+                        // MANAGE_ROOM_SETTINGS may not reshape what every
+                        // admin (themselves included) can do.
+                        let admin_baseline_changed =
+                            current.admin_added_permissions
+                                != settings.admin_added_permissions
+                                || current.admin_removed_permissions
+                                    != settings.admin_removed_permissions;
+                        if admin_baseline_changed && room_created_by != user_id {
+                            return Err(Error::Authorization(
+                                "Only room creator can change the admin permission baseline"
+                                    .to_string(),
+                            ));
+                        }
                         let domain = CacheDomain::RoomSettings { room_id };
                         let reservation =
                             Self::begin_room_settings_write_with(&consistency, &room_id, version)
@@ -275,10 +292,12 @@ impl RoomService {
 
         self.validate_room_settings(&settings)?;
 
-        self.room_repo
+        let room = self
+            .room_repo
             .get_by_id(&room_id)
             .await?
             .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
+        let room_created_by = room.created_by;
         let settings = std::sync::Arc::new(settings);
 
         let (previous_settings, updated_settings, updated_version) =
@@ -294,6 +313,18 @@ impl RoomService {
                         let (current, version) =
                             self.room_settings_repo.get_with_version(&room_id).await?;
                         let updated_settings = (*settings).clone();
+                        // Same creator-conferred rule as set_settings: the
+                        // admin baseline gates what every admin can do.
+                        let admin_baseline_changed = current.admin_added_permissions
+                            != updated_settings.admin_added_permissions
+                            || current.admin_removed_permissions
+                                != updated_settings.admin_removed_permissions;
+                        if admin_baseline_changed && room_created_by != user_id {
+                            return Err(Error::Authorization(
+                                "Only room creator can change the admin permission baseline"
+                                    .to_string(),
+                            ));
+                        }
                         let mut tx = self.pool.begin().await?;
                         self.ensure_actor_has_room_permission_now_tx(
                             &mut tx,

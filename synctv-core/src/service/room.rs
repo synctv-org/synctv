@@ -140,6 +140,7 @@ mod member_review_approval;
 mod member_review_rejection;
 pub use member_review_rejection::AdminRejectJoinRequestWithOutbox;
 mod member_role_policy;
+pub(in crate::service) use member_role_policy::validate_member_permission_update_actor;
 mod member_roles;
 mod member_roles_admin;
 pub use member_roles::{MemberPermissionPatch, UpdateMemberWithOutboxRequest};

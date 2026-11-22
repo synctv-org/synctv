@@ -349,3 +349,104 @@ async fn test_legacy_permission_writers_reject_self_edit() {
         "legacy remanage_member_permissions self-edit must be rejected, got {remanage:?}"
     );
 }
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_admin_cannot_escalate_via_room_settings_admin_baseline() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let creator = ok(
+        user_repo.create(&make_user("baseline_creator")).await,
+        "creator should be created",
+    );
+    let admin = ok(
+        user_repo.create(&make_user("baseline_admin")).await,
+        "admin should be created",
+    );
+
+    let room = ok(
+        room_service
+            .create_room(
+                "Settings Baseline Room".to_string(),
+                String::new(),
+                creator.id,
+                None,
+                None,
+            )
+            .await,
+        "room should be created",
+    );
+    ok(
+        room_service.join_room(room.id, admin.id, None).await,
+        "admin should join room",
+    );
+    ok(
+        room_service
+            .member_service()
+            .set_member_role(room.id, creator.id, admin.id, RoomRole::Admin)
+            .await,
+        "creator should promote admin",
+    );
+
+    // Admin rewrites the room-wide admin baseline to grant DELETE_ROOM to
+    // every admin (themselves included) through MANAGE_ROOM_SETTINGS.
+    let mut escalated = ok(
+        room_service.get_room_settings(&room.id).await,
+        "room settings should load",
+    );
+    escalated.admin_added_permissions =
+        synctv_core::models::room_settings::AdminAddedPermissions::new(
+            RoomAdminPermissionBits::DELETE_ROOM,
+        );
+    let result = room_service
+        .set_settings(room.id, admin.id, escalated)
+        .await;
+    assert!(
+        matches!(result, Err(Error::Authorization(_))),
+        "admin changing the admin permission baseline must be rejected, got {result:?}"
+    );
+
+    let deletion = room_service.delete_room(room.id, admin.id).await;
+    assert!(
+        matches!(deletion, Err(Error::Authorization(_))),
+        "admin must not gain DELETE_ROOM through the settings baseline"
+    );
+
+    // Admin may still tune member-level defaults within existing powers.
+    let mut member_tweak = ok(
+        room_service.get_room_settings(&room.id).await,
+        "room settings should load",
+    );
+    member_tweak.member_removed_permissions =
+        synctv_core::models::room_settings::MemberRemovedPermissions::new(
+            RoomMemberPermissionBits::USE_VOICE_CHAT,
+        );
+    ok(
+        room_service
+            .set_settings(room.id, admin.id, member_tweak)
+            .await,
+        "admin should adjust member-level room settings",
+    );
+
+    // The creator may set the admin baseline deliberately.
+    let mut delegated = ok(
+        room_service.get_room_settings(&room.id).await,
+        "room settings should load",
+    );
+    delegated.admin_added_permissions =
+        synctv_core::models::room_settings::AdminAddedPermissions::new(
+            RoomAdminPermissionBits::DELETE_ROOM,
+        );
+    ok(
+        room_service
+            .set_settings(room.id, creator.id, delegated)
+            .await,
+        "creator should set the admin permission baseline",
+    );
+    ok(
+        room_service.delete_room(room.id, admin.id).await,
+        "admin with creator-granted baseline DELETE_ROOM should delete",
+    );
+}

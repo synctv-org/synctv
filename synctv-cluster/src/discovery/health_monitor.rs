@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
-use tokio::time::interval;
+use tokio::time::{MissedTickBehavior, interval, sleep};
 use tokio_util::sync::CancellationToken;
 
 use super::node_registry::ClusterMode;
@@ -234,109 +234,115 @@ impl HealthMonitor {
 
         let registry = self.node_registry.clone();
         let health_status = self.health_status.clone();
-        let timeout_secs = registry.heartbeat_timeout_secs();
         let cancel_token = self.cancel_token.clone();
         let last_successful_refresh_at = self.last_successful_refresh_at.clone();
         let probe_config = self.probe_config.clone();
         let probe_states = self.probe_states.clone();
         let check_interval_secs = self.check_interval_secs;
 
+        if check_interval_secs == 0 || probe_config.probe_interval_secs == 0 {
+            return Err(crate::Error::Configuration(
+                "Cluster health check and probe intervals must be positive".to_string(),
+            ));
+        }
         let mut probe_timer = interval(Duration::from_secs(probe_config.probe_interval_secs));
+        probe_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let heartbeat_timer = sleep(Duration::from_secs(check_interval_secs));
 
         let handle = tokio::spawn(async move {
-            /// Maximum backoff multiplier when registry is unreachable.
-            /// Caps at 8x the base check interval to avoid excessively long gaps.
-            const MAX_BACKOFF_MULTIPLIER: u64 = 8;
-
-            let mut consecutive_registry_failures: u32 = 0;
-
-            loop {
-                // Calculate backoff delay for heartbeat checks when registry is unreachable.
-                // On consecutive failures, wait longer (exponential backoff capped at 8x)
-                // to reduce log noise and wasted Redis round-trips.
-                let backoff_multiplier = if consecutive_registry_failures > 0 {
-                    (1u64 << consecutive_registry_failures.min(3)).min(MAX_BACKOFF_MULTIPLIER)
-                } else {
-                    1
-                };
-                let effective_check_interval =
-                    Duration::from_secs(check_interval_secs * backoff_multiplier);
-
-                tokio::select! {
-                    () = cancel_token.cancelled() => {
-                        tracing::info!("Health monitor shutting down");
-                        return;
-                    }
-                    () = tokio::time::sleep(effective_check_interval) => {
-                        // Passive heartbeat check with backoff on registry failures
-                        match registry.get_all_nodes().await {
-                            Ok(nodes) => {
-                                let previous_failures = consecutive_registry_failures;
-                                let refresh_state = update_registry_failure_tracking(
-                                    registry.cluster_mode(),
-                                    &mut consecutive_registry_failures,
-                                );
-                                match refresh_state {
-                                    RegistryRefreshState::Authoritative => {
-                                        if previous_failures > 0 {
-                                            tracing::info!(
-                                                previous_failures,
-                                                "Health monitor reconnected to registry"
-                                            );
-                                        }
-                                        last_successful_refresh_at.store(
-                                            current_unix_timestamp_secs(),
-                                            Ordering::Relaxed,
-                                        );
-                                    }
-                                    RegistryRefreshState::LocalOnly => {
-                                        if previous_failures > 0 {
-                                            tracing::info!(
-                                                previous_failures,
-                                                "Health monitor using local-only registry"
-                                            );
-                                        }
-                                    }
-                                    RegistryRefreshState::DegradedFallback => {
-                                        tracing::warn!(
-                                            consecutive_failures = consecutive_registry_failures,
-                                            "Health monitor using degraded local node cache while registry is unavailable"
-                                        );
-                                    }
-                                }
-                                Self::process_heartbeats(&health_status, &nodes, timeout_secs).await;
-                            }
-                            Err(e) => {
-                                consecutive_registry_failures = consecutive_registry_failures.saturating_add(1);
-                                if consecutive_registry_failures <= 3 {
-                                    tracing::error!(
-                                        consecutive_failures = consecutive_registry_failures,
-                                        error = %e,
-                                        "Failed to get nodes for health check"
-                                    );
-                                } else {
-                                    tracing::debug!(
-                                        consecutive_failures = consecutive_registry_failures,
-                                        error = %e,
-                                        "Failed to get nodes for health check (backoff active)"
-                                    );
-                                }
-                            }
+            cancel_token.run_until_cancelled(async {
+                tokio::pin!(heartbeat_timer);
+                let mut consecutive_registry_failures: u32 = 0;
+                loop {
+                    tokio::select! {
+                        biased;
+                        () = &mut heartbeat_timer => {
+                            Self::refresh_heartbeats(
+                                registry.as_ref(),
+                                &health_status,
+                                &last_successful_refresh_at,
+                                &mut consecutive_registry_failures,
+                            ).await;
+                            let multiplier = 1 << consecutive_registry_failures.min(3);
+                            heartbeat_timer.as_mut().set(sleep(Duration::from_secs(
+                                check_interval_secs.saturating_mul(multiplier),
+                            )));
                         }
-                    }
-                    _ = probe_timer.tick() => {
-                        // Active TCP probe -- skip if registry is unreachable or serving degraded fallback data.
-                        if consecutive_registry_failures == 0 {
+                        _ = probe_timer.tick(), if consecutive_registry_failures == 0 => {
                             Self::probe_nodes(&registry, &health_status, &probe_config, &probe_states).await;
                         }
                     }
                 }
-            }
+            }).await;
+            tracing::info!("Health monitor shutting down");
         });
 
         *guard = Some(handle);
 
         Ok(())
+    }
+
+    async fn refresh_heartbeats(
+        registry: &dyn ClusterNodeDirectory,
+        health_status: &Arc<RwLock<std::collections::HashMap<String, NodeHealth>>>,
+        last_successful_refresh_at: &std::sync::atomic::AtomicU64,
+        consecutive_registry_failures: &mut u32,
+    ) {
+        match registry.get_all_nodes().await {
+            Ok(nodes) => {
+                let previous_failures = *consecutive_registry_failures;
+                let refresh_state = update_registry_failure_tracking(
+                    registry.cluster_mode(),
+                    consecutive_registry_failures,
+                );
+                match refresh_state {
+                    RegistryRefreshState::Authoritative => {
+                        if previous_failures > 0 {
+                            tracing::info!(
+                                previous_failures,
+                                "Health monitor reconnected to registry"
+                            );
+                        }
+                    }
+                    RegistryRefreshState::LocalOnly => {
+                        if previous_failures > 0 {
+                            tracing::info!(
+                                previous_failures,
+                                "Health monitor using local-only registry"
+                            );
+                        }
+                    }
+                    RegistryRefreshState::DegradedFallback => {
+                        tracing::warn!(
+                            consecutive_failures = consecutive_registry_failures,
+                            "Health monitor using degraded local node cache while registry is unavailable"
+                        );
+                    }
+                }
+                Self::process_heartbeats(health_status, &nodes, registry.heartbeat_timeout_secs())
+                    .await;
+                if refresh_state == RegistryRefreshState::Authoritative {
+                    last_successful_refresh_at
+                        .store(current_unix_timestamp_secs(), Ordering::Relaxed);
+                }
+            }
+            Err(e) => {
+                *consecutive_registry_failures = consecutive_registry_failures.saturating_add(1);
+                if *consecutive_registry_failures <= 3 {
+                    tracing::error!(
+                        consecutive_failures = consecutive_registry_failures,
+                        error = %e,
+                        "Failed to get nodes for health check"
+                    );
+                } else {
+                    tracing::debug!(
+                        consecutive_failures = consecutive_registry_failures,
+                        error = %e,
+                        "Failed to get nodes for health check (backoff active)"
+                    );
+                }
+            }
+        }
     }
 
     /// Process heartbeat status for a set of nodes (passive check).
@@ -852,6 +858,49 @@ mod tests {
             !parent.is_cancelled(),
             "Constructing the child monitor must not cancel the parent token"
         );
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn probe_ticks_preserve_heartbeat_and_backoff_deadlines() -> Result<()> {
+        let registry = Arc::new(NodeRegistry::new_local_only("self".into(), 30, "test:")?);
+        registry.test_set_cluster_mode(ClusterMode::Degraded);
+        let monitor = HealthMonitor::with_cancellation_token_and_probe_config(
+            registry,
+            3,
+            &CancellationToken::new(),
+            HealthProbeConfig {
+                probe_interval_secs: 1,
+                ..Default::default()
+            },
+        );
+        monitor
+            .health_status
+            .write()
+            .await
+            .insert("departed".into(), NodeHealth::Healthy);
+        monitor.start()?;
+        tokio::task::yield_now().await;
+        for _ in 0..3 {
+            tokio::time::advance(Duration::from_secs(1)).await;
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(monitor.get_node_status("departed").await, None);
+        monitor
+            .health_status
+            .write()
+            .await
+            .insert("departed".into(), NodeHealth::Healthy);
+        tokio::time::advance(Duration::from_secs(5)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(
+            monitor.get_node_status("departed").await,
+            Some(NodeHealth::Healthy)
+        );
+        tokio::time::advance(Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(monitor.get_node_status("departed").await, None);
+        monitor.shutdown().await;
         Ok(())
     }
 

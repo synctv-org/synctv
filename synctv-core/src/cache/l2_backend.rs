@@ -7,6 +7,7 @@
 //! - `RedisCacheL2`: Redis-backed L2 with TTL, retry logic, and atomic set-if-newer.
 //! - `NoopCacheL2`: No-op backend (L1-only mode). All reads return None, all writes are no-ops.
 
+use crate::redis_runtime::index::{IndexKind, StaleMember, prune_stale_members};
 use crate::{Error, RedisConnectionRuntime, Result};
 use async_trait::async_trait;
 use std::future::Future;
@@ -415,6 +416,56 @@ impl RedisCacheL2 {
         format!("{prefix}__l2_index")
     }
 
+    async fn prune_missing_keys(
+        &self,
+        conn: &mut redis::aio::ConnectionManager,
+        prefix: &str,
+        missing: &[StaleMember],
+    ) {
+        if missing.is_empty() {
+            return;
+        }
+        if let Err(error) = run_l2_redis_op(
+            self.operation_timeout(),
+            "prune missing L2 keys from namespace index",
+            prune_stale_members(
+                conn,
+                IndexKind::SortedSet,
+                &Self::namespace_index_key(prefix),
+                missing,
+            ),
+        )
+        .await
+        {
+            tracing::debug!(prefix, %error, "Failed to prune missing L2 keys from namespace index");
+        }
+    }
+
+    async fn delete_namespace_members(
+        &self,
+        conn: &mut redis::aio::ConnectionManager,
+        index_key: &str,
+        keys: &[String],
+    ) -> Result<()> {
+        // A writer may add other keys after ZRANGE. Remove only the members
+        // whose values we invalidate in this transaction.
+        for chunk in keys.chunks(256) {
+            let mut pipe = redis::pipe();
+            pipe.atomic()
+                .del(chunk)
+                .ignore()
+                .zrem(index_key, chunk)
+                .ignore();
+            run_l2_redis_op(
+                self.operation_timeout(),
+                "delete indexed L2 cache keys",
+                pipe.query_async::<()>(conn),
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
     fn ttl_secs_to_i64(ttl_secs: u64) -> Result<i64> {
         i64::try_from(ttl_secs)
             .map_err(|_| Error::Internal("L2 cache TTL exceeds i64::MAX seconds".to_string()))
@@ -475,21 +526,12 @@ impl CacheL2Backend for RedisCacheL2 {
         .await?;
 
         if result.is_none() {
-            let index_key = Self::namespace_index_key(prefix);
-            if let Err(error) = run_l2_redis_op(
-                self.operation_timeout(),
-                "prune missing L2 key from namespace index",
-                conn.zrem::<_, _, usize>(&index_key, key),
+            self.prune_missing_keys(
+                &mut conn,
+                prefix,
+                &[StaleMember::missing_indexed_key(key.to_owned())],
             )
-            .await
-            {
-                tracing::debug!(
-                    prefix = %prefix,
-                    key = %key,
-                    error = %error,
-                    "Failed to prune missing L2 key from namespace index"
-                );
-            }
+            .await;
         }
 
         Ok(result)
@@ -702,31 +744,13 @@ impl CacheL2Backend for RedisCacheL2 {
         )
         .await?;
 
-        let missing_keys: Vec<&String> = keys
+        let missing: Vec<_> = keys
             .iter()
-            .zip(results.iter())
-            .filter_map(|(key, value)| value.is_none().then_some(key))
+            .zip(&results)
+            .filter(|(_, value)| value.is_none())
+            .map(|(key, _)| StaleMember::missing_indexed_key(key.clone()))
             .collect();
-        if !missing_keys.is_empty() {
-            let index_key = Self::namespace_index_key(prefix);
-            let mut prune_pipe = redis::pipe();
-            for key in missing_keys {
-                prune_pipe.cmd("ZREM").arg(&index_key).arg(key).ignore();
-            }
-            if let Err(error) = run_l2_redis_op(
-                self.operation_timeout(),
-                "prune missing L2 batch keys from namespace index",
-                prune_pipe.query_async::<()>(&mut conn),
-            )
-            .await
-            {
-                tracing::debug!(
-                    prefix = %prefix,
-                    error = %error,
-                    "Failed to prune missing L2 batch keys from namespace index"
-                );
-            }
-        }
+        self.prune_missing_keys(&mut conn, prefix, &missing).await;
 
         Ok(results)
     }
@@ -929,32 +953,8 @@ impl CacheL2Backend for RedisCacheL2 {
         )
         .await?;
 
-        for chunk in keys.chunks(256) {
-            let mut pipe = redis::pipe();
-            pipe.cmd("DEL");
-            for key in chunk {
-                pipe.arg(key);
-            }
-            pipe.ignore();
-
-            run_l2_redis_op(
-                self.operation_timeout(),
-                format!("delete indexed L2 cache keys for prefix '{prefix}'"),
-                pipe.query_async::<()>(&mut conn),
-            )
-            .await?;
-        }
-
-        run_l2_redis_op(
-            self.operation_timeout(),
-            format!("delete L2 cache namespace index for prefix '{prefix}'"),
-            redis::cmd("DEL")
-                .arg(&index_key)
-                .query_async::<()>(&mut conn),
-        )
-        .await?;
-
-        Ok(())
+        self.delete_namespace_members(&mut conn, &index_key, &keys)
+            .await
     }
 
     fn is_active(&self) -> bool {
@@ -1041,6 +1041,33 @@ mod tests {
                 delete_count: Arc::new(AtomicU64::new(0)),
             }
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn namespace_cleanup_preserves_concurrent_writes() -> Result<()> {
+        let (_redis, mut conn) = synctv_core_testing::start_redis().await;
+        let prefix = synctv_core_testing::test_redis_key_prefix("l2-prune");
+        let cache = RedisCacheL2::from_runtime(crate::direct_runtime(conn.clone()));
+        let old_key = format!("{prefix}old");
+        let new_key = format!("{prefix}new");
+        let index = RedisCacheL2::namespace_index_key(&prefix);
+
+        cache.set_scoped(&prefix, &old_key, "old", 60).await?;
+        let snapshot = vec![old_key.clone()];
+        let observed_missing = StaleMember::missing_indexed_key(new_key.clone());
+        cache.set_scoped(&prefix, &new_key, "new", 60).await?;
+        cache
+            .prune_missing_keys(&mut conn, &prefix, &[observed_missing])
+            .await;
+        cache
+            .delete_namespace_members(&mut conn, &index, &snapshot)
+            .await?;
+        assert_eq!(cache.get(&old_key).await?, None);
+        assert_eq!(cache.get(&new_key).await?.as_deref(), Some("new"));
+        cache.delete_by_prefix(&prefix).await?;
+        assert_eq!(cache.get(&new_key).await?, None);
+        Ok(())
     }
 
     #[tokio::test]

@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use synctv_core::RedisCoordinationRuntime;
+use synctv_core::redis_runtime::index::{IndexKind, StaleMember, prune_stale_members};
 use tokio::sync::RwLock;
 use tokio::time::{Duration, timeout};
 use tokio_util::sync::CancellationToken;
@@ -614,37 +615,29 @@ impl NodeRegistry {
     async fn prune_node_index_members(
         &self,
         conn: &mut redis::aio::MultiplexedConnection,
-        node_ids: &[String],
+        candidates: &[StaleMember],
     ) {
-        if node_ids.is_empty() {
-            return;
-        }
-
-        let index_key = self.node_index_key();
-        let mut pipe = redis::pipe();
-        for node_id in node_ids {
-            pipe.cmd("SREM").arg(&index_key).arg(node_id).ignore();
-        }
-
-        let op_result: std::result::Result<(), Error> =
-            timeout(self.redis_operation_timeout(), pipe.query_async(conn))
-                .await
-                .map_err(|_| Error::Timeout("Redis node index cleanup timed out".to_string()))
-                .and_then(|r| {
-                    r.map_err(|e| Error::Database(format!("Redis node index cleanup failed: {e}")))
-                });
+        let op_result = timeout(
+            self.redis_operation_timeout(),
+            prune_stale_members(conn, IndexKind::Set, &self.node_index_key(), candidates),
+        )
+        .await
+        .map_err(|_| Error::Timeout("Redis node index cleanup timed out".to_string()))
+        .and_then(|r| {
+            r.map_err(|e| Error::Database(format!("Redis node index cleanup failed: {e}")))
+        });
         self.record_operation_result(&op_result);
 
         match op_result {
-            Ok(()) => {
+            Ok(removed_members) => {
                 tracing::debug!(
-                    removed_members = node_ids.len(),
+                    removed_members,
                     "Pruned stale node IDs from Redis node index"
                 );
             }
             Err(error) => {
                 tracing::warn!(
-                    removed_members = node_ids.len(),
+                    candidates = candidates.len(),
                     error = %error,
                     "Failed to prune stale node IDs from Redis node index"
                 );
@@ -1444,7 +1437,7 @@ impl NodeRegistry {
                 for key in &keys {
                     cmd.arg(key);
                 }
-                let mget_result: std::result::Result<Vec<Option<String>>, Error> =
+                let mget_result: std::result::Result<Vec<Option<Vec<u8>>>, Error> =
                     timeout(self.redis_operation_timeout(), cmd.query_async(&mut conn))
                         .await
                         .map_err(|_| Error::Timeout("Redis MGET timed out".to_string()))
@@ -1456,14 +1449,19 @@ impl NodeRegistry {
 
                 let mut stale_index_members = Vec::new();
                 for (node_id, value) in node_ids.into_iter().zip(values) {
-                    match value {
-                        Some(value) => match serde_json::from_str::<NodeInfo>(&value) {
-                            Ok(node_info) if !node_info.is_stale(self.heartbeat_timeout_secs) => {
-                                nodes.push(node_info);
-                            }
-                            _ => stale_index_members.push(node_id),
-                        },
-                        None => stale_index_members.push(node_id),
+                    if let Some(node) = value
+                        .as_deref()
+                        .and_then(|json| serde_json::from_slice::<NodeInfo>(json).ok())
+                        && node.node_id == node_id
+                        && !node.is_stale(self.heartbeat_timeout_secs)
+                    {
+                        nodes.push(node);
+                    } else {
+                        stale_index_members.push(StaleMember {
+                            metadata_key: self.node_key(&node_id),
+                            member: node_id,
+                            observed_value: value,
+                        });
                     }
                 }
 

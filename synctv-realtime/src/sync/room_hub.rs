@@ -2,7 +2,6 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use futures::stream::{FuturesUnordered, StreamExt};
 use parking_lot::Mutex;
-use redis::AsyncCommands;
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::fmt;
@@ -182,18 +181,6 @@ where
 fn ttl_refresh_interval_secs(ttl_secs: i64) -> u64 {
     let refresh_secs = ttl_secs.saturating_mul(2).div_euclid(5).clamp(30, 120);
     u64::try_from(refresh_secs).unwrap_or(30)
-}
-
-fn room_members_after_prune(results: &[i64]) -> Result<i64, String> {
-    results.last().copied().ok_or_else(|| {
-        "Redis prune stale distributed room subscribers returned no HLEN result".to_string()
-    })
-}
-
-fn log_best_effort_redis_cleanup(operation: &'static str, result: Result<(), String>) {
-    if let Err(error) = result {
-        warn!(operation, error = %error, "Best-effort Redis room hub cleanup failed");
-    }
 }
 
 fn ttl_secs_unsigned(ttl_secs: i64) -> u64 {
@@ -1226,252 +1213,6 @@ impl RoomMessageHub {
         })
     }
 
-    /// Get all subscribers in a room across all replicas (from Redis).
-    ///
-    /// Returns the full subscriber list from Redis, which includes subscriptions
-    /// from all replicas in the cluster. Local-only hubs return their local
-    /// subscriber list. Redis-backed hubs return an error if the distributed
-    /// snapshot cannot be loaded or validated.
-    pub async fn get_room_subscribers_distributed(
-        &self,
-        room_id: &RoomId,
-    ) -> crate::Result<Vec<(RealtimeActor, ConnectionId)>> {
-        if self.redis_conn.is_some() {
-            let room_key = self.room_key(room_id);
-            let room_index_directory_key = self.room_index_directory_key();
-            let mut conn_clone = match self
-                .redis_conn_clone("load distributed room subscribers")
-                .await
-            {
-                Ok(Some(conn)) => conn,
-                Ok(None) => return Ok(self.get_room_subscribers(room_id)),
-                Err(error) => return Err(crate::Error::Redis(error)),
-            };
-
-            match self
-                .redis_op(
-                    "load distributed room subscribers",
-                    conn_clone.hgetall::<_, Vec<(String, String)>>(&room_key),
-                )
-                .await
-            {
-                Ok(entries) => {
-                    if entries.is_empty() {
-                        log_best_effort_redis_cleanup(
-                            "prune empty room from room index directory",
-                            self.redis_op(
-                                "prune empty room from room index directory",
-                                conn_clone.srem(&room_index_directory_key, &room_key),
-                            )
-                            .await,
-                        );
-                        return Ok(Vec::new());
-                    }
-
-                    let conn_keys: Vec<String> = entries
-                        .iter()
-                        .map(|(conn_id, _)| self.conn_key(conn_id))
-                        .collect();
-                    let conn_rooms = match self
-                        .redis_op(
-                            "load connection room mappings",
-                            conn_clone.mget::<_, Vec<Option<i64>>>(conn_keys),
-                        )
-                        .await
-                    {
-                        Ok(conn_rooms) => conn_rooms,
-                        Err(error) => return Err(crate::Error::Redis(error)),
-                    };
-
-                    let mut subscribers = Vec::with_capacity(entries.len());
-                    let mut stale_connection_ids = Vec::with_capacity(entries.len());
-
-                    for ((conn_id, actor), mapped_room_id) in entries.into_iter().zip(conn_rooms) {
-                        if mapped_room_id == Some(room_id.get()) {
-                            if let Ok(actor) = serde_json::from_str::<RealtimeActor>(&actor) {
-                                subscribers.push((actor, ConnectionId::new(conn_id)));
-                            } else {
-                                stale_connection_ids.push(conn_id);
-                            }
-                        } else {
-                            stale_connection_ids.push(conn_id);
-                        }
-                    }
-
-                    if !stale_connection_ids.is_empty() {
-                        let mut pipe = redis::pipe();
-                        for conn_id in &stale_connection_ids {
-                            pipe.hdel(&room_key, conn_id).ignore();
-                        }
-                        pipe.cmd("HLEN").arg(&room_key);
-
-                        match self
-                            .redis_op(
-                                "prune stale distributed room subscribers",
-                                pipe.query_async::<Vec<i64>>(&mut conn_clone),
-                            )
-                            .await
-                        {
-                            Ok(results) => {
-                                let room_members_after_prune = match room_members_after_prune(
-                                    &results,
-                                ) {
-                                    Ok(count) => count,
-                                    Err(error) => {
-                                        warn!(
-                                            room_id = %room_id,
-                                            removed_members = stale_connection_ids.len(),
-                                            "Failed to validate stale distributed room subscriber prune result: {error}"
-                                        );
-                                        return Ok(subscribers);
-                                    }
-                                };
-                                if room_members_after_prune == 0 {
-                                    log_best_effort_redis_cleanup(
-                                        "delete empty room subscription hash",
-                                        self.redis_op(
-                                            "delete empty room subscription hash",
-                                            conn_clone.del(&room_key),
-                                        )
-                                        .await,
-                                    );
-                                    log_best_effort_redis_cleanup(
-                                        "remove empty room from room index directory",
-                                        self.redis_op(
-                                            "remove empty room from room index directory",
-                                            conn_clone.srem(&room_index_directory_key, &room_key),
-                                        )
-                                        .await,
-                                    );
-                                }
-                                debug!(
-                                    room_id = %room_id,
-                                    removed_members = stale_connection_ids.len(),
-                                    "Pruned stale distributed room subscribers on read"
-                                );
-                            }
-                            Err(e) => {
-                                warn!(
-                                    room_id = %room_id,
-                                    removed_members = stale_connection_ids.len(),
-                                    "Failed to prune stale distributed room subscribers on read: {e}"
-                                );
-                            }
-                        }
-                    }
-
-                    return Ok(subscribers);
-                }
-                Err(error) => return Err(crate::Error::Redis(error)),
-            }
-        }
-
-        Ok(self.get_room_subscribers(room_id))
-    }
-
-    /// Audit replica-wide subscription state from Redis (observability only).
-    ///
-    /// Scans Redis for persisted subscription relationships and logs room/subscriber
-    /// counts. This is an **observability tool**, not a recovery mechanism.
-    ///
-    /// This method does **not** populate the local `rooms` or `connections` DashMaps
-    /// because:
-    ///
-    /// 1. **`MessageSender` cannot be recovered.** Each subscriber's `mpsc::Sender`
-    ///    is only meaningful to the original WebSocket connection. Without a live
-    ///    sender, messages cannot be routed, so inserting a synthetic `Subscriber` would
-    ///    create a broken entry that either panics or silently drops events.
-    ///
-    /// 2. **Stale data from crashed replicas.** Redis may contain subscriptions from
-    ///    nodes that crashed without unsubscribing. These will expire via TTL, but
-    ///    recovering them into the local cache would create phantom subscribers.
-    ///
-    /// 3. **No lifecycle events.** Populating the local cache would emit spurious
-    ///    `RoomActivated` events to the Redis Pub/Sub subscriber task, causing it
-    ///    to subscribe to channels for rooms that have no real local subscribers.
-    ///
-    /// **Clients must reconnect** after a replica restart to re-establish their
-    /// subscriptions via `subscribe()`. This method only logs what Redis knows
-    /// about for dashboards and debugging.
-    pub async fn audit_redis_subscriptions(&self) -> Result<usize, String> {
-        info!(
-            "Auditing cluster subscription state from Redis (observability only, clients must reconnect for message routing)"
-        );
-        let Some(mut conn_clone) = self.redis_conn_clone("audit room subscriptions").await? else {
-            return Err("Redis not configured".to_string());
-        };
-
-        let room_index_directory_key = self.room_index_directory_key();
-        let mut recovered = 0;
-        let keys: Vec<String> = self
-            .redis_op(
-                "load room subscription index directory",
-                conn_clone.smembers(&room_index_directory_key),
-            )
-            .await?;
-        let mut stale_directory_members = Vec::with_capacity(keys.len());
-        let room_key_prefix = self.room_key_prefix();
-
-        for key in keys {
-            // Extract room_id from key
-            let room_id_str = key.trim_start_matches(&room_key_prefix);
-            let Ok(room_id) = room_id_str.parse::<RoomId>() else {
-                tracing::warn!(room_id = %room_id_str, "Ignoring invalid room hub room key");
-                continue;
-            };
-
-            // Fetch all subscribers for this room
-            let entries: Vec<(String, String)> = match self
-                .redis_op("load audited room subscribers", conn_clone.hgetall(&key))
-                .await
-            {
-                Ok(entries) => entries,
-                Err(e) => {
-                    warn!(
-                        room_id = %room_id,
-                        error = %e,
-                        "Failed to fetch audited room subscribers from Redis"
-                    );
-                    continue;
-                }
-            };
-            if entries.is_empty() {
-                stale_directory_members.push(key.clone());
-                log_best_effort_redis_cleanup(
-                    "delete empty audited room key",
-                    self.redis_op("delete empty audited room key", conn_clone.del(&key))
-                        .await,
-                );
-                continue;
-            }
-
-            let valid_subscriber_count = entries
-                .iter()
-                .filter(|(_, actor)| serde_json::from_str::<RealtimeActor>(actor).is_ok())
-                .count();
-            recovered += valid_subscriber_count;
-
-            info!(
-                room_id = %room_id,
-                subscriber_count = valid_subscriber_count,
-                "Audited room subscription state from Redis (observability only)"
-            );
-        }
-
-        if !stale_directory_members.is_empty() {
-            log_best_effort_redis_cleanup(
-                "remove stale room subscription directory members",
-                self.redis_op(
-                    "remove stale room subscription directory members",
-                    conn_clone.srem(&room_index_directory_key, stale_directory_members),
-                )
-                .await,
-            );
-        }
-
-        Ok(recovered)
-    }
-
     /// Refresh TTLs on all active Redis subscription keys.
     ///
     /// Redis keys for room subscriptions (`room_hub:room:*`) and connection
@@ -1660,6 +1401,8 @@ impl RoomMessageRuntime for RoomMessageHub {
         RoomMessageHub::background_shutdown_requested(self)
     }
 }
+
+mod redis_subscribers;
 
 #[cfg(test)]
 mod tests;

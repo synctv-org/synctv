@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
 use redis::AsyncCommands;
-use synctv_cluster::{HeartbeatResult, NodeRegistry};
+use synctv_cluster::{HeartbeatResult, NodeInfo, NodeRegistry};
 use synctv_core_testing::{RedisContainer, start_redis_client_url_with_label};
 
 async fn setup_redis(label: &str) -> (RedisContainer, redis::Client) {
@@ -12,7 +12,7 @@ async fn setup_redis(label: &str) -> (RedisContainer, redis::Client) {
 
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
-async fn test_get_all_nodes_prunes_missing_members_from_node_index() {
+async fn test_get_all_nodes_prunes_missing_and_mismatched_node_index_members() {
     let (_redis_container, redis_client) = setup_redis("node-registry-index-prune").await;
     let prefix = "node-index-prune:";
     let registry = NodeRegistry::new(
@@ -29,8 +29,27 @@ async fn test_get_all_nodes_prunes_missing_members_from_node_index() {
         .expect("redis connection");
     let index_key = format!("{prefix}cluster:nodes:index");
 
+    registry
+        .register("127.0.0.1:50052".to_owned())
+        .await
+        .unwrap();
+    let mismatched = NodeInfo::new("other-node".to_owned(), "127.0.0.1:50051".to_owned());
     let _: () = conn
-        .sadd(&index_key, "missing-node")
+        .set(
+            format!("{prefix}cluster:nodes:wrong-id"),
+            serde_json::to_string(&mismatched).unwrap(),
+        )
+        .await
+        .unwrap();
+    let _: () = conn
+        .set(
+            format!("{prefix}cluster:nodes:invalid-json"),
+            &[0xff_u8][..],
+        )
+        .await
+        .unwrap();
+    let _: () = conn
+        .sadd(&index_key, &["missing-node", "wrong-id", "invalid-json"])
         .await
         .expect("should seed node index");
 
@@ -38,19 +57,14 @@ async fn test_get_all_nodes_prunes_missing_members_from_node_index() {
         .get_all_nodes()
         .await
         .expect("get_all_nodes should succeed");
-    assert!(
-        nodes.is_empty(),
-        "missing node index members must not materialize as live nodes"
-    );
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(nodes[0].node_id, "self-node");
 
     let remaining_members: Vec<String> = conn
         .smembers(&index_key)
         .await
         .expect("should read node index members");
-    assert!(
-        remaining_members.is_empty(),
-        "stale node index members should be pruned during discovery, got {remaining_members:?}"
-    );
+    assert_eq!(remaining_members, ["self-node"]);
 }
 
 #[tokio::test]

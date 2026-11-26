@@ -26,6 +26,7 @@ pub use config::{ConnectionLimits, ConnectionLimitsOptions};
 mod metrics;
 pub use metrics::{ConnectionMetrics, ShutdownReport};
 mod disconnects;
+mod redis_indexes;
 mod redis_maintenance;
 mod redis_state;
 mod reservation;

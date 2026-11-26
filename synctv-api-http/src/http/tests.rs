@@ -1271,31 +1271,38 @@ async fn test_start_proxy_cache_lifecycle_evicts_expired_entries_and_stops_on_ca
     let cache = Arc::new(
         SliceCache::new(SliceCacheConfig {
             eviction_interval: Duration::from_millis(20),
+            stale_max_age: Duration::from_mins(3),
             max_cache_size: 1024,
             ..SliceCacheConfig::default()
         })
         .map_err(|error| test_error(error.to_string()))?,
     );
-    let key = "expired-slice".to_string();
-    cache
-        .backend()
-        .put(
-            &key,
-            StoredEntry {
-                data: Bytes::from_static(b"stale"),
-                inserted_at: SystemTime::now() - Duration::from_secs(2),
-                ttl: Duration::from_millis(5),
-                last_accessed: SystemTime::now() - Duration::from_secs(2),
-            },
-        )
-        .await
-        .map_err(|error| test_error(error.to_string()))?;
+    let now = SystemTime::now();
+    for (key, age) in [
+        ("revalidatable-slice", Duration::from_mins(2)),
+        ("expired-slice", Duration::from_mins(4)),
+    ] {
+        cache
+            .backend()
+            .put(
+                key,
+                StoredEntry {
+                    data: Bytes::from_static(b"stale"),
+                    inserted_at: now - age,
+                    ttl: Duration::from_secs(1),
+                    last_accessed: now - age,
+                },
+            )
+            .await
+            .map_err(|error| test_error(error.to_string()))?;
+        assert!(cache.backend().get(key).await.is_some());
+    }
 
     let lifecycle = start_proxy_cache_lifecycle(&cache);
 
     tokio::time::timeout(Duration::from_secs(1), async {
         loop {
-            if cache.backend().get(&key).await.is_none() {
+            if cache.backend().get("expired-slice").await.is_none() {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -1309,6 +1316,7 @@ async fn test_start_proxy_cache_lifecycle_evicts_expired_entries_and_stops_on_ca
         .await
         .map_err(|error| test_error(error.to_string()))?
         .map_err(|error| test_error(error.to_string()))?;
+    assert!(cache.backend().get("revalidatable-slice").await.is_some());
     Ok(())
 }
 

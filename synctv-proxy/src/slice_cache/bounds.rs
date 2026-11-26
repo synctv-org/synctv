@@ -96,6 +96,54 @@ pub(super) fn exclusive_end(start: u64, last: u64, total: Option<u64>) -> Option
     last.checked_add(1)
 }
 
+/// An HTTP Range uses an inclusive end, even when the aligned slice crosses u64::MAX.
+#[cfg_attr(verus_only, verus_spec(out => ensures
+    out.is_some() == (width > 0 && index as int * width <= u64::MAX),
+    out matches Some((start, last)) ==> (start == index as int * width &&
+        last == vstd::math::min(start as int + width - 1, u64::MAX as int)),
+))]
+pub(super) fn aligned_request(index: u64, width: u64) -> Option<(u64, u64)> {
+    let span = width.checked_sub(1)?;
+    let start = index.checked_mul(width)?;
+    Some((start, start.saturating_add(span)))
+}
+
+/// Validate a half-open Content-Range before admitting the response body.
+#[cfg_attr(verus_only, verus_spec(out => ensures
+    out.is_some() == (exists|total: u64|
+        (reported == Some(total) || known == Some(total)) &&
+        (reported.is_none() || reported == Some(total)) &&
+        (known.is_none() || known == Some(total)) &&
+        start == requested && start < total && width > 0 &&
+        end == vstd::math::min(start as int + width, total as int)),
+    out matches Some((total, len)) ==> (
+        (reported == Some(total) || known == Some(total)) &&
+        (known.is_none() || known == Some(total)) && (reported.is_none() || reported == Some(total)) &&
+        len == end as int - start && 0 < len <= width && start == requested && end <= total),
+))]
+pub(super) fn response_extent(
+    requested: u64,
+    width: usize,
+    start: u64,
+    end: u64,
+    reported: Option<u64>,
+    known: Option<u64>,
+) -> Option<(u64, usize)> {
+    let total = match reported {
+        Some(size) => size,
+        None => known?,
+    };
+    if matches!(known, Some(expected) if expected != total) || start != requested || start >= total
+    {
+        return None;
+    }
+    let len = (total - start).min(width as u64);
+    if len == 0 || end != start + len {
+        return None;
+    }
+    Some((total, usize::try_from(len).ok()?))
+}
+
 #[cfg(verus_only)]
 verus! {
     // Scan the maximal ASCII decimal prefix with an unbounded mathematical accumulator.

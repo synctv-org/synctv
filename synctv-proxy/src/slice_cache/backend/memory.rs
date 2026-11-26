@@ -33,6 +33,14 @@ pub struct MemoryBackend {
 }
 
 impl MemoryBackend {
+    pub(super) fn keys_with_prefix(&self, prefix: &str) -> Vec<String> {
+        self.cache
+            .iter()
+            .filter(|(key, _)| key.starts_with(prefix))
+            .map(|(key, _)| key.as_ref().clone())
+            .collect()
+    }
+
     /// Create a new memory backend.
     ///
     /// - `max_capacity`: maximum cache size in bytes (moka's weighted capacity).
@@ -200,10 +208,7 @@ impl SliceCacheBackend for MemoryBackend {
     }
 
     async fn keys(&self) -> Vec<String> {
-        self.cache
-            .iter()
-            .map(|(key, _)| key.as_ref().clone())
-            .collect()
+        self.keys_with_prefix("")
     }
 }
 

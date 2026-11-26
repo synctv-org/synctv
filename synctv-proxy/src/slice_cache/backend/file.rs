@@ -8,9 +8,9 @@
 //! cache_dir/
 //!   ab/
 //!     cd/
-//!       abcdef0123456789...  (SHA256 hex as filename)
+//!       abcdef0123456789...-0  (resource digest and hexadecimal slice index)
 //!   .tmp/
-//!     tmp_<unique_id>        (atomic-write staging area)
+//!     tmp_<unique_id>          (atomic-write staging area)
 //! ```
 //!
 //! The first `dir_levels.0` hex chars of the key form the level-1 directory
@@ -67,6 +67,15 @@ pub struct FileBackend {
 }
 
 impl FileBackend {
+    pub(super) fn keys_with_prefix(&self, prefix: &str) -> Vec<String> {
+        self.index
+            .entries
+            .iter()
+            .filter(|entry| entry.key().starts_with(prefix))
+            .map(|entry| entry.key().clone())
+            .collect()
+    }
+
     const ACCESS_TIME_PERSIST_CONCURRENCY: usize = 8;
 
     /// Create a new file backend rooted at `cache_dir`.
@@ -333,7 +342,7 @@ impl SliceCacheBackend for FileBackend {
     }
 
     async fn keys(&self) -> Vec<String> {
-        self.index.entries.iter().map(|r| r.key().clone()).collect()
+        self.keys_with_prefix("")
     }
 }
 

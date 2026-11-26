@@ -7,9 +7,9 @@ use crate::{
     repository::UpsertFileUploadSessionPart,
     service::file_storage::{
         constant_time_eq, decode_file_object_key, file_part_manifest_digest, payload_len_i64,
-        upload_manifest_parts_from_metadata, upload_media_type, upload_session_is_multipart,
-        upload_session_is_single_object, upload_session_parts_progress, validate_file_upload_token,
-        validate_upload_range,
+        upload_session_is_multipart, upload_session_is_single_object,
+        upload_session_parts_progress, validate_file_upload_token, validate_stored_upload_part,
+        validate_upload_content,
     },
 };
 
@@ -48,60 +48,18 @@ impl S3CompatibleFileStorageService {
                 "file upload session is not active".to_string(),
             ));
         }
-        let mime_type = payload
-            .mime_type
-            .as_deref()
-            .ok_or_else(|| Error::InvalidInput("invalid file upload token".to_string()))?;
-        if mime_type != session.mime_type {
-            return Err(Error::InvalidInput(
-                "file upload token does not match upload session".to_string(),
-            ));
-        }
-        if let Some(content_type) = content_type.as_deref()
-            && upload_media_type(content_type)? != mime_type
-        {
-            return Err(Error::InvalidInput(
-                "file content-type does not match upload session".to_string(),
-            ));
-        }
-        let expected_size = payload
-            .size_bytes
-            .ok_or_else(|| Error::InvalidInput("invalid file upload token".to_string()))?;
-        if expected_size != session.size_bytes {
-            return Err(Error::InvalidInput(
-                "file upload token does not match upload session".to_string(),
-            ));
-        }
+        validate_upload_content(&session, &payload, content_type.as_deref())?;
+        let expected_size = session.size_bytes;
         let actual_part_checksum = hex::encode(Sha256::digest(&data));
         let range = range.unwrap_or(crate::models::FileUploadRange {
             start: 0,
             end_inclusive: payload_len_i64(data.len())? - 1,
             total_size: expected_size,
         });
-        // Validate against the persisted session plan. S3 and database
-        // multipart sessions share the same resume/idempotency contract: the
-        // per-session manifest defines accepted offsets, sizes, and checksums.
-        let part_index =
-            validate_upload_range(range, data.len(), expected_size, session.part_size_bytes)?;
-        let part_number = part_index.checked_add(1).ok_or_else(|| {
-            Error::InvalidInput("file upload part number is too large".to_string())
-        })?;
-        let manifest_parts = upload_manifest_parts_from_metadata(&session.metadata)?;
-        let expected_part = manifest_parts
-            .iter()
-            .find(|part| part.part_number == part_number)
-            .ok_or_else(|| {
-                Error::InvalidInput("file upload part is not in manifest".to_string())
-            })?;
-        let part_size = payload_len_i64(data.len())?;
-        if expected_part.offset_bytes != range.start
-            || expected_part.size_bytes != part_size
-            || expected_part.checksum_sha256 != actual_part_checksum
-        {
-            return Err(Error::InvalidInput(
-                "file upload part does not match manifest".to_string(),
-            ));
-        }
+        let (part_index, part) =
+            validate_stored_upload_part(&session, range, data.len(), &actual_part_checksum)?;
+        let part_number = part.part_number;
+        let part_size = part.size_bytes;
         if upload_session_is_single_object(session.session_kind) {
             if range.start != 0 || part_size != expected_size {
                 return Err(Error::InvalidInput(
@@ -111,11 +69,7 @@ impl S3CompatibleFileStorageService {
             let actual_content_manifest_sha256 = file_part_manifest_digest(
                 expected_size,
                 session.part_size_bytes,
-                [(
-                    expected_part.part_number,
-                    part_size,
-                    actual_part_checksum.as_str(),
-                )],
+                [(part_number, part_size, actual_part_checksum.as_str())],
             )?;
             if !constant_time_eq(
                 actual_content_manifest_sha256.as_bytes(),

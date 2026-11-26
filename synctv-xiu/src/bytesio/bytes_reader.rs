@@ -48,6 +48,16 @@ impl BytesReader {
         Ok(())
     }
 
+    pub(crate) fn as_slice(&self) -> &[u8] {
+        &self.buffer
+    }
+
+    pub(crate) fn discard(&mut self, count: usize) -> Result<(), BytesReadError> {
+        self.ensure_available(count)?;
+        self.buffer.advance(count);
+        Ok(())
+    }
+
     pub fn read_bytes(&mut self, bytes_num: usize) -> Result<BytesMut, BytesReadError> {
         self.ensure_available(bytes_num)?;
         Ok(self.buffer.split_to(bytes_num))

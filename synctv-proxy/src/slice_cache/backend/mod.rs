@@ -55,6 +55,15 @@ pub enum CacheBackend {
     File(file::FileBackend),
 }
 
+impl CacheBackend {
+    pub(super) fn keys_with_prefix(&self, prefix: &str) -> Vec<String> {
+        match self {
+            Self::Memory(backend) => backend.keys_with_prefix(prefix),
+            Self::File(backend) => backend.keys_with_prefix(prefix),
+        }
+    }
+}
+
 #[async_trait]
 impl SliceCacheBackend for CacheBackend {
     async fn get(&self, key: &str) -> Option<StoredEntry> {
@@ -107,9 +116,6 @@ impl SliceCacheBackend for CacheBackend {
     }
 
     async fn keys(&self) -> Vec<String> {
-        match self {
-            Self::Memory(b) => b.keys().await,
-            Self::File(b) => b.keys().await,
-        }
+        self.keys_with_prefix("")
     }
 }

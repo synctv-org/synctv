@@ -114,10 +114,9 @@ async fn load_cache_file(
     match read_cache_file_header(&path).await {
         Ok(header) => {
             let expected_path = cache_path(cache_dir, dir_levels, &header.key);
-            if path != expected_path {
+            if expected_path.as_deref() != Some(path.as_path()) {
                 tracing::warn!(
                     path = %path.display(),
-                    expected_path = %expected_path.display(),
                     key = %header.key,
                     "Cache file path does not match header key, deleting"
                 );

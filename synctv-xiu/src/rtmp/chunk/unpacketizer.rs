@@ -3,7 +3,10 @@ use {
         ChunkBasicHeader, ChunkInfo, ChunkMessageHeader, ExtendTimestampType, define,
         errors::{UnpackError, UnpackErrorValue},
     },
-    crate::bytesio::bytes_reader::BytesReader,
+    crate::bytesio::{
+        bytes_errors::{BytesReadError, BytesReadErrorValue},
+        bytes_reader::BytesReader,
+    },
     crate::rtmp::messages::define::msg_type_id,
     byteorder::{BigEndian, LittleEndian},
     bytes::{BufMut, BytesMut},
@@ -123,10 +126,7 @@ impl ChunkUnpacketizer {
         tracing::trace!(
             "extend_data length: {}: content:{:X?}",
             self.reader.len(),
-            self.reader
-                .get_remaining_bytes()
-                .split_to(self.reader.len())
-                .to_vec()
+            self.reader.as_slice()
         );
         Ok(())
     }
@@ -210,23 +210,9 @@ impl ChunkUnpacketizer {
     pub fn read_basic_header(&mut self) -> Result<UnpackResult, UnpackError> {
         // Validate the complete basic header before consuming any bytes. A TCP
         // read can end between the two extended-CSID bytes.
-        let byte = self.reader.advance_u8()?;
-
-        let format_id = (byte >> 6) & 0b0000_0011;
-        let encoded_csid = byte & 0b0011_1111;
-        let basic_header_len = match encoded_csid {
-            0 => 2,
-            1 => 3,
-            _ => 1,
-        };
-        self.reader.advance_bytes(basic_header_len)?;
-        self.reader.read_u8()?;
-
-        let csid = match encoded_csid {
-            0 => 64 + u32::from(self.reader.read_u8()?),
-            1 => 64 + u32::from(self.reader.read_u16::<LittleEndian>()?),
-            _ => u32::from(encoded_csid),
-        };
+        let (format_id, csid, len) = super::basic_header::decode(self.reader.as_slice())
+            .ok_or_else(|| BytesReadError::from(BytesReadErrorValue::NotEnoughBytes))?;
+        self.reader.discard(len)?;
 
         if let Some(partial) = self.in_progress_chunks.pop(&csid) {
             self.in_progress_payload_bytes = self
@@ -242,10 +228,9 @@ impl ChunkUnpacketizer {
             || self.current_chunk_info.payload.is_empty()
         {
             tracing::trace!(
-                "read_basic_header, chunk stream id update, new: {}, old:{}, byte: {}",
+                "read_basic_header, chunk stream id update, new: {}, old:{}",
                 csid,
-                self.current_chunk_info.basic_header.chunk_stream_id,
-                byte
+                self.current_chunk_info.basic_header.chunk_stream_id
             );
             match self.chunk_message_headers.get(&csid) {
                 Some(header) => {
@@ -598,20 +583,21 @@ mod tests {
 
     #[test]
     fn three_byte_basic_header_survives_tcp_split_between_extended_csid_bytes() {
-        // CSID 320 is encoded as marker 1 followed by (320 - 64) in
-        // little-endian order: 0x00, 0x01.
-        let chunk = type0_chunk(&[0x01, 0x00, 0x01], 1, 9, &[0xaa]);
-        let mut unpacker = ChunkUnpacketizer::new();
-
-        unpacker.extend_data(&chunk[..2]).unwrap();
-        let partial = unpacker.read_chunks().unwrap_err();
-        assert!(matches!(partial.value, UnpackErrorValue::EmptyChunks));
-
-        unpacker.extend_data(&chunk[2..]).unwrap();
-        let chunks = expect_chunks(unpacker.read_chunks().unwrap());
-        assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0].basic_header.chunk_stream_id, 320);
-        assert_eq!(chunks[0].payload.as_ref(), &[0xaa]);
+        // The three-byte representation is also legal for IDs that fit in two bytes.
+        for (csid, header) in [(319, [1, 255, 0]), (320, [1, 0, 1])] {
+            let chunk = type0_chunk(&header, 1, 9, &[0xaa]);
+            let mut unpacker = ChunkUnpacketizer::new();
+            for byte in &chunk[..2] {
+                unpacker.extend_data(std::slice::from_ref(byte)).unwrap();
+                let partial = unpacker.read_chunks().unwrap_err();
+                assert!(matches!(partial.value, UnpackErrorValue::EmptyChunks));
+            }
+            unpacker.extend_data(&chunk[2..]).unwrap();
+            let chunks = expect_chunks(unpacker.read_chunks().unwrap());
+            assert_eq!(chunks.len(), 1);
+            assert_eq!(chunks[0].basic_header.chunk_stream_id, csid);
+            assert_eq!(chunks[0].payload.as_ref(), &[0xaa]);
+        }
     }
 
     #[test]

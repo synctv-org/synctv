@@ -3,6 +3,7 @@ use crate::{
     Error, Result,
     models::{
         CompleteFileUploadSession, CompleteFileUploadSessionResult, FileBlob, FileBlobCompression,
+        file_storage::upload_plan::planned_part,
     },
     repository::UpsertFileUploadSessionPart,
     service::file_storage::{
@@ -226,12 +227,19 @@ impl S3CompatibleFileStorageService {
                 "file upload session kind is invalid".to_string(),
             ));
         }
-        let upload_id = request
+        let upload_id = session
             .upload_id
             .as_deref()
-            .or(session.upload_id.as_deref())
             .ok_or_else(|| Error::InvalidInput("S3 upload_id is required".to_string()))?;
-        let mut uploaded_parts = Vec::with_capacity(request.parts.len());
+        if request
+            .upload_id
+            .as_deref()
+            .is_some_and(|id| id != upload_id)
+        {
+            return Err(Error::InvalidInput(
+                "S3 upload_id does not match upload session".to_string(),
+            ));
+        }
         for part in &request.parts {
             if part.part_number <= 0 || part.size_bytes <= 0 {
                 return Err(Error::InvalidInput(
@@ -243,30 +251,29 @@ impl S3CompatibleFileStorageService {
                     "S3 multipart completion requires every part checksum_sha256".to_string(),
                 )
             })?;
-            let offset = i64::from(part.part_number - 1)
-                .checked_mul(session.part_size_bytes)
-                .ok_or_else(|| {
-                    Error::InvalidInput("file upload part offset overflow".to_string())
-                })?;
-            let expected_part_size = (session.size_bytes - offset).min(session.part_size_bytes);
-            if offset < 0 || expected_part_size <= 0 || part.size_bytes != expected_part_size {
+            let planned = planned_part(
+                session.size_bytes,
+                session.part_size_bytes,
+                part.part_number,
+            )
+            .filter(|planned| planned.size_bytes == part.size_bytes);
+            let Some(planned) = planned else {
                 return Err(Error::InvalidInput(
                     "S3 multipart completion part size does not match upload session".to_string(),
                 ));
-            }
+            };
             repository
                 .upsert_upload_session_part(UpsertFileUploadSessionPart {
                     storage_backend: &self.config.storage_backend,
                     upload_session_key: &session.upload_session_key,
                     part_index: part.part_number - 1,
                     part_number: part.part_number,
-                    offset_bytes: offset,
+                    offset_bytes: planned.offset_bytes,
                     size_bytes: part.size_bytes,
                     checksum_sha256: Some(checksum),
                     etag: Some(&part.etag),
                 })
                 .await?;
-            uploaded_parts.push(part.part_number);
         }
         let session_parts = repository
             .list_upload_session_parts(&self.config.storage_backend, &session.upload_session_key)

@@ -13,7 +13,8 @@ use wiremock::matchers::{header, method, path};
 use wiremock::{Match, Mock, MockServer, Request, Respond, ResponseTemplate};
 
 use synctv_proxy::slice_cache::{
-    CacheStatus, CachedResourceMeta, SliceCache, SliceCacheBackend, SliceCacheConfig,
+    CacheBackendConfig, CacheStatus, CachedResourceMeta, SliceCache, SliceCacheBackend,
+    SliceCacheConfig,
 };
 
 fn mock_public_origin(mock_server: &MockServer) -> String {
@@ -2597,35 +2598,59 @@ async fn test_etag_consistency_mismatch_triggers_invalidation() {
         .mount(&mock_server)
         .await;
 
-    let config = SliceCacheConfig {
-        slice_size,
-        ..Default::default()
-    };
-    let cache = slice_cache_for_mock(config, &mock_server);
+    let temp = tempfile::tempdir().unwrap();
+    for backend in [
+        CacheBackendConfig::Memory,
+        CacheBackendConfig::File {
+            cache_dir: temp.path().to_owned(),
+            dir_levels: (2, 2),
+        },
+    ] {
+        let cache = SliceCache::try_new_with_client_and_ssrf_guard(
+            SliceCacheConfig {
+                backend,
+                slice_size,
+                ..Default::default()
+            },
+            mock_client(&mock_server),
+            synctv_common::ssrf::SsrfGuard::builder()
+                .extra_allowed_host("cdn.example.com".to_string())
+                .build(),
+        )
+        .await
+        .unwrap();
+        let url = mock_public_url(&mock_server, "/video.mp4");
+        let headers = HashMap::new();
+        let variant = HashMap::from([("Accept-Language".to_owned(), "fr".to_owned())]);
 
-    let url = mock_public_url(&mock_server, "/video.mp4");
-    let headers = HashMap::new();
-
-    // Fetch slice 0 - succeeds, establishes ETag for this resource
-    let s0 = cache
-        .get_or_fetch_slice(&url, &headers, 0, total_size)
-        .await;
-    assert!(s0.is_ok(), "First slice should succeed");
-
-    // Fetch slice 1 - ETag mismatch should return an error
-    let s1 = cache
-        .get_or_fetch_slice(&url, &headers, 1, total_size)
-        .await;
-    assert!(
-        s1.is_err(),
-        "Second slice with different ETag must return an error"
-    );
-
-    let err_msg = s1.unwrap_err().to_string();
-    assert!(
-        err_msg.contains("ETag") || err_msg.contains("etag") || err_msg.contains("modified"),
-        "Error message should mention ETag mismatch, got: {err_msg}"
-    );
+        for request_headers in [&headers, &variant] {
+            let (bytes, status) = cache
+                .get_or_fetch_slice(&url, request_headers, 0, total_size)
+                .await
+                .unwrap();
+            assert_eq!(bytes, slice0);
+            assert_eq!(status, CacheStatus::Miss);
+        }
+        let error = cache
+            .get_or_fetch_slice(&url, &headers, 1, total_size)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("ETag mismatch"), "{error}");
+        let key = SliceCache::compute_cache_key(&url, &headers, 0);
+        assert!(cache.backend().get(&key).await.is_none());
+        let (bytes, status) = cache
+            .get_or_fetch_slice(&url, &variant, 0, total_size)
+            .await
+            .unwrap();
+        assert_eq!(bytes, slice0);
+        assert_eq!(status, CacheStatus::Hit);
+        let (bytes, status) = cache
+            .get_or_fetch_slice(&url, &headers, 0, total_size)
+            .await
+            .unwrap();
+        assert_eq!(bytes, slice0);
+        assert_eq!(status, CacheStatus::Miss);
+    }
 }
 
 /// An established ETag must not silently disappear on a later slice.
@@ -4518,6 +4543,82 @@ async fn test_206_response_accepts_missing_content_range_total_when_slice_matche
 
     assert_eq!(status, CacheStatus::Miss);
     assert_eq!(cached, body);
+}
+
+#[tokio::test]
+async fn wildcard_slice_must_end_at_known_eof() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/tail"))
+        .and(header("Range", "bytes=1000-1999"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(vec![7; 1000])
+                .insert_header("Content-Range", "bytes 1000-1999/*"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let cache = slice_cache_for_mock(
+        SliceCacheConfig {
+            slice_size: 1000,
+            ..Default::default()
+        },
+        &server,
+    );
+    let url = mock_public_url(&server, "/tail");
+    let headers = HashMap::new();
+    let err = cache
+        .get_or_fetch_slice(&url, &headers, 1, 1500)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("Content-Range"), "{err}");
+    assert!(
+        cache
+            .backend()
+            .get(&SliceCache::compute_cache_key(&url, &headers, 1))
+            .await
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn last_slice_of_maximum_length_resource_is_cacheable() {
+    let server = MockServer::start().await;
+    let total = u64::MAX;
+    let index = total / 1000;
+    let start = index * 1000;
+    let body = vec![7; 615];
+    Mock::given(method("GET"))
+        .and(path("/tail"))
+        .and(header("Range", format!("bytes={start}-{total}")))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(body.clone())
+                .insert_header(
+                    "Content-Range",
+                    format!("bytes {start}-{}/{total}", total - 1),
+                ),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let cache = slice_cache_for_mock(
+        SliceCacheConfig {
+            slice_size: 1000,
+            ..Default::default()
+        },
+        &server,
+    );
+    let url = mock_public_url(&server, "/tail");
+    for expected in [CacheStatus::Miss, CacheStatus::Hit] {
+        let (bytes, status) = cache
+            .get_or_fetch_slice(&url, &HashMap::new(), index, total)
+            .await
+            .unwrap();
+        assert_eq!(status, expected);
+        assert_eq!(bytes.as_ref(), body.as_slice());
+    }
 }
 
 /// A corrupted cache file with an absurdly large header_len should be

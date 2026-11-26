@@ -39,6 +39,27 @@ async fn test_file_backend_put_get() -> TestResult {
     Ok(())
 }
 
+#[tokio::test]
+async fn short_and_multibyte_cache_keys_survive_index_rebuild() -> TestResult {
+    let (backend, temp) = make_backend().await?;
+    let keys = ["a", "ab", "abab", "片段", "abcd-ff"];
+    for key in keys {
+        put_entry(&backend, key, key.as_bytes()).await?;
+    }
+    assert!(put_entry(&backend, "", b"empty").await.is_err());
+    drop(backend);
+
+    let reopened = FileBackend::new(temp.path().to_owned(), (2, 2)).await?;
+    let result = reopened.load_index(Duration::from_hours(1)).await?;
+    assert_eq!(result.loaded, keys.len() as u64);
+    assert_eq!(result.errors, 0);
+    for key in keys {
+        let entry = reopened.get(key).await.ok_or("missing cache entry")?;
+        assert_eq!(entry.data.as_ref(), key.as_bytes());
+    }
+    Ok(())
+}
+
 #[test]
 fn test_cache_entry_deadline_saturates() {
     assert_eq!(cache_entry_deadline_millis(1_000, 5), 6_000);

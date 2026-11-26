@@ -104,8 +104,8 @@ mod cache_file_layout;
 #[path = "../synctv-core/src/repository/outbox_retry.rs"]
 mod outbox_retry;
 
-#[path = "../synctv-core/src/service/file_storage/part_count.rs"]
-mod upload_part_count;
+#[path = "../synctv-core/src/models/file_storage/upload_plan.rs"]
+mod upload_plan;
 
 #[path = "../synctv-quic/src/bridge/body_budget.rs"]
 mod body_budget;
@@ -115,3 +115,9 @@ mod totp_window;
 
 #[path = "../synctv-core/src/service/file_storage/read_bounds.rs"]
 mod read_bounds;
+
+#[path = "../synctv-cluster/src/discovery/load_balancer/warmup.rs"]
+mod warmup;
+
+#[path = "../synctv-xiu/src/rtmp/chunk/basic_header.rs"]
+mod basic_header;

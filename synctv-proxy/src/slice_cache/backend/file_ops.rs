@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -33,7 +34,8 @@ pub(super) async fn write_entry(
     key: &str,
     entry: &StoredEntry,
 ) -> anyhow::Result<WrittenFileEntry> {
-    let path = cache_path(cache_dir, dir_levels, key);
+    let path = cache_path(cache_dir, dir_levels, key)
+        .ok_or_else(|| anyhow::anyhow!("Invalid file cache key"))?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).await?;
     }
@@ -138,11 +140,32 @@ pub(super) fn expired_keys(index: &FileIndex) -> Vec<String> {
         .collect()
 }
 
-pub(super) fn cache_path(cache_dir: &Path, dir_levels: (usize, usize), key: &str) -> PathBuf {
-    let (level1_len, level2_len) = dir_levels;
-    let level1 = &key[..level1_len.min(key.len())];
-    let level2 = &key[level1_len..((level1_len + level2_len).min(key.len()))];
-    cache_dir.join(level1).join(level2).join(key)
+pub(super) fn cache_path(
+    cache_dir: &Path,
+    dir_levels: (usize, usize),
+    key: &str,
+) -> Option<PathBuf> {
+    let end1 = key.floor_char_boundary(dir_levels.0);
+    let end2 = key.floor_char_boundary(dir_levels.0.saturating_add(dir_levels.1));
+    let shards = [
+        (dir_levels.0, &key[..end1]),
+        (dir_levels.1, &key[end1..end2]),
+    ];
+    let mut path = cache_dir.to_owned();
+    for component in shards
+        .into_iter()
+        .filter(|(width, _)| *width != 0)
+        // Keep a fixed directory depth even when a short key runs out of bytes.
+        // Otherwise one key's file can occupy another key's shard directory.
+        .map(|(_, shard)| if shard.is_empty() { "_" } else { shard })
+        .chain([key])
+    {
+        if component == ".tmp" || Path::new(component).file_name() != Some(OsStr::new(component)) {
+            return None;
+        }
+        path.push(component);
+    }
+    Some(path)
 }
 
 fn tmp_dir(cache_dir: &Path) -> PathBuf {

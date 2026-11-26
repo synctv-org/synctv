@@ -30,7 +30,7 @@ use {
         utils::Uuid,
     },
     async_trait::async_trait,
-    bytes::BytesMut,
+    bytes::{Buf, Bytes, BytesMut},
     parking_lot::RwLock,
     std::collections::VecDeque,
     std::fmt,
@@ -118,24 +118,19 @@ fn normalize_enhanced_video_data(data: &mut BytesMut) -> Result<bool, SessionErr
         }
     };
 
-    let mut normalized = BytesMut::with_capacity(data.len());
-    normalized.extend_from_slice(&[frame_type << 4 | codec_id, legacy_packet_type]);
-    match packet_type {
-        PACKET_TYPE_CODED_FRAMES => {
-            if data.len() < 8 {
-                return Err(invalid_enhanced_video_data(
-                    "coded frame is missing its composition time",
-                ));
-            }
-            normalized.extend_from_slice(&data[5..]);
+    if packet_type == PACKET_TYPE_CODED_FRAMES {
+        if data.len() < 8 {
+            return Err(invalid_enhanced_video_data(
+                "coded frame is missing its composition time",
+            ));
         }
-        PACKET_TYPE_SEQUENCE_START | PACKET_TYPE_SEQUENCE_END | PACKET_TYPE_CODED_FRAMES_X => {
-            normalized.extend_from_slice(&[0, 0, 0]);
-            normalized.extend_from_slice(&data[5..]);
-        }
-        _ => unreachable!("enhanced RTMP packet type was validated above"),
+        // Keep the composition time and payload in place after the legacy header.
+        data.advance(3);
+    } else {
+        data[2..5].fill(0);
     }
-    *data = normalized;
+    data[0] = frame_type << 4 | codec_id;
+    data[1] = legacy_packet_type;
     Ok(true)
 }
 
@@ -302,7 +297,7 @@ impl Common {
                 Some(data) => match data {
                     FrameData::Audio { timestamp, data } => {
                         let data_size = data.len();
-                        self.send_audio(BytesMut::from(data), timestamp).await?;
+                        self.send_audio(data, timestamp).await?;
 
                         if let Some(sender) = &self.statistic_data_sender {
                             let statistic_audio_data = StatisticData::Audio {
@@ -318,7 +313,7 @@ impl Common {
                     }
                     FrameData::Video { timestamp, data } => {
                         let data_size = data.len();
-                        self.send_video(BytesMut::from(data), timestamp).await?;
+                        self.send_video(data, timestamp).await?;
 
                         if let Some(sender) = &self.statistic_data_sender {
                             let statistic_video_data = StatisticData::Video {
@@ -334,7 +329,7 @@ impl Common {
                         }
                     }
                     FrameData::MetaData { timestamp, data } => {
-                        self.send_metadata(BytesMut::from(data), timestamp).await?;
+                        self.send_metadata(data, timestamp).await?;
                     }
                     FrameData::MediaInfo { .. } => {}
                 },
@@ -348,61 +343,57 @@ impl Common {
         }
     }
 
-    pub async fn send_audio(&mut self, data: BytesMut, timestamp: u32) -> Result<(), SessionError> {
-        let mut chunk_info = ChunkInfo::new(
-            csid_type::AUDIO,
-            chunk_type::TYPE_0,
-            timestamp,
-            usize_to_u32_saturating(data.len()),
-            msg_type_id::AUDIO,
-            0,
-            data,
-        );
-
-        if let Some(packetizer) = &mut self.packetizer {
-            packetizer.write_chunk(&mut chunk_info).await?;
-        }
-
-        Ok(())
+    pub async fn send_audio(
+        &mut self,
+        data: impl Into<Bytes>,
+        timestamp: u32,
+    ) -> Result<(), SessionError> {
+        self.send_media(csid_type::AUDIO, msg_type_id::AUDIO, timestamp, data.into())
+            .await
     }
 
-    pub async fn send_video(&mut self, data: BytesMut, timestamp: u32) -> Result<(), SessionError> {
-        let mut chunk_info = ChunkInfo::new(
-            csid_type::VIDEO,
-            chunk_type::TYPE_0,
-            timestamp,
-            usize_to_u32_saturating(data.len()),
-            msg_type_id::VIDEO,
-            0,
-            data,
-        );
-
-        if let Some(packetizer) = &mut self.packetizer {
-            packetizer.write_chunk(&mut chunk_info).await?;
-        }
-
-        Ok(())
+    pub async fn send_video(
+        &mut self,
+        data: impl Into<Bytes>,
+        timestamp: u32,
+    ) -> Result<(), SessionError> {
+        self.send_media(csid_type::VIDEO, msg_type_id::VIDEO, timestamp, data.into())
+            .await
     }
 
     pub async fn send_metadata(
         &mut self,
-        data: BytesMut,
+        data: impl Into<Bytes>,
         timestamp: u32,
     ) -> Result<(), SessionError> {
-        let mut chunk_info = ChunkInfo::new(
+        self.send_media(
             csid_type::DATA_AMF0_AMF3,
-            chunk_type::TYPE_0,
-            timestamp,
-            usize_to_u32_saturating(data.len()),
             msg_type_id::DATA_AMF0,
-            0,
-            data,
-        );
+            timestamp,
+            data.into(),
+        )
+        .await
+    }
 
+    async fn send_media(
+        &mut self,
+        csid: u32,
+        message_type: u8,
+        timestamp: u32,
+        data: Bytes,
+    ) -> Result<(), SessionError> {
         if let Some(packetizer) = &mut self.packetizer {
-            packetizer.write_chunk(&mut chunk_info).await?;
+            let mut chunk = ChunkInfo::new(
+                csid,
+                chunk_type::TYPE_0,
+                timestamp,
+                usize_to_u32_saturating(data.len()),
+                message_type,
+                0,
+                data,
+            );
+            packetizer.write_chunk(&mut chunk).await?;
         }
-
         Ok(())
     }
 
@@ -538,21 +529,7 @@ impl Common {
             value: SessionErrorValue::StreamHubEventSendErr,
         })?);
 
-        let statistic_data_sender: Option<StatisticDataSender> = result.1;
-
-        if let Some(sender) = &statistic_data_sender {
-            let statistic_subscriber = StatisticData::Subscriber {
-                id: self.session_id,
-                remote_addr: remote_addr_to_string(self.remote_addr),
-                start_time: chrono::Local::now(),
-                sub_type: SubscribeType::RtmpPull,
-            };
-            if let Err(err) = sender.send(statistic_subscriber) {
-                tracing::error!("send statistic_subscriber err: {err}");
-            }
-        }
-
-        self.statistic_data_sender = statistic_data_sender;
+        self.statistic_data_sender = result.1;
 
         Ok(())
     }
@@ -929,6 +906,11 @@ mod tests {
             truncated.value,
             SessionErrorValue::InvalidEnhancedVideoData(_)
         ));
+
+        let incomplete = b"\x91avc1\x00\x01";
+        let mut data = BytesMut::from(&incomplete[..]);
+        assert!(normalize_enhanced_video_data(&mut data).is_err());
+        assert_eq!(&data[..], incomplete);
 
         let unknown = normalize_enhanced_video_data(&mut BytesMut::from(&b"\x96hvc1"[..]))
             .expect_err("multitrack packet must fail until multitrack is supported");

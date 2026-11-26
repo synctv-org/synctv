@@ -6,6 +6,7 @@ use {
     },
     crate::bytesio::{bytes_writer::AsyncBytesWriter, net_io::TNetIO},
     byteorder::{BigEndian, LittleEndian},
+    bytes::Buf,
     std::{num::NonZeroUsize, sync::Arc, time::Duration},
     tokio::sync::Mutex,
 };
@@ -40,7 +41,7 @@ impl ChunkPacketizer {
             max_chunk_size: CHUNK_SIZE as usize,
         }
     }
-    fn zip_chunk_header(&mut self, chunk_info: &mut ChunkInfo) -> PackResult {
+    fn zip_chunk_header<P>(&mut self, chunk_info: &mut ChunkInfo<P>) {
         chunk_info.basic_header.format = 0;
 
         if let Some(pre_header) = self
@@ -81,8 +82,6 @@ impl ChunkPacketizer {
             );
             chunk_info.message_header.timestamp_delta = 0;
         }
-
-        PackResult::Success
     }
 
     fn write_basic_header(&mut self, fmt: u8, csid: u32) -> Result<(), PackError> {
@@ -185,15 +184,21 @@ impl ChunkPacketizer {
         Ok(())
     }
 
-    pub async fn write_chunk(&mut self, chunk_info: &mut ChunkInfo) -> Result<(), PackError> {
+    pub async fn write_chunk<P: Buf + AsRef<[u8]>>(
+        &mut self,
+        chunk_info: &mut ChunkInfo<P>,
+    ) -> Result<(), PackError> {
+        if chunk_info.message_header.msg_length > 0x00ff_ffff {
+            return Err(
+                PackErrorValue::MessageTooLarge(chunk_info.message_header.msg_length).into(),
+            );
+        }
         self.zip_chunk_header(chunk_info);
 
         tracing::trace!(
             "write_chunk  current timestamp: {}",
             chunk_info.message_header.timestamp,
         );
-
-        let mut whole_payload_size = chunk_info.payload.len();
 
         self.write_basic_header(
             chunk_info.basic_header.format,
@@ -217,27 +222,17 @@ impl ChunkPacketizer {
             self.write_extened_timestamp(extended_timestamp)?;
         }
 
-        let mut cur_payload_size: usize;
-        while whole_payload_size > 0 {
-            cur_payload_size = if whole_payload_size > self.max_chunk_size {
-                self.max_chunk_size
-            } else {
-                whole_payload_size
-            };
-
-            let payload_bytes = chunk_info.payload.split_to(cur_payload_size);
-            self.writer.write(&payload_bytes[0..])?;
-
-            whole_payload_size -= cur_payload_size;
-
-            if whole_payload_size > 0 {
+        let payload = chunk_info.payload.as_ref();
+        for (index, part) in payload.chunks(self.max_chunk_size).enumerate() {
+            if index > 0 {
                 self.write_basic_header(3, chunk_info.basic_header.chunk_stream_id)?;
-
-                if let Some(extended_timestamp) = extended_timestamp {
-                    self.write_extened_timestamp(extended_timestamp)?;
+                if let Some(timestamp) = extended_timestamp {
+                    self.write_extened_timestamp(timestamp)?;
                 }
             }
+            self.writer.write(part)?;
         }
+        chunk_info.payload.advance(payload.len());
         self.writer.flush_timeout(WRITE_FLUSH_TIMEOUT).await?;
 
         Ok(())
@@ -305,6 +300,35 @@ mod tests {
         };
         assert_eq!(chunks[0].basic_header.chunk_stream_id, 320);
         assert_eq!(chunks[0].payload.as_ref(), &[0xaa]);
+    }
+
+    #[tokio::test]
+    async fn shared_multichunk_payload_round_trips_after_empty_message() {
+        let captured = Arc::new(ParkingMutex::new(Vec::new()));
+        let io: Arc<Mutex<Box<dyn TNetIO + Send + Sync>>> =
+            Arc::new(Mutex::new(Box::new(CaptureIo {
+                bytes: Arc::clone(&captured),
+            })));
+        let mut packetizer = ChunkPacketizer::new(io);
+        let timestamp = 0x0100_0000;
+        let data = Bytes::from(vec![0xab; CHUNK_SIZE as usize * 2 + 1]);
+
+        for payload in [Bytes::new(), data.clone()] {
+            let length = u32::try_from(payload.len()).unwrap();
+            let mut chunk = ChunkInfo::new(7, 0, timestamp, length, 9, 1, payload);
+            packetizer.write_chunk(&mut chunk).await.unwrap();
+            assert!(chunk.payload.is_empty());
+        }
+        let mut unpacker = ChunkUnpacketizer::new();
+        unpacker.update_max_chunk_size(CHUNK_SIZE as usize);
+        unpacker.extend_data(&captured.lock()).unwrap();
+        let UnpackResult::Chunks(chunks) = unpacker.read_chunks().unwrap() else {
+            panic!("both messages should unpack")
+        };
+        assert_eq!(chunks.len(), 2);
+        assert!(chunks[0].payload.is_empty());
+        assert_eq!(chunks[1].message_header.timestamp, timestamp);
+        assert_eq!(chunks[1].payload, data);
     }
 
     #[tokio::test]

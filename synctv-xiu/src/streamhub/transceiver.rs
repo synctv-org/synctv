@@ -1,7 +1,7 @@
 use super::{
     define::{
         DataReceiver, DataSender, FrameData, FrameDataReceiver, FrameDataSender, FrameTrySendError,
-        PacketData, PacketDataReceiver, PacketDataSender, PublisherActivityCallback, StatisticData,
+        PacketData, PacketDataReceiver, PacketDataSender, PublisherActivityCallback,
         StatisticDataReceiver, StatisticDataSender, TStreamHandler, TransceiverEvent,
         TransceiverEventExecuteResultSender, TransceiverEventReceiver,
     },
@@ -10,7 +10,6 @@ use super::{
     stream::StreamIdentifier,
     utils::Uuid,
 };
-use crate::flv::define::aac_packet_type;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -32,24 +31,20 @@ fn map_task_join_error(task_name: &str, error: &tokio::task::JoinError) -> Strea
     }
 }
 
-/// Tracks per-subscriber frame drop counts for diagnostics.
-pub(crate) struct SubscriberDropCounter {
-    pub(crate) sender: FrameDataSender,
+/// The counter is shared with fan-out snapshots and identifies this registration.
+pub(crate) struct SubscriberDropCounter<S> {
+    pub(crate) sender: S,
     pub(crate) drop_count: Arc<AtomicU64>,
 }
 
-/// Tracks per-subscriber packet drop counts for diagnostics.
-pub(crate) struct PacketSubscriberDropCounter {
-    sender: PacketDataSender,
-    drop_count: Arc<AtomicU64>,
-}
+type SubscriberMap<S> = Arc<Mutex<HashMap<Uuid, SubscriberDropCounter<S>>>>;
 
 pub(crate) struct ReceiveEventLoopContext {
     pub(crate) stream_handler: Arc<dyn TStreamHandler>,
     pub(crate) exit: broadcast::Sender<()>,
     pub(crate) receiver: TransceiverEventReceiver,
-    pub(crate) packet_senders: Arc<Mutex<HashMap<Uuid, PacketSubscriberDropCounter>>>,
-    pub(crate) frame_senders: Arc<Mutex<HashMap<Uuid, SubscriberDropCounter>>>,
+    pub(crate) packet_senders: SubscriberMap<PacketDataSender>,
+    pub(crate) frame_senders: SubscriberMap<FrameDataSender>,
     pub(crate) frame_generation: Arc<AtomicU64>,
     pub(crate) packet_generation: Arc<AtomicU64>,
     pub(crate) statistic_sender: StatisticDataSender,
@@ -58,7 +53,7 @@ pub(crate) struct ReceiveEventLoopContext {
 
 pub(crate) struct FrameDataLoopContext {
     pub(crate) stream_handler: Arc<dyn TStreamHandler>,
-    pub(crate) frame_senders: Arc<Mutex<HashMap<Uuid, SubscriberDropCounter>>>,
+    pub(crate) frame_senders: SubscriberMap<FrameDataSender>,
     pub(crate) generation: Arc<AtomicU64>,
     pub(crate) statistics_data: Arc<Mutex<StatisticsStream>>,
     pub(crate) publisher_activity: Option<Arc<PublisherActivityTracker>>,
@@ -88,25 +83,35 @@ fn send_subscribe_result(
     }
 }
 
-/// Drop the given subscribers from the shared statistics after they were found
-/// closed during fan-out. Identical for frame and packet subscribers.
-async fn evict_subscriber_stats(
-    statistics_data: &Arc<Mutex<StatisticsStream>>,
-    closed_ids: &[Uuid],
+async fn evict_closed_subscribers<S>(
+    senders: &Mutex<HashMap<Uuid, SubscriberDropCounter<S>>>,
+    generation: &AtomicU64,
+    statistics: &Mutex<StatisticsStream>,
+    closed: Vec<(Uuid, Arc<AtomicU64>)>,
 ) {
-    let mut stats = statistics_data.lock().await;
-    for id in closed_ids {
-        stats.subscribers.remove(id);
+    if closed.is_empty() {
+        return;
     }
-    stats.subscriber_count = stats.subscriber_count.saturating_sub(closed_ids.len());
+    // All membership changes take the statistics lock before changing routing.
+    let mut stats = statistics.lock().await;
+    let mut senders = senders.lock().await;
+    for (id, registration) in closed {
+        if let std::collections::hash_map::Entry::Occupied(entry) = senders.entry(id)
+            && Arc::ptr_eq(&entry.get().drop_count, &registration)
+        {
+            entry.remove();
+            stats.remove_subscriber(&id);
+            generation.fetch_add(1, Ordering::Release);
+        }
+    }
 }
 
 /// Fans publisher data out to subscribers and maintains stream statistics.
 pub(crate) struct StreamDataTransceiver {
     data_receiver: DataReceiver,
     event_receiver: TransceiverEventReceiver,
-    id_to_frame_sender: Arc<Mutex<HashMap<Uuid, SubscriberDropCounter>>>,
-    id_to_packet_sender: Arc<Mutex<HashMap<Uuid, PacketSubscriberDropCounter>>>,
+    id_to_frame_sender: SubscriberMap<FrameDataSender>,
+    id_to_packet_sender: SubscriberMap<PacketDataSender>,
     frame_generation: Arc<AtomicU64>,
     packet_generation: Arc<AtomicU64>,
     statistic_data_sender: StatisticDataSender,
@@ -200,7 +205,7 @@ impl StreamDataTransceiver {
     fn fan_out_frame(
         snapshot: &[(Uuid, FrameDataSender, Arc<AtomicU64>)],
         data: &FrameData,
-    ) -> Vec<Uuid> {
+    ) -> Vec<(Uuid, Arc<AtomicU64>)> {
         let mut closed_ids = Vec::new();
         for (id, sender, drop_count) in snapshot {
             match sender.try_send(data.clone()) {
@@ -216,7 +221,7 @@ impl StreamDataTransceiver {
                     }
                 }
                 Err(FrameTrySendError::Closed(_)) => {
-                    closed_ids.push(*id);
+                    closed_ids.push((*id, Arc::clone(drop_count)));
                 }
             }
         }
@@ -226,7 +231,7 @@ impl StreamDataTransceiver {
     fn fan_out_packet(
         snapshot: &[(Uuid, PacketDataSender, Arc<AtomicU64>)],
         data: &PacketData,
-    ) -> Vec<Uuid> {
+    ) -> Vec<(Uuid, Arc<AtomicU64>)> {
         let mut closed_ids = Vec::new();
         for (id, sender, drop_count) in snapshot {
             match sender.try_send(data.clone()) {
@@ -242,7 +247,7 @@ impl StreamDataTransceiver {
                     }
                 }
                 Err(mpsc::error::TrySendError::Closed(_)) => {
-                    closed_ids.push(*id);
+                    closed_ids.push((*id, Arc::clone(drop_count)));
                 }
             }
         }
@@ -279,20 +284,13 @@ impl StreamDataTransceiver {
 
             let closed_ids = Self::fan_out_frame(cached_snapshot, &val);
 
-            if !closed_ids.is_empty() {
-                let mut senders = context.frame_senders.lock().await;
-                for id in &closed_ids {
-                    senders.remove(id);
-                    tracing::debug!("Removed closed frame subscriber: {}", id);
-                }
-                drop(senders);
-                context.generation.fetch_add(1, Ordering::Release);
-                // Force a snapshot rebuild on the next frame by making the
-                // cached generation differ from the bumped global generation.
-                *cached_gen = cached_gen.wrapping_sub(1);
-
-                evict_subscriber_stats(&context.statistics_data, &closed_ids).await;
-            }
+            evict_closed_subscribers(
+                &context.frame_senders,
+                &context.generation,
+                &context.statistics_data,
+                closed_ids,
+            )
+            .await;
         }
         Ok(())
     }
@@ -347,7 +345,7 @@ impl StreamDataTransceiver {
 
     async fn receive_packet_data(
         data: Option<PacketData>,
-        packet_senders: &Arc<Mutex<HashMap<Uuid, PacketSubscriberDropCounter>>>,
+        packet_senders: &SubscriberMap<PacketDataSender>,
         generation: &Arc<AtomicU64>,
         cached_snapshot: &mut Vec<(Uuid, PacketDataSender, Arc<AtomicU64>)>,
         cached_gen: &mut u64,
@@ -375,27 +373,14 @@ impl StreamDataTransceiver {
 
             let closed_ids = Self::fan_out_packet(cached_snapshot, &val);
 
-            if !closed_ids.is_empty() {
-                let mut senders = packet_senders.lock().await;
-                for id in &closed_ids {
-                    senders.remove(id);
-                    tracing::debug!("Removed closed packet subscriber: {}", id);
-                }
-                drop(senders);
-                generation.fetch_add(1, Ordering::Release);
-                // Force a snapshot rebuild on the next packet by making the
-                // cached generation differ from the bumped global generation.
-                *cached_gen = cached_gen.wrapping_sub(1);
-
-                evict_subscriber_stats(statistics_data, &closed_ids).await;
-            }
+            evict_closed_subscribers(packet_senders, generation, statistics_data, closed_ids).await;
         }
     }
 
     fn receive_packet_data_loop(
         mut exit: broadcast::Receiver<()>,
         mut receiver: PacketDataReceiver,
-        packet_senders: Arc<Mutex<HashMap<Uuid, PacketSubscriberDropCounter>>>,
+        packet_senders: SubscriberMap<PacketDataSender>,
         generation: Arc<AtomicU64>,
         event_sender: Option<mpsc::UnboundedSender<TransceiverEvent>>,
         statistics_data: Arc<Mutex<StatisticsStream>>,
@@ -442,154 +427,27 @@ impl StreamDataTransceiver {
         })
     }
 
-    async fn receive_statistics_data(
-        data: Option<StatisticData>,
-        statistics_data: &Arc<Mutex<StatisticsStream>>,
-    ) {
-        if let Some(val) = data {
-            match val {
-                StatisticData::Audio {
-                    uuid,
-                    data_size,
-                    aac_packet_type,
-                    duration: _,
-                } => {
-                    let mut guard = statistics_data.lock().await;
-                    if let Some(uid) = uuid {
-                        if let Some(sub) = guard.subscribers.get_mut(&uid) {
-                            sub.send_bytes += data_size;
-                        }
-                        guard.total_send_bytes += data_size;
-                    } else {
-                        if aac_packet_type == aac_packet_type::AAC_RAW {
-                            guard.publisher.audio.recv_bytes += data_size;
-                        }
-                        guard.total_recv_bytes += data_size;
-                    }
-                }
-                StatisticData::Video {
-                    uuid,
-                    data_size,
-                    frame_count,
-                    is_key_frame,
-                    duration: _,
-                } => {
-                    let mut guard = statistics_data.lock().await;
-                    if let Some(uid) = uuid {
-                        if let Some(sub) = guard.subscribers.get_mut(&uid) {
-                            sub.send_bytes += data_size;
-                            sub.total_send_bytes += data_size;
-                        }
-                        guard.total_send_bytes += data_size;
-                    } else {
-                        guard.total_recv_bytes += data_size;
-                        guard.publisher.video.recv_bytes += data_size;
-                        guard.publisher.video.recv_frame_count += frame_count;
-                        guard.publisher.recv_bytes += data_size;
-                        if let Some(is_key) = is_key_frame {
-                            if is_key {
-                                guard.publisher.video.gop =
-                                    guard.publisher.video.recv_frame_count_for_gop;
-                                guard.publisher.video.recv_frame_count_for_gop = 1;
-                            } else {
-                                guard.publisher.video.recv_frame_count_for_gop += frame_count;
-                            }
-                        }
-                    }
-                }
-                StatisticData::AudioCodec {
-                    sound_format,
-                    profile,
-                    samplerate,
-                    channels,
-                } => {
-                    let audio_codec_data = &mut statistics_data.lock().await.publisher.audio;
-                    audio_codec_data.sound_format = sound_format;
-                    audio_codec_data.profile = profile;
-                    audio_codec_data.samplerate = samplerate;
-                    audio_codec_data.channels = channels;
-                }
-                StatisticData::VideoCodec {
-                    codec,
-                    profile,
-                    level,
-                    width,
-                    height,
-                } => {
-                    let video_codec_data = &mut statistics_data.lock().await.publisher.video;
-                    video_codec_data.codec = codec;
-                    video_codec_data.profile = profile;
-                    video_codec_data.level = level;
-                    video_codec_data.width = width;
-                    video_codec_data.height = height;
-                }
-                StatisticData::HevcCodec {
-                    codec,
-                    profile: _,
-                    level: _,
-                    width,
-                    height,
-                } => {
-                    let video_codec_data = &mut statistics_data.lock().await.publisher.video;
-                    video_codec_data.codec = codec;
-                    video_codec_data.width = width;
-                    video_codec_data.height = height;
-                }
-                StatisticData::Publisher {
-                    id,
-                    remote_addr,
-                    start_time,
-                } => {
-                    let publisher = &mut statistics_data.lock().await.publisher;
-                    publisher.id = id;
-                    publisher.remote_address = remote_addr;
-                    publisher.start_time = start_time;
-                }
-                StatisticData::Subscriber {
-                    id,
-                    remote_addr,
-                    sub_type,
-                    start_time,
-                } => {
-                    let subscriber = &mut statistics_data.lock().await.subscribers;
-                    let sub = statistics::StatisticSubscriber {
-                        id,
-                        remote_address: remote_addr,
-                        sub_type,
-                        start_time,
-                        send_bitrate: 0,
-                        send_bytes: 0,
-                        total_send_bytes: 0,
-                    };
-                    subscriber.insert(id, sub);
-                }
-            }
-        }
-    }
-
     fn receive_statistics_data_loop(
-        mut exit_receive: broadcast::Receiver<()>,
-        exit_caclulate: broadcast::Receiver<()>,
+        exit: broadcast::Receiver<()>,
         mut receiver: StatisticDataReceiver,
-        statistics_data: Arc<Mutex<StatisticsStream>>,
+        statistics: Arc<Mutex<StatisticsStream>>,
     ) -> tokio::task::JoinHandle<()> {
-        let mut statistic_calculate =
-            statistics::StatisticsCalculate::new(statistics_data.clone(), exit_caclulate);
-        tokio::spawn(async move { statistic_calculate.start().await });
-
+        const BATCH_SIZE: usize = 64;
         tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    data = receiver.recv() => {
-                        if data.is_none() {
-                            break;
-                        }
-                        Self::receive_statistics_data(data, &statistics_data).await;
-                    }
-                    _ = exit_receive.recv() => {
-                        break;
+            let mut calculator =
+                statistics::StatisticsCalculate::new(Arc::clone(&statistics), exit);
+            let collect = async {
+                let mut batch = Vec::new();
+                while receiver.recv_many(&mut batch, BATCH_SIZE).await > 0 {
+                    let mut stats = statistics.lock().await;
+                    for data in batch.drain(..) {
+                        stats.record(data);
                     }
                 }
+            };
+            tokio::select! {
+                () = collect => {}
+                () = calculator.start() => {}
             }
         })
     }
@@ -627,7 +485,7 @@ impl StreamDataTransceiver {
                         result_sender,
                     } => {
                         if let Err(err) = stream_handler
-                            .send_prior_data(sender.clone(), info.sub_type)
+                            .send_prior_data(sender.clone(), info.sub_type.clone())
                             .await
                         {
                             tracing::warn!(
@@ -636,51 +494,48 @@ impl StreamDataTransceiver {
                             send_subscribe_result(result_sender, Err(err));
                             continue;
                         }
+                        let mut stats = statistics_data.lock().await;
                         match sender {
-                            DataSender::Frame {
-                                sender: frame_sender,
-                            } => {
+                            DataSender::Frame { sender } => {
+                                if packet_senders.lock().await.remove(&info.id).is_some() {
+                                    packet_generation.fetch_add(1, Ordering::Release);
+                                }
                                 frame_senders.lock().await.insert(
                                     info.id,
                                     SubscriberDropCounter {
-                                        sender: frame_sender,
+                                        sender,
                                         drop_count: Arc::new(AtomicU64::new(0)),
                                     },
                                 );
                                 frame_generation.fetch_add(1, Ordering::Release);
                             }
-                            DataSender::Packet {
-                                sender: packet_sender,
-                            } => {
+                            DataSender::Packet { sender } => {
+                                if frame_senders.lock().await.remove(&info.id).is_some() {
+                                    frame_generation.fetch_add(1, Ordering::Release);
+                                }
                                 packet_senders.lock().await.insert(
                                     info.id,
-                                    PacketSubscriberDropCounter {
-                                        sender: packet_sender,
+                                    SubscriberDropCounter {
+                                        sender,
                                         drop_count: Arc::new(AtomicU64::new(0)),
                                     },
                                 );
                                 packet_generation.fetch_add(1, Ordering::Release);
                             }
                         }
-
+                        stats.register_subscriber(info);
+                        drop(stats);
                         send_subscribe_result(result_sender, Ok(statistic_sender.clone()));
-
-                        let mut statistics_data = statistics_data.lock().await;
-                        statistics_data.subscriber_count += 1;
                     }
                     TransceiverEvent::UnSubscribe { info } => {
-                        {
-                            frame_senders.lock().await.remove(&info.id);
-                            let mut packet_senders = packet_senders.lock().await;
-                            packet_senders.remove(&info.id);
+                        let mut stats = statistics_data.lock().await;
+                        if frame_senders.lock().await.remove(&info.id).is_some() {
+                            frame_generation.fetch_add(1, Ordering::Release);
                         }
-                        frame_generation.fetch_add(1, Ordering::Release);
-                        packet_generation.fetch_add(1, Ordering::Release);
-
-                        let mut statistics_data = statistics_data.lock().await;
-                        statistics_data.subscribers.remove(&info.id);
-                        statistics_data.subscriber_count =
-                            statistics_data.subscriber_count.saturating_sub(1);
+                        if packet_senders.lock().await.remove(&info.id).is_some() {
+                            packet_generation.fetch_add(1, Ordering::Release);
+                        }
+                        stats.remove_subscriber(&info.id);
                     }
                     TransceiverEvent::UnPublish {} => {
                         if let Err(err) = exit.send(()) {
@@ -741,7 +596,6 @@ impl StreamDataTransceiver {
         }
 
         let stats_handle = Self::receive_statistics_data_loop(
-            tx.subscribe(),
             tx.subscribe(),
             self.statistic_data_receiver,
             self.statistic_data.clone(),

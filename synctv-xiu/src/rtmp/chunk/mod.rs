@@ -98,28 +98,19 @@ impl ChunkHeader {
 // }
 
 #[derive(Eq, PartialEq, Clone)]
-pub struct ChunkInfo {
+pub struct ChunkInfo<P = BytesMut> {
     pub basic_header: ChunkBasicHeader,
     pub message_header: ChunkMessageHeader,
-    pub payload: BytesMut,
+    pub payload: P,
 }
 
-impl fmt::Debug for ChunkInfo {
+impl<P: AsRef<[u8]>> fmt::Debug for ChunkInfo<P> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let hex_payload = hex::encode(&self.payload);
-
-        let formatted_payload = hex_payload
-            .as_bytes()
-            .chunks(2)
-            .map(|chunk| format!("0x{}{}", chunk[0] as char, chunk[1] as char))
-            .collect::<Vec<_>>()
-            .join(", ");
-
-        write!(
-            f,
-            "ChunkInfo {{ basic_header: {:?}, message_header: {:?}, payload: {} }}",
-            self.basic_header, self.message_header, formatted_payload
-        )
+        f.debug_struct("ChunkInfo")
+            .field("basic_header", &self.basic_header)
+            .field("message_header", &self.message_header)
+            .field("payload_len", &self.payload.as_ref().len())
+            .finish()
     }
 }
 
@@ -129,7 +120,7 @@ impl Default for ChunkInfo {
     }
 }
 
-impl ChunkInfo {
+impl<P> ChunkInfo<P> {
     #[must_use]
     pub const fn new(
         csid: u32,
@@ -138,7 +129,7 @@ impl ChunkInfo {
         msg_length: u32,
         msg_type_id: u8,
         msg_stream_id: u32,
-        payload: BytesMut,
+        payload: P,
     ) -> Self {
         Self {
             basic_header: ChunkBasicHeader::new(format, csid),

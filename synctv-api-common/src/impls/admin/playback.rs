@@ -1,7 +1,6 @@
+use synctv_core::models::media::PlaybackResult;
 use synctv_core::{
-    models::{
-        PlaybackKind, PlaylistId, ProviderTarget, RoomId, RoomPlaybackState, UserId, UserStatus,
-    },
+    models::{PlaylistId, ProviderTarget, RoomId, RoomPlaybackState, UserId, UserStatus},
     service::{PlaybackStatePatch, PlaybackStateUpdateRequest},
 };
 
@@ -9,11 +8,11 @@ use super::{
     AdminApiImpl, ApiError, LOCAL_MANAGEMENT_ACTOR_USER_ID, PlaybackFanoutActor,
     ProviderPlaybackLifecycleApi, RequestContext, playback_client_profile_from_proto,
     playback_expires_at, playback_generation_error_allows_state_only,
-    playback_snapshot_error_indicates_stale_state, provider_playback_info_to_model,
-    public_id_encode_error, try_playback_state_to_proto, try_playback_to_proto,
+    playback_snapshot_error_indicates_stale_state, public_id_encode_error,
+    try_playback_state_to_proto, try_playback_to_proto,
 };
 use crate::impls::client::convert::{PlaybackHttpSigningContext, dynamic_playlist_source_fields};
-use crate::impls::playback::normalized_provider_duration;
+use crate::impls::playback::build_provider_playback;
 
 struct DynamicPlaylistPlaybackRequest<'a> {
     room_id_model: &'a RoomId,
@@ -95,35 +94,11 @@ impl AdminApiImpl {
             .generate_playback(&ctx, &media.source_config)
             .await
             .map_err(ApiError::from)?;
-        let playback_kind = provider_result
-            .playback_kind
-            .unwrap_or(PlaybackKind::Regular);
-        let duration_seconds =
-            normalized_provider_duration(Some(playback_kind), provider_result.duration_seconds);
-
-        let mut builder = synctv_core::models::media::PlaybackResult::builder(
-            media.playlist_id,
-            media.room_id,
-            media.name.clone(),
-            media.position,
-        )
-        .id(media.id)
-        .provider(provider_result.provider)
-        .provider_instance_name(provider_result.provider_instance_name.clone())
-        .default_mode(provider_result.default_mode.clone())
-        .duration_seconds(duration_seconds)
-        .playback_kind(playback_kind);
-
-        for (mode_name, provider_info) in provider_result.playback_infos {
-            let info = provider_playback_info_to_model(&provider_info);
-            builder = builder.add_mode(mode_name, info);
-        }
-        builder = builder.metadata(provider_result.metadata);
-
-        let mut full_result = builder
-            .build()
-            .ok_or_else(|| ApiError::Internal("Failed to build PlaybackResult".to_string()))?;
-
+        let mut full_result = build_provider_playback(
+            PlaybackResult::builder(media.playlist_id, media.room_id, media.name, media.position)
+                .id(media.id),
+            provider_result,
+        )?;
         // Match the client playback menu: live sources advertise their
         // transcode rungs alongside the source quality.
         crate::impls::client::playback::append_live_transcode_rungs(
@@ -235,34 +210,11 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        let playback_kind = provider_result
-            .playback_kind
-            .unwrap_or(PlaybackKind::Regular);
-        let duration_seconds =
-            normalized_provider_duration(Some(playback_kind), provider_result.duration_seconds);
-
-        let mut builder = synctv_core::models::media::PlaybackResult::builder(
-            Some(*playlist_id),
-            *room_id_model,
-            item.name.clone(),
-            0.0,
-        )
-        .provider(provider_result.provider)
-        .provider_instance_name(provider_result.provider_instance_name.clone())
-        .default_mode(provider_result.default_mode.clone())
-        .duration_seconds(duration_seconds)
-        .playback_kind(playback_kind);
-
-        for (mode_name, provider_info) in provider_result.playback_infos {
-            let info = provider_playback_info_to_model(&provider_info);
-            builder = builder.add_mode(mode_name, info);
-        }
-        builder = builder.metadata(provider_result.metadata);
-
-        let mut full_result = builder
-            .target(target.clone())
-            .build()
-            .ok_or_else(|| ApiError::Internal("Failed to build PlaybackResult".to_string()))?;
+        let mut full_result = build_provider_playback(
+            PlaybackResult::builder(Some(*playlist_id), *room_id_model, item.name, 0.0)
+                .target(target.clone()),
+            provider_result,
+        )?;
         // Match the client playback menu: live sources advertise their
         // transcode rungs alongside the source quality.
         crate::impls::client::playback::append_live_transcode_rungs(

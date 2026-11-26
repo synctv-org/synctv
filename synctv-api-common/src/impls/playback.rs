@@ -52,6 +52,26 @@ pub trait PlaybackService: Send + Sync {
     }
 }
 
+pub(super) fn build_provider_playback(
+    builder: synctv_core::models::media::PlaybackResultBuilder,
+    result: synctv_core::provider::PlaybackResult,
+) -> Result<synctv_core::models::media::PlaybackResult, ApiError> {
+    let duration = normalized_provider_duration(result.playback_kind, result.duration_seconds);
+    let mut builder = builder
+        .provider(result.provider)
+        .provider_instance_name(result.provider_instance_name)
+        .default_mode(result.default_mode)
+        .duration_seconds(duration)
+        .playback_kind(result.playback_kind.unwrap_or(PlaybackKind::Regular))
+        .metadata(result.metadata);
+    for (mode, info) in result.playback_infos {
+        builder = builder.add_mode(mode, info.into());
+    }
+    builder
+        .build()
+        .ok_or_else(|| ApiError::Internal("Failed to build PlaybackResult".into()))
+}
+
 pub fn playback_expires_at(playback: &synctv_proto::client::Playback) -> Option<i64> {
     playback
         .playback_infos

@@ -1296,7 +1296,14 @@ async fn test_distributed_queries_prune_stale_index_members() -> TestResult {
         .set(&valid_conn_key, serde_json::to_string(&valid_metadata)?)
         .await?;
 
-    for conn_id in [stale_missing, stale_mismatch, valid] {
+    let wrong_id = "copied-metadata";
+    let _: () = redis_conn
+        .set(
+            manager.conn_metadata_key(wrong_id),
+            serde_json::to_string(&valid_metadata)?,
+        )
+        .await?;
+    for conn_id in [stale_missing, stale_mismatch, wrong_id, valid] {
         let _: () = redis_conn.sadd(&actor_index_key, conn_id).await?;
         let _: () = redis_conn.sadd(&room_index_key, conn_id).await?;
     }

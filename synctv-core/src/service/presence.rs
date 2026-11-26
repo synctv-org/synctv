@@ -9,6 +9,7 @@ use tokio::sync::broadcast;
 use tracing::{debug, warn};
 
 use crate::models::{RealtimeActor, RoomId, UserId};
+use crate::redis_runtime::index::{IndexKind, StaleMember, prune_stale_members};
 use crate::{
     Error, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
     redis_runtime_snapshot,
@@ -1030,29 +1031,11 @@ impl OnlinePresenceService {
         format!("{}presence:nodes", self.key_prefix)
     }
 
-    async fn prune_index_members(
-        &self,
-        redis: &mut redis::aio::ConnectionManager,
-        index_key: impl Into<String>,
-        connection_ids: &[String],
-    ) {
-        if connection_ids.is_empty() {
-            return;
-        }
-        let result: redis::RedisResult<()> = redis::cmd("SREM")
-            .arg(index_key.into())
-            .arg(connection_ids)
-            .query_async(redis)
-            .await;
-        if let Err(error) = result {
-            warn!(%error, "failed to prune stale presence index members");
-        }
-    }
-
-    async fn load_connections_for_index(
+    async fn load_scoped_connections_for_index(
         &self,
         redis: &mut redis::aio::ConnectionManager,
         index_key: String,
+        matches_scope: impl Fn(&PresenceConnection) -> bool,
     ) -> Result<Vec<PresenceConnection>> {
         let connection_ids: Vec<String> = redis
             .smembers(&index_key)
@@ -1065,57 +1048,38 @@ impl OnlinePresenceService {
             .iter()
             .map(|connection_id| self.conn_key(connection_id))
             .collect::<Vec<_>>();
-        let metadata: Vec<Option<String>> = redis
-            .mget(metadata_keys)
+        let metadata: Vec<Option<Vec<u8>>> = redis
+            .mget(&metadata_keys)
             .await
             .map_err(|error| Error::Internal(format!("read presence metadata: {error}")))?;
-        let mut stale_connection_ids = Vec::new();
+        let mut stale = Vec::new();
         let mut connections = Vec::new();
-        for (connection_id, payload) in connection_ids.into_iter().zip(metadata) {
-            let Some(payload) = payload else {
-                stale_connection_ids.push(connection_id);
-                continue;
-            };
-            match serde_json::from_str::<PresenceConnection>(&payload) {
-                Ok(connection) if connection.connection_id == connection_id => {
-                    connections.push(connection);
-                }
-                Ok(_) => stale_connection_ids.push(connection_id),
-                Err(error) => {
-                    warn!(%error, connection_id, "invalid presence metadata");
-                    stale_connection_ids.push(connection_id);
+        for ((connection_id, metadata_key), payload) in
+            connection_ids.into_iter().zip(metadata_keys).zip(metadata)
+        {
+            if let Some(json) = &payload {
+                match serde_json::from_slice::<PresenceConnection>(json) {
+                    Ok(connection)
+                        if connection.connection_id == connection_id
+                            && matches_scope(&connection) =>
+                    {
+                        connections.push(connection);
+                        continue;
+                    }
+                    Ok(_) => {}
+                    Err(error) => warn!(%error, connection_id, "invalid presence metadata"),
                 }
             }
+            stale.push(StaleMember {
+                metadata_key,
+                member: connection_id,
+                observed_value: payload,
+            });
         }
-        self.prune_index_members(redis, index_key, &stale_connection_ids)
-            .await;
+        if let Err(error) = prune_stale_members(redis, IndexKind::Set, &index_key, &stale).await {
+            warn!(%error, "failed to prune stale presence index members");
+        }
         Ok(connections)
-    }
-
-    async fn load_scoped_connections_for_index(
-        &self,
-        redis: &mut redis::aio::ConnectionManager,
-        index_key: String,
-        matches_scope: impl Fn(&PresenceConnection) -> bool,
-    ) -> Result<Vec<PresenceConnection>> {
-        let connections = self
-            .load_connections_for_index(redis, index_key.clone())
-            .await?;
-        let mut stale_connection_ids = Vec::new();
-        let scoped_connections = connections
-            .into_iter()
-            .filter_map(|connection| {
-                if matches_scope(&connection) {
-                    Some(connection)
-                } else {
-                    stale_connection_ids.push(connection.connection_id);
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-        self.prune_index_members(redis, index_key, &stale_connection_ids)
-            .await;
-        Ok(scoped_connections)
     }
 
     async fn persist_connection(&self, connection: &PresenceConnection) -> Result<()> {
@@ -1135,78 +1099,48 @@ impl OnlinePresenceService {
         let rooms_key = self.rooms_key();
         let mut pipe = redis::pipe();
         for connection in connections {
-            let payload = serde_json::to_string(connection).map_err(|error| {
-                Error::Internal(format!("serialize presence connection: {error}"))
-            })?;
-            let conn_key = self.conn_key(&connection.connection_id);
-            let node_key = self.node_key(&connection.node_id);
-            pipe.cmd("SET")
-                .arg(&conn_key)
-                .arg(payload)
-                .arg("EX")
-                .arg(PRESENCE_METADATA_TTL_SECONDS)
-                .ignore()
-                .cmd("SADD")
-                .arg(&node_key)
-                .arg(&connection.connection_id)
-                .ignore()
-                .cmd("EXPIRE")
-                .arg(&node_key)
-                .arg(PRESENCE_METADATA_TTL_SECONDS)
-                .ignore()
-                .cmd("SADD")
-                .arg(&nodes_key)
-                .arg(&connection.node_id)
-                .ignore()
-                .cmd("EXPIRE")
-                .arg(&nodes_key)
-                .arg(PRESENCE_METADATA_TTL_SECONDS)
-                .ignore();
-            if let Some(user_id) = connection.actor.user_id() {
-                let user_key = self.user_key(user_id);
-                pipe.cmd("SADD")
-                    .arg(&user_key)
-                    .arg(&connection.connection_id)
-                    .ignore()
-                    .cmd("EXPIRE")
-                    .arg(&user_key)
-                    .arg(PRESENCE_METADATA_TTL_SECONDS)
-                    .ignore();
-            }
-            if let Some(room_id) = connection.room_id {
-                let room_key = self.room_key(room_id);
-                pipe.cmd("SADD")
-                    .arg(&room_key)
-                    .arg(&connection.connection_id)
-                    .ignore()
-                    .cmd("EXPIRE")
-                    .arg(&room_key)
-                    .arg(PRESENCE_METADATA_TTL_SECONDS)
-                    .ignore()
-                    .cmd("SADD")
-                    .arg(&rooms_key)
-                    .arg(room_id.to_string())
-                    .ignore()
-                    .cmd("EXPIRE")
-                    .arg(&rooms_key)
-                    .arg(PRESENCE_METADATA_TTL_SECONDS)
-                    .ignore();
-                if let Some(user_id) = connection.actor.user_id() {
-                    let user_room_key = self.user_room_key(user_id, room_id);
-                    pipe.cmd("SADD")
-                        .arg(&user_room_key)
-                        .arg(&connection.connection_id)
-                        .ignore()
-                        .cmd("EXPIRE")
-                        .arg(&user_room_key)
-                        .arg(PRESENCE_METADATA_TTL_SECONDS)
-                        .ignore();
-                }
-            }
+            self.queue_connection_write(&mut pipe, connection, &nodes_key, &rooms_key)?;
         }
         pipe.query_async::<()>(&mut redis)
             .await
             .map_err(|error| Error::Internal(format!("persist presence connections: {error}")))?;
+        Ok(())
+    }
+
+    fn queue_connection_write(
+        &self,
+        pipe: &mut redis::Pipeline,
+        connection: &PresenceConnection,
+        nodes_key: &str,
+        rooms_key: &str,
+    ) -> Result<()> {
+        let payload = serde_json::to_string(connection)
+            .map_err(|error| Error::Internal(format!("serialize presence connection: {error}")))?;
+        let id = connection.connection_id.as_str();
+        pipe.set_ex(
+            self.conn_key(id),
+            payload,
+            PRESENCE_METADATA_TTL_SECONDS.cast_unsigned(),
+        )
+        .ignore();
+        let mut add_member = |key: &str, member: &str| {
+            pipe.sadd(key, member)
+                .ignore()
+                .expire(key, PRESENCE_METADATA_TTL_SECONDS)
+                .ignore();
+        };
+        add_member(&self.node_key(&connection.node_id), id);
+        add_member(nodes_key, &connection.node_id);
+        if let Some(user_id) = connection.actor.user_id() {
+            add_member(&self.user_key(user_id), id);
+        }
+        if let Some(room_id) = connection.room_id {
+            add_member(&self.room_key(room_id), id);
+            add_member(rooms_key, &room_id.to_string());
+            if let Some(user_id) = connection.actor.user_id() {
+                add_member(&self.user_room_key(user_id, room_id), id);
+            }
+        }
         Ok(())
     }
 
@@ -1215,43 +1149,12 @@ impl OnlinePresenceService {
         connection: &PresenceConnection,
         previous_room_id: Option<RoomId>,
     ) -> Result<()> {
-        self.persist_connection(connection).await?;
-        let Some(room_id) = connection.room_id else {
-            return Ok(());
-        };
         let Some(mut redis) = self.redis_connection("persist presence room move").await? else {
             return Ok(());
         };
-        let room_key = self.room_key(room_id);
-        let rooms_key = self.rooms_key();
         let mut pipe = redis::pipe();
-        pipe.cmd("SADD")
-            .arg(&room_key)
-            .arg(&connection.connection_id)
-            .ignore()
-            .cmd("EXPIRE")
-            .arg(&room_key)
-            .arg(PRESENCE_METADATA_TTL_SECONDS)
-            .ignore()
-            .cmd("SADD")
-            .arg(&rooms_key)
-            .arg(room_id.to_string())
-            .ignore()
-            .cmd("EXPIRE")
-            .arg(&rooms_key)
-            .arg(PRESENCE_METADATA_TTL_SECONDS)
-            .ignore();
-        if let Some(user_id) = connection.actor.user_id() {
-            let user_room_key = self.user_room_key(user_id, room_id);
-            pipe.cmd("SADD")
-                .arg(&user_room_key)
-                .arg(&connection.connection_id)
-                .ignore()
-                .cmd("EXPIRE")
-                .arg(&user_room_key)
-                .arg(PRESENCE_METADATA_TTL_SECONDS)
-                .ignore();
-        }
+        pipe.atomic();
+        self.queue_connection_write(&mut pipe, connection, &self.nodes_key(), &self.rooms_key())?;
         if let Some(previous_room_id) = previous_room_id {
             pipe.cmd("SREM")
                 .arg(self.room_key(previous_room_id))
@@ -2006,6 +1909,37 @@ mod tests {
         assert_eq!(hot[0].room_id, room_id(10));
         assert_eq!(hot[0].online_member_count, 2);
         assert_eq!(hot[0].online_guest_count, 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn redis_presence_room_move_transfers_both_indexes() -> anyhow::Result<()> {
+        let (_container, client) = start_redis_with_client().await;
+        let prefix = synctv_core_testing::test_redis_key_prefix("presence-room-move");
+        let presence = redis_presence_service(&client, &prefix).await?;
+        let mut redis = redis_connection_manager(&client).await;
+        let user = user_id(1);
+        let first = room_id(10);
+        let second = room_id(11);
+        presence
+            .register_connection(
+                "member".into(),
+                "node".into(),
+                RealtimeActor::user(user, "1"),
+            )
+            .await?;
+        presence.join_room("member", first).await?;
+        presence.join_room("member", second).await?;
+        presence.join_room("member", second).await?;
+        for (room, expected) in [(first, false), (second, true)] {
+            for key in [presence.room_key(room), presence.user_room_key(user, room)] {
+                assert_eq!(
+                    redis.sismember::<_, _, bool>(key, "member").await?,
+                    expected
+                );
+            }
+        }
         Ok(())
     }
 

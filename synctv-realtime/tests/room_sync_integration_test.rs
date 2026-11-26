@@ -556,6 +556,26 @@ async fn test_distributed_room_lookup_prunes_stale_hash_members() {
         .hset(&room_key, "conn_valid", &valid_actor_json)
         .await
         .unwrap();
+    let _: () = redis::pipe()
+        .hset(&room_key, "corrupt_actor", &[0xff_u8][..])
+        .ignore()
+        .set_ex(
+            format!("{prefix}room_hub:conn:corrupt_actor"),
+            room_id.get(),
+            180,
+        )
+        .ignore()
+        .hset(&room_key, "corrupt_mapping", &valid_actor_json)
+        .ignore()
+        .set_ex(
+            format!("{prefix}room_hub:conn:corrupt_mapping"),
+            &[0xff_u8][..],
+            180,
+        )
+        .ignore()
+        .query_async(&mut conn)
+        .await
+        .unwrap();
     let _: () = conn.set(&valid_conn_key, room_id.get()).await.unwrap();
     let _: () = conn.set(&wrong_room_conn_key, 10_000_092i64).await.unwrap();
     let _: () = conn.expire(&room_key, 180).await.unwrap();

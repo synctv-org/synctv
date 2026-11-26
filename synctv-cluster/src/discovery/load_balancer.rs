@@ -11,6 +11,9 @@ use super::node_registry::NodeInfo;
 use super::runtime::{ClusterHealthRuntime, ClusterNodeDirectory};
 use crate::error::{Error, Result};
 
+mod warmup;
+use warmup::{WARMUP_PENALTY, warmup_score};
+
 /// Load balancing strategy
 #[derive(Debug, Clone, Copy)]
 pub enum LoadBalancingStrategy {
@@ -52,10 +55,6 @@ fn least_connections_score(node: &NodeInfo, now_timestamp: i64) -> usize {
     // Nodes report connection count in metadata["connections"] via heartbeat.
     // Nodes without valid connection metadata receive a warmup penalty so new or
     // malformed reporters are not immediately preferred by every caller.
-    const WARMUP_PERIOD_SECS: i64 = 60;
-    const WARMUP_PERIOD_SECS_USIZE: usize = 60;
-    const WARMUP_PENALTY: usize = 1000;
-
     if let Some(raw_connections) = node.metadata.get("connections") {
         return raw_connections.parse::<usize>().unwrap_or_else(|error| {
             tracing::warn!(
@@ -78,25 +77,15 @@ fn least_connections_score(node: &NodeInfo, now_timestamp: i64) -> usize {
         now_timestamp
     });
 
-    let age_secs = now_timestamp.saturating_sub(registered_at);
-    if age_secs < WARMUP_PERIOD_SECS {
-        let age_secs = usize::try_from(age_secs).unwrap_or(usize::MAX);
-        let remaining_warmup = WARMUP_PERIOD_SECS_USIZE.saturating_sub(age_secs);
-        let penalty = WARMUP_PENALTY.saturating_mul(remaining_warmup) / WARMUP_PERIOD_SECS_USIZE;
-        tracing::trace!(
-            node_id = %node.node_id,
-            age_secs = age_secs,
-            effective_connections = penalty,
-            "Node in warmup period"
-        );
-        penalty
-    } else {
-        tracing::debug!(
-            node_id = %node.node_id,
-            "Node has no connection metadata after warmup, treating as empty"
-        );
-        0
-    }
+    let penalty = warmup_score(registered_at, now_timestamp);
+    tracing::trace!(
+        node_id = %node.node_id,
+        registered_at,
+        now_timestamp,
+        effective_connections = penalty,
+        "Scored cluster node without connection metadata"
+    );
+    penalty
 }
 
 impl LoadBalancer {
@@ -429,6 +418,17 @@ mod tests {
         // node-1 is in warmup period with penalty > 5, so "self" should be selected
         assert_eq!(node, "self", "Warmup node should be penalized");
         Ok(())
+    }
+
+    #[test]
+    fn future_registration_keeps_full_penalty_until_clock_catches_up() {
+        let mut node = NodeInfo::new("new-node".into(), "localhost:8080".into());
+        node.metadata.insert("registered_at".into(), "100".into());
+        for (now, expected) in [(99, 1000), (100, 1000), (130, 500), (159, 16), (160, 0)] {
+            assert_eq!(least_connections_score(&node, now), expected);
+        }
+        node.metadata.insert("connections".into(), "4".into());
+        assert_eq!(least_connections_score(&node, 99), 4);
     }
 
     #[tokio::test]

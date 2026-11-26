@@ -18,6 +18,7 @@ use crate::{
         FileUploadSessionCreateResult, FileUploadSessionKind, FileUploadSessionMetadata,
         FileUploadSessionRecord, GetFileObject, NewStoredFile, StoreFileUpload,
         StoreFileUploadResult, SubmittedFileReference, SubmittedFileReferenceKind, UserId,
+        file_storage::upload_plan,
     },
     repository::FileStorageRepository,
 };
@@ -25,7 +26,6 @@ use crate::{
 mod audio_processing;
 mod database;
 mod media_processing;
-mod part_count;
 mod read_bounds;
 mod read_seek;
 mod routing;
@@ -248,21 +248,8 @@ pub(super) fn create_file_upload_plan(
         )));
     }
     let part_size_bytes = upload_session_part_size();
-    let part_count = part_count::upload_part_count(size_bytes, part_size_bytes);
-    let part_count = i32::try_from(part_count)
-        .map_err(|_| Error::InvalidInput("file upload has too many parts".to_string()))?;
-    let mut parts = Vec::with_capacity(usize::try_from(part_count).unwrap_or(0));
-    for part_number in 1..=part_count {
-        let offset_bytes = i64::from(part_number - 1)
-            .checked_mul(part_size_bytes)
-            .ok_or_else(|| Error::Internal("file upload part offset overflow".to_string()))?;
-        let size_bytes = (size_bytes - offset_bytes).min(part_size_bytes);
-        parts.push(FileUploadPlanPart {
-            part_number,
-            offset_bytes,
-            size_bytes,
-        });
-    }
+    let parts = upload_plan::plan_parts(size_bytes, part_size_bytes)
+        .ok_or_else(|| Error::InvalidInput("file upload has too many parts".to_string()))?;
     Ok(FileUploadPlan {
         checksum_algorithm: FILE_UPLOAD_CHECKSUM_ALGORITHM_SHA256.to_string(),
         part_size_bytes,
@@ -272,33 +259,17 @@ pub(super) fn create_file_upload_plan(
 
 pub(super) fn validated_upload_manifest(
     size_bytes: i64,
-    max_size_bytes: i64,
     parts: &[FileUploadManifestPart],
-) -> Result<(FileUploadPlan, String)> {
-    let plan = create_file_upload_plan(size_bytes, max_size_bytes)?;
-    if parts.is_empty() {
-        return Err(Error::InvalidInput(
-            "file upload manifest parts are required".to_string(),
-        ));
-    }
-    if parts.len() != plan.parts.len() {
+) -> Result<(i64, String)> {
+    let part_size_bytes = upload_session_part_size();
+    if !upload_plan::manifest_matches_plan(size_bytes, part_size_bytes, parts) {
         return Err(Error::InvalidInput(
             "file upload manifest does not match server upload plan".to_string(),
         ));
     }
-    for (expected, actual) in plan.parts.iter().zip(parts) {
-        if actual.part_number != expected.part_number
-            || actual.offset_bytes != expected.offset_bytes
-            || actual.size_bytes != expected.size_bytes
-        {
-            return Err(Error::InvalidInput(
-                "file upload manifest does not match server upload plan".to_string(),
-            ));
-        }
-    }
     let digest = file_part_manifest_digest(
         size_bytes,
-        plan.part_size_bytes,
+        part_size_bytes,
         parts.iter().map(|part| {
             (
                 part.part_number,
@@ -307,18 +278,65 @@ pub(super) fn validated_upload_manifest(
             )
         }),
     )?;
-    Ok((plan, digest))
+    Ok((part_size_bytes, digest))
 }
 
-pub(super) fn upload_manifest_parts_from_metadata(
-    metadata: &FileUploadSessionMetadata,
-) -> Result<Vec<FileUploadManifestPart>> {
-    if metadata.manifest_parts.is_empty() {
+fn validate_upload_content(
+    session: &FileUploadSessionRecord,
+    token: &FileUploadTokenPayload,
+    content_type: Option<&str>,
+) -> Result<()> {
+    let (Some(mime_type), Some(size)) = (token.mime_type.as_deref(), token.size_bytes) else {
+        return Err(Error::InvalidInput("invalid file upload token".to_string()));
+    };
+    if mime_type != session.mime_type || size != session.size_bytes {
+        return Err(Error::InvalidInput(
+            "file upload token does not match upload session".to_string(),
+        ));
+    }
+    if let Some(content_type) = content_type
+        && upload_media_type(content_type)? != mime_type
+    {
+        return Err(Error::InvalidInput(
+            "file content-type does not match upload session".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Match incoming bytes against the plan captured when the session was opened.
+fn validate_stored_upload_part<'a>(
+    session: &'a FileUploadSessionRecord,
+    range: FileUploadRange,
+    data_len: usize,
+    checksum: &str,
+) -> Result<(i32, &'a FileUploadManifestPart)> {
+    let planned =
+        validate_upload_range(range, data_len, session.size_bytes, session.part_size_bytes)?;
+    let number = planned.part_number;
+    let index = number - 1;
+    let manifest = &session.metadata.manifest_parts;
+    if manifest.is_empty() {
         return Err(Error::InvalidInput(
             "file upload session manifest is missing".to_string(),
         ));
     }
-    Ok(metadata.manifest_parts.clone())
+    // New sessions persist plan order. Older records can still be matched by number.
+    let part = usize::try_from(index)
+        .ok()
+        .and_then(|i| manifest.get(i))
+        .filter(|part| part.part_number == number)
+        .or_else(|| manifest.iter().find(|part| part.part_number == number))
+        .ok_or_else(|| Error::InvalidInput("file upload part is not in manifest".to_string()))?;
+    if part.offset_bytes != planned.offset_bytes
+        || part.size_bytes != planned.size_bytes
+        || !part.checksum_sha256.eq_ignore_ascii_case(checksum)
+    {
+        return Err(Error::InvalidInput(
+            "file upload part does not match manifest".to_string(),
+        ));
+    }
+    Ok((index, part))
 }
 
 pub(super) fn upload_manifest_is_single_object(
@@ -382,9 +400,9 @@ pub(super) fn validate_upload_range(
     data_len: usize,
     expected_size: i64,
     part_size_bytes: i64,
-) -> Result<i32> {
-    use part_count::RangeError;
-    part_count::upload_index(
+) -> Result<FileUploadPlanPart> {
+    use upload_plan::RangeError;
+    upload_plan::part_for_range(
         range.start,
         range.end_inclusive,
         range.total_size,
@@ -402,6 +420,7 @@ pub(super) fn validate_upload_range(
                     "file upload part size must match the upload session part size"
                 }
                 RangeError::Index => "file upload part index is too large",
+                RangeError::Number => "file upload part number is too large",
             }
             .to_string(),
         )
@@ -1455,7 +1474,6 @@ where
         })
         .collect::<Result<Vec<_>>>()?;
     normalized_parts.sort_by_key(|part| part.0);
-    let mut expected_part_number = 1_i32;
     let mut total_size = 0_i64;
     let mut hasher = Sha256::new();
     hasher.update(b"synctv-file-part-manifest-sha256-v1");
@@ -1463,8 +1481,8 @@ where
     hasher.update(size_bytes.to_be_bytes());
     hasher.update(part_size_bytes.to_be_bytes());
     hasher.update((normalized_parts.len() as u64).to_be_bytes());
-    for (part_number, part_size, checksum) in normalized_parts {
-        if part_number != expected_part_number {
+    for (index, (part_number, part_size, checksum)) in normalized_parts.into_iter().enumerate() {
+        if usize::try_from(part_number) != Ok(index + 1) {
             return Err(Error::InvalidInput(
                 "file manifest part numbers must be contiguous".to_string(),
             ));
@@ -1475,9 +1493,6 @@ where
         hasher.update(part_number.to_be_bytes());
         hasher.update(part_size.to_be_bytes());
         hasher.update(checksum.as_bytes());
-        expected_part_number = expected_part_number
-            .checked_add(1)
-            .ok_or_else(|| Error::Internal("file manifest part number overflow".to_string()))?;
     }
     if total_size != size_bytes {
         return Err(Error::InvalidInput(

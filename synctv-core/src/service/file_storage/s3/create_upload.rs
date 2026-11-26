@@ -33,11 +33,8 @@ impl S3CompatibleFileStorageService {
                 )?,
             ));
         }
-        let (plan, content_manifest_sha256) = validated_upload_manifest(
-            request.size_bytes,
-            request.policy.max_size_bytes,
-            &request.parts,
-        )?;
+        let (part_size_bytes, content_manifest_sha256) =
+            validated_upload_manifest(request.size_bytes, &request.parts)?;
         let file_id = new_file_id();
         let session_metadata = upload_session_metadata(UploadSessionMetadataInput {
             file_id: &file_id,
@@ -125,7 +122,7 @@ impl S3CompatibleFileStorageService {
                 expires_at: Some(expires_at),
                 max_size_bytes: request.policy.max_size_bytes,
                 resumable: true,
-                part_size_bytes: plan.part_size_bytes,
+                part_size_bytes,
                 uploaded_size_bytes: 0,
                 uploaded_parts: Vec::new(),
                 upload_id: None,
@@ -224,7 +221,7 @@ impl S3CompatibleFileStorageService {
                 mime_type: &request.mime_type,
                 size_bytes: request.size_bytes,
                 content_manifest_sha256: &content_manifest_sha256,
-                part_size_bytes: plan.part_size_bytes,
+                part_size_bytes,
                 metadata: &session_metadata,
                 expires_at,
             })
@@ -329,7 +326,7 @@ impl S3CompatibleFileStorageService {
             expires_at: Some(expires_at),
             max_size_bytes: request.policy.max_size_bytes,
             resumable: !single_object_upload,
-            part_size_bytes: plan.part_size_bytes,
+            part_size_bytes,
             uploaded_size_bytes,
             uploaded_parts,
             upload_id,

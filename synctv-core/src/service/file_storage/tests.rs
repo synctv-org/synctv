@@ -55,10 +55,66 @@ fn upload_plan_rounds_up_and_reports_unrepresentable_part_count() -> anyhow::Res
             Some(last_size)
         );
     }
+    let total = 3 * width + 5;
+    let parts = create_file_upload_plan(total, i64::MAX)?.parts;
+    let expected = [
+        (1, 0, width),
+        (2, width, width),
+        (3, 2 * width, width),
+        (4, 3 * width, 5),
+    ];
+    assert_eq!(parts.len(), expected.len());
+    for (part, (number, offset, size)) in parts.iter().zip(expected) {
+        assert_eq!(
+            (part.part_number, part.offset_bytes, part.size_bytes),
+            (number, offset, size)
+        );
+        let range = FileUploadRange {
+            start: offset,
+            end_inclusive: offset + size - 1,
+            total_size: total,
+        };
+        let accepted = validate_upload_range(range, usize::try_from(size)?, total, width)?;
+        assert_eq!(
+            (
+                accepted.part_number,
+                accepted.offset_bytes,
+                accepted.size_bytes
+            ),
+            (number, offset, size)
+        );
+    }
     assert!(matches!(
         create_file_upload_plan(i64::MAX, i64::MAX),
         Err(Error::InvalidInput(message)) if message.contains("too many parts")
     ));
+    Ok(())
+}
+
+#[test]
+fn upload_manifest_requires_exact_plan_through_eof() -> anyhow::Result<()> {
+    let width = upload_session_part_size();
+    let total = width + 1;
+    let part = |part_number, offset_bytes, size_bytes| FileUploadManifestPart {
+        part_number,
+        offset_bytes,
+        size_bytes,
+        checksum_sha256: "ab".repeat(32),
+    };
+    let first = part(1, 0, width);
+    let last = part(2, width, 1);
+    let valid = [first.clone(), last.clone()];
+    assert_eq!(validated_upload_manifest(total, &valid)?.0, width);
+    for invalid in [
+        vec![first.clone()],
+        vec![last.clone(), first.clone()],
+        vec![first.clone(), part(2, width - 1, 1)],
+        vec![first.clone(), part(2, width, 2)],
+        vec![first.clone(), last, part(3, total, 1)],
+    ] {
+        assert!(validated_upload_manifest(total, &invalid).is_err());
+    }
+    assert!(validated_upload_manifest(i64::MAX, &[first]).is_err());
     Ok(())
 }
 
@@ -69,9 +125,20 @@ fn final_upload_part_respects_stored_part_width() -> anyhow::Result<()> {
         end_inclusive,
         total_size: 10,
     };
-    assert_eq!(validate_upload_range(range(4, 7), 4, 10, 4)?, 1);
-    assert_eq!(validate_upload_range(range(8, 9), 2, 10, 4)?, 2);
+    assert_eq!(validate_upload_range(range(4, 7), 4, 10, 4)?.part_number, 2);
+    assert_eq!(validate_upload_range(range(8, 9), 2, 10, 4)?.part_number, 3);
     assert!(validate_upload_range(range(4, 9), 6, 10, 4).is_err());
+    let last_index = i64::from(i32::MAX);
+    let total_size = last_index + 1;
+    let range = FileUploadRange {
+        start: last_index,
+        end_inclusive: last_index,
+        total_size,
+    };
+    assert!(matches!(
+        validate_upload_range(range, 1, total_size, 1),
+        Err(Error::InvalidInput(message)) if message == "file upload part number is too large"
+    ));
     Ok(())
 }
 
@@ -2808,6 +2875,96 @@ async fn database_storage_skips_low_savings_compression() {
 
 #[tokio::test]
 #[ignore = "Requires Docker-backed PostgreSQL"]
+async fn stored_upload_checks_token_content_and_accepts_reordered_manifest() -> anyhow::Result<()> {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let repository = Arc::new(FileStorageRepository::new(pool));
+    let secret = "test-file-storage-secret";
+    let storage = DatabaseFileStorageService::new("database", repository.clone(), secret);
+    let width = upload_session_part_size();
+    let total = width + 1;
+    let payload = vec![b'x'; usize::try_from(total)?];
+    let (mut request, _) = simple_upload_request(
+        UserId::expect_positive(1),
+        "test/files",
+        "multipart",
+        "application/pdf",
+        &payload,
+        generic_binary_upload_policy(total),
+    );
+    for part in &mut request.parts {
+        part.checksum_sha256.make_ascii_uppercase();
+    }
+    let session = expect_upload_session(storage.create_upload_session(request).await?, "session");
+    let key = decode_file_object_key(&session.encoded_object_key)?;
+    let mut record = repository
+        .get_upload_session("database", &key)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("missing session"))?;
+    record.metadata.manifest_parts.reverse();
+    repository
+        .update_upload_session_metadata("database", &key, &record.metadata)
+        .await?;
+    let upload = |upload_token| StoreFileUpload {
+        encoded_object_key: session.encoded_object_key.clone(),
+        upload_token,
+        content_type: None,
+        range: Some(FileUploadRange {
+            start: width,
+            end_inclusive: width,
+            total_size: total,
+        }),
+        data: bytes::Bytes::from_static(b"x"),
+    };
+    let mut wrong_size = session.file.clone();
+    wrong_size.size_bytes = Some(total - 1);
+    let mut wrong_type = session.file.clone();
+    wrong_type.mime_type = Some("image/png".to_owned());
+    for file in [wrong_size, wrong_type] {
+        let token = file_upload_token_for_object_key(
+            &file,
+            &key,
+            record.metadata.user_id,
+            &record.metadata.storage_scope,
+            record.expires_at,
+            secret,
+            Some(&record.content_manifest_sha256),
+        )?;
+        assert!(
+            matches!(storage.store_upload(upload(token)).await, Err(Error::InvalidInput(message))
+            if message == "file upload token does not match upload session")
+        );
+    }
+    assert!(
+        repository
+            .list_blob_parts("database", &key)
+            .await?
+            .is_empty()
+    );
+    assert!(
+        repository
+            .list_upload_session_parts("database", &key)
+            .await?
+            .is_empty()
+    );
+    let result = storage
+        .store_upload(upload(
+            session.upload_headers[FILE_UPLOAD_TOKEN_HEADER].clone(),
+        ))
+        .await?;
+    let StoreFileUploadResult::PartAccepted {
+        uploaded_size_bytes,
+        uploaded_parts,
+    } = result
+    else {
+        anyhow::bail!("expected an incomplete upload");
+    };
+    assert_eq!(uploaded_size_bytes, 1);
+    assert_eq!(uploaded_parts, [2]);
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker-backed PostgreSQL"]
 async fn database_storage_resumable_upload_completes_after_all_parts() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
@@ -4284,7 +4441,7 @@ async fn s3_storage_server_mediated_upload_is_bound_to_session_key() {
 
 #[tokio::test]
 #[ignore = "Requires Docker-backed PostgreSQL"]
-async fn s3_storage_multipart_completion_rejects_manifest_mismatch() {
+async fn s3_storage_multipart_completion_can_retry_after_manifest_mismatch() -> anyhow::Result<()> {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
     let operator = ok(
@@ -4331,6 +4488,7 @@ async fn s3_storage_multipart_completion_rejects_manifest_mismatch() {
         metadata: crate::models::FileMetadata::default(),
         policy,
     });
+    let correct_parts = complete_parts_from_manifest(&request.parts);
     let actual_parts = complete_parts_from_manifest(&manifest_parts_from_payload(&actual_payload));
     let session = ok(
         storage.create_upload_session(request).await,
@@ -4338,10 +4496,10 @@ async fn s3_storage_multipart_completion_rejects_manifest_mismatch() {
     );
     ok(
         operator
-            .write_with(&session.file.object_key, actual_payload)
+            .write_with(&session.file.object_key, expected_payload.clone())
             .content_type("application/pdf")
             .await,
-        "tampered S3 object should be written",
+        "expected S3 object should be present",
     );
     let upload_token = some(
         session
@@ -4353,20 +4511,32 @@ async fn s3_storage_multipart_completion_rejects_manifest_mismatch() {
         "upload token should exist",
     );
 
+    let completion = |upload_id, parts| CompleteFileUploadSession {
+        file_id: Some(session.file.id.clone()),
+        encoded_object_key: session.encoded_object_key.clone(),
+        upload_token: upload_token.clone(),
+        upload_id,
+        ownership_proof: None,
+        parts,
+    };
+    let session_key = decode_file_object_key(&session.encoded_object_key)?;
+    let other_id = Some("another-upload".to_owned());
+    assert!(matches!(
+        storage.complete_upload_session(completion(other_id, correct_parts.clone())).await,
+        Err(Error::InvalidInput(message)) if message.contains("upload_id")
+    ));
+    assert!(
+        repository
+            .list_upload_session_parts("s3_public", &session_key)
+            .await?
+            .is_empty()
+    );
     let error = err(
         storage
-            .complete_upload_session(CompleteFileUploadSession {
-                file_id: Some(session.file.id.clone()),
-                encoded_object_key: session.encoded_object_key.clone(),
-                upload_token,
-                upload_id: session.upload_id.clone(),
-                ownership_proof: None,
-                parts: actual_parts,
-            })
+            .complete_upload_session(completion(session.upload_id.clone(), actual_parts))
             .await,
         "S3 multipart checksum mismatch should fail",
     );
-
     assert!(matches!(error, Error::InvalidInput(message) if message.contains("manifest")));
     assert!(
         ok(
@@ -4388,6 +4558,13 @@ async fn s3_storage_multipart_completion_rejects_manifest_mismatch() {
             .await,
         "object validation should load"
     ));
+    assert!(operator.exists(&session.file.object_key).await?);
+    let retried = storage
+        .complete_upload_session(completion(None, correct_parts))
+        .await?;
+    assert!(retried.object.is_some());
+    assert_eq!(retried.uploaded_size_bytes, payload_size(&expected_payload));
+    Ok(())
 }
 
 #[tokio::test]

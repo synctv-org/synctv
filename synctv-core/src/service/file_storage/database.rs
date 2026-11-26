@@ -29,15 +29,14 @@ use crate::{
         file_upload_token_for_object_key, mark_upload_session_ownership_proof_verified,
         media_processing::attach_variants_to_files, new_file_id, payload_len_i64,
         process_file_variants_for_object, register_upload_session_reference,
-        strip_internal_file_metadata, upload_manifest_is_single_object,
-        upload_manifest_parts_from_metadata, upload_media_type, upload_session_file_id,
+        strip_internal_file_metadata, upload_manifest_is_single_object, upload_session_file_id,
         upload_session_is_multipart, upload_session_is_single_object, upload_session_metadata,
         upload_session_metadata_with_manifest, upload_session_object_metadata,
         upload_session_parts_progress, upload_session_policy, upload_session_progress,
         validate_create_file_upload_session, validate_file_mime_type, validate_file_reuse_grant,
         validate_file_upload_token, validate_file_upload_token_context,
-        validate_session_file_for_storage, validate_stored_files, validate_upload_range,
-        validated_upload_manifest,
+        validate_session_file_for_storage, validate_stored_files, validate_stored_upload_part,
+        validate_upload_content, validated_upload_manifest,
     },
 };
 
@@ -394,20 +393,6 @@ async fn database_part_chunk(part: FileBlobPart, range: FileByteRange) -> Result
     Ok(bytes::Bytes::from(part_data.data).slice(start..end))
 }
 
-fn database_upload_max_size_bytes(policy_max_size_bytes: i64) -> i64 {
-    policy_max_size_bytes
-}
-
-fn validate_database_upload_session_size(request: &CreateFileUploadSession) -> Result<i64> {
-    let max_size_bytes = database_upload_max_size_bytes(request.policy.max_size_bytes);
-    if request.size_bytes > max_size_bytes {
-        return Err(Error::InvalidInput(format!(
-            "file size must be between 1 and {max_size_bytes} bytes for database storage"
-        )));
-    }
-    Ok(max_size_bytes)
-}
-
 async fn compress_payload(
     config: DatabaseFileStorageCompressionConfig,
     data: bytes::Bytes,
@@ -536,14 +521,14 @@ impl FileStorageService for DatabaseFileStorageService {
         request: CreateFileUploadSession,
     ) -> Result<FileUploadSessionCreateResult> {
         validate_create_file_upload_session(&request)?;
-        let max_size_bytes = validate_database_upload_session_size(&request)?;
+        let max_size_bytes = request.policy.max_size_bytes;
         if request.parts.is_empty() {
             return Ok(FileUploadSessionCreateResult::Plan(
                 super::create_file_upload_plan(request.size_bytes, max_size_bytes)?,
             ));
         }
-        let (plan, content_manifest_sha256) =
-            validated_upload_manifest(request.size_bytes, max_size_bytes, &request.parts)?;
+        let (part_size_bytes, content_manifest_sha256) =
+            validated_upload_manifest(request.size_bytes, &request.parts)?;
         let file_id = new_file_id();
         let session_metadata = upload_session_metadata(UploadSessionMetadataInput {
             file_id: &file_id,
@@ -636,7 +621,7 @@ impl FileStorageService for DatabaseFileStorageService {
                 expires_at: Some(expires_at),
                 max_size_bytes,
                 resumable: true,
-                part_size_bytes: plan.part_size_bytes,
+                part_size_bytes,
                 uploaded_size_bytes: 0,
                 uploaded_parts: Vec::new(),
                 upload_id: None,
@@ -772,7 +757,7 @@ impl FileStorageService for DatabaseFileStorageService {
                     .ok_or_else(|| Error::InvalidInput("file mime_type is required".to_string()))?,
                 size_bytes: request.size_bytes,
                 content_manifest_sha256: &content_manifest_sha256,
-                part_size_bytes: plan.part_size_bytes,
+                part_size_bytes,
                 metadata: &session_metadata,
                 expires_at,
             })
@@ -820,7 +805,7 @@ impl FileStorageService for DatabaseFileStorageService {
             expires_at: Some(expires_at),
             max_size_bytes,
             resumable: !single_object_upload,
-            part_size_bytes: plan.part_size_bytes,
+            part_size_bytes,
             uploaded_size_bytes,
             uploaded_parts,
             upload_id: None,
@@ -1054,50 +1039,19 @@ impl FileStorageService for DatabaseFileStorageService {
             .await?
             .ok_or_else(|| Error::InvalidInput("file upload session was not found".to_string()))?;
         ensure_session_open(&session)?;
-        let mime_type = payload
-            .mime_type
-            .as_deref()
-            .ok_or_else(|| Error::InvalidInput("invalid file upload token".to_string()))?;
-        if let Some(content_type) = content_type.as_deref()
-            && upload_media_type(content_type)? != mime_type
-        {
-            return Err(Error::InvalidInput(
-                "file content-type does not match upload session".to_string(),
-            ));
-        }
-        let expected_size = payload
-            .size_bytes
-            .ok_or_else(|| Error::InvalidInput("invalid file upload token".to_string()))?;
+        validate_upload_content(&session, &payload, content_type.as_deref())?;
+        let expected_size = session.size_bytes;
+        let mime_type = session.mime_type.as_str();
         let actual_part_checksum = hex::encode(Sha256::digest(&data));
         let range = range.unwrap_or(crate::models::FileUploadRange {
             start: 0,
             end_inclusive: payload_len_i64(data.len())? - 1,
             total_size: expected_size,
         });
-        // Validate against the persisted session plan. The global default part
-        // size can change over time, while an open upload session keeps its own
-        // `part_size_bytes` and manifest for resume/idempotency.
-        let part_index =
-            validate_upload_range(range, data.len(), expected_size, session.part_size_bytes)?;
-        let part_number = part_index.checked_add(1).ok_or_else(|| {
-            Error::InvalidInput("file upload part number is too large".to_string())
-        })?;
-        let manifest_parts = upload_manifest_parts_from_metadata(&session.metadata)?;
-        let expected_part = manifest_parts
-            .iter()
-            .find(|part| part.part_number == part_number)
-            .ok_or_else(|| {
-                Error::InvalidInput("file upload part is not in manifest".to_string())
-            })?;
-        let part_size = payload_len_i64(data.len())?;
-        if expected_part.offset_bytes != range.start
-            || expected_part.size_bytes != part_size
-            || expected_part.checksum_sha256 != actual_part_checksum
-        {
-            return Err(Error::InvalidInput(
-                "file upload part does not match manifest".to_string(),
-            ));
-        }
+        let (part_index, part) =
+            validate_stored_upload_part(&session, range, data.len(), &actual_part_checksum)?;
+        let part_number = part.part_number;
+        let part_size = part.size_bytes;
         if upload_session_is_single_object(session.session_kind) {
             if range.start != 0 || part_size != expected_size {
                 return Err(Error::InvalidInput(
@@ -1107,11 +1061,7 @@ impl FileStorageService for DatabaseFileStorageService {
             let actual_content_manifest_sha256 = file_part_manifest_digest(
                 expected_size,
                 session.part_size_bytes,
-                [(
-                    expected_part.part_number,
-                    part_size,
-                    actual_part_checksum.as_str(),
-                )],
+                [(part_number, part_size, actual_part_checksum.as_str())],
             )?;
             if !constant_time_eq(
                 actual_content_manifest_sha256.as_bytes(),

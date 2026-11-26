@@ -85,23 +85,15 @@ impl ChunkPacketizer {
     }
 
     fn write_basic_header(&mut self, fmt: u8, csid: u32) -> Result<(), PackError> {
-        if csid >= 64 + 255 {
-            let extended_csid =
-                u16::try_from(csid - 64).map_err(|_| PackErrorValue::InvalidChunkStreamId(csid))?;
-            self.writer.write_u8(fmt << 6 | 1)?;
-            // RTMP encodes the 16-bit extended CSID least-significant byte first.
-            self.writer.write_u16::<LittleEndian>(extended_csid)?;
-        } else if csid >= 64 {
-            let extended_csid =
-                u8::try_from(csid - 64).map_err(|_| PackErrorValue::InvalidChunkStreamId(csid))?;
-            self.writer.write_u8(fmt << 6)?;
-            self.writer.write_u8(extended_csid)?;
-        } else {
-            let basic_csid =
-                u8::try_from(csid).map_err(|_| PackErrorValue::InvalidChunkStreamId(csid))?;
-            self.writer.write_u8(fmt << 6 | basic_csid)?;
-        }
-
+        let Some((bytes, len)) = super::basic_header::encode(fmt, csid) else {
+            let error = if fmt > 3 {
+                PackErrorValue::InvalidChunkHeaderFormat(fmt)
+            } else {
+                PackErrorValue::InvalidChunkStreamId(csid)
+            };
+            return Err(error.into());
+        };
+        self.writer.write(&bytes[..len])?;
         Ok(())
     }
 
@@ -292,26 +284,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn three_byte_csid_encoding_round_trips_through_unpacketizer() {
+    async fn basic_header_widths_round_trip_through_unpacketizer() {
         let captured = Arc::new(ParkingMutex::new(Vec::new()));
         let io: Arc<tokio::sync::Mutex<Box<dyn TNetIO + Send + Sync>>> =
             Arc::new(tokio::sync::Mutex::new(Box::new(CaptureIo {
                 bytes: Arc::clone(&captured),
             })));
         let mut packetizer = ChunkPacketizer::new(io);
-        let mut chunk = ChunkInfo::new(320, 0, 7, 1, 9, 1, BytesMut::from(&[0xaa][..]));
-
-        packetizer.write_chunk(&mut chunk).await.unwrap();
-        let wire = captured.lock().clone();
-        assert_eq!(&wire[..3], &[0x01, 0x00, 0x01]);
-
         let mut unpacker = ChunkUnpacketizer::new();
-        unpacker.extend_data(&wire).unwrap();
-        let UnpackResult::Chunks(chunks) = unpacker.read_chunks().unwrap() else {
-            panic!("packetized message should unpack")
-        };
-        assert_eq!(chunks[0].basic_header.chunk_stream_id, 320);
-        assert_eq!(chunks[0].payload.as_ref(), &[0xaa]);
+        for (csid, header) in [
+            (2, &[2][..]),
+            (63, &[63]),
+            (64, &[0, 0]),
+            (319, &[0, 255]),
+            (320, &[1, 0, 1]),
+            (65599, &[1, 255, 255]),
+        ] {
+            let mut chunk = ChunkInfo::new(csid, 0, 7, 1, 9, 1, &b"x"[..]);
+            packetizer.write_chunk(&mut chunk).await.unwrap();
+            let wire = std::mem::take(&mut *captured.lock());
+            assert_eq!(&wire[..header.len()], header);
+            unpacker.extend_data(&wire).unwrap();
+            let UnpackResult::Chunks(chunks) = unpacker.read_chunks().unwrap() else {
+                panic!("packetized message should unpack")
+            };
+            assert_eq!(chunks.len(), 1);
+            assert_eq!(chunks[0].basic_header.chunk_stream_id, csid);
+            assert_eq!(chunks[0].payload.as_ref(), b"x");
+        }
     }
 
     #[tokio::test]

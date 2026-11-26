@@ -27,11 +27,6 @@ impl S3CompatibleFileStorageService {
                 uploaded_parts,
             });
         }
-        let completed_parts = completion_parts_from_session_parts(session_parts)?;
-        self.complete_s3_multipart_upload(&session.object_key, upload_id, &completed_parts)
-            .await?;
-        self.validate_completed_s3_object_size(&session.object_key, session.size_bytes)
-            .await?;
         let content_manifest_sha256 = completed_upload_part_manifest_digest(
             session_parts,
             session.size_bytes,
@@ -41,12 +36,15 @@ impl S3CompatibleFileStorageService {
             content_manifest_sha256.as_bytes(),
             session.content_manifest_sha256.as_bytes(),
         ) {
-            self.delete_invalid_upload_object(&session.object_key, "manifest_mismatch")
-                .await;
             return Err(Error::InvalidInput(
                 "file manifest does not match uploaded parts".to_string(),
             ));
         }
+        let completed_parts = completion_parts_from_session_parts(session_parts)?;
+        self.complete_s3_multipart_upload(&session.object_key, upload_id, &completed_parts)
+            .await?;
+        self.validate_completed_s3_object_size(&session.object_key, session.size_bytes)
+            .await?;
         let repository = self.repository()?;
         let upload_policy = upload_session_policy(&session.metadata);
         let metadata = upload_session_object_metadata(&session.metadata);

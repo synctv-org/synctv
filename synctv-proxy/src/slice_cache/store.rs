@@ -23,6 +23,7 @@ use crate::{
 };
 
 use super::backend::{CacheBackend, SliceCacheBackend};
+use super::bounds::{aligned_request, response_extent};
 use super::config::{CacheBackendConfig, SliceCacheConfig};
 use super::etag::{CachedResourceMeta, StoredEntry};
 use super::head::HeadFetchContext;
@@ -222,8 +223,8 @@ impl SliceCache {
         slice_index: u64,
         include_conditionals: bool,
     ) -> Result<SliceRangeRequest, anyhow::Error> {
-        let (range_start, range_end) =
-            Self::aligned_slice_request_range(slice_index, self.config.slice_size)?;
+        let (range_start, range_end) = aligned_request(slice_index, self.config.slice_size as u64)
+            .with_context(|| format!("Invalid slice range for index {slice_index}"))?;
         let range_header = format_request_range(range_start, range_end);
 
         let mut request = self.client.get(url);
@@ -271,20 +272,6 @@ impl SliceCache {
             .put(key, refreshed)
             .await
             .with_context(|| format!("failed to refresh cached slice TTL for {key}"))
-    }
-
-    fn aligned_slice_request_range(
-        slice_index: u64,
-        slice_size: usize,
-    ) -> Result<(u64, u64), anyhow::Error> {
-        let slice_size = slice_size as u64;
-        let range_start = slice_index
-            .checked_mul(slice_size)
-            .ok_or_else(|| anyhow::anyhow!("Slice start overflow for index {slice_index}"))?;
-        let range_end = range_start
-            .checked_add(slice_size.saturating_sub(1))
-            .ok_or_else(|| anyhow::anyhow!("Slice end overflow for index {slice_index}"))?;
-        Ok((range_start, range_end))
     }
 
     fn fetched_slice_from_meta(
@@ -631,7 +618,7 @@ impl SliceCache {
         provider_headers: &ProviderHeaders,
         slice_index: u64,
     ) -> String {
-        slice_cache_key(url, provider_headers, slice_index)
+        slice_cache_key(&resource_meta_key(url, provider_headers), slice_index)
     }
 
     /// Compute the key used to store per-resource metadata.
@@ -1127,8 +1114,8 @@ impl SliceCache {
             upstream_header_timeout,
             bypass_on_non_partial,
         } = fetch;
-        let key = Self::compute_cache_key(url, provider_headers, slice_index);
         let meta_key = Self::meta_key(url, provider_headers);
+        let key = slice_cache_key(&meta_key, slice_index);
         let (mut cached_meta, mut effective_total_size) =
             self.cached_meta_and_total_size(&meta_key, known_total_size);
 
@@ -1363,10 +1350,6 @@ impl SliceCache {
             request_control,
         } = context;
 
-        let requested_range_end_exclusive = range_start
-            .checked_add(self.config.slice_size as u64)
-            .ok_or_else(|| anyhow::anyhow!("Slice request end overflow for slice {slice_index}"))?;
-
         if resp.status() != reqwest::StatusCode::PARTIAL_CONTENT {
             return Err(anyhow::anyhow!(
                 "Upstream returned {} for slice {} (expected 206 Partial Content)",
@@ -1375,58 +1358,25 @@ impl SliceCache {
             ));
         }
 
-        // Validate Content-Range response header (nginx header filter pattern).
-        let parsed_content_range = if let Some(cr_value) = resp
+        let content_range = resp
             .headers()
             .get("content-range")
-            .and_then(|v| v.to_str().ok())
-        {
-            let cr = parse_content_range(cr_value)?;
-            if cr.start != range_start || cr.end > requested_range_end_exclusive {
-                return Err(anyhow::anyhow!(
-                    "Content-Range mismatch: got {}-{}, expected {}-{} \
-                     (nginx slice header filter validation)",
-                    cr.start,
-                    cr.end,
-                    range_start,
-                    requested_range_end_exclusive,
-                ));
-            }
-            if cr.end < requested_range_end_exclusive {
-                let complete_length = cr.complete_length.or(known_total_size);
-                if complete_length != Some(cr.end) {
-                    return Err(anyhow::anyhow!(
-                        "Short slice response is only valid at resource end: got {}-{}, requested {}-{}",
-                        cr.start,
-                        cr.end,
-                        range_start,
-                        requested_range_end_exclusive,
-                    ));
-                }
-            }
-            match (known_total_size, cr.complete_length) {
-                (Some(expected), Some(complete_length)) if complete_length != expected => {
-                    return Err(anyhow::anyhow!(
-                        "Content-Range total mismatch: got {complete_length}, expected {expected}"
-                    ));
-                }
-                _ => {}
-            }
-            cr
-        } else {
-            return Err(anyhow::anyhow!(
-                "Upstream returned 206 Partial Content without Content-Range header; \
-                 cannot validate slice boundaries"
-            ));
-        };
-        let total_size = parsed_content_range
-            .complete_length
-            .or(known_total_size)
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Slice response did not include a complete resource length and no known total size was available"
-                )
-            })?;
+            .and_then(|value| value.to_str().ok())
+            .context(
+                "Upstream returned 206 Partial Content without a valid Content-Range header",
+            )?;
+        let cr = parse_content_range(content_range)?;
+        let (total_size, expected_len) = response_extent(
+            range_start,
+            self.config.slice_size,
+            cr.start,
+            cr.end,
+            cr.complete_length,
+            known_total_size,
+        ).with_context(|| format!(
+            "Content-Range mismatch: got {content_range}, requested slice at {range_start} with width {} and known total {known_total_size:?}",
+            self.config.slice_size
+        ))?;
 
         // Extract headers for metadata before consuming body.
         let resp_etag = resp
@@ -1462,13 +1412,6 @@ impl SliceCache {
             .get(&mk)
             .map(|m| (m.etag.clone(), m.last_modified.clone()));
 
-        let expected_len = usize::try_from(
-            parsed_content_range
-                .end
-                .saturating_sub(parsed_content_range.start),
-        )
-        .map_err(|_| anyhow::anyhow!("Slice length overflow for slice {slice_index}"))?;
-
         if let Some(content_length) = resp.content_length() {
             let content_length = usize::try_from(content_length)
                 .map_err(|_| anyhow::anyhow!("Slice Content-Length overflow"))?;
@@ -1483,16 +1426,14 @@ impl SliceCache {
             match &resp_etag {
                 Some(new_etag) if new_etag == existing_etag => {}
                 Some(new_etag) => {
-                    self.invalidate_resource(url, provider_headers, total_size)
-                        .await;
+                    self.invalidate_resource(&mk).await;
                     return Err(anyhow::anyhow!(
                         "ETag mismatch: resource modified between slice fetches \
                          (expected {existing_etag}, got {new_etag})"
                     ));
                 }
                 None => {
-                    self.invalidate_resource(url, provider_headers, total_size)
-                        .await;
+                    self.invalidate_resource(&mk).await;
                     return Err(anyhow::anyhow!(
                         "ETag disappeared while fetching slices for resource"
                     ));
@@ -1501,8 +1442,7 @@ impl SliceCache {
         } else if let Some((None, Some(existing_last_modified))) = &existing_validators
             && resp_last_modified.as_ref() != Some(existing_last_modified)
         {
-            self.invalidate_resource(url, provider_headers, total_size)
-                .await;
+            self.invalidate_resource(&mk).await;
             return Err(anyhow::anyhow!(
                 "Last-Modified mismatch: resource modified between slice fetches"
             ));
@@ -1552,22 +1492,12 @@ impl SliceCache {
         })
     }
 
-    /// Invalidate all cached slices for a given resource.
-    pub(super) async fn invalidate_resource(
-        &self,
-        url: &str,
-        provider_headers: &ProviderHeaders,
-        total_size: u64,
-    ) {
-        let ss = self.config.slice_size as u64;
-        let num_slices = total_size.div_ceil(ss);
-        for i in 0..num_slices {
-            let key = Self::compute_cache_key(url, provider_headers, i);
+    async fn invalidate_resource(&self, resource: &str) {
+        let prefix = format!("{resource}-");
+        for key in self.backend.keys_with_prefix(&prefix) {
             self.backend.remove(&key).await;
         }
-        // Also remove metadata so next fetch establishes a new ETag.
-        let mk = Self::meta_key(url, provider_headers);
-        self.meta.remove(&mk);
+        self.meta.remove(resource);
     }
 
     /// Periodically remove stale per-key locks that are not currently held

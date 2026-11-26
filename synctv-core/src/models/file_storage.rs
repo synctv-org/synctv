@@ -6,6 +6,9 @@ use std::collections::BTreeMap;
 
 use super::UserId;
 
+pub(crate) mod upload_plan;
+pub use upload_plan::{FileUploadManifestPart, FileUploadPlanPart};
+
 pub const FILE_ID_MAX_CHARS: usize = 128;
 pub const FILE_STORAGE_BACKEND_MAX_CHARS: usize = 64;
 pub const FILE_OBJECT_KEY_MAX_CHARS: usize = 2048;
@@ -537,15 +540,6 @@ pub struct CreateFileUploadSession {
     pub policy: FileUploadPolicy,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FileUploadManifestPart {
-    pub part_number: i32,
-    pub offset_bytes: i64,
-    pub size_bytes: i64,
-    pub checksum_sha256: String,
-}
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileUploadOwnershipProofMetadata {
@@ -569,13 +563,6 @@ pub struct FileUploadSessionMetadata {
     pub manifest_parts: Vec<FileUploadManifestPart>,
     pub ownership_proof: Option<FileUploadOwnershipProofMetadata>,
     pub ownership_proof_verified: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FileUploadPlanPart {
-    pub part_number: i32,
-    pub offset_bytes: i64,
-    pub size_bytes: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

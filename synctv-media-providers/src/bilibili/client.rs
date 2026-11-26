@@ -542,7 +542,7 @@ impl BilibiliClient {
         ssrf_guard: SsrfGuard,
     ) -> Self {
         #[cfg(not(any(feature = "tls-webpki-roots", feature = "tls-native-roots")))]
-        let _ = ssrf_guard;
+        drop(ssrf_guard);
         Self {
             client,
             short_link_client,
@@ -614,17 +614,9 @@ impl BilibiliClient {
         wbi_state: Arc<WbiState>,
         ssrf_guard: SsrfGuard,
     ) -> Self {
-        #[cfg(not(any(feature = "tls-webpki-roots", feature = "tls-native-roots")))]
-        let _ = ssrf_guard;
         Self {
-            client,
-            short_link_client,
             cookies: Some(cookies),
-            live_danmaku_device_cookies: Arc::new(OnceCell::new()),
-            wbi_state,
-            endpoints,
-            #[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots"))]
-            ssrf_guard,
+            ..Self::new_with_transport(client, short_link_client, endpoints, wbi_state, ssrf_guard)
         }
     }
 

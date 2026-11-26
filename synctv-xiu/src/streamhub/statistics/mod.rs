@@ -1,3 +1,4 @@
+use crate::streamhub::define::{StatisticData, SubscriberInfo};
 use {
     super::stream::StreamIdentifier,
     crate::flv::define::{
@@ -111,6 +112,142 @@ pub struct StatisticSubscriber {
 }
 
 impl StatisticsStream {
+    pub(super) fn register_subscriber(&mut self, info: SubscriberInfo) {
+        self.subscribers.insert(
+            info.id,
+            StatisticSubscriber {
+                id: info.id,
+                remote_address: info.notify_info.remote_addr,
+                sub_type: info.sub_type,
+                start_time: Local::now(),
+                send_bitrate: 0,
+                send_bytes: 0,
+                total_send_bytes: 0,
+            },
+        );
+        self.subscriber_count = self.subscribers.len();
+    }
+
+    pub(super) fn remove_subscriber(&mut self, id: &Uuid) {
+        self.subscribers.remove(id);
+        self.subscriber_count = self.subscribers.len();
+    }
+
+    fn record_sent_bytes(&mut self, id: &Uuid, bytes: usize) {
+        if let Some(subscriber) = self.subscribers.get_mut(id) {
+            subscriber.send_bytes += bytes;
+            subscriber.total_send_bytes += bytes;
+        }
+        self.total_send_bytes += bytes;
+    }
+
+    pub(super) fn record(&mut self, data: StatisticData) {
+        match data {
+            StatisticData::Audio {
+                uuid, data_size, ..
+            } => {
+                if let Some(uid) = uuid {
+                    self.record_sent_bytes(&uid, data_size);
+                } else {
+                    self.publisher.audio.recv_bytes += data_size;
+                    self.publisher.recv_bytes += data_size;
+                    self.total_recv_bytes += data_size;
+                }
+            }
+            StatisticData::Video {
+                uuid,
+                data_size,
+                frame_count,
+                is_key_frame,
+                ..
+            } => {
+                if let Some(uid) = uuid {
+                    self.record_sent_bytes(&uid, data_size);
+                } else {
+                    self.total_recv_bytes += data_size;
+                    self.publisher.video.recv_bytes += data_size;
+                    self.publisher.video.recv_frame_count += frame_count;
+                    self.publisher.recv_bytes += data_size;
+                    if let Some(is_key) = is_key_frame {
+                        if is_key {
+                            self.publisher.video.gop =
+                                self.publisher.video.recv_frame_count_for_gop;
+                            self.publisher.video.recv_frame_count_for_gop = 1;
+                        } else {
+                            self.publisher.video.recv_frame_count_for_gop += frame_count;
+                        }
+                    }
+                }
+            }
+            StatisticData::AudioCodec {
+                sound_format,
+                profile,
+                samplerate,
+                channels,
+            } => {
+                let audio_codec_data = &mut self.publisher.audio;
+                audio_codec_data.sound_format = sound_format;
+                audio_codec_data.profile = profile;
+                audio_codec_data.samplerate = samplerate;
+                audio_codec_data.channels = channels;
+            }
+            StatisticData::VideoCodec {
+                codec,
+                profile,
+                level,
+                width,
+                height,
+            } => {
+                let video_codec_data = &mut self.publisher.video;
+                video_codec_data.codec = codec;
+                video_codec_data.profile = profile;
+                video_codec_data.level = level;
+                video_codec_data.hevc_profile = None;
+                video_codec_data.hevc_level = None;
+                video_codec_data.width = width;
+                video_codec_data.height = height;
+            }
+            StatisticData::HevcCodec {
+                codec,
+                profile,
+                level,
+                width,
+                height,
+            } => {
+                let video_codec_data = &mut self.publisher.video;
+                video_codec_data.codec = codec;
+                video_codec_data.profile = AvcProfile::UNKNOWN;
+                video_codec_data.level = AvcLevel::UNKNOWN;
+                video_codec_data.hevc_profile = Some(profile);
+                video_codec_data.hevc_level = Some(level);
+                video_codec_data.width = width;
+                video_codec_data.height = height;
+            }
+            StatisticData::Publisher {
+                id,
+                remote_addr,
+                start_time,
+            } => {
+                let publisher = &mut self.publisher;
+                publisher.id = id;
+                publisher.remote_address = remote_addr;
+                publisher.start_time = start_time;
+            }
+            StatisticData::Subscriber {
+                id,
+                remote_addr,
+                sub_type,
+                start_time,
+            } => {
+                if let Some(subscriber) = self.subscribers.get_mut(&id) {
+                    subscriber.remote_address = remote_addr;
+                    subscriber.sub_type = sub_type;
+                    subscriber.start_time = start_time;
+                }
+            }
+        }
+    }
+
     #[must_use]
     pub fn new(identifier: StreamIdentifier) -> Self {
         Self {

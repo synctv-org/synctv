@@ -1145,6 +1145,161 @@ mod tests {
         );
     }
 
+    #[test]
+    fn audio_counts_toward_publisher_and_subscriber_traffic() {
+        use crate::flv::define::aac_packet_type::{AAC_RAW, AAC_SEQHDR};
+        let mut stats = StatisticsStream::new(test_identifier());
+        let subscriber = test_subscriber();
+        let id = subscriber.id;
+        stats.register_subscriber(subscriber);
+        for aac_packet_type in [AAC_SEQHDR, AAC_RAW] {
+            for uuid in [None, Some(id)] {
+                stats.record(StatisticData::Audio {
+                    uuid,
+                    data_size: 17,
+                    aac_packet_type,
+                    duration: 0,
+                });
+            }
+        }
+        assert_eq!(stats.publisher.audio.recv_bytes, 34);
+        assert_eq!(stats.publisher.recv_bytes, 34);
+        assert_eq!(stats.total_recv_bytes, 34);
+        assert_eq!(stats.subscribers[&id].total_send_bytes, 34);
+        assert_eq!(stats.total_send_bytes, 34);
+    }
+
+    #[test]
+    fn video_statistics_follow_codec_changes() {
+        use crate::flv::define::{AvcCodecId, AvcLevel, AvcProfile, HevcLevel, HevcProfile};
+        let mut stats = StatisticsStream::new(test_identifier());
+        let avc = || StatisticData::VideoCodec {
+            codec: AvcCodecId::H264,
+            profile: AvcProfile::High,
+            level: AvcLevel::Level4,
+            width: 1920,
+            height: 1080,
+        };
+        stats.record(avc());
+        stats.record(StatisticData::HevcCodec {
+            codec: AvcCodecId::HEVC,
+            profile: HevcProfile::Main10,
+            level: HevcLevel::Level51,
+            width: 3840,
+            height: 2160,
+        });
+        let video = &stats.publisher.video;
+        assert!(matches!(video.profile, AvcProfile::UNKNOWN));
+        assert!(matches!(video.level, AvcLevel::UNKNOWN));
+        assert_eq!(video.hevc_profile, Some(HevcProfile::Main10));
+        assert_eq!(video.hevc_level, Some(HevcLevel::Level51));
+        stats.record(avc());
+        let video = &stats.publisher.video;
+        assert!(matches!(video.profile, AvcProfile::High));
+        assert!(matches!(video.level, AvcLevel::Level4));
+        assert_eq!(video.hevc_profile, None);
+        assert_eq!(video.hevc_level, None);
+    }
+
+    #[tokio::test]
+    async fn stale_fanout_cleanup_preserves_replacement_subscription() {
+        let subscriber = test_subscriber();
+        let (events, receiver) = mpsc::unbounded_channel();
+        let (exit, _) = broadcast::channel(1);
+        let (statistic_sender, _) = mpsc::unbounded_channel();
+        let frames = Arc::new(Mutex::new(HashMap::new()));
+        let generation = Arc::new(AtomicU64::new(0));
+        let statistics = Arc::new(Mutex::new(StatisticsStream::new(test_identifier())));
+        let handle = StreamDataTransceiver::receive_event_loop(ReceiveEventLoopContext {
+            stream_handler: Arc::new(NoopHandler),
+            exit,
+            receiver,
+            packet_senders: Arc::default(),
+            frame_senders: frames.clone(),
+            frame_generation: generation.clone(),
+            packet_generation: Arc::default(),
+            statistic_sender,
+            statistics_data: statistics.clone(),
+        });
+        let subscribe = |info, sender| {
+            let (result_sender, result) = oneshot::channel();
+            events
+                .send(define::TransceiverEvent::Subscribe {
+                    info,
+                    sender: DataSender::Frame {
+                        sender: FrameDataSender::bounded(sender),
+                    },
+                    result_sender,
+                })
+                .unwrap();
+            result
+        };
+        let (old_sender, old_rx) = mpsc::channel(1);
+        subscribe(subscriber.clone(), old_sender)
+            .await
+            .unwrap()
+            .unwrap();
+        let old_registration = {
+            let senders = frames.lock().await;
+            let entry = &senders[&subscriber.id];
+            (
+                subscriber.id,
+                entry.sender.clone(),
+                entry.drop_count.clone(),
+            )
+        };
+        drop(old_rx);
+        let (replacement, mut replacement_rx) = mpsc::channel(1);
+        subscribe(subscriber.clone(), replacement)
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Model replacement after fan-out selected its snapshot, before eviction.
+        let context = transceiver::FrameDataLoopContext {
+            stream_handler: Arc::new(NoopHandler),
+            frame_senders: frames.clone(),
+            generation: generation.clone(),
+            statistics_data: statistics.clone(),
+            publisher_activity: None,
+        };
+        let data = FrameData::Video {
+            timestamp: 1,
+            data: bytes::Bytes::from_static(b"frame"),
+        };
+        let mut stale_snapshot = vec![old_registration];
+        let mut observed_generation = generation.load(Ordering::Acquire);
+        StreamDataTransceiver::receive_frame_data(
+            Some(data.clone()),
+            &context,
+            &mut stale_snapshot,
+            &mut observed_generation,
+        )
+        .await
+        .unwrap();
+        StreamDataTransceiver::receive_frame_data(Some(data), &context, &mut Vec::new(), &mut 0)
+            .await
+            .unwrap();
+        assert!(replacement_rx.try_recv().is_ok());
+        assert_eq!(statistics.lock().await.subscriber_count, 1);
+
+        let (another_sender, _another_rx) = mpsc::channel(1);
+        subscribe(test_subscriber(), another_sender)
+            .await
+            .unwrap()
+            .unwrap();
+        for _ in 0..2 {
+            events
+                .send(define::TransceiverEvent::UnSubscribe {
+                    info: subscriber.clone(),
+                })
+                .unwrap();
+        }
+        drop(events);
+        handle.await.unwrap();
+        assert_eq!(statistics.lock().await.subscriber_count, 1);
+    }
+
     #[tokio::test(start_paused = true)]
     async fn publisher_activity_is_recorded_without_subscribers_and_throttled() {
         let (hub_sender, hub_receiver) = mpsc::channel(8);

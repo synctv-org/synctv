@@ -37,6 +37,10 @@ impl From<BytesReadError> for UnpackError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum PackErrorValue {
+    #[error("message size {0} exceeds the RTMP 24-bit length limit")]
+    MessageTooLarge(u32),
+    #[error("RTMP message declares {declared} bytes but has {actual} bytes of payload")]
+    PayloadLengthMismatch { declared: u32, actual: usize },
     #[error("chunk header is missing")]
     NotExistHeader,
     #[error("unknown read state")]

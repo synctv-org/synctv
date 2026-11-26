@@ -3,7 +3,8 @@
 //! Note: Real-time playback control (play/pause/seek/speed) is handled via WebSocket messages
 
 use synctv_core::models::SourceProvider;
-use synctv_core::models::{PlaybackKind, PlaylistId, RoomPlaybackState, UserId};
+use synctv_core::models::media::PlaybackResult;
+use synctv_core::models::{PlaylistId, RoomPlaybackState, UserId};
 use synctv_core::provider::{ExecutionControl, ProviderActor, ProviderContext};
 use synctv_core::service::{
     PlaybackSourceExpectation, PlaybackStatePatch, PlaybackStateUpdateRequest,
@@ -11,14 +12,14 @@ use synctv_core::service::{
 
 use super::convert::{
     PlaybackHttpSigningContext, dynamic_playlist_source_fields, playback_client_profile_from_proto,
-    playback_history_page_to_proto, provider_playback_info_to_model, provider_target_from_proto,
-    try_playback_state_to_proto, try_playback_to_proto,
+    playback_history_page_to_proto, provider_target_from_proto, try_playback_state_to_proto,
+    try_playback_to_proto,
 };
 use super::playback_lifecycle::ProviderPlaybackLifecycleApi;
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
 use crate::impls::ApiError;
 use crate::impls::playback::{
-    normalized_provider_duration, playback_expires_at, playback_generation_error_allows_state_only,
+    build_provider_playback, playback_expires_at, playback_generation_error_allows_state_only,
     playback_snapshot_error_indicates_stale_state,
 };
 use crate::playback_fanout::{PlaybackFanoutActor, PreparedPlaybackStateFanout};
@@ -117,53 +118,6 @@ impl<'a> PlaybackBuildActor<'a> {
             Self::Guest { guest_id } => Ok(guest_id.to_string()),
         }
     }
-}
-
-struct ProviderPlaybackResultBuildRequest {
-    provider_result: synctv_core::provider::PlaybackResult,
-    playlist_id: Option<synctv_core::models::PlaylistId>,
-    room_id: synctv_core::models::RoomId,
-    name: String,
-    position: f64,
-    media_id: Option<synctv_core::models::MediaId>,
-    duration_seconds: Option<f64>,
-    playback_kind: PlaybackKind,
-}
-
-fn build_playback_result_from_provider(
-    request: ProviderPlaybackResultBuildRequest,
-) -> Result<synctv_core::models::media::PlaybackResult, ApiError> {
-    let ProviderPlaybackResultBuildRequest {
-        provider_result,
-        playlist_id,
-        room_id,
-        name,
-        position,
-        media_id,
-        duration_seconds,
-        playback_kind,
-    } = request;
-    let mut builder =
-        synctv_core::models::media::PlaybackResult::builder(playlist_id, room_id, name, position)
-            .provider(provider_result.provider)
-            .provider_instance_name(provider_result.provider_instance_name.clone())
-            .default_mode(provider_result.default_mode.clone())
-            .duration_seconds(duration_seconds)
-            .playback_kind(playback_kind);
-
-    if let Some(id) = media_id {
-        builder = builder.id(id);
-    }
-
-    for (mode_name, provider_info) in provider_result.playback_infos {
-        let info = provider_playback_info_to_model(&provider_info);
-        builder = builder.add_mode(mode_name, info);
-    }
-    builder = builder.metadata(provider_result.metadata);
-
-    builder
-        .build()
-        .ok_or_else(|| ApiError::Internal("Failed to build PlaybackResult".to_string()))
 }
 
 fn apply_static_direct_url_thumbnail(
@@ -636,23 +590,11 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
         let thumbnail = self.static_direct_url_thumbnail(&media).await?;
-        let playback_kind = provider_result
-            .playback_kind
-            .unwrap_or(PlaybackKind::Regular);
-        let duration_seconds =
-            normalized_provider_duration(Some(playback_kind), provider_result.duration_seconds);
-
-        let mut full_result =
-            build_playback_result_from_provider(ProviderPlaybackResultBuildRequest {
-                provider_result,
-                playlist_id: media.playlist_id,
-                room_id: media.room_id,
-                name: media.name.clone(),
-                position: media.position,
-                media_id: Some(media.id),
-                duration_seconds,
-                playback_kind,
-            })?;
+        let mut full_result = build_provider_playback(
+            PlaybackResult::builder(media.playlist_id, media.room_id, media.name, media.position)
+                .id(media.id),
+            provider_result,
+        )?;
         apply_static_direct_url_thumbnail(
             &mut full_result,
             media.source_provider,
@@ -797,26 +739,11 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        let playback_kind = provider_result
-            .playback_kind
-            .unwrap_or(PlaybackKind::Regular);
-        let duration_seconds =
-            normalized_provider_duration(Some(playback_kind), provider_result.duration_seconds);
-
-        let mut full_result =
-            build_playback_result_from_provider(ProviderPlaybackResultBuildRequest {
-                provider_result,
-                playlist_id: Some(*playlist_id),
-                room_id: *room_id,
-                name: item.name.clone(),
-                position: 0.0,
-                media_id: None,
-                duration_seconds,
-                playback_kind,
-            })?;
-
-        full_result.target = Some(target.clone());
-
+        let mut full_result = build_provider_playback(
+            PlaybackResult::builder(Some(*playlist_id), *room_id, item.name, 0.0)
+                .target(target.clone()),
+            provider_result,
+        )?;
         let generation = filter_unavailable_live_whep(
             self.live_streaming_infrastructure.as_ref(),
             &mut full_result,

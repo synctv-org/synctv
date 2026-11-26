@@ -113,6 +113,20 @@ pub struct PlaybackInfo {
     pub default_danmaku_index: Option<usize>,
 }
 
+impl From<PlaybackInfo> for crate::models::media::PlaybackInfo {
+    fn from(info: PlaybackInfo) -> Self {
+        Self {
+            thumbnail: info.thumbnail,
+            medias: info.medias,
+            default_media_index: info.default_media_index,
+            subtitles: info.subtitles,
+            default_subtitle_index: info.default_subtitle_index,
+            danmakus: info.danmakus,
+            default_danmaku_index: info.default_danmaku_index,
+        }
+    }
+}
+
 /// Complete playback result with multiple modes
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlaybackResult {

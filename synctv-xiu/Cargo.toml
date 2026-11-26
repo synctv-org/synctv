@@ -55,7 +55,6 @@ chrono.workspace = true
 # Crypto
 hmac.workspace = true
 sha2.workspace = true
-hex.workspace = true
 
 # Concurrency
 dashmap.workspace = true
@@ -78,6 +77,7 @@ opendal-http-transport-reqwest = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
 
 [dev-dependencies]
+hex.workspace = true
 base64.workspace = true
 ffmpeg-next.workspace = true
 ffmpeg-sys-next.workspace = true

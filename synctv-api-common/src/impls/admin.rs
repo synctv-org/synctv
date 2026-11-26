@@ -16,8 +16,8 @@ use synctv_core::models::SortDirection as CoreSortDirection;
 
 use super::ApiError;
 use super::client::convert::{
-    playback_client_profile_from_proto, provider_playback_info_to_model, try_members_to_proto,
-    try_playback_state_to_proto, try_playback_to_proto, user_status_to_proto,
+    playback_client_profile_from_proto, try_members_to_proto, try_playback_state_to_proto,
+    try_playback_to_proto, user_status_to_proto,
 };
 use super::client::user_notification_preferences_to_proto;
 use crate::chat_event_dispatcher::ChatEventDispatcher;

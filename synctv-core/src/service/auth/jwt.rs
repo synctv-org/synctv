@@ -11,7 +11,9 @@ use crate::{
     models::{RoomId, UserId},
 };
 
+mod expiration;
 mod types;
+use expiration::{ExpirationPolicy, ExpirationStatus};
 
 pub use types::{Claims, GuestClaims, TokenAuthContext, TokenCredentialBinding, TokenType};
 use types::{
@@ -57,26 +59,29 @@ fn decode_untrusted_token_type_hint(token: &str) -> Option<TokenTypeHint> {
 }
 
 fn validate_expiration(clock: &dyn Clock, exp: i64, leeway_secs: u64, context: &str) -> Result<()> {
-    let leeway = i64::try_from(leeway_secs).unwrap_or(i64::MAX);
-    let expires_with_leeway = exp.saturating_add(leeway);
-    if clock.now().timestamp() > expires_with_leeway {
-        return Err(Error::Authentication(format!("{context} expired")));
-    }
-    Ok(())
+    check_expiration(
+        clock,
+        Some(exp),
+        leeway_secs,
+        ExpirationPolicy::Required,
+        context,
+    )
 }
 
-fn validate_serialized_claims_expiration<T: Serialize>(
+fn check_expiration(
     clock: &dyn Clock,
-    claims: &T,
+    exp: Option<i64>,
     leeway_secs: u64,
+    policy: ExpirationPolicy,
     context: &str,
 ) -> Result<()> {
-    let value =
-        serde_json::to_value(claims).internal_with_err("Failed to inspect custom token claims")?;
-    if let Some(exp) = value.get("exp").and_then(serde_json::Value::as_i64) {
-        validate_expiration(clock, exp, leeway_secs, context)?;
+    match expiration::check(clock.now().timestamp(), exp, leeway_secs, policy) {
+        ExpirationStatus::Valid => Ok(()),
+        ExpirationStatus::Expired => Err(Error::Authentication(format!("{context} expired"))),
+        ExpirationStatus::Missing => Err(Error::Authentication(format!(
+            "{context} missing expiration"
+        ))),
     }
-    Ok(())
 }
 
 const MIN_JWT_SECRET_ENTROPY_BITS_F64: f64 = 128.0;
@@ -720,8 +725,28 @@ impl JwtService {
         self.verify_guest_token(token).is_ok()
     }
 
-    /// Get access token duration in seconds
-    ///
+    /// Time to retain a JTI through its inclusive acceptance window.
+    pub fn revocation_ttl(&self, exp: i64, now: i64) -> Result<u64> {
+        expiration::retention(exp, now, self.clock_skew_leeway_secs).ok_or_else(|| {
+            Error::Internal("Token revocation deadline exceeds supported range".to_string())
+        })
+    }
+
+    pub(crate) fn refresh_family_retention(&self) -> Result<u64> {
+        expiration::family_retention(
+            self.refresh_token_duration_seconds(),
+            self.clock_skew_leeway_secs,
+        )
+        .ok_or_else(|| {
+            Error::Internal("Refresh session revocation exceeds supported range".to_string())
+        })
+    }
+
+    pub(crate) fn family_revoked(issued: i64, revoked: Option<i64>) -> bool {
+        expiration::revoked_before(issued, revoked)
+    }
+
+    /// Get access token duration in seconds.
     /// Used by `OAuth2` token response to report the correct `expires_in` value.
     pub fn access_token_duration_seconds(&self) -> Result<i64> {
         duration_hours_to_seconds(
@@ -749,23 +774,9 @@ impl JwtService {
 
     pub fn verify_custom<T>(&self, token: &str) -> Result<T>
     where
-        T: DeserializeOwned + Serialize,
+        T: DeserializeOwned,
     {
-        let mut validation = Validation::new(self.algorithm);
-        validation.validate_exp = false;
-        validation.validate_nbf = false;
-
-        let token_data = decode(token, &self.decoding_key, &validation)
-            .map_err(|e| map_jwt_error(&e, "Token"))?;
-
-        validate_serialized_claims_expiration(
-            self.clock.as_ref(),
-            &token_data.claims,
-            self.clock_skew_leeway_secs,
-            "Token",
-        )?;
-
-        Ok(token_data.claims)
+        self.verify_custom_expiration(token, ExpirationPolicy::Required)
     }
 
     /// Verify a custom token whose claims may intentionally omit expiration.
@@ -775,24 +786,43 @@ impl JwtService {
     /// [`Self::verify_custom`] so an expiration claim remains required.
     pub fn verify_custom_with_optional_exp<T>(&self, token: &str) -> Result<T>
     where
-        T: DeserializeOwned + Serialize,
+        T: DeserializeOwned,
     {
+        self.verify_custom_expiration(token, ExpirationPolicy::Optional)
+    }
+
+    fn verify_custom_expiration<T: DeserializeOwned>(
+        &self,
+        token: &str,
+        policy: ExpirationPolicy,
+    ) -> Result<T> {
+        #[derive(Deserialize)]
+        struct ExpirationClaim {
+            exp: Option<i64>,
+        }
+
         let mut validation = Validation::new(self.algorithm);
         validation.validate_exp = false;
         validation.validate_nbf = false;
-        validation.required_spec_claims.remove("exp");
-
-        let token_data = decode(token, &self.decoding_key, &validation)
-            .map_err(|e| map_jwt_error(&e, "Token"))?;
-
-        validate_serialized_claims_expiration(
+        if matches!(policy, ExpirationPolicy::Optional) {
+            validation.required_spec_claims.remove("exp");
+        }
+        // Inspect the signed JSON before projecting it into T. Callers may
+        // omit fields or customize how they deserialize or serialize claims.
+        let raw =
+            decode::<Box<serde_json::value::RawValue>>(token, &self.decoding_key, &validation)
+                .map_err(|e| map_jwt_error(&e, "Token"))?
+                .claims;
+        let claim: ExpirationClaim = serde_json::from_str(raw.get())
+            .map_err(|_| Error::Authentication("Invalid token expiration".into()))?;
+        check_expiration(
             self.clock.as_ref(),
-            &token_data.claims,
+            claim.exp,
             self.clock_skew_leeway_secs,
+            policy,
             "Token",
         )?;
-
-        Ok(token_data.claims)
+        serde_json::from_str(raw.get()).map_err(|err| map_jwt_error(&err.into(), "Token"))
     }
 }
 

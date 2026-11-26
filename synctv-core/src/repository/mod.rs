@@ -11,6 +11,7 @@ pub(crate) mod file_storage;
 pub(crate) mod jsonb;
 pub(crate) mod media;
 pub(crate) mod notification;
+mod outbox_retry;
 pub(crate) mod playback;
 pub(crate) mod playback_history;
 pub(crate) mod playback_session;

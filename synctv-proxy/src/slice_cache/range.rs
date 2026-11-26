@@ -10,13 +10,8 @@
 
 use std::fmt;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ClientRangePlan {
-    Explicit { start: u64, end: u64 },
-    OpenEnded { start: u64 },
-    Suffix { suffix_len: u64 },
-    MultiRange,
-}
+pub use super::bounds::ClientRangePlan;
+use super::bounds::{self, BoundsError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClientRangeError {
@@ -100,42 +95,16 @@ pub fn range_bounds_for_total(
         total_size,
     };
 
-    if matches!(
-        plan,
-        ClientRangePlan::Explicit { .. }
-            | ClientRangePlan::OpenEnded { .. }
-            | ClientRangePlan::Suffix { .. }
-    ) && total_size == 0
-    {
-        return Err(unsatisfiable("Range start beyond total size"));
-    }
-
-    match plan {
-        ClientRangePlan::Explicit { start, mut end } => {
-            if start >= total_size {
-                return Err(unsatisfiable("Range start beyond total size"));
-            }
-            if end >= total_size {
-                end = total_size - 1;
-            }
-            Ok((start, end))
+    bounds::resolve(plan, total_size).map_err(|err| match err {
+        BoundsError::BeyondTotal => unsatisfiable("Range start beyond total size"),
+        BoundsError::EmptySuffix => unsatisfiable("Suffix range out of bounds"),
+        BoundsError::Reversed => {
+            ClientRangeError::InvalidRequest("Range start must not exceed range end".into())
         }
-        ClientRangePlan::OpenEnded { start } => {
-            if start >= total_size {
-                return Err(unsatisfiable("Range start beyond total size"));
-            }
-            Ok((start, total_size - 1))
-        }
-        ClientRangePlan::Suffix { suffix_len } => {
-            if suffix_len == 0 {
-                return Err(unsatisfiable("Suffix range out of bounds"));
-            }
-            Ok((total_size.saturating_sub(suffix_len), total_size - 1))
-        }
-        ClientRangePlan::MultiRange => Err(ClientRangeError::InvalidRequest(
-            "Multi-range requests are not supported by the slice cache".to_string(),
-        )),
-    }
+        BoundsError::MultiRange => ClientRangeError::InvalidRequest(
+            "Multi-range requests are not supported by the slice cache".into(),
+        ),
+    })
 }
 
 #[must_use]
@@ -204,17 +173,6 @@ pub fn parse_content_range(value: &str) -> Result<ContentRange, anyhow::Error> {
     let (end_inclusive, rest) = parse_u64_prefix(rest)
         .ok_or_else(|| anyhow::anyhow!("Invalid or missing end in Content-Range"))?;
 
-    // Validate start <= end_inclusive (e.g., "bytes 500-100/1000" is invalid).
-    if start > end_inclusive {
-        return Err(anyhow::anyhow!(
-            "Invalid Content-Range: start ({start}) > end ({end_inclusive})"
-        ));
-    }
-
-    let end = end_inclusive
-        .checked_add(1)
-        .ok_or_else(|| anyhow::anyhow!("Content-Range end overflow"))?;
-
     // Expect '/'.
     let rest = rest.trim_start();
     let rest = rest
@@ -240,6 +198,9 @@ pub fn parse_content_range(value: &str) -> Result<ContentRange, anyhow::Error> {
         ));
     }
 
+    let end = bounds::exclusive_end(start, end_inclusive, complete_length)
+        .ok_or_else(|| anyhow::anyhow!("Invalid Content-Range bounds: {value}"))?;
+
     Ok(ContentRange {
         start,
         end,
@@ -254,20 +215,8 @@ pub fn parse_content_range(value: &str) -> Result<ContentRange, anyhow::Error> {
 /// Modeled after nginx's digit-by-digit parsing with overflow protection
 /// (`cutoff`/`cutlim` pattern).
 fn parse_u64_prefix(s: &str) -> Option<(u64, &str)> {
-    let bytes = s.as_bytes();
-    if bytes.is_empty() || !bytes[0].is_ascii_digit() {
-        return None;
-    }
-
-    let mut value: u64 = 0;
-    let mut i = 0;
-    while i < bytes.len() && bytes[i].is_ascii_digit() {
-        let digit = u64::from(bytes[i] - b'0');
-        value = value.checked_mul(10)?.checked_add(digit)?;
-        i += 1;
-    }
-
-    Some((value, &s[i..]))
+    let (value, consumed) = bounds::decimal_prefix(s.as_bytes())?;
+    Some((value, s.get(consumed..)?))
 }
 
 // Slice alignment helpers

@@ -418,31 +418,9 @@ fn crop_slice_for_range(
     range_start: u64,
     range_end: u64,
 ) -> Result<Bytes, io::Error> {
-    let offset_start = if range_start > slice_start {
-        usize::try_from(range_start - slice_start)
-            .map_err(|_| io::Error::other("Slice crop start exceeds platform usize"))?
-    } else {
-        0
-    };
-
-    let slice_len = data.len();
-    let slice_end = slice_start
-        .checked_add(slice_len as u64)
-        .ok_or_else(|| io::Error::other("Slice end overflow"))?;
-    let offset_end = if range_end < slice_end {
-        usize::try_from(range_end - slice_start)
-            .map_err(|_| io::Error::other("Slice crop end exceeds platform usize"))?
-            .checked_add(1)
-            .ok_or_else(|| io::Error::other("Slice crop end overflow"))?
-    } else {
-        slice_len
-    };
-
-    if offset_start > offset_end || offset_end > slice_len {
-        return Err(io::Error::other("Invalid slice crop range"));
-    }
-
-    Ok(data.slice(offset_start..offset_end))
+    let (start, end) = super::bounds::crop_offsets(slice_start, data.len(), range_start, range_end)
+        .ok_or_else(|| io::Error::other("Invalid slice crop range"))?;
+    Ok(data.slice(start..end))
 }
 
 async fn stream_original_range_with_learned_meta(

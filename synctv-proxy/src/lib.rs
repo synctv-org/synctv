@@ -8,11 +8,13 @@
 compile_error!("features \"tls-aws-lc\" and \"tls-ring\" are mutually exclusive - use only one");
 
 mod cors;
+mod cors_policy;
 mod error;
 pub mod grpc;
 mod manifest;
 mod mpd;
 mod redirect;
+mod redirect_header_policy;
 pub mod slice_cache;
 
 use std::collections::HashMap;

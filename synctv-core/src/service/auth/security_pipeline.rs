@@ -137,9 +137,9 @@ impl SecurityPipeline {
         if let Some(cache) = &self.user_cache {
             match cache.get(&user_id).await {
                 Ok(Some(cached)) => {
-                    if cached.is_banned()
-                        || cached.status() == UserStatus::Banned
-                        || cached.is_deleted()
+                    if !cached
+                        .status()
+                        .permits_session(cached.is_banned(), cached.is_deleted())
                     {
                         return Err(Error::Authentication("Authentication failed".to_string()));
                     }
@@ -183,7 +183,10 @@ impl SecurityPipeline {
         }
 
         let is_banned = self.user_service.is_user_banned(&user_id).await?;
-        if user.is_deleted() || is_banned {
+        if !user
+            .status
+            .permits_session(is_banned || user.is_banned, user.is_deleted())
+        {
             return Err(Error::Authentication("Authentication failed".to_string()));
         }
 

@@ -199,6 +199,13 @@ fn test_parse_content_range_u64_max_start() {
 }
 
 #[test]
+fn content_range_must_fit_the_declared_representation() {
+    assert!(parse_content_range("bytes 3-9/9").is_err());
+    assert!(parse_content_range("bytes 0-0/0").is_err());
+    assert!(parse_content_range("bytes 3-9/10").is_ok());
+}
+
+#[test]
 fn test_parse_content_range_start_greater_than_end() {
     assert!(parse_content_range("bytes 500-100/1000").is_err());
 }

@@ -542,6 +542,19 @@ fn test_custom_token_durations() {
 }
 
 #[test]
+fn revocation_covers_last_accepted_second() {
+    let jwt = ok(
+        JwtService::with_durations(TEST_JWT_SECRET, 1, 1, 1, 5),
+        "JWT service should build",
+    );
+    assert_eq!(ok(jwt.revocation_ttl(100, 100), "at expiry"), 6);
+    assert_eq!(ok(jwt.revocation_ttl(100, 105), "at leeway"), 1);
+    assert_eq!(ok(jwt.revocation_ttl(100, 106), "past leeway"), 0);
+    assert_eq!(ok(jwt.revocation_ttl(i64::MIN, i64::MAX), "elapsed"), 0);
+    assert!(jwt.revocation_ttl(i64::MAX, i64::MIN).is_err());
+}
+
+#[test]
 fn test_refresh_token_duration() {
     let jwt = create_jwt_service();
     let user_id = UserId::new();
@@ -694,6 +707,40 @@ fn test_custom_token_requires_expiration_by_default() {
     assert!(
         jwt.verify_custom_with_optional_exp::<NonExpiringClaims>(&token)
             .is_ok()
+    );
+}
+
+#[test]
+fn custom_expiration_uses_signed_claims_even_when_the_consumer_omits_exp() {
+    #[derive(serde::Deserialize)]
+    struct Subject {
+        sub: String,
+    }
+
+    let jwt = create_jwt_service();
+    for exp in [serde_json::json!(1), serde_json::json!("invalid")] {
+        let token = ok(
+            jwt.sign_custom(&serde_json::json!({ "sub": "user", "exp": exp })),
+            "sign claims",
+        );
+        assert!(jwt.verify_custom::<Subject>(&token).is_err());
+        assert!(
+            jwt.verify_custom_with_optional_exp::<Subject>(&token)
+                .is_err()
+        );
+    }
+    let future = crate::SystemClock.now().timestamp() + 3600;
+    let token = ok(
+        jwt.sign_custom(&serde_json::json!({ "sub": "user", "exp": future })),
+        "sign claims",
+    );
+    assert_eq!(
+        ok(
+            jwt.verify_custom::<Subject>(&token),
+            "verify signed expiration"
+        )
+        .sub,
+        "user"
     );
 }
 

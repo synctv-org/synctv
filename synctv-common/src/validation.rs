@@ -6,6 +6,8 @@
 //! sequences.
 #![allow(clippy::missing_errors_doc)]
 
+mod encoded_dot;
+
 use std::fmt;
 
 /// Error returned when a path fails traversal validation.
@@ -68,56 +70,17 @@ pub fn validate_path_for_traversal(path: &str) -> Result<(), PathTraversalError>
         });
     }
 
-    // Check 4: URL-encoded variants and complex attacks. `str::get` is used
-    // instead of direct slicing: `&path[i + 1..i + 3]` panicked when a
-    // multi-byte UTF-8 char straddled the slice (e.g. "%Aé"); `get`
-    // returns `None` for the same slices instead.
-    let bytes = path.as_bytes();
-    let mut i = 0;
-
-    while i < bytes.len() {
-        if bytes[i] == b'%'
-            && i + 2 < bytes.len()
-            && let Some(hex) = path.get(i + 1..i + 3)
-            && let Ok(byte_val) = u8::from_str_radix(hex, 16)
-        {
-            // Reject URL-encoded dot (0x2E)
-            if byte_val == 0x2E {
-                return Err(PathTraversalError {
-                    reason: "must not contain URL-encoded dot character".to_string(),
-                });
+    match encoded_dot::first(path.as_bytes()) {
+        None => Ok(()),
+        Some(depth) => Err(PathTraversalError {
+            reason: match depth {
+                encoded_dot::Depth::Single => "must not contain URL-encoded dot character",
+                encoded_dot::Depth::Double => "must not contain double-encoded dot character",
+                encoded_dot::Depth::Triple => "must not contain triple-encoded dot character",
             }
-
-            // Reject multi-layer encoded dots:
-            // %252e  -> %2e  -> .  (double-encoded)
-            // %25252e -> %252e -> %2e -> .  (triple-encoded)
-            if byte_val == 0x25
-                && i + 4 < bytes.len()
-                && let Some(inner_hex) = path.get(i + 3..i + 5)
-                && let Ok(inner_val) = u8::from_str_radix(inner_hex, 16)
-            {
-                if inner_val == 0x2E {
-                    return Err(PathTraversalError {
-                        reason: "must not contain double-encoded dot character".to_string(),
-                    });
-                }
-                // Triple encoding: %25 decodes to %, check next layer
-                if inner_val == 0x25
-                    && i + 6 < bytes.len()
-                    && let Some(nested_hex) = path.get(i + 5..i + 7)
-                    && let Ok(nested_val) = u8::from_str_radix(nested_hex, 16)
-                    && nested_val == 0x2E
-                {
-                    return Err(PathTraversalError {
-                        reason: "must not contain triple-encoded dot character".to_string(),
-                    });
-                }
-            }
-        }
-        i += 1;
+            .to_string(),
+        }),
     }
-
-    Ok(())
 }
 
 #[cfg(test)]

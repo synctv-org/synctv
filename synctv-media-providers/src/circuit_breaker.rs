@@ -1,23 +1,72 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
-
+use std::sync::{Arc, Mutex, MutexGuard};
 use tracing::{error, warn};
 
-/// Number of consecutive failures before the circuit opens.
-pub const CIRCUIT_BREAKER_THRESHOLD: u32 = 5;
+mod state;
+use state::State;
+pub use state::{CIRCUIT_BREAKER_THRESHOLD, CIRCUIT_BREAKER_TIMEOUT_SECS};
 
-/// Seconds the circuit stays open before transitioning to half-open.
-pub const CIRCUIT_BREAKER_TIMEOUT_SECS: i64 = 30;
-
-/// Circuit breaker state per provider service.
+/// Per-provider circuit breaker. Each admission or completion updates a single state.
 #[derive(Default)]
 pub struct CircuitBreaker {
-    /// Number of consecutive failures (reset to 0 on success)
-    consecutive_failures: AtomicU32,
-    /// Unix timestamp (seconds) when the circuit was opened. -1 = never opened.
-    opened_at: AtomicI64,
-    // Whether a half-open probe request is currently in flight.
-    half_open_probe_in_flight: AtomicBool,
+    inner: Mutex<Inner>,
+}
+
+#[derive(Default)]
+struct Inner {
+    state: State,
+    // In-flight calls keep the old allocation alive. Identity cannot be reused
+    // until all of those calls have finished.
+    generation: Arc<()>,
+}
+
+impl Inner {
+    fn fail(&mut self, service: &str) {
+        let opened = self.state.fail(unix_timestamp_secs());
+        if matches!(self.state, State::Open(_)) {
+            self.generation = Arc::new(());
+        }
+        if opened {
+            error!(%service, threshold = CIRCUIT_BREAKER_THRESHOLD, "Circuit breaker opened");
+        }
+    }
+}
+
+/// Admission for one RPC. A dropped half-open probe releases its reservation.
+pub struct RequestPermit {
+    breaker: Arc<CircuitBreaker>,
+    generation: Arc<()>,
+    probe_since: Option<i64>,
+}
+
+impl RequestPermit {
+    pub fn success(mut self) {
+        let mut inner = self.breaker.inner();
+        if Arc::ptr_eq(&self.generation, &inner.generation) {
+            inner.state.succeed();
+        }
+        self.probe_since = None;
+    }
+
+    pub fn failure(mut self, service: &str) {
+        let mut inner = self.breaker.inner();
+        if Arc::ptr_eq(&self.generation, &inner.generation) {
+            inner.fail(service);
+        }
+        self.probe_since = None;
+    }
+}
+
+impl Drop for RequestPermit {
+    fn drop(&mut self) {
+        if let Some(since) = self.probe_since {
+            let mut inner = self.breaker.inner();
+            if Arc::ptr_eq(&self.generation, &inner.generation)
+                && matches!(inner.state, State::Probing)
+            {
+                inner.state = State::Open(since);
+            }
+        }
+    }
 }
 
 fn unix_timestamp_secs() -> i64 {
@@ -33,61 +82,51 @@ fn unix_timestamp_secs() -> i64 {
 impl CircuitBreaker {
     #[must_use]
     pub fn new() -> Arc<Self> {
-        Arc::new(Self {
-            consecutive_failures: AtomicU32::new(0),
-            opened_at: AtomicI64::new(-1),
-            half_open_probe_in_flight: AtomicBool::new(false),
+        Arc::new(Self::default())
+    }
+
+    fn inner(&self) -> MutexGuard<'_, Inner> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub fn try_request(self: &Arc<Self>) -> Option<RequestPermit> {
+        let mut inner = self.inner();
+        let previous = inner.state;
+        if !Self::admit(&mut inner.state) {
+            return None;
+        }
+        Some(RequestPermit {
+            breaker: Arc::clone(self),
+            generation: Arc::clone(&inner.generation),
+            probe_since: match previous {
+                State::Open(since) => Some(since),
+                _ => None,
+            },
         })
     }
 
-    /// Check whether a request should be allowed through.
     pub fn allow_request(&self) -> bool {
-        let failures = self.consecutive_failures.load(Ordering::SeqCst);
-        if failures < CIRCUIT_BREAKER_THRESHOLD {
-            return true;
-        }
-
-        let opened_at = self.opened_at.load(Ordering::SeqCst);
-        if opened_at < 0 {
-            return true;
-        }
-
-        let now = unix_timestamp_secs();
-        if now.saturating_sub(opened_at) < CIRCUIT_BREAKER_TIMEOUT_SECS {
-            return false;
-        }
-
-        self.half_open_probe_in_flight
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
+        Self::admit(&mut self.inner().state)
     }
 
-    /// Record a successful request: reset failure counter.
+    fn admit(state: &mut State) -> bool {
+        // The normal closed path needs no clock read.
+        let now = if matches!(*state, State::Open(_)) {
+            unix_timestamp_secs()
+        } else {
+            0
+        };
+        state.admit(now)
+    }
+
     pub fn record_success(&self) {
-        self.consecutive_failures.store(0, Ordering::SeqCst);
-        self.opened_at.store(-1, Ordering::SeqCst);
-        self.half_open_probe_in_flight
-            .store(false, Ordering::SeqCst);
+        self.inner().state.succeed();
     }
 
-    /// Record a failure: increment counter and open circuit if threshold reached.
     pub fn record_failure(&self, service: &str) {
-        let prev = self.consecutive_failures.fetch_add(1, Ordering::SeqCst);
-        let new_failures = prev + 1;
-        if new_failures >= CIRCUIT_BREAKER_THRESHOLD {
-            let now = unix_timestamp_secs();
-            self.opened_at.store(now, Ordering::SeqCst);
-            self.half_open_probe_in_flight
-                .store(false, Ordering::SeqCst);
-            if prev < CIRCUIT_BREAKER_THRESHOLD {
-                error!(
-                    service = %service,
-                    threshold = CIRCUIT_BREAKER_THRESHOLD,
-                    "Circuit breaker opened after {} consecutive failures",
-                    CIRCUIT_BREAKER_THRESHOLD
-                );
-            }
-        }
+        self.inner().fail(service);
     }
 }
 

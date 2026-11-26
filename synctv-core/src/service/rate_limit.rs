@@ -37,6 +37,8 @@ use synctv_common::{ExecutionControl, ExecutionControlError};
 use thiserror::Error;
 
 mod memory;
+mod window;
+use window::retry_after_seconds_from_oldest;
 mod redis_backend;
 
 use memory::InMemoryGovernorLimiter;
@@ -135,21 +137,6 @@ fn window_millis(window_seconds: u64) -> std::result::Result<u64, RateLimitError
     window_seconds.checked_mul(1000).ok_or_else(|| {
         RateLimitError::BackendUnavailable("rate limit window exceeds u64::MAX millis".to_string())
     })
-}
-
-fn retry_after_seconds_from_oldest(
-    now_millis: u64,
-    oldest_score_millis: u64,
-    window_seconds: u64,
-) -> u64 {
-    if oldest_score_millis == 0 {
-        return 1;
-    }
-
-    let time_since_oldest = now_millis.saturating_sub(oldest_score_millis);
-    let window_ms = window_seconds.saturating_mul(1000);
-    let remaining_window = window_ms.saturating_sub(time_since_oldest);
-    remaining_window.div_ceil(1000).max(1)
 }
 
 fn redis_count_to_u32(value: i64, field: &'static str) -> std::result::Result<u32, RateLimitError> {

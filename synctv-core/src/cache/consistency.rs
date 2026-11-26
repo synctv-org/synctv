@@ -266,14 +266,18 @@ pub struct VersionFenceReservation {
     pub started_at_ms: Option<i64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FenceRepairDecision {
-    KeepPending,
-    FinalizePending,
-    ExpirePending,
-    AdvanceCommitted,
-    ResetCommitted,
-    Noop,
+mod decision;
+pub use decision::FenceRepairDecision;
+
+impl From<decision::ReservationError> for Error {
+    fn from(error: decision::ReservationError) -> Self {
+        match error {
+            decision::ReservationError::Conflict => Self::OptimisticLockConflict,
+            decision::ReservationError::Exhausted => {
+                Self::Internal("Cache fence version exhausted".into())
+            }
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -336,7 +340,7 @@ impl VersionFenceStore for LocalVersionFenceStore {
     async fn bump_version(&self, domain: &CacheDomain) -> Result<i64> {
         let mut state = self.state.lock();
         let version = state.versions.entry(domain.clone()).or_insert(0);
-        *version += 1;
+        *version = decision::next_version(*version, None, *version)?;
         Ok(*version)
     }
 
@@ -385,13 +389,10 @@ impl VersionFenceStore for LocalVersionFenceStore {
         observed_version: i64,
     ) -> Result<i64> {
         let mut state = self.state.lock();
-        let current = state.versions.entry(domain.clone()).or_insert(0);
-        if *current > observed_version {
-            return Err(Error::OptimisticLockConflict);
-        }
-
-        *current = observed_version + 1;
-        Ok(*current)
+        let current = state.versions.get(domain).copied().unwrap_or(0);
+        let next = decision::next_version(current, None, observed_version)?;
+        state.versions.insert(domain.clone(), next);
+        Ok(next)
     }
 
     async fn begin_write(
@@ -401,15 +402,9 @@ impl VersionFenceStore for LocalVersionFenceStore {
     ) -> Result<VersionFenceReservation> {
         let mut state = self.state.lock();
         let current_version = state.versions.get(domain).copied().unwrap_or(0);
-        if current_version > observed_version {
-            return Err(Error::OptimisticLockConflict);
-        }
-
-        if let Some(pending) = state.pending.get(domain) {
-            if observed_version < current_version || observed_version != pending.version {
-                return Err(Error::OptimisticLockConflict);
-            }
-
+        let pending = state.pending.get(domain).map(|r| r.version);
+        let next = decision::next_version(current_version, pending, observed_version)?;
+        if pending.is_some() {
             // The caller's DB snapshot has already observed the pending
             // version, so that earlier reservation must have committed even if
             // its fence commit was lost. Finalize it before installing a new
@@ -422,7 +417,7 @@ impl VersionFenceStore for LocalVersionFenceStore {
         }
 
         let reservation = VersionFenceReservation {
-            version: observed_version + 1,
+            version: next,
             token: Uuid::new_v4().to_string(),
             started_at_ms: Some(crate::SystemClock.now_millis()),
         };
@@ -1407,37 +1402,20 @@ impl ConsistencyCoordinator {
         db_version: i64,
         pending_lease: Duration,
     ) -> FenceRepairDecision {
-        if let Some(pending) = state.pending_version {
-            if pending <= db_version {
-                return FenceRepairDecision::FinalizePending;
-            }
-            if Self::pending_lease_expired(state, pending_lease) {
-                return FenceRepairDecision::ExpirePending;
-            }
-            return FenceRepairDecision::KeepPending;
-        }
-
-        if state.committed_version < db_version {
-            return FenceRepairDecision::AdvanceCommitted;
-        }
-        if state.committed_version > db_version {
-            return FenceRepairDecision::ResetCommitted;
-        }
-
-        FenceRepairDecision::Noop
+        let expired = state.pending_version.is_some_and(|v| v > db_version)
+            && decision::lease_expired(
+                state.pending_started_at_ms,
+                crate::SystemClock.now_millis(),
+                pending_lease.as_millis(),
+            );
+        decision::repair_decision(
+            state.committed_version,
+            state.pending_version,
+            db_version,
+            expired,
+        )
     }
 
-    fn pending_lease_expired(state: &VersionFenceState, pending_lease: Duration) -> bool {
-        let Some(started_at_ms) = state.pending_started_at_ms else {
-            return false;
-        };
-        let now_ms = crate::SystemClock.now_millis();
-        let elapsed_ms = now_ms.saturating_sub(started_at_ms);
-        let Ok(pending_lease_ms) = i64::try_from(pending_lease.as_millis()) else {
-            return true;
-        };
-        elapsed_ms >= pending_lease_ms
-    }
     pub async fn repair_pending_domains<F, Fut>(&self, mut db_version_for_domain: F)
     where
         F: FnMut(CacheDomain) -> Fut,
@@ -1814,6 +1792,22 @@ mod tests {
                 .await
                 .checked("operation should succeed"),
             Some(2)
+        );
+    }
+
+    #[tokio::test]
+    async fn exhausted_version_leaves_the_pending_write_intact() {
+        let store = LocalVersionFenceStore::new();
+        let domain = room_settings_domain(1);
+        store
+            .begin_write(&domain, i64::MAX - 1)
+            .await
+            .checked("reserve last version");
+        let before = store.current_state(&domain).await.checked("read fence");
+        assert!(store.begin_write(&domain, i64::MAX).await.is_err());
+        assert_eq!(
+            store.current_state(&domain).await.checked("read fence"),
+            before
         );
     }
 

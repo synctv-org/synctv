@@ -17,6 +17,8 @@
 //! - Then use `ws://host/ws/rooms/{roomId}?ticket=xxx`
 //! - Tickets are single-use and expire quickly (30 seconds by default)
 
+mod origin;
+
 use axum::{
     extract::{ConnectInfo, FromRef, FromRequestParts, Path, Query, State, WebSocketUpgrade},
     http::request::Parts,
@@ -471,24 +473,42 @@ pub(crate) fn same_origin_as_host(
     };
 
     let (request_host, request_port) = split_host_and_port(host_header)?;
-    if !origin_host.eq_ignore_ascii_case(request_host) {
+    let parse_scheme = |value: &str| {
+        if value.eq_ignore_ascii_case("http") {
+            Some(origin::Scheme::Http)
+        } else if value.eq_ignore_ascii_case("https") {
+            Some(origin::Scheme::Https)
+        } else {
+            None
+        }
+    };
+    let Some(scheme) = parse_scheme(origin.scheme()) else {
         return Ok(false);
-    }
-
-    if let Some(request_scheme) = forwarded_proto
-        && !origin.scheme().eq_ignore_ascii_case(request_scheme)
-    {
-        return Ok(false);
-    }
-
-    Ok(origin.port_or_known_default()
-        == request_port.or_else(|| default_port_for_scheme(origin.scheme())))
+    };
+    let forwarded = match forwarded_proto {
+        Some(value) => {
+            let Some(scheme) = parse_scheme(value) else {
+                return Ok(false);
+            };
+            Some(scheme)
+        }
+        None => None,
+    };
+    Ok(origin::matches_authority(
+        origin_host.as_bytes(),
+        request_host.as_bytes(),
+        scheme,
+        forwarded,
+        origin.port(),
+        request_port,
+    ))
 }
 
 fn split_host_and_port(host_header: &str) -> Result<(&str, Option<u16>), AppError> {
     if let Some(stripped) = host_header.strip_prefix('[') {
         if let Some(end) = stripped.find(']') {
-            let host = &stripped[..end];
+            // Url::host_str includes the brackets in an IPv6 literal.
+            let host = &host_header[..end + 2];
             let remainder = &stripped[end + 1..];
             let port = match remainder.strip_prefix(':') {
                 Some(port) => Some(parse_host_port(port)?),
@@ -512,14 +532,6 @@ fn parse_host_port(port: &str) -> Result<u16, AppError> {
     }
     port.parse()
         .map_err(|_| AppError::forbidden("Invalid Host header port"))
-}
-
-fn default_port_for_scheme(scheme: &str) -> Option<u16> {
-    match scheme {
-        "http" => Some(80),
-        "https" => Some(443),
-        _ => None,
-    }
 }
 
 pub(crate) fn websocket_runtime_dependencies_available(state: &AppState) -> bool {

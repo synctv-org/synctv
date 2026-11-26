@@ -6,13 +6,7 @@ type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Syn
 #[test]
 fn half_open_allows_only_one_probe_request() -> TestResult {
     let breaker = CircuitBreaker::new();
-    breaker
-        .consecutive_failures
-        .store(CIRCUIT_BREAKER_THRESHOLD, Ordering::SeqCst);
-    breaker.opened_at.store(
-        unix_now() - CIRCUIT_BREAKER_TIMEOUT_SECS - 1,
-        Ordering::SeqCst,
-    );
+    breaker.inner().state = State::Open(unix_now() - CIRCUIT_BREAKER_TIMEOUT_SECS - 1);
 
     let mut handles = Vec::new();
     for _ in 0..8 {
@@ -39,13 +33,7 @@ fn half_open_allows_only_one_probe_request() -> TestResult {
 #[test]
 fn failed_half_open_probe_reopens_circuit_immediately() {
     let breaker = CircuitBreaker::new();
-    breaker
-        .consecutive_failures
-        .store(CIRCUIT_BREAKER_THRESHOLD, Ordering::SeqCst);
-    breaker.opened_at.store(
-        unix_now() - CIRCUIT_BREAKER_TIMEOUT_SECS - 1,
-        Ordering::SeqCst,
-    );
+    breaker.inner().state = State::Open(unix_now() - CIRCUIT_BREAKER_TIMEOUT_SECS - 1);
 
     assert!(breaker.allow_request(), "probe request should be allowed");
     breaker.record_failure("alist");
@@ -60,4 +48,25 @@ fn unix_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs().cast_signed())
+}
+
+#[test]
+fn dropped_probe_can_retry_and_old_success_cannot_close_the_open_circuit() -> TestResult {
+    let breaker = CircuitBreaker::new();
+    let pending = breaker.try_request().ok_or("expected admission")?;
+    for _ in 0..CIRCUIT_BREAKER_THRESHOLD {
+        breaker
+            .try_request()
+            .ok_or("expected admission")?
+            .failure("test");
+    }
+    pending.success();
+    assert!(breaker.try_request().is_none());
+    breaker.inner().state = State::Open(unix_now() - CIRCUIT_BREAKER_TIMEOUT_SECS);
+    let probe = breaker.try_request().ok_or("expected probe")?;
+    assert!(breaker.try_request().is_none());
+    drop(probe);
+    breaker.try_request().ok_or("expected new probe")?.success();
+    assert!(matches!(breaker.inner().state, State::Closed(0)));
+    Ok(())
 }

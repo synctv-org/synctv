@@ -1,3 +1,4 @@
+use super::super::factors;
 use std::{net::IpAddr, time::Duration};
 
 use synctv_common::ExecutionControl;
@@ -37,45 +38,14 @@ impl UserService {
         auth_factors: &UserAuthFactors,
         completed_methods: &[AuthFactorMethod],
     ) -> Vec<AuthFactorMethod> {
-        let mut methods = Vec::with_capacity(5);
-        if auth_factors.password && !completed_methods.contains(&AuthFactorMethod::Password) {
-            methods.push(AuthFactorMethod::Password);
-        }
-        if auth_factors.webauthn && !completed_methods.contains(&AuthFactorMethod::WebAuthn) {
-            methods.push(AuthFactorMethod::WebAuthn);
-        }
-        let totp_completed = completed_methods.contains(&AuthFactorMethod::Totp)
-            || completed_methods.contains(&AuthFactorMethod::RecoveryCode);
-        if auth_factors.totp && !totp_completed {
-            methods.push(AuthFactorMethod::Totp);
-            if auth_factors.totp_recovery_codes_remaining > 0 {
-                methods.push(AuthFactorMethod::RecoveryCode);
-            }
-        }
-        if auth_factors.email && !completed_methods.contains(&AuthFactorMethod::Email) {
-            methods.push(AuthFactorMethod::Email);
-        }
-        methods
+        Self::enrolled_factors(auth_factors).available(
+            &factors::from_methods(completed_methods),
+            auth_factors.totp_recovery_codes_remaining > 0,
+        )
     }
 
     fn sensitive_required_methods(auth_factors: &UserAuthFactors) -> Vec<AuthFactorMethod> {
-        let mut methods = Vec::with_capacity(5);
-        if auth_factors.password {
-            methods.push(AuthFactorMethod::Password);
-        }
-        if auth_factors.webauthn {
-            methods.push(AuthFactorMethod::WebAuthn);
-        }
-        if auth_factors.totp {
-            methods.push(AuthFactorMethod::Totp);
-            if auth_factors.totp_recovery_codes_remaining > 0 {
-                methods.push(AuthFactorMethod::RecoveryCode);
-            }
-        }
-        if auth_factors.email {
-            methods.push(AuthFactorMethod::Email);
-        }
-        methods
+        Self::sensitive_available_methods(auth_factors, &[])
     }
 
     async fn sensitive_challenge_from_session(
@@ -131,10 +101,10 @@ impl UserService {
             } else {
                 1
             };
-        let required_methods = Self::sensitive_required_methods(&auth_factors);
+        let enrolled_count = Self::enrolled_factors(&auth_factors).count();
         let can_bootstrap_from_oauth2 =
-            auth_context == Some(TokenAuthContext::OAuth2) && required_methods.is_empty();
-        if required_methods.len() < required_count && !can_bootstrap_from_oauth2 {
+            auth_context == Some(TokenAuthContext::OAuth2) && enrolled_count == 0;
+        if enrolled_count < required_count && !can_bootstrap_from_oauth2 {
             return Err(Error::InvalidInput(
                 "Sensitive operation verification requires enough local authentication methods"
                     .to_string(),
@@ -303,7 +273,7 @@ impl UserService {
             return Err(Error::Authentication("Authentication failed".to_string()));
         }
         session.completed_methods.push(method);
-        if session.completed_methods.len() >= session.required_count {
+        if factors::from_methods(&session.completed_methods).count() >= session.required_count {
             let verification_id = synctv_common::snanoid!(48);
             self.sensitive_verification_session_store
                 .store(&verification_id, &session, remaining_ttl)
@@ -330,7 +300,9 @@ impl UserService {
             .await?
             .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
         Self::validate_sensitive_verification_session(&session)?;
-        if session.user_id != *user_id || session.completed_methods.len() < session.required_count {
+        if session.user_id != *user_id
+            || factors::from_methods(&session.completed_methods).count() < session.required_count
+        {
             return Err(Error::Authentication("Authentication failed".to_string()));
         }
         Ok(())

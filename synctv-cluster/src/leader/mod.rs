@@ -23,6 +23,8 @@
 //! }
 //! ```
 
+mod timing;
+
 #[cfg(feature = "k8s")]
 pub mod k8s_lease;
 #[cfg(feature = "k8s")]
@@ -489,12 +491,6 @@ const DEFAULT_LEADER_LOCK_KEY: &str = "leader_election";
 /// At the default renew interval of 10s, 3 failures = ~30s of no leader.
 const LEADER_VACANCY_THRESHOLD: u64 = 3;
 
-/// Multiplier applied to grace period after prolonged Redis outage.
-/// When Redis recovers after being unavailable for an extended period,
-/// the grace period is multiplied by this factor to prevent multiple nodes
-/// from simultaneously attempting to acquire leadership.
-const OUTAGE_RECOVERY_GRACE_MULTIPLIER: u64 = 3;
-
 /// Threshold (in number of consecutive failures) at which we consider
 /// Redis to be in a prolonged outage state. Once failures exceed this
 /// threshold and Redis recovers, we apply an extended grace period.
@@ -914,13 +910,7 @@ impl LeaderElector {
         if let Some(lost_at_ts) = *guard {
             // Determine the applicable grace period
             let in_prolonged_outage = self.in_prolonged_outage.load(Ordering::Acquire);
-            let grace_period = if in_prolonged_outage {
-                // Extended grace period after prolonged outage
-                self.renew_interval_secs * OUTAGE_RECOVERY_GRACE_MULTIPLIER
-            } else {
-                // Normal grace period
-                self.renew_interval_secs
-            };
+            let grace_period = timing::redis_grace(self.renew_interval_secs, in_prolonged_outage);
 
             // Get current Redis time
             match self.get_redis_time().await {

@@ -6,6 +6,7 @@
 use std::time::Duration;
 use std::{collections::HashSet, sync::Arc};
 
+use crate::models::room::{CurrentItem, StaticChoice};
 use crate::{
     Clock, Error, Result, SystemClock,
     cache::{
@@ -1753,73 +1754,24 @@ impl PlaybackService {
                         return Ok(None);
                     }
 
-                    let next_media = match mode {
-                        PlayMode::Sequential => {
-                            if let Some(ref current_id) = selection_state.playing_media_id {
-                                match playlist.iter().position(|m| &m.id == current_id) {
-                                    Some(pos) if pos + 1 < playlist.len() => {
-                                        Some(&playlist[pos + 1])
-                                    }
-                                    Some(_) => None,
-                                    None => {
-                                        tracing::warn!(
-                                            room_id = %room_id,
-                                            media_id = %current_id,
-                                            "Sequential: current media no longer present, falling back to first available item"
-                                        );
-                                        playlist.first()
-                                    }
-                                }
-                            } else {
-                                playlist.first()
+                    let current_id = selection_state.playing_media_id;
+                    let current = match current_id {
+                        None => CurrentItem::Unset,
+                        Some(id) => playlist.iter().position(|item| item.id == id)
+                            .map_or(CurrentItem::Missing, CurrentItem::At),
+                    };
+                    let next_media = match mode.static_choice(playlist.len(), current) {
+                        StaticChoice::Stop => None,
+                        StaticChoice::At(index) => {
+                            if matches!(current, CurrentItem::Missing) && mode != PlayMode::Shuffle {
+                                tracing::warn!(%room_id, ?current_id, ?mode,
+                                    "Current media no longer present, falling back to first available item");
                             }
+                            playlist.get(index)
                         }
-                        PlayMode::RepeatOne => {
-                            if let Some(ref current_id) = selection_state.playing_media_id {
-                                playlist.iter().find(|m| &m.id == current_id).or_else(|| {
-                                    tracing::warn!(
-                                        room_id = %room_id,
-                                        media_id = %current_id,
-                                        "RepeatOne: current media no longer present, falling back to first available item"
-                                    );
-                                    playlist.first()
-                                })
-                            } else {
-                                playlist.first()
-                            }
-                        }
-                        PlayMode::RepeatAll => {
-                            if let Some(ref current_id) = selection_state.playing_media_id {
-                                if let Some(pos) = playlist.iter().position(|m| &m.id == current_id)
-                                {
-                                    Some(&playlist[(pos + 1) % playlist.len()])
-                                } else {
-                                    tracing::warn!(
-                                        room_id = %room_id,
-                                        media_id = %current_id,
-                                        "RepeatAll: current media no longer present, falling back to first available item"
-                                    );
-                                    playlist.first()
-                                }
-                            } else {
-                                playlist.first()
-                            }
-                        }
-                        PlayMode::Shuffle => {
-                            if let Some(ref current_id) = selection_state.playing_media_id {
-                                let other_media = playlist
-                                    .iter()
-                                    .filter(|m| &m.id != current_id)
-                                    .collect::<Vec<_>>();
-                                if other_media.is_empty() {
-                                    playlist.iter().find(|m| &m.id == current_id)
-                                } else {
-                                    other_media.into_iter().choose(&mut rand::rng())
-                                }
-                            } else {
-                                playlist.first()
-                            }
-                        }
+                        StaticChoice::SampleOthers => playlist.iter()
+                            .filter(|item| Some(item.id) != current_id)
+                            .choose(&mut rand::rng()).or_else(|| playlist.first()),
                     };
 
                     next_media.cloned().map(NextTarget::Static)

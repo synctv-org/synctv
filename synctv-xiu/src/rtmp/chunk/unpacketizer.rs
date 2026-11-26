@@ -7,15 +7,15 @@ use {
     crate::rtmp::messages::define::msg_type_id,
     byteorder::{BigEndian, LittleEndian},
     bytes::{BufMut, BytesMut},
-    std::{cmp::min, fmt, num::NonZeroUsize, vec::Vec},
+    std::{fmt, num::NonZeroUsize, vec::Vec},
 };
 
 const PARSE_ERROR_NUMBER: usize = 5;
 /// Maximum number of chunk stream IDs to track before cleanup
 /// RTMP spec allows up to 65599 stream IDs, but in practice most streams use far fewer
 const MAX_CACHED_CHUNK_HEADERS: NonZeroUsize = NonZeroUsize::MIN.saturating_add(255);
-/// Maximum message size (10 MB) to prevent unbounded memory growth from malicious clients
-const MAX_MESSAGE_SIZE: usize = 10 * 1024 * 1024;
+mod budget;
+use budget::{BudgetError, MAX_MESSAGE_SIZE};
 
 #[derive(Eq, PartialEq, Debug)]
 pub enum UnpackResult {
@@ -465,35 +465,19 @@ impl ChunkUnpacketizer {
     pub fn read_message_payload(&mut self) -> Result<UnpackResult, UnpackError> {
         let whole_msg_length = self.current_message_header().msg_length as usize;
 
-        if whole_msg_length > MAX_MESSAGE_SIZE {
-            return Err(UnpackError {
-                value: UnpackErrorValue::MessageTooLarge(whole_msg_length, MAX_MESSAGE_SIZE),
-            });
-        }
-
-        let remaining_bytes = whole_msg_length - self.current_chunk_info.payload.len();
-
-        tracing::trace!(
-            "read_message_payload whole msg length: {whole_msg_length} and remaining bytes need to be read: {remaining_bytes}"
-        );
-
-        let need_read_length = if whole_msg_length > self.max_chunk_size {
-            min(remaining_bytes, self.max_chunk_size)
-        } else {
-            remaining_bytes
-        };
-
+        let need_read_length = budget::next_read(
+            whole_msg_length,
+            self.current_chunk_info.payload.len(),
+            self.max_chunk_size,
+            self.in_progress_payload_bytes,
+        )
+        .map_err(|err| match err {
+            BudgetError::InvalidLength => UnpackErrorValue::CannotParse,
+            BudgetError::TooLarge(size) => {
+                UnpackErrorValue::MessageTooLarge(size, MAX_MESSAGE_SIZE)
+            }
+        })?;
         let remaining_mut = self.current_chunk_info.payload.remaining_mut();
-        let total_after_read = self
-            .in_progress_payload_bytes
-            .saturating_add(self.current_chunk_info.payload.len())
-            .saturating_add(need_read_length);
-        if total_after_read > MAX_MESSAGE_SIZE {
-            return Err(UnpackError {
-                value: UnpackErrorValue::MessageTooLarge(total_after_read, MAX_MESSAGE_SIZE),
-            });
-        }
-
         if need_read_length > remaining_mut {
             let additional = need_read_length - remaining_mut;
             self.current_chunk_info.payload.reserve(additional);

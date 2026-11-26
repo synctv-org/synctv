@@ -51,20 +51,16 @@ impl InMemoryGovernorLimiter {
         let (max_requests, window_seconds) =
             Self::normalize_quota_input(max_requests, window_seconds);
         let key = (max_requests, window_seconds);
-        if let Some(limiter) = self.limiters.get(&key) {
-            return limiter;
-        }
+        self.limiters.get_with(key, || {
+            let period = Duration::from_secs(window_seconds)
+                .checked_div(max_requests)
+                .unwrap_or(Duration::from_millis(1));
+            let quota = Quota::with_period(period.max(Duration::from_millis(1)))
+                .unwrap_or_else(|| Quota::per_second(nonzero!(1u32)))
+                .allow_burst(NonZeroU32::new(max_requests).unwrap_or(nonzero!(1u32)));
 
-        let period = Duration::from_secs(window_seconds)
-            .checked_div(max_requests)
-            .unwrap_or(Duration::from_millis(1));
-        let quota = Quota::with_period(period.max(Duration::from_millis(1)))
-            .unwrap_or_else(|| Quota::per_second(nonzero!(1u32)))
-            .allow_burst(NonZeroU32::new(max_requests).unwrap_or(nonzero!(1u32)));
-
-        let limiter = Arc::new(GovernorRateLimiter::keyed(quota));
-        self.limiters.insert(key, Arc::clone(&limiter));
-        limiter
+            Arc::new(GovernorRateLimiter::keyed(quota))
+        })
     }
 
     /// Drop keyed entries whose GCRA state is indistinguishable from a fresh

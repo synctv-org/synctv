@@ -1,3 +1,4 @@
+use crate::cors_policy::{PreflightDecision, preflight_decision};
 use axum::{
     body::Body,
     http::{HeaderName, HeaderValue, StatusCode, header},
@@ -113,19 +114,12 @@ fn build_allowed_cors_response(origin: &str) -> Response {
 ///
 /// Returns the appropriate response based on the CORS configuration and origin.
 pub fn handle_cors_preflight(origin: Option<&str>, config: &CorsConfig) -> Response {
-    if config.wildcard {
-        return build_wildcard_cors_response();
+    match preflight_decision(config.wildcard, origin, &config.allowed_origins) {
+        PreflightDecision::Wildcard => build_wildcard_cors_response(),
+        PreflightDecision::NoOrigin => build_no_origin_cors_response(),
+        PreflightDecision::Forbidden => build_forbidden_cors_response(),
+        PreflightDecision::Allowed(value) => build_allowed_cors_response(value),
     }
-
-    let Some(origin) = origin else {
-        return build_no_origin_cors_response();
-    };
-
-    if !config.is_allowed(origin) {
-        return build_forbidden_cors_response();
-    }
-
-    build_allowed_cors_response(origin)
 }
 
 /// CORS configuration for the proxy.
@@ -175,14 +169,6 @@ impl CorsConfig {
             allowed_origins: vec![],
             wildcard: true,
         }
-    }
-
-    /// Check if an origin is allowed.
-    fn is_allowed(&self, origin: &str) -> bool {
-        if self.wildcard {
-            return true;
-        }
-        self.allowed_origins.iter().any(|o| o == origin)
     }
 }
 

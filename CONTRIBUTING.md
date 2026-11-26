@@ -38,6 +38,8 @@ cargo +nightly test --workspace --doc --locked
 cargo +nightly check --workspace --all-targets --features openapi
 ```
 
+Run `make verify` when changing a verified backend rule or its caller. The [verification guide](verification/README.md) describes installation, contracts, and their scope.
+
 If your change touches SQLx queries, migrations, or query result shapes, refresh and verify SQLx metadata according to the project workflow before submitting.
 
 ## Documentation

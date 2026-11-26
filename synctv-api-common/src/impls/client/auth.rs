@@ -952,7 +952,9 @@ where
             ApiError::Authentication(synctv_common::messages::INVALID_OR_EXPIRED_TOKEN.to_string())
         })?;
 
-    let remaining_ttl = (claims.exp - now).max(0).cast_unsigned();
+    let remaining_ttl = jwt_service
+        .revocation_ttl(claims.exp, now)
+        .map_err(ApiError::from)?;
     if remaining_ttl == 0 {
         return Err(ApiError::Authentication(
             "Access token already expired".to_string(),
@@ -1301,13 +1303,11 @@ mod tests {
             &synctv_core::service::TokenCredentialBinding::Password { version: 0 },
         ))?;
 
-        let result = revoke_session_for_logout(
-            &jwt_service,
-            &token,
-            synctv_core::SystemClock.now().timestamp(),
-            |_logout_token| async { Ok(()) },
-        )
-        .await;
+        let result =
+            revoke_session_for_logout(&jwt_service, &token, i64::MAX, |_logout_token| async {
+                Ok(())
+            })
+            .await;
 
         match result {
             Err(ApiError::Authentication(message)) => {

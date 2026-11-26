@@ -4,50 +4,22 @@ use std::time::Duration;
 
 use synctv_common::ExecutionControl;
 
+use crate::redirect_header_policy::{preserve_redirect_header, restrict_chain};
 use crate::{ProxyError, reqwest_error_indicates_connection_failure, run_with_proxy_cancellation};
 
 /// Maximum number of redirects to follow manually.
 const MAX_REDIRECTS: usize = 10;
 
-/// Headers that should be preserved across redirect hops.
-///
-/// Provider-controlled headers and cache-generated headers are re-applied on
-/// each redirect to avoid breaking providers that require them on the final
-/// CDN request.
-pub(crate) const REDIRECT_PRESERVE_HEADERS: &[&str] = &[
-    "authorization",
-    "cookie",
-    "origin",
-    "proxy-authorization",
-    "referer",
-    "user-agent",
-    "range",
-    "accept",
-    "accept-language",
-    "if-none-match",
-    "if-modified-since",
-];
-
-/// Headers to drop when a redirect crosses origin boundaries.
-///
-/// Credential headers stay within one origin. Cross-origin `Referer` values
-/// are reduced to their origin below, matching `strict-origin-when-cross-origin`.
-const CROSS_ORIGIN_DROP_HEADERS: &[&str] = &["authorization", "cookie", "proxy-authorization"];
-
-fn preserve_redirect_header(name: &str, is_cross_origin: bool) -> bool {
-    REDIRECT_PRESERVE_HEADERS.contains(&name)
-        && !(is_cross_origin && CROSS_ORIGIN_DROP_HEADERS.contains(&name))
-}
-
+/// Forward allowlisted headers at the disclosure level established by the entire chain.
 fn redirect_header_value(
     name: &str,
     value: &reqwest::header::HeaderValue,
-    is_cross_origin: bool,
+    restricted: bool,
 ) -> Option<reqwest::header::HeaderValue> {
-    if !preserve_redirect_header(name, is_cross_origin) {
+    if !preserve_redirect_header(name, restricted) {
         return None;
     }
-    if !is_cross_origin || name != "referer" {
+    if !restricted || name != "referer" {
         return Some(value.clone());
     }
     let referer = url::Url::parse(value.to_str().ok()?).ok()?;
@@ -95,9 +67,8 @@ pub(crate) async fn send_head_with_redirect_validation_with_control_and_timeout(
 /// are handled here. Each redirect target gets both static URL validation
 /// and async DNS resolution checks to prevent DNS-rebinding SSRF.
 ///
-/// Headers matching [`REDIRECT_PRESERVE_HEADERS`] are captured from the
-/// initial request and re-applied on every redirect hop so that
-/// provider-controlled headers are not lost.
+/// Headers are drawn from the initial request. After the first cross-origin
+/// hop, only the restricted allowlist and origin-only referrer may be forwarded.
 #[cfg(test)]
 pub(crate) async fn send_with_redirect_validation(
     client: &reqwest::Client,
@@ -156,6 +127,7 @@ async fn send_with_redirect_validation_inner(
     .map_err(|error| classify_reqwest_error(&error))?;
 
     let mut hops = 0usize;
+    let mut restricted = false;
     while response.status().is_redirection()
         && response.status() != reqwest::StatusCode::NOT_MODIFIED
     {
@@ -186,13 +158,12 @@ async fn send_with_redirect_validation_inner(
             );
         }
 
-        let is_cross_origin =
-            location.origin().ascii_serialization() != current_url.origin().ascii_serialization();
+        restricted = restrict_chain(restricted, location.origin() == current_url.origin());
         validate_target_url_against_ssrf(&location, ssrf_guard)?;
 
         let mut redirect_req = client.request(redirect_method.clone(), location.clone());
         for (name, value) in &preserved {
-            let Some(value) = redirect_header_value(name.as_str(), value, is_cross_origin) else {
+            let Some(value) = redirect_header_value(name.as_str(), value, restricted) else {
                 continue;
             };
             redirect_req = redirect_req.header(name.clone(), value);
@@ -281,7 +252,7 @@ fn reqwest_error_has_ssrf_resolution_block(error: &reqwest::Error) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{preserve_redirect_header, redirect_header_value};
+    use super::{preserve_redirect_header, redirect_header_value, restrict_chain};
 
     #[test]
     fn sensitive_headers_only_survive_same_origin_redirects() {
@@ -292,6 +263,20 @@ mod tests {
         assert!(preserve_redirect_header("origin", false));
         assert!(preserve_redirect_header("origin", true));
         assert!(!preserve_redirect_header("x-private-token", false));
+    }
+
+    #[test]
+    fn redirect_restrictions_persist_for_the_remaining_hops() {
+        let value = reqwest::header::HeaderValue::from_static("value");
+        let mut restricted = false;
+        for (same_origin, credentials_allowed) in [(true, true), (false, false), (true, false)] {
+            restricted = restrict_chain(restricted, same_origin);
+            assert_eq!(
+                redirect_header_value("authorization", &value, restricted).is_some(),
+                credentials_allowed
+            );
+            assert!(redirect_header_value("range", &value, restricted).is_some());
+        }
     }
 
     #[test]

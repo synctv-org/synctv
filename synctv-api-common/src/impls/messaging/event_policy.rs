@@ -1,17 +1,31 @@
 use synctv_core::models::{RoomId, UserId};
 use synctv_realtime::sync::{DisconnectSignal, RealtimeEvent};
 
-pub const fn should_broadcast_user_left(
-    has_other_local_connection: bool,
-    distributed_presence: Result<bool, ()>,
-) -> bool {
-    if has_other_local_connection {
-        return false;
-    }
+mod scope;
+use scope::Scope;
+pub use scope::should_broadcast_user_left;
 
-    match distributed_presence {
-        Ok(true) => false,
-        Ok(false) | Err(()) => true,
+fn signal_scope(signal: &DisconnectSignal, connection_id: &str) -> Scope {
+    match signal {
+        DisconnectSignal::Connection(id) => Scope::Connection(id == connection_id),
+        DisconnectSignal::User(u) => Scope::User(u.get()),
+        DisconnectSignal::Room { room_id, .. } => Scope::Room(room_id.get()),
+        DisconnectSignal::UserFromRoom { user_id, room_id } => {
+            Scope::RoomUser(room_id.get(), user_id.get())
+        }
+    }
+}
+
+fn admin_scope(event: &RealtimeEvent) -> Scope {
+    match event {
+        RealtimeEvent::KickUser { user_id, .. } => Scope::User(user_id.get()),
+        RealtimeEvent::RoomDeleted { room_id, .. } => Scope::DeletedRoom(room_id.get()),
+        RealtimeEvent::RoomBanned { room_id, .. }
+        | RealtimeEvent::RoomOwnerInactive { room_id, .. } => Scope::Room(room_id.get()),
+        RealtimeEvent::KickUserFromRoom {
+            user_id, room_id, ..
+        } => Scope::RoomUser(room_id.get(), user_id.get()),
+        _ => Scope::Unrelated,
     }
 }
 
@@ -22,17 +36,7 @@ pub fn disconnect_signal_requires_skip_cleanup(
     room_id: &RoomId,
     connection_id: &str,
 ) -> bool {
-    match signal {
-        DisconnectSignal::Connection(conn_id) => conn_id == connection_id,
-        // A global user disconnect (ban/delete) must still let cleanup emit a
-        // room-scoped UserLeft for the connection's current room.
-        DisconnectSignal::User(_uid) => false,
-        DisconnectSignal::Room { room_id: rid, .. } => rid == room_id,
-        DisconnectSignal::UserFromRoom {
-            user_id: uid,
-            room_id: rid,
-        } => user_id == Some(*uid) && rid == room_id,
-    }
+    signal_scope(signal, connection_id).skip_cleanup(room_id.get(), user_id.map(UserId::get))
 }
 
 #[inline]
@@ -41,19 +45,7 @@ pub fn admin_event_requires_skip_cleanup(
     user_id: Option<UserId>,
     room_id: &RoomId,
 ) -> bool {
-    match event {
-        // A global KickUser must still allow connection cleanup to publish a
-        // room-scoped UserLeft on the affected room.
-        RealtimeEvent::KickUser { user_id: _uid, .. } => false,
-        RealtimeEvent::RoomBanned { room_id: rid, .. }
-        | RealtimeEvent::RoomOwnerInactive { room_id: rid, .. } => rid == room_id,
-        RealtimeEvent::KickUserFromRoom {
-            user_id: uid,
-            room_id: rid,
-            ..
-        } => user_id == Some(*uid) && rid == room_id,
-        _ => false,
-    }
+    admin_scope(event).skip_cleanup(room_id.get(), user_id.map(UserId::get))
 }
 
 #[inline]
@@ -63,15 +55,7 @@ pub fn watch_disconnect_signal_matches(
     room_id: &RoomId,
     connection_id: &str,
 ) -> bool {
-    match signal {
-        DisconnectSignal::Connection(conn_id) => conn_id == connection_id,
-        DisconnectSignal::User(uid) => user_id == Some(*uid),
-        DisconnectSignal::Room { room_id: rid, .. } => rid == room_id,
-        DisconnectSignal::UserFromRoom {
-            user_id: uid,
-            room_id: rid,
-        } => user_id == Some(*uid) && rid == room_id,
-    }
+    signal_scope(signal, connection_id).disconnect(room_id.get(), user_id.map(UserId::get))
 }
 
 #[inline]
@@ -80,18 +64,7 @@ pub fn watch_admin_event_matches(
     user_id: Option<UserId>,
     room_id: &RoomId,
 ) -> bool {
-    match event {
-        RealtimeEvent::KickUser { user_id: uid, .. } => user_id == Some(*uid),
-        RealtimeEvent::KickUserFromRoom {
-            user_id: uid,
-            room_id: rid,
-            ..
-        } => user_id == Some(*uid) && rid == room_id,
-        RealtimeEvent::RoomDeleted { room_id: rid, .. }
-        | RealtimeEvent::RoomBanned { room_id: rid, .. }
-        | RealtimeEvent::RoomOwnerInactive { room_id: rid, .. } => rid == room_id,
-        _ => false,
-    }
+    admin_scope(event).disconnect(room_id.get(), user_id.map(UserId::get))
 }
 
 /// Guest revocation is terminal for guest-principal watch sessions, mirroring

@@ -11,10 +11,29 @@ fn ttl_secs_to_chrono_duration(ttl_secs: u64) -> Result<chrono::Duration> {
     let seconds = i64::try_from(ttl_secs).map_err(|_| {
         crate::Error::InvalidInput("token blacklist TTL exceeds i64::MAX seconds".to_string())
     })?;
-    Ok(chrono::Duration::seconds(seconds))
+    chrono::Duration::try_seconds(seconds).ok_or_else(|| {
+        crate::Error::InvalidInput("token blacklist TTL exceeds duration range".to_string())
+    })
 }
 
-// InMemoryTokenBlacklistStore
+fn local_deadline(ttl_secs: u64) -> Result<Instant> {
+    Instant::now()
+        .checked_add(Duration::from_secs(ttl_secs))
+        .ok_or_else(|| {
+            crate::Error::Internal(
+                "Token revocation deadline exceeds local clock range".to_string(),
+            )
+        })
+}
+
+fn database_deadline(ttl_secs: u64) -> Result<chrono::DateTime<chrono::Utc>> {
+    crate::SystemClock
+        .now()
+        .checked_add_signed(ttl_secs_to_chrono_duration(ttl_secs)?)
+        .ok_or_else(|| {
+            crate::Error::Internal("Token revocation deadline exceeds timestamp range".to_string())
+        })
+}
 
 /// In-memory [`TokenBlacklistStore`] using moka caches with per-entry TTL tracking.
 ///
@@ -92,7 +111,7 @@ impl TokenBlacklistStore for InMemoryTokenBlacklistStore {
     }
 
     async fn blacklist(&self, key: &str, ttl_secs: u64) -> Result<()> {
-        let expiry = Instant::now() + Duration::from_secs(ttl_secs);
+        let expiry = local_deadline(ttl_secs)?;
         self.jti_blacklist.insert(key.to_string(), expiry).await;
         Ok(())
     }
@@ -121,7 +140,7 @@ impl TokenBlacklistStore for InMemoryTokenBlacklistStore {
                 true
             } else {
                 // Not blacklisted, so insert atomically
-                let expiry = Instant::now() + Duration::from_secs(ttl_secs);
+                let expiry = local_deadline(ttl_secs)?;
                 self.jti_blacklist.insert(key.to_string(), expiry).await;
                 false
             }
@@ -142,7 +161,7 @@ impl TokenBlacklistStore for InMemoryTokenBlacklistStore {
     }
 
     async fn set_family_revoked(&self, key: &str, timestamp: i64, ttl_secs: u64) -> Result<()> {
-        let expiry = Instant::now() + Duration::from_secs(ttl_secs);
+        let expiry = local_deadline(ttl_secs)?;
         self.family_revoked
             .insert(key.to_string(), (timestamp, expiry))
             .await;
@@ -229,7 +248,7 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
     }
 
     async fn blacklist(&self, key: &str, ttl_secs: u64) -> Result<()> {
-        let expires_at = crate::SystemClock.now() + ttl_secs_to_chrono_duration(ttl_secs)?;
+        let expires_at = database_deadline(ttl_secs)?;
         sqlx::query!(
             "INSERT INTO auth_token_blacklist (jti, expires_at) VALUES ($1, $2) \
              ON CONFLICT (jti) DO UPDATE SET expires_at = EXCLUDED.expires_at",
@@ -257,7 +276,7 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
     /// - `Ok(true)` if key already existed (replay detected)
     /// - `Ok(false)` if key was newly inserted (first use)
     async fn blacklist_if_not_exists(&self, key: &str, ttl_secs: u64) -> Result<bool> {
-        let expires_at = crate::SystemClock.now() + ttl_secs_to_chrono_duration(ttl_secs)?;
+        let expires_at = database_deadline(ttl_secs)?;
 
         // xmax = 0 means the row was inserted (no conflict)
         // xmax != 0 means the row already existed (conflict, nothing inserted)
@@ -310,7 +329,7 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
     }
 
     async fn set_family_revoked(&self, key: &str, timestamp: i64, ttl_secs: u64) -> Result<()> {
-        let expires_at = crate::SystemClock.now() + ttl_secs_to_chrono_duration(ttl_secs)?;
+        let expires_at = database_deadline(ttl_secs)?;
         sqlx::query!(
             "INSERT INTO auth_token_blacklist (jti, expires_at, family_revoked_at) VALUES ($1, $2, $3) \
              ON CONFLICT (jti) DO UPDATE

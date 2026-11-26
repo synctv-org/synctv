@@ -376,28 +376,31 @@ impl RoomSettings {
     /// Formula: (`global_default` | added) & ~removed
     #[must_use]
     pub const fn admin_permissions(&self, global_default: RoomPermissionSet) -> RoomPermissionSet {
-        let mut result = global_default.0;
-        result |= RoomAdminPermissionBits::to_permissions(self.admin_added_permissions.0);
-        result &= !RoomAdminPermissionBits::to_permissions(self.admin_removed_permissions.0);
-        RoomPermissionSet(result)
+        RoomPermissionSet(RoomAdminPermissionBits::effective(
+            global_default.0,
+            self.admin_added_permissions.0,
+            self.admin_removed_permissions.0,
+        ))
     }
 
     /// Get effective permissions for Member role
     #[must_use]
     pub const fn member_permissions(&self, global_default: RoomPermissionSet) -> RoomPermissionSet {
-        let mut result = global_default.0;
-        result |= RoomMemberPermissionBits::to_permissions(self.member_added_permissions.0);
-        result &= !RoomMemberPermissionBits::to_permissions(self.member_removed_permissions.0);
-        RoomPermissionSet(result)
+        RoomPermissionSet(RoomMemberPermissionBits::effective(
+            global_default.0,
+            self.member_added_permissions.0,
+            self.member_removed_permissions.0,
+        ))
     }
 
     /// Get effective permissions for Guest
     #[must_use]
     pub const fn guest_permissions(&self, global_default: RoomPermissionSet) -> RoomPermissionSet {
-        let mut result = global_default.0 & RoomPermissionSet::guest_assignable().0;
-        result |= RoomGuestPermissionBits::to_permissions(self.guest_added_permissions.0);
-        result &= !RoomGuestPermissionBits::to_permissions(self.guest_removed_permissions.0);
-        RoomPermissionSet(result)
+        RoomPermissionSet(RoomGuestPermissionBits::effective(
+            global_default.0,
+            self.guest_added_permissions.0,
+            self.guest_removed_permissions.0,
+        ))
     }
 
     fn validate_admin_permission_bits(&self) -> Result<()> {

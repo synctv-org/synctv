@@ -16,7 +16,6 @@ use crate::{
 };
 
 pub const REALTIME_OUTBOX_CHANNEL: &str = "realtime_outbox_new";
-const DEFAULT_MAX_ATTEMPTS: i32 = 12;
 const INSERT_MANY_CHUNK_SIZE: usize = 1000;
 
 struct RoomResourceEventBatch {
@@ -471,9 +470,9 @@ impl RealtimeOutboxRepository {
         attempts: i32,
         error: &str,
     ) -> Result<()> {
-        let next_attempt = attempts.saturating_add(1);
-        let delay_seconds = retry_delay_seconds(next_attempt);
-        let status = if next_attempt >= DEFAULT_MAX_ATTEMPTS {
+        let (next_attempt, delay_seconds, exhausted) =
+            super::outbox_retry::realtime_failure(attempts);
+        let status = if exhausted {
             RealtimeOutboxStatus::Dead
         } else {
             RealtimeOutboxStatus::Pending
@@ -1125,9 +1124,4 @@ fn resource_summary_details(event: &NewRealtimeOutboxEvent) -> Result<Option<Res
 
 fn permission_bits(permissions: RoomPermissionSet) -> i64 {
     i64::try_from(permissions.bits()).unwrap_or(i64::MAX)
-}
-
-fn retry_delay_seconds(attempts: i32) -> i64 {
-    let capped = attempts.clamp(1, 8);
-    i64::from(2_i32.pow(capped.cast_unsigned())).min(300)
 }

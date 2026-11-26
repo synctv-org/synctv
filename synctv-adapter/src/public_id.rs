@@ -12,30 +12,8 @@ use synctv_core::models::{
 // encoding, prefixes, and transport-facing identifier formats. File and
 // environment parsing live in the top-level `synctv` crate.
 
-const USER_ID_TAG: u64 = 1;
-const ROOM_ID_TAG: u64 = 2;
-const MEDIA_ID_TAG: u64 = 3;
-const PLAYLIST_ID_TAG: u64 = 4;
-const REVIEW_REQUEST_ID_TAG: u64 = 5;
-const BAN_RECORD_ID_TAG: u64 = 6;
-const CONTENT_REPORT_ID_TAG: u64 = 7;
-const ROOM_CATEGORY_ID_TAG: u64 = 8;
-const ROOM_LABEL_ID_TAG: u64 = 9;
-const PLAYBACK_HISTORY_ENTRY_ID_TAG: u64 = 10;
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub enum PublicIdKind {
-    User,
-    Room,
-    Media,
-    Playlist,
-    ReviewRequest,
-    BanRecord,
-    ContentReport,
-    RoomCategory,
-    RoomLabel,
-    PlaybackHistoryEntry,
-}
+mod typed;
+pub use typed::PublicIdKind;
 
 impl PublicIdKind {
     #[must_use]
@@ -51,22 +29,6 @@ impl PublicIdKind {
             Self::RoomCategory => "RoomCategoryId",
             Self::RoomLabel => "RoomLabelId",
             Self::PlaybackHistoryEntry => "PlaybackHistoryEntryId",
-        }
-    }
-
-    #[must_use]
-    pub const fn tag(self) -> u64 {
-        match self {
-            Self::User => USER_ID_TAG,
-            Self::Room => ROOM_ID_TAG,
-            Self::Media => MEDIA_ID_TAG,
-            Self::Playlist => PLAYLIST_ID_TAG,
-            Self::ReviewRequest => REVIEW_REQUEST_ID_TAG,
-            Self::BanRecord => BAN_RECORD_ID_TAG,
-            Self::ContentReport => CONTENT_REPORT_ID_TAG,
-            Self::RoomCategory => ROOM_CATEGORY_ID_TAG,
-            Self::RoomLabel => ROOM_LABEL_ID_TAG,
-            Self::PlaybackHistoryEntry => PLAYBACK_HISTORY_ENTRY_ID_TAG,
         }
     }
 
@@ -356,13 +318,16 @@ impl PublicIdCodec {
                 .map_err(|_| format!("invalid {kind}: expected a decimal public ID body"))?,
             PublicIdEncoding::Sqids(sqids) => {
                 let decoded = sqids.decode(payload);
-                let [decoded_type_tag, id] = decoded.as_slice() else {
-                    return Err(format!("invalid {kind}: expected a typed sqid body"));
-                };
-                if *decoded_type_tag != kind.tag() {
-                    return Err(format!("invalid {kind}: sqid type mismatch"));
-                }
-                i64::try_from(*id).map_err(|_| format!("invalid {kind}: sqid exceeds i64"))?
+                return typed::decode(&decoded, kind.tag()).map_err(|error| match error {
+                    typed::BodyError::Shape => {
+                        format!("invalid {kind}: expected a typed sqid body")
+                    }
+                    typed::BodyError::Kind => format!("invalid {kind}: sqid type mismatch"),
+                    typed::BodyError::Overflow => format!("invalid {kind}: sqid exceeds i64"),
+                    typed::BodyError::Zero => {
+                        format!("invalid {kind}: expected a positive integer")
+                    }
+                });
             }
         };
         validate_positive_id(id, kind)?;

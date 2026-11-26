@@ -7,6 +7,8 @@
 //! the send half — including trailers, so SSE and other long-lived responses
 //! as well as gRPC work unchanged.
 
+mod body_budget;
+
 use bytes::{Buf, Bytes};
 use http::Request;
 use http_body::Body as HttpBody;
@@ -92,15 +94,27 @@ impl Drop for H3RecvBody {
         tokio::spawn(async move {
             let drain = async {
                 while let Ok(Some(chunk)) = stream.recv_data().await {
-                    received = received.saturating_add(chunk.chunk().len());
-                    if received > REQUEST_BODY_LIMIT {
+                    let Some(next) =
+                        body_budget::account(received, chunk.remaining(), REQUEST_BODY_LIMIT)
+                    else {
                         return;
-                    }
+                    };
+                    received = next;
                 }
             };
             let _ = tokio::time::timeout(BODY_DRAIN_TIMEOUT, drain).await;
         });
     }
+}
+
+fn take_body_chunk(received: &mut usize, mut chunk: impl Buf) -> Result<Bytes, BridgeError> {
+    let length = chunk.remaining();
+    *received = body_budget::account(*received, length, REQUEST_BODY_LIMIT).ok_or(
+        BridgeError::BodyTooLarge {
+            limit: REQUEST_BODY_LIMIT,
+        },
+    )?;
+    Ok(chunk.copy_to_bytes(length))
 }
 
 impl HttpBody for H3RecvBody {
@@ -116,20 +130,13 @@ impl HttpBody for H3RecvBody {
             return Poll::Ready(None);
         };
         match stream.poll_recv_data(cx) {
-            Poll::Ready(Ok(Some(chunk))) => {
-                let chunk = Bytes::copy_from_slice(chunk.chunk());
-                self.received = self.received.saturating_add(chunk.len());
-                if self.received > REQUEST_BODY_LIMIT {
-                    // Protocol violation: reset the rest of the upload.
+            Poll::Ready(Ok(Some(chunk))) => match take_body_chunk(&mut self.received, chunk) {
+                Ok(data) => Poll::Ready(Some(Ok(http_body::Frame::data(data)))),
+                Err(error) => {
                     self.stream = None;
-                    return Poll::Ready(Some(Err(std::io::Error::other(
-                        BridgeError::BodyTooLarge {
-                            limit: REQUEST_BODY_LIMIT,
-                        },
-                    ))));
+                    Poll::Ready(Some(Err(std::io::Error::other(error))))
                 }
-                Poll::Ready(Some(Ok(http_body::Frame::data(chunk))))
-            }
+            },
             Poll::Ready(Ok(None)) => {
                 // Clean EOF: the receive half now drops without a reset.
                 self.stream = None;
@@ -214,4 +221,26 @@ where
         .await
         .map_err(|error| BridgeError::Transport(error.to_string()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_body_counts_all_segments_before_copying() -> Result<(), BridgeError> {
+        let segments = || Bytes::from_static(b"ab").chain(Bytes::from_static(b"cd"));
+        let mut received = REQUEST_BODY_LIMIT - 4;
+        assert_eq!(
+            take_body_chunk(&mut received, segments())?.as_ref(),
+            b"abcd"
+        );
+        assert_eq!(received, REQUEST_BODY_LIMIT);
+        assert!(matches!(
+            take_body_chunk(&mut received, segments()),
+            Err(BridgeError::BodyTooLarge { .. })
+        ));
+        assert_eq!(received, REQUEST_BODY_LIMIT);
+        Ok(())
+    }
 }

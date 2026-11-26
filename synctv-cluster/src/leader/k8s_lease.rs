@@ -28,12 +28,6 @@ use tracing::{debug, info, warn};
 /// Default base grace period in seconds before attempting re-acquisition.
 const DEFAULT_GRACE_PERIOD_BASE_SECS: u64 = 5;
 
-/// Clock drift tolerance in seconds to add to lease duration checks.
-/// This prevents premature leader takeovers due to NTP adjustments or
-/// clock skew between nodes. A 5-second tolerance is reasonable for
-/// most NTP-synchronized environments.
-const CLOCK_DRIFT_TOLERANCE_SECS: i64 = 5;
-
 /// Default maximum grace period in seconds (cap for exponential backoff).
 const DEFAULT_GRACE_PERIOD_MAX_SECS: u64 = 60;
 
@@ -53,21 +47,15 @@ fn current_micro_time() -> k8s_openapi::apimachinery::pkg::apis::meta::v1::Micro
     )
 }
 
-fn elapsed_secs_since(
-    renew_time: &k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime,
-) -> i64 {
-    k8s_openapi::jiff::Timestamp::now().as_second() - renew_time.0.as_second()
-}
-
 fn lease_is_expired(
     renew_time: Option<&k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime>,
     lease_duration_secs: i32,
 ) -> bool {
-    let Some(renew_time) = renew_time else {
-        return true;
-    };
-    let effective_duration = i64::from(lease_duration_secs) + CLOCK_DRIFT_TOLERANCE_SECS;
-    elapsed_secs_since(renew_time) > effective_duration
+    super::timing::lease_expired(
+        renew_time.map(|time| time.0.as_second()),
+        k8s_openapi::jiff::Timestamp::now().as_second(),
+        lease_duration_secs,
+    )
 }
 
 fn validate_config(config: &K8sLeaderElectorConfig) -> anyhow::Result<()> {
@@ -186,13 +174,13 @@ impl K8sLeaderElector {
         // 404 (not found) is fine — the lease just doesn't exist yet.
         // 403 (forbidden) means the service account lacks the required permissions.
         let leases: Api<Lease> = Api::namespaced(client.clone(), &namespace);
-        if let Err(kube::Error::Api(err)) = leases.get_opt(&config.lease_name).await {
-            if err.code == 403 {
-                return Err(anyhow::anyhow!(
-                    "K8s service account lacks permission to manage Leases in namespace {namespace}. \
+        if let Err(kube::Error::Api(err)) = leases.get_opt(&config.lease_name).await
+            && err.code == 403
+        {
+            return Err(anyhow::anyhow!(
+                "K8s service account lacks permission to manage Leases in namespace {namespace}. \
                      Required RBAC: verbs [get,create,update] on resource leases in group coordination.k8s.io"
-                ));
-            }
+            ));
         }
 
         let (event_tx, _) = broadcast::channel(16);
@@ -835,16 +823,11 @@ impl K8sLeaderElector {
     /// Calculate the grace period duration based on consecutive losses.
     /// Uses exponential backoff: base * 2^(losses-1), capped at max.
     fn calculate_grace_period(&self, consecutive_losses: u64) -> Duration {
-        if consecutive_losses == 0 {
-            return Duration::from_secs(self.grace_period_base_secs);
-        }
-
-        // Exponential backoff: base * 2^(losses-1)
-        // Cap at max to prevent indefinite waiting
-        let multiplier = 1u64 << (consecutive_losses - 1).min(6); // Max 2^6 = 64x
-        let grace_secs = (self.grace_period_base_secs * multiplier).min(self.grace_period_max_secs);
-
-        Duration::from_secs(grace_secs)
+        Duration::from_secs(super::timing::loss_backoff(
+            self.grace_period_base_secs,
+            self.grace_period_max_secs,
+            consecutive_losses,
+        ))
     }
 
     /// Returns the remaining grace period duration, or None if not in grace period.
@@ -901,6 +884,7 @@ impl super::LeaderElect for K8sLeaderElector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::leader::timing::CLOCK_DRIFT_TOLERANCE_SECS;
 
     #[test]
     fn test_config_validation_rejects_invalid_timing() {

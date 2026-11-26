@@ -12,7 +12,7 @@
 //! consecutive failures and opens after `CIRCUIT_BREAKER_THRESHOLD` failures,
 //! then transitions to half-open after `CIRCUIT_BREAKER_TIMEOUT_SECS` to allow recovery.
 //!
-//! `record_success` is called only for RPCs that complete with an OK gRPC status.
+//! The initial gRPC status header determines the outcome of an admitted RPC.
 //! Backend failures that are encoded as gRPC error responses still count as
 //! failures, while client/auth/validation errors do not poison the breaker.
 
@@ -45,16 +45,6 @@ const PROVIDER_GRPC_FRAME_SIZE_LIMIT: u32 = 4 * 1024 * 1024;
 const PROVIDER_GRPC_COMPRESSION_ENABLED_ENV: &str = "PROVIDER_GRPC_COMPRESSION_ENABLED";
 const PROVIDER_LISTEN_ADDR_ENV: &str = "PROVIDER_LISTEN_ADDR";
 const DEFAULT_PROVIDER_LISTEN_ADDR: &str = "[::]:50051";
-
-trait GrpcStatusHeaders {
-    fn grpc_status_headers(&self) -> &HeaderMap;
-}
-
-impl<B> GrpcStatusHeaders for HttpResponse<B> {
-    fn grpc_status_headers(&self) -> &HeaderMap {
-        self.headers()
-    }
-}
 
 fn grpc_status_code(headers: &HeaderMap) -> Code {
     headers
@@ -139,18 +129,11 @@ fn validate_provider_secret(metadata: &MetadataMap, expected_secret: &str) -> Re
     Ok(())
 }
 
-fn validate_provider_secret_boxed(
-    metadata: &MetadataMap,
-    expected_secret: &str,
-) -> Result<(), Box<Status>> {
-    validate_provider_secret(metadata, expected_secret).map_err(Box::new)
-}
-
 /// Tower [`Layer`] that wraps a gRPC service and signals the circuit breaker
 /// after each RPC call completes.
 ///
 /// On a successful gRPC response (`grpc-status = 0`) it calls
-/// [`CircuitBreaker::record_success`], resetting the failure counter and
+/// the permit’s success handler, resetting the failure counter and
 /// returning the circuit to the Closed state. Backend failures returned as gRPC
 /// status responses are classified from the `grpc-status` header so they still
 /// open the circuit, while auth/validation/client errors do not.
@@ -191,8 +174,7 @@ struct CircuitBreakerService<S> {
 
 impl<S, Req> Service<Req> for CircuitBreakerService<S>
 where
-    S: Service<Req> + Clone + Send + 'static,
-    S::Response: GrpcStatusHeaders + Send + 'static,
+    S: Service<Req, Response = HttpResponse<tonic::body::Body>> + Send + 'static,
     S::Future: Send + 'static,
     S::Error: Send + 'static,
 {
@@ -205,72 +187,35 @@ where
     }
 
     fn call(&mut self, req: Req) -> Self::Future {
-        let cb = self.circuit_breaker.clone();
         let service_name = self.service_name;
+        let Some(permit) = self.circuit_breaker.try_request() else {
+            let status = Status::unavailable(format!(
+                "Service {service_name} is temporarily unavailable (circuit breaker open)"
+            ));
+            return Box::pin(async move { Ok(status.into_http()) });
+        };
         let fut = self.inner.call(req);
         Box::pin(async move {
             let result = fut.await;
             match &result {
                 Ok(response) => {
-                    let headers = response.grpc_status_headers();
+                    let headers = response.headers();
                     if should_record_circuit_breaker_success(headers) {
-                        cb.record_success();
+                        permit.success();
                     } else if should_record_circuit_breaker_failure(headers) {
-                        cb.record_failure(service_name);
+                        permit.failure(service_name);
                     }
                 }
-                Err(_) => cb.record_failure(service_name),
+                Err(_) => permit.failure(service_name),
             }
             result
         })
     }
 }
 
-/// Shared-secret interceptor for provider gRPC endpoints.
-///
-/// Validates that incoming requests carry the correct shared secret
-/// in the `x-provider-secret` metadata header using constant-time comparison.
-///
-/// Also enforces the per-service circuit breaker so that a
-/// continuously failing backend cannot consume all server threads.
-#[derive(Clone)]
-struct ProviderAuthInterceptor {
-    secret: Arc<String>,
-    circuit_breaker: Arc<CircuitBreaker>,
-    service_name: &'static str,
-}
-
-impl ProviderAuthInterceptor {
-    fn new(
-        secret: String,
-        circuit_breaker: Arc<CircuitBreaker>,
-        service_name: &'static str,
-    ) -> Self {
-        Self {
-            secret: Arc::new(secret),
-            circuit_breaker,
-            service_name,
-        }
-    }
-
-    #[allow(clippy::result_large_err)] // tonic interceptors require Result<Request<T>, Status>
-    fn validate<T>(&self, request: Request<T>) -> Result<Request<T>, Status> {
-        // Check circuit breaker before auth to short-circuit quickly
-        if !self.circuit_breaker.allow_request() {
-            warn!(
-                service = %self.service_name,
-                "Circuit breaker open — rejecting request"
-            );
-            return Err(Status::unavailable(format!(
-                "Service {} is temporarily unavailable (circuit breaker open)",
-                self.service_name
-            )));
-        }
-
-        // Auth failures don't count as circuit-breaker events; they are client
-        // configuration errors rather than backend failures.
-        validate_provider_secret_boxed(request.metadata(), &self.secret).map_err(|error| *error)?;
-
+fn provider_auth(secret: Arc<String>) -> impl tonic::service::Interceptor + Clone {
+    move |request: Request<()>| {
+        validate_provider_secret(request.metadata(), &secret)?;
         Ok(request)
     }
 }
@@ -312,12 +257,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bilibili_cb = CircuitBreaker::new();
     let emby_cb = CircuitBreaker::new();
 
-    // Create auth interceptors (one per service, they are Clone + cheap)
-    let alist_auth = ProviderAuthInterceptor::new(auth_secret.clone(), alist_cb.clone(), "alist");
-    let bilibili_auth =
-        ProviderAuthInterceptor::new(auth_secret.clone(), bilibili_cb.clone(), "bilibili");
-    let emby_auth = ProviderAuthInterceptor::new(auth_secret.clone(), emby_cb.clone(), "emby");
-    let health_auth_secret = Arc::new(auth_secret);
+    let auth_secret = Arc::new(auth_secret);
 
     // Create circuit-breaker layers so only true gRPC successes reset the
     // breaker, while backend failures encoded in grpc-status still count.
@@ -391,26 +331,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .concurrency_limit_per_connection(100)
         .add_service(InterceptedService::new(
             health_service,
-            move |request: Request<()>| {
-                validate_provider_secret(request.metadata(), &health_auth_secret)?;
-                Ok(request)
-            },
+            provider_auth(auth_secret.clone()),
         ))
-        .add_service(
-            alist_cb_layer.named_layer(InterceptedService::new(alist_server, move |req| {
-                alist_auth.validate(req)
-            })),
-        )
-        .add_service(
-            bilibili_cb_layer.named_layer(InterceptedService::new(bilibili_server, move |req| {
-                bilibili_auth.validate(req)
-            })),
-        )
-        .add_service(
-            emby_cb_layer.named_layer(InterceptedService::new(emby_server, move |req| {
-                emby_auth.validate(req)
-            })),
-        )
+        .add_service(InterceptedService::new(
+            alist_cb_layer.named_layer(alist_server),
+            provider_auth(auth_secret.clone()),
+        ))
+        .add_service(InterceptedService::new(
+            bilibili_cb_layer.named_layer(bilibili_server),
+            provider_auth(auth_secret.clone()),
+        ))
+        .add_service(InterceptedService::new(
+            emby_cb_layer.named_layer(emby_server),
+            provider_auth(auth_secret),
+        ))
         .serve_with_shutdown(addr, shutdown_signal())
         .await?;
 
@@ -450,6 +384,42 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn provider_auth_and_open_breaker_gate_backend_calls() -> anyhow::Result<()> {
+        use std::convert::Infallible;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use synctv_media_providers::circuit_breaker::CIRCUIT_BREAKER_THRESHOLD;
+        use tonic::codegen::http::Request as HttpRequest;
+        use tower::ServiceExt;
+
+        let calls = Arc::new(AtomicU32::new(0));
+        let backend_calls = Arc::clone(&calls);
+        let backend = tower::service_fn(move |_: HttpRequest<tonic::body::Body>| {
+            backend_calls.fetch_add(1, Ordering::Relaxed);
+            std::future::ready(Ok::<_, Infallible>(
+                Status::unavailable("backend").into_http(),
+            ))
+        });
+        let breaker = CircuitBreakerLayer::new(CircuitBreaker::new(), "test");
+        let service = InterceptedService::new(
+            breaker.layer(backend),
+            provider_auth(Arc::new("test-secret".to_string())),
+        );
+        for _ in 0..=CIRCUIT_BREAKER_THRESHOLD {
+            let request = HttpRequest::builder()
+                .header("x-provider-secret", "test-secret")
+                .body(tonic::body::Body::empty())?;
+            let response = service.clone().oneshot(request).await?;
+            assert_eq!(grpc_status_code(response.headers()), Code::Unavailable);
+        }
+        let response = service
+            .oneshot(HttpRequest::new(tonic::body::Body::empty()))
+            .await?;
+        assert_eq!(grpc_status_code(response.headers()), Code::Unauthenticated);
+        assert_eq!(calls.load(Ordering::Relaxed), CIRCUIT_BREAKER_THRESHOLD);
+        Ok(())
+    }
 
     fn grpc_headers(code: Option<&str>) -> Result<HeaderMap, Box<dyn std::error::Error>> {
         let mut headers = HeaderMap::new();

@@ -642,8 +642,25 @@ fn test_validate_websocket_origin_uses_direct_peer_for_trusted_proxy_forwarded_p
 #[test]
 fn test_split_host_and_port_supports_ipv6_host_header() -> TestResult {
     let (host, port) = app_ok(split_host_and_port("[::1]:8080"))?;
-    assert_eq!(host, "::1");
+    assert_eq!(host, "[::1]");
     assert_eq!(port, Some(8080));
+    Ok(())
+}
+
+#[test]
+fn ipv6_origin_checks_the_port_and_proxy_scheme() -> TestResult {
+    let origin = url::Url::parse("https://[::1]/")?;
+    assert!(app_ok(same_origin_as_host(
+        &origin,
+        "[::1]:443",
+        Some("HTTPS")
+    ))?);
+    assert!(!app_ok(same_origin_as_host(&origin, "[::1]:80", None))?);
+    assert!(!app_ok(same_origin_as_host(
+        &origin,
+        "[::1]",
+        Some("http")
+    ))?);
     Ok(())
 }
 

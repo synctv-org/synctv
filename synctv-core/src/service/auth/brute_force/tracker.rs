@@ -93,6 +93,23 @@ impl InMemoryAttemptTracker {
     }
 }
 
+async fn record_local_failure(
+    cache: &moka::future::Cache<String, (u64, i64)>,
+    key: &str,
+    now: i64,
+) {
+    cache
+        .entry(key.to_string())
+        .and_upsert_with(|maybe_entry| {
+            let new_count = match maybe_entry {
+                Some(entry) => super::lockout::next_count(entry.into_value().0),
+                None => 1,
+            };
+            std::future::ready((new_count, now))
+        })
+        .await;
+}
+
 #[async_trait]
 impl AttemptTracker for InMemoryAttemptTracker {
     async fn get_attempts(&self, key: &str) -> Result<(u64, i64)> {
@@ -100,16 +117,7 @@ impl AttemptTracker for InMemoryAttemptTracker {
     }
 
     async fn record_failure(&self, key: &str, now: i64, _ttl_secs: u64) -> Result<()> {
-        self.cache
-            .entry(key.to_string())
-            .and_upsert_with(|maybe_entry| {
-                let new_count = match maybe_entry {
-                    Some(entry) => entry.into_value().0 + 1,
-                    None => 1,
-                };
-                std::future::ready((new_count, now))
-            })
-            .await;
+        record_local_failure(&self.cache, key, now).await;
         Ok(())
     }
 
@@ -213,10 +221,7 @@ impl RedisAttemptTracker {
     }
 
     async fn record_fallback_failure(&self, key: &str, now: i64) {
-        let (count, _) = self.fallback.get(key).await.unwrap_or((0, now));
-        self.fallback
-            .insert(key.to_string(), (count + 1, now))
-            .await;
+        record_local_failure(&self.fallback, key, now).await;
     }
 
     #[must_use]

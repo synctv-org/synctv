@@ -9,6 +9,10 @@
 //! - Role and Status separation
 //! - Allow/Deny permission pattern for customization
 
+#[cfg(verus_only)]
+use vstd::prelude::*;
+
+#[cfg(not(verus_only))]
 use serde::{Deserialize, Serialize};
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not};
 use std::str::FromStr;
@@ -17,7 +21,9 @@ use std::str::FromStr;
 ///
 /// This enum deliberately has no numeric representation. Numeric permission
 /// bits live in the role-specific bitspaces below.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(not(verus_only), derive(Serialize, Deserialize))]
+#[cfg_attr(verus_only, verus_verify)]
 pub enum RoomPermission {
     SendChatMessages,
     ManageOwnMedia,
@@ -68,8 +74,10 @@ impl RoomPermission {
 
 /// Effective permissions projected into the admin bitspace for checks and
 /// client-visible snapshots. It is derived data, not an override bitspace.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(not(verus_only), derive(Serialize, Deserialize))]
+#[cfg_attr(not(verus_only), serde(transparent))]
+#[cfg_attr(verus_only, verus_verify)]
 pub struct RoomPermissionSet(pub u64);
 
 impl RoomPermissionSet {
@@ -124,29 +132,37 @@ impl RoomPermissionSet {
     }
 
     #[must_use]
+    #[cfg_attr(verus_only, verus_spec(allowed => ensures
+        allowed == (self.0 & RoomAdminPermissionBits::bit_for(permission) != 0),
+    ))]
     pub const fn has(&self, permission: RoomPermission) -> bool {
         let bit = RoomAdminPermissionBits::bit_for(permission);
-        bit != 0 && (self.0 & bit) != 0
+        (self.0 & bit) != 0
     }
 
     #[must_use]
+    #[cfg_attr(verus_only, verus_spec(allowed => ensures allowed == (self.0 & permissions.0 == permissions.0)))]
     pub const fn has_all(&self, permissions: Self) -> bool {
         (self.0 & permissions.0) == permissions.0
     }
 
     #[must_use]
+    #[cfg_attr(verus_only, verus_spec(allowed => ensures allowed == (self.0 & permissions.0 != 0)))]
     pub const fn has_any(&self, permissions: Self) -> bool {
         (self.0 & permissions.0) != 0
     }
 
+    #[cfg_attr(verus_only, verus_spec(ensures final(self).0 == (old(self).0 | RoomAdminPermissionBits::bit_for(permission)),))]
     pub const fn grant(&mut self, permission: RoomPermission) {
         self.0 |= RoomAdminPermissionBits::bit_for(permission);
     }
 
+    #[cfg_attr(verus_only, verus_spec(ensures final(self).0 == (old(self).0 & !RoomAdminPermissionBits::bit_for(permission)),))]
     pub const fn revoke(&mut self, permission: RoomPermission) {
         self.0 &= !RoomAdminPermissionBits::bit_for(permission);
     }
 
+    #[cfg_attr(verus_only, verus_spec(ensures final(self).0 == (if enabled { old(self).0 | RoomAdminPermissionBits::bit_for(permission) } else { old(self).0 & !RoomAdminPermissionBits::bit_for(permission) }),))]
     pub const fn set(&mut self, permission: RoomPermission, enabled: bool) {
         if enabled {
             self.grant(permission);
@@ -155,16 +171,26 @@ impl RoomPermissionSet {
         }
     }
 
+    #[cfg_attr(verus_only, verus_spec(ensures final(self).0 == (old(self).0 ^ RoomAdminPermissionBits::bit_for(permission)),))]
     pub const fn toggle(&mut self, permission: RoomPermission) {
         self.0 ^= RoomAdminPermissionBits::bit_for(permission);
     }
 }
 
+#[cfg_attr(verus_only, verus_verify(dual_spec, closed))]
+#[cfg_attr(verus_only, verus_spec(returns map_bit(bits, source, target)))]
+const fn map_bit(bits: u64, source: u64, target: u64) -> u64 {
+    if bits & source != 0 { target } else { 0 }
+}
+
 /// Permission bitspace for non-admin room members.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(verus_only), derive(Serialize, Deserialize))]
+#[cfg_attr(not(verus_only), serde(transparent))]
+#[cfg_attr(verus_only, verus_verify)]
 pub struct RoomMemberPermissionBits(pub u64);
 
+#[cfg_attr(verus_only, verus_verify)]
 impl RoomMemberPermissionBits {
     pub const SEND_CHAT_MESSAGES: u64 = 1 << 0;
     pub const MANAGE_OWN_MEDIA: u64 = 1 << 1;
@@ -184,6 +210,7 @@ impl RoomMemberPermissionBits {
 
     pub const DEFAULT: u64 = Self::ALL;
 
+    #[cfg(not(verus_only))]
     pub const NAMES: &[(&str, u64)] = &[
         ("send_chat_messages", Self::SEND_CHAT_MESSAGES),
         ("manage_own_media", Self::MANAGE_OWN_MEDIA),
@@ -194,63 +221,92 @@ impl RoomMemberPermissionBits {
         ("use_p2p_media", Self::USE_P2P_MEDIA),
     ];
 
+    #[cfg_attr(verus_only, verus_spec(result => ensures
+        result == (base | Self::to_permissions(added)) & !Self::to_permissions(removed),
+    ))]
+    pub(super) const fn effective(base: u64, added: u64, removed: u64) -> u64 {
+        apply_overrides(
+            base,
+            Self::to_permissions(added),
+            Self::to_permissions(removed),
+            u64::MAX,
+        )
+    }
+
     #[must_use]
+    #[cfg_attr(verus_only, verus_spec(valid => ensures valid == (bits & !Self::ALL == 0)))]
     pub const fn includes_only_defined(bits: u64) -> bool {
         bits & !Self::ALL == 0
     }
 
     #[must_use]
+    #[cfg_attr(verus_only, verus_verify(dual_spec, closed))]
+    #[cfg_attr(verus_only, verus_spec(returns Self::to_permissions(bits)))]
     pub const fn to_permissions(bits: u64) -> u64 {
-        let mut permissions = 0;
-        if bits & Self::SEND_CHAT_MESSAGES != 0 {
-            permissions |= RoomAdminPermissionBits::SEND_CHAT_MESSAGES;
-        }
-        if bits & Self::MANAGE_OWN_MEDIA != 0 {
-            permissions |= RoomAdminPermissionBits::MANAGE_OWN_MEDIA;
-        }
-        if bits & Self::BROWSE_LIBRARY != 0 {
-            permissions |= RoomAdminPermissionBits::BROWSE_LIBRARY;
-        }
-        if bits & Self::VIEW_MEMBERS != 0 {
-            permissions |= RoomAdminPermissionBits::VIEW_MEMBERS;
-        }
-        if bits & Self::VIEW_CHAT_HISTORY != 0 {
-            permissions |= RoomAdminPermissionBits::VIEW_CHAT_HISTORY;
-        }
-        if bits & Self::USE_VOICE_CHAT != 0 {
-            permissions |= RoomAdminPermissionBits::USE_VOICE_CHAT;
-        }
-        if bits & Self::USE_P2P_MEDIA != 0 {
-            permissions |= RoomAdminPermissionBits::USE_P2P_MEDIA;
-        }
-        permissions
+        map_bit(
+            bits,
+            Self::SEND_CHAT_MESSAGES,
+            RoomAdminPermissionBits::SEND_CHAT_MESSAGES,
+        ) | map_bit(
+            bits,
+            Self::MANAGE_OWN_MEDIA,
+            RoomAdminPermissionBits::MANAGE_OWN_MEDIA,
+        ) | map_bit(
+            bits,
+            Self::BROWSE_LIBRARY,
+            RoomAdminPermissionBits::BROWSE_LIBRARY,
+        ) | map_bit(
+            bits,
+            Self::VIEW_MEMBERS,
+            RoomAdminPermissionBits::VIEW_MEMBERS,
+        ) | map_bit(
+            bits,
+            Self::VIEW_CHAT_HISTORY,
+            RoomAdminPermissionBits::VIEW_CHAT_HISTORY,
+        ) | map_bit(
+            bits,
+            Self::USE_VOICE_CHAT,
+            RoomAdminPermissionBits::USE_VOICE_CHAT,
+        ) | map_bit(
+            bits,
+            Self::USE_P2P_MEDIA,
+            RoomAdminPermissionBits::USE_P2P_MEDIA,
+        )
     }
 
     #[must_use]
+    #[cfg_attr(verus_only, verus_verify(dual_spec, closed))]
+    #[cfg_attr(verus_only, verus_spec(returns Self::from_permissions(permissions)))]
     pub const fn from_permissions(permissions: u64) -> u64 {
-        let mut bits = 0;
-        if permissions & RoomAdminPermissionBits::SEND_CHAT_MESSAGES != 0 {
-            bits |= Self::SEND_CHAT_MESSAGES;
-        }
-        if permissions & RoomAdminPermissionBits::MANAGE_OWN_MEDIA != 0 {
-            bits |= Self::MANAGE_OWN_MEDIA;
-        }
-        if permissions & RoomAdminPermissionBits::BROWSE_LIBRARY != 0 {
-            bits |= Self::BROWSE_LIBRARY;
-        }
-        if permissions & RoomAdminPermissionBits::VIEW_MEMBERS != 0 {
-            bits |= Self::VIEW_MEMBERS;
-        }
-        if permissions & RoomAdminPermissionBits::VIEW_CHAT_HISTORY != 0 {
-            bits |= Self::VIEW_CHAT_HISTORY;
-        }
-        if permissions & RoomAdminPermissionBits::USE_VOICE_CHAT != 0 {
-            bits |= Self::USE_VOICE_CHAT;
-        }
-        if permissions & RoomAdminPermissionBits::USE_P2P_MEDIA != 0 {
-            bits |= Self::USE_P2P_MEDIA;
-        }
-        bits
+        map_bit(
+            permissions,
+            RoomAdminPermissionBits::SEND_CHAT_MESSAGES,
+            Self::SEND_CHAT_MESSAGES,
+        ) | map_bit(
+            permissions,
+            RoomAdminPermissionBits::MANAGE_OWN_MEDIA,
+            Self::MANAGE_OWN_MEDIA,
+        ) | map_bit(
+            permissions,
+            RoomAdminPermissionBits::BROWSE_LIBRARY,
+            Self::BROWSE_LIBRARY,
+        ) | map_bit(
+            permissions,
+            RoomAdminPermissionBits::VIEW_MEMBERS,
+            Self::VIEW_MEMBERS,
+        ) | map_bit(
+            permissions,
+            RoomAdminPermissionBits::VIEW_CHAT_HISTORY,
+            Self::VIEW_CHAT_HISTORY,
+        ) | map_bit(
+            permissions,
+            RoomAdminPermissionBits::USE_VOICE_CHAT,
+            Self::USE_VOICE_CHAT,
+        ) | map_bit(
+            permissions,
+            RoomAdminPermissionBits::USE_P2P_MEDIA,
+            Self::USE_P2P_MEDIA,
+        )
     }
 }
 
@@ -258,10 +314,13 @@ impl RoomMemberPermissionBits {
 ///
 /// Admin bits are independent from member bits even when some names map to the
 /// same runtime capability.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(verus_only), derive(Serialize, Deserialize))]
+#[cfg_attr(not(verus_only), serde(transparent))]
+#[cfg_attr(verus_only, verus_verify)]
 pub struct RoomAdminPermissionBits(pub u64);
 
+#[cfg_attr(verus_only, verus_verify)]
 impl RoomAdminPermissionBits {
     pub const SEND_CHAT_MESSAGES: u64 = 1 << 0;
     pub const MANAGE_OWN_MEDIA: u64 = 1 << 1;
@@ -309,6 +368,7 @@ impl RoomAdminPermissionBits {
 
     pub const DEFAULT: u64 = Self::ALL & !Self::DELETE_ROOM;
 
+    #[cfg(not(verus_only))]
     pub const NAMES: &[(&str, u64)] = &[
         ("send_chat_messages", Self::SEND_CHAT_MESSAGES),
         ("manage_own_media", Self::MANAGE_OWN_MEDIA),
@@ -333,183 +393,75 @@ impl RoomAdminPermissionBits {
         ("use_p2p_media", Self::USE_P2P_MEDIA),
     ];
 
+    #[cfg_attr(verus_only, verus_spec(result => ensures
+        result == (base | Self::to_permissions(added)) & !Self::to_permissions(removed),
+    ))]
+    pub(super) const fn effective(base: u64, added: u64, removed: u64) -> u64 {
+        apply_overrides(
+            base,
+            Self::to_permissions(added),
+            Self::to_permissions(removed),
+            u64::MAX,
+        )
+    }
+
     #[must_use]
+    #[cfg_attr(verus_only, verus_spec(valid => ensures valid == (bits & !Self::ALL == 0)))]
     pub const fn includes_only_defined(bits: u64) -> bool {
         bits & !Self::ALL == 0
     }
 
     #[must_use]
+    #[cfg_attr(verus_only, verus_verify(dual_spec, closed))]
+    #[cfg_attr(verus_only, verus_spec(returns Self::bit_for(permission)))]
     pub const fn bit_for(permission: RoomPermission) -> u64 {
         match permission {
-            crate::models::RoomPermission::SendChatMessages => Self::SEND_CHAT_MESSAGES,
-            crate::models::RoomPermission::ManageOwnMedia => Self::MANAGE_OWN_MEDIA,
-            crate::models::RoomPermission::BrowseLibrary => Self::BROWSE_LIBRARY,
-            crate::models::RoomPermission::ViewMembers => Self::VIEW_MEMBERS,
-            crate::models::RoomPermission::ViewChatHistory => Self::VIEW_CHAT_HISTORY,
-            crate::models::RoomPermission::UseVoiceChat => Self::USE_VOICE_CHAT,
-            crate::models::RoomPermission::UseP2pMedia => Self::USE_P2P_MEDIA,
-            crate::models::RoomPermission::DeleteMedia => Self::DELETE_MEDIA,
-            crate::models::RoomPermission::ReorderMedia => Self::REORDER_MEDIA,
-            crate::models::RoomPermission::ClearMedia => Self::CLEAR_MEDIA,
-            crate::models::RoomPermission::ManageLiveStreams => Self::MANAGE_LIVE_STREAMS,
-            crate::models::RoomPermission::ControlPlaybackState => Self::CONTROL_PLAYBACK_STATE,
-            crate::models::RoomPermission::NavigatePlayback => Self::NAVIGATE_PLAYBACK,
-            crate::models::RoomPermission::ReviewJoinRequests => Self::REVIEW_JOIN_REQUESTS,
-            crate::models::RoomPermission::RemoveMembers => Self::REMOVE_MEMBERS,
-            crate::models::RoomPermission::ManageMemberPermissions => {
-                Self::MANAGE_MEMBER_PERMISSIONS
-            }
-            crate::models::RoomPermission::AddMembers => Self::ADD_MEMBERS,
-            crate::models::RoomPermission::ManageRoomSettings => Self::MANAGE_ROOM_SETTINGS,
-            crate::models::RoomPermission::DeleteChatMessages => Self::DELETE_CHAT_MESSAGES,
-            crate::models::RoomPermission::DeleteRoom => Self::DELETE_ROOM,
-            crate::models::RoomPermission::ViewPlaybackHistory => Self::VIEW_PLAYBACK_HISTORY,
+            RoomPermission::SendChatMessages => Self::SEND_CHAT_MESSAGES,
+            RoomPermission::ManageOwnMedia => Self::MANAGE_OWN_MEDIA,
+            RoomPermission::BrowseLibrary => Self::BROWSE_LIBRARY,
+            RoomPermission::ViewMembers => Self::VIEW_MEMBERS,
+            RoomPermission::ViewChatHistory => Self::VIEW_CHAT_HISTORY,
+            RoomPermission::UseVoiceChat => Self::USE_VOICE_CHAT,
+            RoomPermission::UseP2pMedia => Self::USE_P2P_MEDIA,
+            RoomPermission::DeleteMedia => Self::DELETE_MEDIA,
+            RoomPermission::ReorderMedia => Self::REORDER_MEDIA,
+            RoomPermission::ClearMedia => Self::CLEAR_MEDIA,
+            RoomPermission::ManageLiveStreams => Self::MANAGE_LIVE_STREAMS,
+            RoomPermission::ControlPlaybackState => Self::CONTROL_PLAYBACK_STATE,
+            RoomPermission::NavigatePlayback => Self::NAVIGATE_PLAYBACK,
+            RoomPermission::ReviewJoinRequests => Self::REVIEW_JOIN_REQUESTS,
+            RoomPermission::RemoveMembers => Self::REMOVE_MEMBERS,
+            RoomPermission::ManageMemberPermissions => Self::MANAGE_MEMBER_PERMISSIONS,
+            RoomPermission::AddMembers => Self::ADD_MEMBERS,
+            RoomPermission::ManageRoomSettings => Self::MANAGE_ROOM_SETTINGS,
+            RoomPermission::DeleteChatMessages => Self::DELETE_CHAT_MESSAGES,
+            RoomPermission::DeleteRoom => Self::DELETE_ROOM,
+            RoomPermission::ViewPlaybackHistory => Self::VIEW_PLAYBACK_HISTORY,
         }
     }
 
     #[must_use]
+    #[cfg_attr(verus_only, verus_verify(dual_spec, closed))]
+    #[cfg_attr(verus_only, verus_spec(returns Self::to_permissions(bits)))]
     pub const fn to_permissions(bits: u64) -> u64 {
-        let mut permissions = 0;
-        if bits & Self::SEND_CHAT_MESSAGES != 0 {
-            permissions |= RoomAdminPermissionBits::SEND_CHAT_MESSAGES;
-        }
-        if bits & Self::MANAGE_OWN_MEDIA != 0 {
-            permissions |= RoomAdminPermissionBits::MANAGE_OWN_MEDIA;
-        }
-        if bits & Self::BROWSE_LIBRARY != 0 {
-            permissions |= RoomAdminPermissionBits::BROWSE_LIBRARY;
-        }
-        if bits & Self::VIEW_MEMBERS != 0 {
-            permissions |= RoomAdminPermissionBits::VIEW_MEMBERS;
-        }
-        if bits & Self::VIEW_CHAT_HISTORY != 0 {
-            permissions |= RoomAdminPermissionBits::VIEW_CHAT_HISTORY;
-        }
-        if bits & Self::USE_VOICE_CHAT != 0 {
-            permissions |= RoomAdminPermissionBits::USE_VOICE_CHAT;
-        }
-        if bits & Self::DELETE_MEDIA != 0 {
-            permissions |= RoomAdminPermissionBits::DELETE_MEDIA;
-        }
-        if bits & Self::REORDER_MEDIA != 0 {
-            permissions |= RoomAdminPermissionBits::REORDER_MEDIA;
-        }
-        if bits & Self::CLEAR_MEDIA != 0 {
-            permissions |= RoomAdminPermissionBits::CLEAR_MEDIA;
-        }
-        if bits & Self::MANAGE_LIVE_STREAMS != 0 {
-            permissions |= RoomAdminPermissionBits::MANAGE_LIVE_STREAMS;
-        }
-        if bits & Self::CONTROL_PLAYBACK_STATE != 0 {
-            permissions |= RoomAdminPermissionBits::CONTROL_PLAYBACK_STATE;
-        }
-        if bits & Self::NAVIGATE_PLAYBACK != 0 {
-            permissions |= RoomAdminPermissionBits::NAVIGATE_PLAYBACK;
-        }
-        if bits & Self::REVIEW_JOIN_REQUESTS != 0 {
-            permissions |= RoomAdminPermissionBits::REVIEW_JOIN_REQUESTS;
-        }
-        if bits & Self::REMOVE_MEMBERS != 0 {
-            permissions |= RoomAdminPermissionBits::REMOVE_MEMBERS;
-        }
-        if bits & Self::MANAGE_MEMBER_PERMISSIONS != 0 {
-            permissions |= RoomAdminPermissionBits::MANAGE_MEMBER_PERMISSIONS;
-        }
-        if bits & Self::ADD_MEMBERS != 0 {
-            permissions |= RoomAdminPermissionBits::ADD_MEMBERS;
-        }
-        if bits & Self::MANAGE_ROOM_SETTINGS != 0 {
-            permissions |= RoomAdminPermissionBits::MANAGE_ROOM_SETTINGS;
-        }
-        if bits & Self::DELETE_CHAT_MESSAGES != 0 {
-            permissions |= RoomAdminPermissionBits::DELETE_CHAT_MESSAGES;
-        }
-        if bits & Self::DELETE_ROOM != 0 {
-            permissions |= RoomAdminPermissionBits::DELETE_ROOM;
-        }
-        if bits & Self::VIEW_PLAYBACK_HISTORY != 0 {
-            permissions |= RoomAdminPermissionBits::VIEW_PLAYBACK_HISTORY;
-        }
-        if bits & Self::USE_P2P_MEDIA != 0 {
-            permissions |= RoomAdminPermissionBits::USE_P2P_MEDIA;
-        }
-        permissions
+        bits & Self::ALL
     }
 
     #[must_use]
+    #[cfg_attr(verus_only, verus_verify(dual_spec, closed))]
+    #[cfg_attr(verus_only, verus_spec(returns Self::from_permissions(permissions)))]
     pub const fn from_permissions(permissions: u64) -> u64 {
-        let mut bits = 0;
-        if permissions & RoomAdminPermissionBits::SEND_CHAT_MESSAGES != 0 {
-            bits |= Self::SEND_CHAT_MESSAGES;
-        }
-        if permissions & RoomAdminPermissionBits::MANAGE_OWN_MEDIA != 0 {
-            bits |= Self::MANAGE_OWN_MEDIA;
-        }
-        if permissions & RoomAdminPermissionBits::BROWSE_LIBRARY != 0 {
-            bits |= Self::BROWSE_LIBRARY;
-        }
-        if permissions & RoomAdminPermissionBits::VIEW_MEMBERS != 0 {
-            bits |= Self::VIEW_MEMBERS;
-        }
-        if permissions & RoomAdminPermissionBits::VIEW_CHAT_HISTORY != 0 {
-            bits |= Self::VIEW_CHAT_HISTORY;
-        }
-        if permissions & RoomAdminPermissionBits::USE_VOICE_CHAT != 0 {
-            bits |= Self::USE_VOICE_CHAT;
-        }
-        if permissions & RoomAdminPermissionBits::DELETE_MEDIA != 0 {
-            bits |= Self::DELETE_MEDIA;
-        }
-        if permissions & RoomAdminPermissionBits::REORDER_MEDIA != 0 {
-            bits |= Self::REORDER_MEDIA;
-        }
-        if permissions & RoomAdminPermissionBits::CLEAR_MEDIA != 0 {
-            bits |= Self::CLEAR_MEDIA;
-        }
-        if permissions & RoomAdminPermissionBits::MANAGE_LIVE_STREAMS != 0 {
-            bits |= Self::MANAGE_LIVE_STREAMS;
-        }
-        if permissions & RoomAdminPermissionBits::CONTROL_PLAYBACK_STATE != 0 {
-            bits |= Self::CONTROL_PLAYBACK_STATE;
-        }
-        if permissions & RoomAdminPermissionBits::NAVIGATE_PLAYBACK != 0 {
-            bits |= Self::NAVIGATE_PLAYBACK;
-        }
-        if permissions & RoomAdminPermissionBits::REVIEW_JOIN_REQUESTS != 0 {
-            bits |= Self::REVIEW_JOIN_REQUESTS;
-        }
-        if permissions & RoomAdminPermissionBits::REMOVE_MEMBERS != 0 {
-            bits |= Self::REMOVE_MEMBERS;
-        }
-        if permissions & RoomAdminPermissionBits::MANAGE_MEMBER_PERMISSIONS != 0 {
-            bits |= Self::MANAGE_MEMBER_PERMISSIONS;
-        }
-        if permissions & RoomAdminPermissionBits::ADD_MEMBERS != 0 {
-            bits |= Self::ADD_MEMBERS;
-        }
-        if permissions & RoomAdminPermissionBits::MANAGE_ROOM_SETTINGS != 0 {
-            bits |= Self::MANAGE_ROOM_SETTINGS;
-        }
-        if permissions & RoomAdminPermissionBits::DELETE_CHAT_MESSAGES != 0 {
-            bits |= Self::DELETE_CHAT_MESSAGES;
-        }
-        if permissions & RoomAdminPermissionBits::DELETE_ROOM != 0 {
-            bits |= Self::DELETE_ROOM;
-        }
-        if permissions & RoomAdminPermissionBits::VIEW_PLAYBACK_HISTORY != 0 {
-            bits |= Self::VIEW_PLAYBACK_HISTORY;
-        }
-        if permissions & RoomAdminPermissionBits::USE_P2P_MEDIA != 0 {
-            bits |= Self::USE_P2P_MEDIA;
-        }
-        bits
+        permissions & Self::ALL
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(verus_only), derive(Serialize, Deserialize))]
+#[cfg_attr(not(verus_only), serde(transparent))]
+#[cfg_attr(verus_only, verus_verify)]
 pub struct RoomGuestPermissionBits(pub u64);
 
+#[cfg_attr(verus_only, verus_verify)]
 impl RoomGuestPermissionBits {
     pub const VIEW_MEMBERS: u64 = 1 << 32;
     pub const VIEW_CHAT_HISTORY: u64 = 1 << 33;
@@ -520,6 +472,7 @@ impl RoomGuestPermissionBits {
         Self::VIEW_MEMBERS | Self::VIEW_CHAT_HISTORY | Self::USE_VOICE_CHAT | Self::USE_P2P_MEDIA;
     pub const DEFAULT: u64 = 0;
 
+    #[cfg(not(verus_only))]
     pub const NAMES: &[(&str, u64)] = &[
         ("view_members", Self::VIEW_MEMBERS),
         ("view_chat_history", Self::VIEW_CHAT_HISTORY),
@@ -527,45 +480,69 @@ impl RoomGuestPermissionBits {
         ("use_p2p_media", Self::USE_P2P_MEDIA),
     ];
 
+    #[cfg_attr(verus_only, verus_spec(result => ensures
+        result == (base | Self::to_permissions(added)) & !Self::to_permissions(removed) & Self::to_permissions(Self::ALL),
+        result & !Self::to_permissions(Self::ALL) == 0,
+    ))]
+    pub(super) const fn effective(base: u64, added: u64, removed: u64) -> u64 {
+        apply_overrides(
+            base,
+            Self::to_permissions(added),
+            Self::to_permissions(removed),
+            Self::to_permissions(Self::ALL),
+        )
+    }
+
     #[must_use]
+    #[cfg_attr(verus_only, verus_spec(valid => ensures valid == (bits & !Self::ALL == 0)))]
     pub const fn includes_only_defined(bits: u64) -> bool {
         bits & !Self::ALL == 0
     }
 
     #[must_use]
+    #[cfg_attr(verus_only, verus_verify(dual_spec, closed))]
+    #[cfg_attr(verus_only, verus_spec(returns Self::to_permissions(bits)))]
     pub const fn to_permissions(bits: u64) -> u64 {
-        let mut permissions = 0;
-        if bits & Self::VIEW_MEMBERS != 0 {
-            permissions |= RoomAdminPermissionBits::VIEW_MEMBERS;
-        }
-        if bits & Self::VIEW_CHAT_HISTORY != 0 {
-            permissions |= RoomAdminPermissionBits::VIEW_CHAT_HISTORY;
-        }
-        if bits & Self::USE_VOICE_CHAT != 0 {
-            permissions |= RoomAdminPermissionBits::USE_VOICE_CHAT;
-        }
-        if bits & Self::USE_P2P_MEDIA != 0 {
-            permissions |= RoomAdminPermissionBits::USE_P2P_MEDIA;
-        }
-        permissions
+        map_bit(
+            bits,
+            Self::VIEW_MEMBERS,
+            RoomAdminPermissionBits::VIEW_MEMBERS,
+        ) | map_bit(
+            bits,
+            Self::VIEW_CHAT_HISTORY,
+            RoomAdminPermissionBits::VIEW_CHAT_HISTORY,
+        ) | map_bit(
+            bits,
+            Self::USE_VOICE_CHAT,
+            RoomAdminPermissionBits::USE_VOICE_CHAT,
+        ) | map_bit(
+            bits,
+            Self::USE_P2P_MEDIA,
+            RoomAdminPermissionBits::USE_P2P_MEDIA,
+        )
     }
 
     #[must_use]
+    #[cfg_attr(verus_only, verus_verify(dual_spec, closed))]
+    #[cfg_attr(verus_only, verus_spec(returns Self::from_permissions(permissions)))]
     pub const fn from_permissions(permissions: u64) -> u64 {
-        let mut bits = 0;
-        if permissions & RoomAdminPermissionBits::VIEW_MEMBERS != 0 {
-            bits |= Self::VIEW_MEMBERS;
-        }
-        if permissions & RoomAdminPermissionBits::VIEW_CHAT_HISTORY != 0 {
-            bits |= Self::VIEW_CHAT_HISTORY;
-        }
-        if permissions & RoomAdminPermissionBits::USE_VOICE_CHAT != 0 {
-            bits |= Self::USE_VOICE_CHAT;
-        }
-        if permissions & RoomAdminPermissionBits::USE_P2P_MEDIA != 0 {
-            bits |= Self::USE_P2P_MEDIA;
-        }
-        bits
+        map_bit(
+            permissions,
+            RoomAdminPermissionBits::VIEW_MEMBERS,
+            Self::VIEW_MEMBERS,
+        ) | map_bit(
+            permissions,
+            RoomAdminPermissionBits::VIEW_CHAT_HISTORY,
+            Self::VIEW_CHAT_HISTORY,
+        ) | map_bit(
+            permissions,
+            RoomAdminPermissionBits::USE_VOICE_CHAT,
+            Self::USE_VOICE_CHAT,
+        ) | map_bit(
+            permissions,
+            RoomAdminPermissionBits::USE_P2P_MEDIA,
+            Self::USE_P2P_MEDIA,
+        )
     }
 }
 
@@ -679,12 +656,108 @@ impl Not for RoomPermissionSet {
     }
 }
 
+#[cfg(verus_only)]
+verus! {
+    // Effective capability bits are persisted and exposed to clients.
+    spec fn wire_capability(bit: u64) -> Option<RoomPermission> {
+        match bit {
+            1 => Some(RoomPermission::SendChatMessages),
+            2 => Some(RoomPermission::ManageOwnMedia),
+            4 => Some(RoomPermission::BrowseLibrary),
+            8 => Some(RoomPermission::ViewMembers),
+            16 => Some(RoomPermission::ViewChatHistory),
+            32 => Some(RoomPermission::UseVoiceChat),
+            1_048_576 => Some(RoomPermission::UseP2pMedia),
+            64 => Some(RoomPermission::DeleteMedia),
+            128 => Some(RoomPermission::ReorderMedia),
+            256 => Some(RoomPermission::ClearMedia),
+            512 => Some(RoomPermission::ManageLiveStreams),
+            1_024 => Some(RoomPermission::ControlPlaybackState),
+            2_048 => Some(RoomPermission::NavigatePlayback),
+            4_096 => Some(RoomPermission::ReviewJoinRequests),
+            8_192 => Some(RoomPermission::RemoveMembers),
+            16_384 => Some(RoomPermission::ManageMemberPermissions),
+            32_768 => Some(RoomPermission::AddMembers),
+            65_536 => Some(RoomPermission::ManageRoomSettings),
+            131_072 => Some(RoomPermission::DeleteChatMessages),
+            262_144 => Some(RoomPermission::DeleteRoom),
+            524_288 => Some(RoomPermission::ViewPlaybackHistory),
+            _ => None,
+        }
+    }
+
+    proof fn capability_round_trip(permission: RoomPermission)
+        ensures wire_capability(RoomAdminPermissionBits::bit_for(permission)) == Some(permission),
+    {
+        assert(
+            RoomAdminPermissionBits::SEND_CHAT_MESSAGES == 1 &&
+            RoomAdminPermissionBits::MANAGE_OWN_MEDIA == 2 &&
+            RoomAdminPermissionBits::BROWSE_LIBRARY == 4 &&
+            RoomAdminPermissionBits::VIEW_MEMBERS == 8 &&
+            RoomAdminPermissionBits::VIEW_CHAT_HISTORY == 16 &&
+            RoomAdminPermissionBits::USE_VOICE_CHAT == 32 &&
+            RoomAdminPermissionBits::DELETE_MEDIA == 64 &&
+            RoomAdminPermissionBits::REORDER_MEDIA == 128 &&
+            RoomAdminPermissionBits::CLEAR_MEDIA == 256 &&
+            RoomAdminPermissionBits::MANAGE_LIVE_STREAMS == 512 &&
+            RoomAdminPermissionBits::CONTROL_PLAYBACK_STATE == 1_024 &&
+            RoomAdminPermissionBits::NAVIGATE_PLAYBACK == 2_048 &&
+            RoomAdminPermissionBits::REVIEW_JOIN_REQUESTS == 4_096 &&
+            RoomAdminPermissionBits::REMOVE_MEMBERS == 8_192 &&
+            RoomAdminPermissionBits::MANAGE_MEMBER_PERMISSIONS == 16_384 &&
+            RoomAdminPermissionBits::ADD_MEMBERS == 32_768 &&
+            RoomAdminPermissionBits::MANAGE_ROOM_SETTINGS == 65_536 &&
+            RoomAdminPermissionBits::DELETE_CHAT_MESSAGES == 131_072 &&
+            RoomAdminPermissionBits::DELETE_ROOM == 262_144 &&
+            RoomAdminPermissionBits::VIEW_PLAYBACK_HISTORY == 524_288 &&
+            RoomAdminPermissionBits::USE_P2P_MEDIA == 1_048_576
+        ) by(bit_vector);
+    }
+
+    proof fn distinct_capabilities(a: RoomPermission, b: RoomPermission)
+        ensures (RoomAdminPermissionBits::bit_for(a) == RoomAdminPermissionBits::bit_for(b)) == (a == b),
+    {
+        capability_round_trip(a);
+        capability_round_trip(b);
+    }
+
+    proof fn admin_projection(bits: u64)
+        by(bit_vector)
+        ensures
+            RoomAdminPermissionBits::to_permissions(bits) == bits & 0x1f_ffff,
+            RoomAdminPermissionBits::from_permissions(RoomAdminPermissionBits::to_permissions(bits))
+                == bits & RoomAdminPermissionBits::ALL,
+    {}
+
+    proof fn member_projection(bits: u64)
+        by(bit_vector)
+        ensures
+            RoomMemberPermissionBits::to_permissions(bits) == ((bits & 0x3f) | ((bits & 0x40) << 14)),
+            RoomMemberPermissionBits::from_permissions(RoomMemberPermissionBits::to_permissions(bits))
+                == bits & RoomMemberPermissionBits::ALL,
+            RoomMemberPermissionBits::to_permissions(bits) & !RoomAdminPermissionBits::ALL == 0,
+    {}
+
+    proof fn guest_projection(bits: u64)
+        by(bit_vector)
+        ensures
+            RoomGuestPermissionBits::to_permissions(bits) == (((bits >> 29) & 0x38) | ((bits >> 15) & 0x10_0000)),
+            RoomGuestPermissionBits::from_permissions(RoomGuestPermissionBits::to_permissions(bits))
+                == bits & RoomGuestPermissionBits::ALL,
+            RoomGuestPermissionBits::to_permissions(bits) & !(RoomAdminPermissionBits::VIEW_MEMBERS
+                | RoomAdminPermissionBits::VIEW_CHAT_HISTORY | RoomAdminPermissionBits::USE_VOICE_CHAT
+                | RoomAdminPermissionBits::USE_P2P_MEDIA) == 0,
+    {}
+}
+
 /// Room role preset (Telegram-style design)
 ///
 /// These are the room-level roles that determine base permissions.
 /// Custom permissions can be added/removed via Allow/Deny pattern.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(not(verus_only), derive(Serialize, Deserialize))]
+#[cfg_attr(not(verus_only), serde(rename_all = "lowercase"))]
+#[cfg_attr(verus_only, verus_verify)]
 pub enum Role {
     /// Room creator - has all permissions (fixed, cannot be modified)
     Creator,
@@ -696,7 +769,54 @@ pub enum Role {
     Guest,
 }
 
+/// Combine defaults and overrides in the effective permission bitspace.
+#[cfg_attr(verus_only, verus_spec(result => ensures
+    result == (base | added) & !removed & ceiling,
+    ceiling == u64::MAX ==> result == (base | added) & !removed,
+    result & removed == 0,
+    result & !ceiling == 0,
+))]
+const fn apply_overrides(base: u64, added: u64, removed: u64, ceiling: u64) -> u64 {
+    let result = (base | added) & !removed & ceiling;
+    #[cfg(verus_only)]
+    proof! {
+        assert(ceiling == u64::MAX ==> ((base | added) & !removed & ceiling) == ((base | added) & !removed)) by(bit_vector);
+        assert(result & removed == 0 && result & !ceiling == 0) by(bit_vector)
+            requires result == (base | added) & !removed & ceiling;
+    }
+    result
+}
+
 impl Role {
+    #[cfg_attr(verus_only, verus_spec(result => ensures
+        match self {
+            Role::Creator => result == RoomAdminPermissionBits::ALL,
+            Role::Admin => result == (base | RoomAdminPermissionBits::to_permissions(admin_added))
+                & !RoomAdminPermissionBits::to_permissions(admin_removed),
+            Role::Member => result == (base | RoomMemberPermissionBits::to_permissions(added))
+                & !RoomMemberPermissionBits::to_permissions(removed),
+            Role::Guest => result == (base | RoomGuestPermissionBits::to_permissions(added))
+                & !RoomGuestPermissionBits::to_permissions(removed)
+                & RoomGuestPermissionBits::to_permissions(RoomGuestPermissionBits::ALL)
+                && result & !RoomGuestPermissionBits::to_permissions(RoomGuestPermissionBits::ALL) == 0,
+        },
+    ))]
+    pub(super) const fn effective_bits(
+        self,
+        base: u64,
+        added: u64,
+        removed: u64,
+        admin_added: u64,
+        admin_removed: u64,
+    ) -> u64 {
+        match self {
+            Self::Creator => RoomAdminPermissionBits::ALL,
+            Self::Admin => RoomAdminPermissionBits::effective(base, admin_added, admin_removed),
+            Self::Member => RoomMemberPermissionBits::effective(base, added, removed),
+            Self::Guest => RoomGuestPermissionBits::effective(base, added, removed),
+        }
+    }
+
     /// Get base permissions for this role (before custom Allow/Deny modifications)
     #[must_use]
     pub const fn permissions(&self) -> RoomPermissionSet {
@@ -768,6 +888,7 @@ impl TryFrom<i32> for Role {
     }
 }
 
+#[cfg(not(verus_only))]
 i16_enum!(Role, "Invalid Role value", {
     Creator = 1,
     Admin = 2,

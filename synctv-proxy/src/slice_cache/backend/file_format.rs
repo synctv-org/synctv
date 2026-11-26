@@ -1,10 +1,12 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
-use tokio::fs;
 use tokio::io::AsyncReadExt;
+
+mod layout;
+pub(super) use layout::cache_entry_deadline_millis;
 
 fn cache_header_bincode_config() -> impl bincode::config::Config + Send + Sync + 'static {
     bincode::config::standard()
@@ -26,9 +28,6 @@ fn decode_header(bytes: &[u8]) -> anyhow::Result<FileEntryHeader> {
 /// Magic bytes identifying a valid `SyncTV` cache file (version 1).
 pub(super) const CACHE_FILE_MAGIC: &[u8; 4] = b"STV\x01";
 
-/// Minimum size of a valid cache file: 4 (magic) + 4 (`header_len`) = 8.
-const MIN_FILE_SIZE: u64 = 8;
-
 /// Safety limit: reject cache files with attacker-sized headers.
 const MAX_HEADER_LEN: usize = 64 * 1024;
 const MAX_HEADER_FUTURE_SKEW_MILLIS: u64 = 24 * 60 * 60 * 1_000;
@@ -44,29 +43,9 @@ pub(super) struct FileEntryHeader {
 }
 
 /// Read a cache file and return the deserialized header + data body.
-pub(super) async fn read_cache_file(path: &PathBuf) -> anyhow::Result<(FileEntryHeader, Bytes)> {
-    let mut file = tokio::fs::File::open(path)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to open cache file {}: {e}", path.display()))?;
-
-    let mut magic = [0u8; 4];
-    file.read_exact(&mut magic)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to read magic from {}: {e}", path.display()))?;
-    if &magic != CACHE_FILE_MAGIC {
-        return Err(anyhow::anyhow!(
-            "Invalid magic in {}: expected {:?}, got {:?}",
-            path.display(),
-            CACHE_FILE_MAGIC,
-            magic
-        ));
-    }
-
-    let header_len = read_header_len(&mut file).await?;
-    let header = read_header(&mut file, header_len).await.map_err(|e| {
-        anyhow::anyhow!("Failed to deserialize header from {}: {e}", path.display())
-    })?;
-    validate_cache_header(path, &header)?;
+pub(super) async fn read_cache_file(path: &Path) -> anyhow::Result<(FileEntryHeader, Bytes)> {
+    let mut file = tokio::fs::File::open(path).await?;
+    let header = validated_header(path, &mut file).await?;
 
     let data_size = usize::try_from(header.data_size).map_err(|_| {
         anyhow::anyhow!(
@@ -75,8 +54,12 @@ pub(super) async fn read_cache_file(path: &PathBuf) -> anyhow::Result<(FileEntry
             header.data_size
         )
     })?;
-    let mut data_buf = Vec::with_capacity(data_size);
-    file.read_to_end(&mut data_buf).await?;
+    let mut data_buf = Vec::new();
+    data_buf.try_reserve_exact(data_size)?;
+    // One extra byte detects concurrent growth without reading an unbounded stream.
+    file.take(header.data_size.saturating_add(1))
+        .read_to_end(&mut data_buf)
+        .await?;
 
     if data_buf.len() != data_size {
         return Err(anyhow::anyhow!(
@@ -91,18 +74,15 @@ pub(super) async fn read_cache_file(path: &PathBuf) -> anyhow::Result<(FileEntry
 }
 
 /// Read only the header from a cache file.
-pub(super) async fn read_cache_file_header(path: &PathBuf) -> anyhow::Result<FileEntryHeader> {
-    let metadata = fs::metadata(path).await?;
-    if metadata.len() < MIN_FILE_SIZE {
-        return Err(anyhow::anyhow!(
-            "File {} is too small ({} bytes) to be a valid cache file",
-            path.display(),
-            metadata.len()
-        ));
-    }
-
+pub(super) async fn read_cache_file_header(path: &Path) -> anyhow::Result<FileEntryHeader> {
     let mut file = tokio::fs::File::open(path).await?;
+    validated_header(path, &mut file).await
+}
 
+async fn validated_header(
+    path: &Path,
+    file: &mut tokio::fs::File,
+) -> anyhow::Result<FileEntryHeader> {
     let mut magic = [0u8; 4];
     file.read_exact(&mut magic).await?;
     if &magic != CACHE_FILE_MAGIC {
@@ -114,10 +94,15 @@ pub(super) async fn read_cache_file_header(path: &PathBuf) -> anyhow::Result<Fil
         ));
     }
 
-    let header_len = read_header_len(&mut file).await?;
-    let header = read_header(&mut file, header_len).await?;
+    let header_len = read_header_len(file).await?;
+    let header = read_header(file, header_len).await?;
     validate_cache_header(path, &header)?;
-    validate_cache_file_size(path, metadata.len(), header_len, header.data_size)?;
+    validate_cache_file_size(
+        path,
+        file.metadata().await?.len(),
+        header_len,
+        header.data_size,
+    )?;
     Ok(header)
 }
 
@@ -185,9 +170,7 @@ fn validate_cache_file_size(
 ) -> anyhow::Result<()> {
     let header_len = u64::try_from(header_len)
         .map_err(|_| anyhow::anyhow!("Header length overflow in {}", path.display()))?;
-    let expected_size = MIN_FILE_SIZE
-        .checked_add(header_len)
-        .and_then(|prefix_size| prefix_size.checked_add(data_size))
+    let expected_size = layout::file_size(header_len, data_size)
         .ok_or_else(|| anyhow::anyhow!("Cache file size overflow in {}", path.display()))?;
 
     anyhow::ensure!(
@@ -247,10 +230,6 @@ pub(super) fn system_time_to_millis(t: SystemTime) -> u64 {
         }
     };
     millis.try_into().unwrap_or(u64::MAX)
-}
-
-pub(super) const fn cache_entry_deadline_millis(inserted_at_millis: u64, ttl_secs: u64) -> u64 {
-    inserted_at_millis.saturating_add(ttl_secs.saturating_mul(1_000))
 }
 
 pub(super) fn system_time_from_millis(millis: u64) -> Option<SystemTime> {

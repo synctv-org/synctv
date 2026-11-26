@@ -1,6 +1,7 @@
 use super::*;
 use crate::manifest::{make_absolute, rewrite_uri_attribute_with_count};
-use crate::redirect::{REDIRECT_PRESERVE_HEADERS, send_with_redirect_validation};
+use crate::redirect::send_with_redirect_validation;
+use crate::redirect_header_policy::preserve_redirect_header;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -46,20 +47,20 @@ async fn start_request_close_listener()
 #[test]
 fn test_redirect_preserve_headers_includes_critical_headers() {
     assert!(
-        REDIRECT_PRESERVE_HEADERS.contains(&"referer"),
+        preserve_redirect_header("referer", false),
         "Referer must be preserved across redirects for provider auth"
     );
     assert!(
-        REDIRECT_PRESERVE_HEADERS.contains(&"user-agent"),
+        preserve_redirect_header("user-agent", false),
         "User-Agent must be preserved across redirects for provider auth"
     );
     assert!(
-        REDIRECT_PRESERVE_HEADERS.contains(&"range"),
+        preserve_redirect_header("range", false),
         "Range must be preserved across redirects for partial content"
     );
     for header in ["authorization", "cookie", "origin", "proxy-authorization"] {
         assert!(
-            REDIRECT_PRESERVE_HEADERS.contains(&header),
+            preserve_redirect_header(header, false),
             "{header} must participate in redirect scope handling"
         );
     }

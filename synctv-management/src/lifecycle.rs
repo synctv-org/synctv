@@ -1,4 +1,3 @@
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -6,11 +5,8 @@ use tokio::sync::{broadcast, watch};
 
 use crate::proto::{ShutdownMode as ProtoShutdownMode, StopServerEvent, StopServerStage};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ShutdownMode {
-    Graceful,
-    Force,
-}
+mod transition;
+pub use transition::{LifecycleStage, ShutdownMode};
 
 impl ShutdownMode {
     #[must_use]
@@ -20,18 +16,6 @@ impl ShutdownMode {
             Self::Force => ProtoShutdownMode::Force as i32,
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LifecycleStage {
-    Ready,
-    ShutdownRequested,
-    RuntimeDraining,
-    ConnectionDraining,
-    ComponentsShuttingDown,
-    Finalizing,
-    Completed,
-    Failed,
 }
 
 impl LifecycleStage {
@@ -80,9 +64,7 @@ pub struct LifecycleSubscription {
 }
 
 struct Inner {
-    next_sequence: AtomicU64,
     shutdown_tx: watch::Sender<Option<ShutdownMode>>,
-    current_shutdown_mode: RwLock<Option<ShutdownMode>>,
     event_tx: broadcast::Sender<LifecycleEvent>,
     latest_event: RwLock<LifecycleEvent>,
 }
@@ -113,9 +95,7 @@ impl ManagementLifecycleController {
         let (event_tx, _) = broadcast::channel(256);
         Self {
             inner: Arc::new(Inner {
-                next_sequence: AtomicU64::new(initial_event.sequence),
                 shutdown_tx,
-                current_shutdown_mode: RwLock::new(None),
                 event_tx,
                 latest_event: RwLock::new(initial_event),
             }),
@@ -129,28 +109,34 @@ impl ManagementLifecycleController {
 
     #[must_use]
     pub fn current_shutdown_mode(&self) -> Option<ShutdownMode> {
-        *read_lifecycle_lock(&self.inner.current_shutdown_mode, "current_shutdown_mode")
+        *self.inner.shutdown_tx.borrow()
     }
 
     #[must_use]
     pub fn subscribe(&self) -> LifecycleSubscription {
+        let latest = read_lifecycle_lock(&self.inner.latest_event, "latest_event");
         LifecycleSubscription {
-            snapshot: self.latest_event(),
+            snapshot: latest.clone(),
             receiver: self.inner.event_tx.subscribe(),
         }
     }
 
     pub fn request_shutdown(&self, requested_mode: ShutdownMode) -> LifecycleEvent {
-        let effective_mode = self.merge_shutdown_mode(requested_mode);
+        let mut latest = write_lifecycle_lock(&self.inner.latest_event, "latest_event");
+        let current = self.current_shutdown_mode();
+        let effective_mode = transition::merge(current, requested_mode);
+        if current != Some(effective_mode) {
+            self.inner.shutdown_tx.send_replace(Some(effective_mode));
+        }
         let message = match effective_mode {
             ShutdownMode::Graceful => "shutdown requested".to_string(),
             ShutdownMode::Force => "force shutdown requested".to_string(),
         };
         self.publish(
+            &mut latest,
             LifecycleStage::ShutdownRequested,
             effective_mode,
             message,
-            false,
         )
     }
 
@@ -158,7 +144,6 @@ impl ManagementLifecycleController {
         self.publish_current(
             LifecycleStage::RuntimeDraining,
             "runtime shutdown in progress".to_string(),
-            false,
         );
     }
 
@@ -166,7 +151,6 @@ impl ManagementLifecycleController {
         self.publish_current(
             LifecycleStage::ConnectionDraining,
             "connection draining in progress".to_string(),
-            false,
         );
     }
 
@@ -174,7 +158,6 @@ impl ManagementLifecycleController {
         self.publish_current(
             LifecycleStage::ComponentsShuttingDown,
             "component shutdown in progress".to_string(),
-            false,
         );
     }
 
@@ -182,66 +165,34 @@ impl ManagementLifecycleController {
         self.publish_current(
             LifecycleStage::Finalizing,
             "final shutdown tasks in progress".to_string(),
-            false,
         );
     }
 
     pub fn publish_completed(&self) {
-        self.publish_current(
-            LifecycleStage::Completed,
-            "shutdown complete".to_string(),
-            true,
-        );
+        self.publish_current(LifecycleStage::Completed, "shutdown complete".to_string());
     }
 
     pub fn publish_failure(&self, message: impl Into<String>) {
-        self.publish_current(LifecycleStage::Failed, message.into(), true);
-    }
-
-    #[must_use]
-    fn latest_event(&self) -> LifecycleEvent {
-        read_lifecycle_lock(&self.inner.latest_event, "latest_event").clone()
-    }
-
-    fn merge_shutdown_mode(&self, requested_mode: ShutdownMode) -> ShutdownMode {
-        let current_mode =
-            *read_lifecycle_lock(&self.inner.current_shutdown_mode, "current_shutdown_mode");
-        let effective_mode = match (current_mode, requested_mode) {
-            (Some(ShutdownMode::Force), _)
-            | (Some(ShutdownMode::Graceful), ShutdownMode::Force) => ShutdownMode::Force,
-            (Some(existing), _) => existing,
-            (None, mode) => mode,
-        };
-        if current_mode != Some(effective_mode) {
-            *write_lifecycle_lock(&self.inner.current_shutdown_mode, "current_shutdown_mode") =
-                Some(effective_mode);
-            if self.inner.shutdown_tx.send(Some(effective_mode)).is_err() {
-                tracing::debug!(
-                    mode = ?effective_mode,
-                    "management shutdown mode updated with no active watchers"
-                );
-            }
-        }
-        effective_mode
+        self.publish_current(LifecycleStage::Failed, message.into());
     }
 
     fn publish(
         &self,
+        latest: &mut LifecycleEvent,
         stage: LifecycleStage,
         mode: ShutdownMode,
         message: String,
-        terminal: bool,
     ) -> LifecycleEvent {
-        let sequence = self.inner.next_sequence.fetch_add(1, Ordering::Relaxed) + 1;
+        let sequence = latest.sequence.saturating_add(1);
         let event = LifecycleEvent {
             sequence,
             stage,
             mode,
             message,
-            terminal,
+            terminal: stage.terminal(),
             unix_millis: unix_millis_now(),
         };
-        *write_lifecycle_lock(&self.inner.latest_event, "latest_event") = event.clone();
+        *latest = event.clone();
         if self.inner.event_tx.send(event.clone()).is_err() {
             tracing::debug!(
                 sequence = event.sequence,
@@ -252,16 +203,12 @@ impl ManagementLifecycleController {
         event
     }
 
-    fn publish_current(
-        &self,
-        stage: LifecycleStage,
-        message: String,
-        terminal: bool,
-    ) -> LifecycleEvent {
+    fn publish_current(&self, stage: LifecycleStage, message: String) -> LifecycleEvent {
+        let mut latest = write_lifecycle_lock(&self.inner.latest_event, "latest_event");
         let mode = self
             .current_shutdown_mode()
             .unwrap_or(ShutdownMode::Graceful);
-        self.publish(stage, mode, message, terminal)
+        self.publish(&mut latest, stage, mode, message)
     }
 }
 
@@ -317,6 +264,15 @@ mod tests {
         let force = controller.request_shutdown(ShutdownMode::Force);
         assert_eq!(force.stage, LifecycleStage::ShutdownRequested);
         assert_eq!(force.mode, ShutdownMode::Force);
+        assert_eq!(
+            controller.request_shutdown(ShutdownMode::Graceful).mode,
+            ShutdownMode::Force
+        );
+        assert_eq!(
+            *controller.shutdown_receiver().borrow(),
+            Some(ShutdownMode::Force)
+        );
+        assert_eq!(controller.subscribe().snapshot.mode, ShutdownMode::Force);
         assert_eq!(
             controller.current_shutdown_mode(),
             Some(ShutdownMode::Force)

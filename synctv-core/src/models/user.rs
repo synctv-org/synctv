@@ -5,44 +5,10 @@ use std::str::FromStr;
 use super::id::UserId;
 use super::query::SortDirection;
 
-/// Global user role.
-///
-/// This represents the user's permission level at the GLOBAL level,
-/// independent of their account status.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum UserRole {
-    /// Root user (super administrator)
-    /// - Can manage all admins
-    /// - Can access all rooms
-    /// - Can modify global settings
-    Root,
-
-    /// Platform administrator
-    /// - Can manage regular users (approve, ban, delete)
-    /// - Can manage rooms (approve, ban, delete)
-    /// - Cannot manage Root users
-    Admin,
-
-    /// Regular user
-    /// - Can create rooms (subject to global config)
-    /// - Can join rooms
-    User,
-}
+mod access;
+pub use access::{UserRole, UserStatus};
 
 impl UserRole {
-    /// Check if this role can manage another role
-    #[must_use]
-    pub const fn can_manage(&self, other: &Self) -> bool {
-        matches!((self, other), (Self::Root, _) | (Self::Admin, Self::User))
-    }
-
-    /// Check if this role is admin or above
-    #[must_use]
-    pub const fn is_admin_or_above(&self) -> bool {
-        matches!(self, Self::Root | Self::Admin)
-    }
-
     #[must_use]
     pub const fn as_str(&self) -> &'static str {
         match self {
@@ -95,20 +61,6 @@ impl TryFrom<i32> for UserRole {
     }
 }
 
-/// Effective account status.
-///
-/// This is not stored on `users`; it is derived from active records in
-/// `user_bans`. Registration approval/rejection belongs to
-/// `user_registration_requests`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-#[repr(i16)]
-pub enum UserStatus {
-    #[default]
-    Active = 1,
-    Banned = 2,
-}
-
 impl UserStatus {
     #[must_use]
     pub const fn as_str(&self) -> &'static str {
@@ -116,31 +68,6 @@ impl UserStatus {
             Self::Active => "active",
             Self::Banned => "banned",
         }
-    }
-
-    #[must_use]
-    pub const fn is_active(&self) -> bool {
-        matches!(self, Self::Active)
-    }
-
-    #[must_use]
-    pub const fn is_banned(&self) -> bool {
-        matches!(self, Self::Banned)
-    }
-
-    #[must_use]
-    pub const fn can_login(&self) -> bool {
-        self.is_active()
-    }
-
-    #[must_use]
-    pub const fn can_create_room(&self) -> bool {
-        self.is_active()
-    }
-
-    #[must_use]
-    pub const fn can_join_room(&self) -> bool {
-        self.is_active()
     }
 }
 
@@ -377,26 +304,22 @@ impl User {
     /// Check if user can login (checks status, not role)
     #[must_use]
     pub const fn can_login(&self) -> bool {
-        self.deleted_at.is_none() && !self.is_banned && self.status.is_active()
+        self.status
+            .permits_session(self.is_banned, self.is_deleted())
     }
 
     /// Check if user can create rooms (checks both role and status)
     #[must_use]
     pub const fn can_create_room(&self, allow_user: bool) -> bool {
-        if self.deleted_at.is_some() || self.is_banned || !self.status.is_active() {
-            return false;
-        }
-
-        match self.role {
-            UserRole::Root | UserRole::Admin => true,
-            UserRole::User => allow_user,
-        }
+        self.status
+            .permits_room_creation(self.is_banned, self.is_deleted(), self.role, allow_user)
     }
 
     /// Check if user can join rooms (checks status)
     #[must_use]
     pub const fn can_join_room(&self) -> bool {
-        self.deleted_at.is_none() && !self.is_banned && self.status.is_active()
+        self.status
+            .permits_session(self.is_banned, self.is_deleted())
     }
 
     /// Check if user can unbind an OAuth2 provider.

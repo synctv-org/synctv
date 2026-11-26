@@ -7,31 +7,16 @@ use crate::{
     service::RoomService,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ClientResourceAvailability {
-    Available,
-    CreatorInactive,
-}
-
-impl ClientResourceAvailability {
-    #[must_use]
-    pub const fn is_available(self) -> bool {
-        matches!(self, Self::Available)
-    }
-}
+mod availability;
+pub use availability::ClientResourceAvailability;
+use availability::GuestRefusal;
 
 impl RoomService {
     fn room_client_availability(
         room: &Room,
         active_creators: &HashSet<UserId>,
     ) -> ClientResourceAvailability {
-        if room.is_banned {
-            ClientResourceAvailability::CreatorInactive
-        } else if active_creators.contains(&room.created_by) {
-            ClientResourceAvailability::Available
-        } else {
-            ClientResourceAvailability::CreatorInactive
-        }
+        availability::classify(room.is_banned, active_creators.contains(&room.created_by))
     }
 
     async fn load_active_creators<'a, I>(&self, creator_ids: I) -> Result<HashSet<UserId>>
@@ -54,7 +39,7 @@ impl RoomService {
             .get_users_by_ids(&unique_ids)
             .await?
             .into_iter()
-            .filter(|user| user.status.is_active() && !user.is_banned)
+            .filter(crate::models::User::can_login)
             .map(|user| user.id)
             .collect())
     }
@@ -93,7 +78,7 @@ impl RoomService {
 
         Ok(creators
             .into_iter()
-            .filter(|user| user.status.is_active() && !user.is_banned)
+            .filter(crate::models::User::can_login)
             .map(|user| user.id)
             .collect())
     }
@@ -110,7 +95,7 @@ impl RoomService {
 
         let creator = self.user_service.get_user(&room.created_by).await;
         match creator {
-            Ok(user) if user.status.is_active() && !user.is_banned => Ok(()),
+            Ok(user) if user.can_login() => Ok(()),
             Ok(_) | Err(Error::NotFound(_)) => Err(Error::Authorization(
                 "Room is unavailable because its creator is not active".to_string(),
             )),
@@ -151,21 +136,19 @@ impl RoomService {
     }
 
     pub async fn ensure_guest_room_available(&self, room: &Room) -> Result<()> {
-        if !room.is_public {
-            return Err(Error::Authorization(
-                "This room is not available to guests".to_string(),
-            ));
-        }
-        if room.is_banned {
-            return Err(Error::Authorization(
-                "This room has been banned".to_string(),
-            ));
-        }
-        if room.status.is_closed() {
-            return Err(Error::Authorization(
-                "This room is closed and not accepting new connections".to_string(),
-            ));
-        }
+        availability::check_guest(room.is_public, room.is_banned, room.status.is_closed())
+            .map_err(|reason| {
+                Error::Authorization(
+                    match reason {
+                        GuestRefusal::Private => "This room is not available to guests",
+                        GuestRefusal::Banned => "This room has been banned",
+                        GuestRefusal::Closed => {
+                            "This room is closed and not accepting new connections"
+                        }
+                    }
+                    .to_string(),
+                )
+            })?;
         if !self.room_availability(room).await?.is_available() {
             return Err(Error::Authorization(
                 "This room is currently unavailable".to_string(),

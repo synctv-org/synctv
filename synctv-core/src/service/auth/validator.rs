@@ -3,6 +3,8 @@
 //! This module provides the shared token validation primitives used by
 //! request entrypoints.
 
+mod bearer;
+
 use super::{Claims, jwt::JwtService};
 use crate::{Error, Result};
 use std::sync::Arc;
@@ -27,13 +29,12 @@ impl JwtValidator {
     ///
     /// Uses case-insensitive comparison per RFC 7235 (auth scheme is case-insensitive).
     pub fn extract_bearer_token(auth_value: &str) -> Result<String> {
-        if auth_value.len() <= 7 || !auth_value[..7].eq_ignore_ascii_case("Bearer ") {
-            return Err(Error::Authentication(
-                "Authorization header must start with 'Bearer '".to_string(),
-            ));
-        }
-
-        let token = auth_value[7..].trim();
+        let token = bearer::body_offset(auth_value.as_bytes())
+            .and_then(|offset| auth_value.get(offset..))
+            .ok_or_else(|| {
+                Error::Authentication("Authorization header must start with 'Bearer '".to_string())
+            })?
+            .trim();
         if token.is_empty() {
             return Err(Error::Authentication(
                 "Authorization bearer token cannot be empty".to_string(),
@@ -126,6 +127,7 @@ mod tests {
         );
         assert_eq!(token, "def456");
 
+        assert!(JwtValidator::extract_bearer_token("Bearer界abc").is_err());
         let result = JwtValidator::extract_bearer_token("Basic abc123");
         assert!(matches!(result, Err(Error::Authentication(_))));
 

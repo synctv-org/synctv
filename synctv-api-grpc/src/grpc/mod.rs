@@ -224,74 +224,10 @@ const fn should_register_email_service(email_available: bool, email_token_availa
     email_available && email_token_available
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct GrpcHealthRegistrationState {
-    auth_registered: bool,
-    user_registered: bool,
-    room_registered: bool,
-    public_registered: bool,
-    admin_registered: bool,
-    email_registered: bool,
-    notification_registered: bool,
-    oauth2_registered: bool,
-    provider_services_registered: bool,
-    cluster_service_registered: bool,
-    server_state_registered: bool,
-    realtime_presence_registered: bool,
-    proxy_slice_cache_registered: bool,
-    livestream_relay_registered: bool,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct GrpcServiceRegistrationPlan {
-    reflection_enabled: bool,
-    health_state: GrpcHealthRegistrationState,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct GrpcOptionalRegistrations {
-    email_registered: bool,
-    notification_registered: bool,
-    oauth2_registered: bool,
-    provider_services_registered: bool,
-    cluster_service_registered: bool,
-    server_state_registered: bool,
-    realtime_presence_registered: bool,
-    proxy_slice_cache_registered: bool,
-    livestream_relay_registered: bool,
-}
-
-const fn grpc_service_registration_plan(
-    runtime_settings: &synctv_api_common::ApiRuntimeSettings,
-    expose_cluster_services: bool,
-    optional: GrpcOptionalRegistrations,
-) -> GrpcServiceRegistrationPlan {
-    let expose_public_services = !expose_cluster_services;
-    GrpcServiceRegistrationPlan {
-        reflection_enabled: expose_public_services && runtime_settings.server.enable_reflection,
-        health_state: GrpcHealthRegistrationState {
-            auth_registered: expose_public_services,
-            user_registered: expose_public_services,
-            room_registered: expose_public_services,
-            public_registered: expose_public_services,
-            admin_registered: expose_public_services,
-            email_registered: expose_public_services && optional.email_registered,
-            notification_registered: expose_public_services && optional.notification_registered,
-            oauth2_registered: expose_public_services && optional.oauth2_registered,
-            provider_services_registered: expose_public_services
-                && optional.provider_services_registered,
-            cluster_service_registered: expose_cluster_services
-                && optional.cluster_service_registered,
-            server_state_registered: expose_cluster_services && optional.server_state_registered,
-            realtime_presence_registered: expose_cluster_services
-                && optional.realtime_presence_registered,
-            proxy_slice_cache_registered: expose_cluster_services
-                && optional.proxy_slice_cache_registered,
-            livestream_relay_registered: expose_cluster_services
-                && optional.livestream_relay_registered,
-        },
-    }
-}
+mod registration;
+use registration::{
+    GrpcHealthRegistrationState, GrpcOptionalRegistrations, grpc_service_registration_plan,
+};
 
 fn relay_cancellation_token(
     mut shutdown_rx: Option<tokio::sync::watch::Receiver<bool>>,
@@ -699,19 +635,11 @@ fn validate_cluster_grpc_runtime_requirements(
     runtime_settings: &synctv_api_common::ApiRuntimeSettings,
     node_registry_available: bool,
 ) -> anyhow::Result<()> {
-    if runtime_settings.cluster_runtime_enabled() && runtime_settings.cluster.secret.is_empty() {
-        return Err(anyhow::anyhow!(
-            "cluster.enabled=true requires cluster.secret before starting the gRPC server; refusing to start with unauthenticated cluster endpoints"
-        ));
-    }
-
-    if runtime_settings.cluster_runtime_enabled() && !node_registry_available {
-        return Err(anyhow::anyhow!(
-            "cluster.enabled=true requires NodeRegistry before starting the gRPC server; refusing to start with cluster gRPC disabled"
-        ));
-    }
-
-    Ok(())
+    registration::check_cluster(runtime_settings.cluster_runtime_enabled(), !runtime_settings.cluster.secret.is_empty(), node_registry_available)
+        .map_err(|error| match error {
+            registration::ClusterSetupError::Secret => anyhow::anyhow!("cluster.enabled=true requires cluster.secret before starting the gRPC server; refusing to start with unauthenticated cluster endpoints"),
+            registration::ClusterSetupError::Registry => anyhow::anyhow!("cluster.enabled=true requires NodeRegistry before starting the gRPC server; refusing to start with cluster gRPC disabled"),
+        })
 }
 
 // Use synctv_proto for all server traits and message types (single source of truth)
@@ -1336,7 +1264,7 @@ async fn build_axum_router_with_health(
     let cluster_service_registered = expose_cluster_services
         && should_register_cluster_grpc_service(runtime_settings, node_registry.is_some());
     let grpc_registration_plan = grpc_service_registration_plan(
-        runtime_settings,
+        runtime_settings.server.enable_reflection,
         expose_cluster_services,
         GrpcOptionalRegistrations {
             email_registered: email_service_registered,
@@ -3737,7 +3665,7 @@ mod tests {
         config.server.enable_reflection = true;
 
         let plan = grpc_service_registration_plan(
-            &config,
+            config.server.enable_reflection,
             false,
             super::GrpcOptionalRegistrations {
                 email_registered: true,
@@ -3775,7 +3703,7 @@ mod tests {
         config.server.enable_reflection = true;
 
         let plan = grpc_service_registration_plan(
-            &config,
+            config.server.enable_reflection,
             true,
             super::GrpcOptionalRegistrations {
                 email_registered: true,

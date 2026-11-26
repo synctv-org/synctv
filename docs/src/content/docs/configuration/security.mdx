@@ -62,6 +62,8 @@ SYNCTV_JWT_SECRET_FILE=/run/secrets/jwt_secret
 | `jwt.guest_token_duration_hours` | `4` | Guest token 有效期 |
 | `jwt.clock_skew_leeway_secs` | `60` | 时钟偏移容忍 |
 
+SyncTV 从自定义令牌的签名载荷中检查到期时间，推流密钥也遵循这项规则。永久推流密钥可以省略到期时间。推流密钥还有独立的生命周期检查，到期时间过后即失效。
+
 公网部署保持较短 access token，通过 refresh token 续期。服务器时间漂移应使用 NTP 修正，不靠调大 clock skew 掩盖。
 
 ## `security.credential_encryption_key`
@@ -246,7 +248,7 @@ security:
 - `enabled=false`：默认值，关闭 SSRF 防护。
 - `enabled=true`：启用 SSRF 防护，阻断本地/内网/metadata 目标。
 - `allow_private_network_targets=false`：启用 SSRF 防护时，保持本地/内网/metadata 目标阻断。
-- `allowed_hosts`：按主机名放行已知内部服务。
+- `allowed_hosts` 中的主机名可以解析到 RFC 1918 私有 IPv4 地址或 IPv6 唯一本地地址（`fc00::/7`）。其他受限地址需要显式配置 IP 放行策略。
 - `allowed_ip_ranges`：按 IP 或 CIDR 放行已知内部网段或单个服务。
 - `allow_private_network_targets=true`：显式放开所有 private/non-global 目标，仅适合可信内网部署。
 

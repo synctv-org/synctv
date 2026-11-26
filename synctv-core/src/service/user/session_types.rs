@@ -102,15 +102,7 @@ pub struct OpaqueLoginStartChallenge {
     pub credential_response: bytes::Bytes,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AuthFactorMethod {
-    Password,
-    WebAuthn,
-    Totp,
-    RecoveryCode,
-    Email,
-}
+pub use super::factors::AuthFactorMethod;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MfaSession {

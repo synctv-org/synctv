@@ -29,6 +29,26 @@ env:
   SQLX_OFFLINE: true
 
 jobs:
+  verify:
+    name: Verus Proofs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      VERUS_VERSION: 0.2026.11.22.1ce6a59
+      VERUS_SHA256: c955d5958877f4f907cce80aa996d4239a481984829d82e325938c7bf242b0db
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Verus and its Rust toolchain
+        working-directory: ${{ runner.temp }}
+        run: |
+          rustup toolchain install 1.100.0 --profile minimal
+          curl --fail --location --retry 3 -o verus.zip \
+            "https://github.com/verus-lang/verus/releases/download/release/${VERUS_VERSION}/verus-${VERUS_VERSION}-x86-linux.zip"
+          echo "${VERUS_SHA256}  verus.zip" | sha256sum --check
+          unzip -q verus.zip
+      - name: Verify backend contracts
+        run: make verify VERUS="$RUNNER_TEMP/verus-x86-linux/verus"
+
   # Check code formatting
   format:
     name: Format Check

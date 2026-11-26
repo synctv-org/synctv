@@ -25,6 +25,8 @@ use crate::{
 mod audio_processing;
 mod database;
 mod media_processing;
+mod part_count;
+mod read_bounds;
 mod read_seek;
 mod routing;
 mod s3;
@@ -246,7 +248,7 @@ pub(super) fn create_file_upload_plan(
         )));
     }
     let part_size_bytes = upload_session_part_size();
-    let part_count = (size_bytes + part_size_bytes - 1) / part_size_bytes;
+    let part_count = part_count::upload_part_count(size_bytes, part_size_bytes);
     let part_count = i32::try_from(part_count)
         .map_err(|_| Error::InvalidInput("file upload has too many parts".to_string()))?;
     let mut parts = Vec::with_capacity(usize::try_from(part_count).unwrap_or(0));
@@ -381,35 +383,29 @@ pub(super) fn validate_upload_range(
     expected_size: i64,
     part_size_bytes: i64,
 ) -> Result<i32> {
-    if range.start < 0
-        || range.end_inclusive < range.start
-        || range.total_size != expected_size
-        || range.end_inclusive >= range.total_size
-        || part_size_bytes <= 0
-    {
-        return Err(Error::InvalidInput(
-            "file upload part range is invalid".to_string(),
-        ));
-    }
-    if range.size_bytes() != payload_len_i64(data_len)? {
-        return Err(Error::InvalidInput(
-            "file upload part range does not match payload size".to_string(),
-        ));
-    }
-    if range.start % part_size_bytes != 0 {
-        return Err(Error::InvalidInput(
-            "file upload part range must start at a part boundary".to_string(),
-        ));
-    }
-    let final_byte = range.total_size - 1;
-    let is_final_part = range.end_inclusive == final_byte;
-    if !is_final_part && range.size_bytes() != part_size_bytes {
-        return Err(Error::InvalidInput(
-            "file upload part size must match the upload session part size".to_string(),
-        ));
-    }
-    i32::try_from(range.start / part_size_bytes)
-        .map_err(|_| Error::InvalidInput("file upload part index is too large".to_string()))
+    use part_count::RangeError;
+    part_count::upload_index(
+        range.start,
+        range.end_inclusive,
+        range.total_size,
+        expected_size,
+        part_size_bytes,
+        data_len,
+    )
+    .map_err(|error| {
+        Error::InvalidInput(
+            match error {
+                RangeError::Bounds => "file upload part range is invalid",
+                RangeError::Payload => "file upload part range does not match payload size",
+                RangeError::Alignment => "file upload part range must start at a part boundary",
+                RangeError::Width => {
+                    "file upload part size must match the upload session part size"
+                }
+                RangeError::Index => "file upload part index is too large",
+            }
+            .to_string(),
+        )
+    })
 }
 
 pub(super) fn upload_session_parts_progress(

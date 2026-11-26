@@ -2,10 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::id::{RoomId, UserId};
-use super::permission::{
-    Role as RoomRole, RoomAdminPermissionBits, RoomGuestPermissionBits, RoomMemberPermissionBits,
-    RoomPermission, RoomPermissionSet,
-};
+use super::permission::{Role as RoomRole, RoomPermission, RoomPermissionSet};
 use super::query::SortDirection;
 use super::room::RoomStatus;
 
@@ -181,27 +178,13 @@ impl RoomMember {
         &self,
         role_default: RoomPermissionSet,
     ) -> RoomPermissionSet {
-        match self.role {
-            RoomRole::Creator => RoomPermissionSet::all(),
-            RoomRole::Admin => {
-                let mut result = role_default.0;
-                result |= RoomAdminPermissionBits::to_permissions(self.admin_added_permissions);
-                result &= !RoomAdminPermissionBits::to_permissions(self.admin_removed_permissions);
-                RoomPermissionSet(result)
-            }
-            RoomRole::Member => {
-                let mut result = role_default.0;
-                result |= RoomMemberPermissionBits::to_permissions(self.added_permissions);
-                result &= !RoomMemberPermissionBits::to_permissions(self.removed_permissions);
-                RoomPermissionSet(result)
-            }
-            RoomRole::Guest => {
-                let mut result = role_default.0 & RoomPermissionSet::guest_assignable().0;
-                result |= RoomGuestPermissionBits::to_permissions(self.added_permissions);
-                result &= !RoomGuestPermissionBits::to_permissions(self.removed_permissions);
-                RoomPermissionSet(result)
-            }
-        }
+        RoomPermissionSet(self.role.effective_bits(
+            role_default.0,
+            self.added_permissions,
+            self.removed_permissions,
+            self.admin_added_permissions,
+            self.admin_removed_permissions,
+        ))
     }
 
     #[must_use]
@@ -233,27 +216,22 @@ pub struct RoomMemberWithUser {
 impl RoomMemberWithUser {
     #[must_use]
     pub fn effective_permissions(&self, role_default: RoomPermissionSet) -> RoomPermissionSet {
-        let member = RoomMember {
-            room_id: self.room_id,
-            user_id: self.user_id,
-            role: self.role,
-            added_permissions: self.added_permissions,
-            removed_permissions: self.removed_permissions,
-            admin_added_permissions: self.admin_added_permissions,
-            admin_removed_permissions: self.admin_removed_permissions,
-            remark_name: self.remark_name.clone(),
-            display_tag: self.display_tag.clone(),
-            joined_at: self.joined_at,
-            version: 0,
-        };
-
-        member.effective_permissions(role_default)
+        RoomPermissionSet(self.role.effective_bits(
+            role_default.0,
+            self.added_permissions,
+            self.removed_permissions,
+            self.admin_added_permissions,
+            self.admin_removed_permissions,
+        ))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::{
+        RoomAdminPermissionBits, RoomGuestPermissionBits, RoomMemberPermissionBits,
+    };
 
     fn test_member(role: RoomRole) -> RoomMember {
         RoomMember::new(RoomId::expect_positive(1), UserId::expect_positive(1), role)

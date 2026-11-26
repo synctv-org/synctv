@@ -58,6 +58,7 @@ use crate::{
     Error, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile, cache::KeyBuilder,
 };
 
+mod lockout;
 mod tracker;
 use tracker::run_with_control;
 pub use tracker::{AttemptTracker, InMemoryAttemptTracker, RedisAttemptTracker};
@@ -145,10 +146,6 @@ const IP_THRESHOLD: u64 = 20;
 const IP_LOCKOUT_SECS: u64 = 600;
 /// TTL for the per-IP failure counter (10 minutes).
 pub const IP_ATTEMPTS_TTL_SECS: u64 = 600;
-
-fn nonnegative_elapsed_secs(now: i64, last_failure_at: i64) -> u64 {
-    u64::try_from(now.saturating_sub(last_failure_at)).unwrap_or(0)
-}
 
 /// Configuration for brute-force protection thresholds and durations.
 ///
@@ -461,15 +458,12 @@ impl BruteForceProtection {
     ///
     /// Returns `Some(seconds)` if locked out, `None` if allowed.
     const fn lockout_duration_with_config(&self, attempts: u64) -> Option<u64> {
-        if attempts >= self.config.tier3_threshold {
-            Some(self.config.tier3_lockout_secs)
-        } else if attempts >= self.config.tier2_threshold {
-            Some(self.config.tier2_lockout_secs)
-        } else if attempts >= self.config.tier1_threshold {
-            Some(self.config.tier1_lockout_secs)
-        } else {
-            None
-        }
+        lockout::duration(
+            attempts,
+            (self.config.tier1_threshold, self.config.tier1_lockout_secs),
+            (self.config.tier2_threshold, self.config.tier2_lockout_secs),
+            (self.config.tier3_threshold, self.config.tier3_lockout_secs),
+        )
     }
 
     /// Test-only accessor for the username tracker.
@@ -542,9 +536,8 @@ impl BruteForceProtection {
         let lockout_secs = self.lockout_duration_with_config(attempts);
         if let Some(lockout_secs) = lockout_secs {
             let now = crate::SystemClock.now().timestamp();
-            let elapsed = nonnegative_elapsed_secs(now, last_failure_at);
-            if elapsed < lockout_secs {
-                let remaining = lockout_secs - elapsed;
+            let remaining = lockout::remaining(now, last_failure_at, lockout_secs);
+            if remaining > 0 {
                 tracing::warn!(
                     subject_key = %subject_key,
                     attempts = attempts,
@@ -574,9 +567,9 @@ impl BruteForceProtection {
                 run_with_control(control, self.ip_tracker.get_attempts(&ip_key)).await?;
             if ip_attempts >= self.config.ip_threshold {
                 let now = crate::SystemClock.now().timestamp();
-                let elapsed = nonnegative_elapsed_secs(now, ip_last_failure_at);
-                if elapsed < self.config.ip_lockout_secs {
-                    let remaining = self.config.ip_lockout_secs - elapsed;
+                let remaining =
+                    lockout::remaining(now, ip_last_failure_at, self.config.ip_lockout_secs);
+                if remaining > 0 {
                     tracing::warn!(
                         ip = %ip_addr,
                         attempts = ip_attempts,

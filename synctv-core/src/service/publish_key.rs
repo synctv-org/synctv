@@ -19,7 +19,10 @@ use crate::{
 };
 
 mod jti;
+mod lifecycle;
 pub use jti::{InMemoryJtiStore, JtiStore, RedisJtiStore};
+pub use lifecycle::PublishKeyType;
+use lifecycle::{LifetimeError, Phase};
 
 /// Generated publish key for RTMP streaming
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,14 +41,6 @@ pub struct PublishKey {
     pub key_type: PublishKeyType,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PublishKeyType {
-    SingleUse,
-    Expiring,
-    Permanent,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PublishKeyOptions {
     pub key_type: PublishKeyType,
@@ -54,30 +49,27 @@ pub struct PublishKeyOptions {
 
 impl PublishKeyOptions {
     fn validate(self, now: i64) -> Result<Self> {
-        match (self.key_type, self.expires_at) {
-            (PublishKeyType::SingleUse | PublishKeyType::Expiring, Some(expires_at))
-                if expires_at > now =>
-            {
-                Ok(self)
-            }
-            (PublishKeyType::SingleUse | PublishKeyType::Expiring, Some(_)) => Err(
-                Error::InvalidInput("publish key expiration must be in the future".to_string()),
-            ),
-            (PublishKeyType::SingleUse | PublishKeyType::Expiring, None) => {
-                Err(Error::InvalidInput(format!(
-                    "{} publish keys require an expiration time",
-                    match self.key_type {
-                        PublishKeyType::SingleUse => "single-use",
-                        PublishKeyType::Expiring => "expiring",
-                        PublishKeyType::Permanent => unreachable!(),
+        lifecycle::validate(self.key_type, self.expires_at, now, Phase::Issue).map_err(
+            |error| {
+                Error::InvalidInput(match error {
+                    LifetimeError::Expired => {
+                        "publish key expiration must be in the future".to_string()
                     }
-                )))
-            }
-            (PublishKeyType::Permanent, None) => Ok(self),
-            (PublishKeyType::Permanent, Some(_)) => Err(Error::InvalidInput(
-                "permanent publish keys must not have an expiration time".to_string(),
-            )),
-        }
+                    LifetimeError::RequiresExpiration => format!(
+                        "{} publish keys require an expiration time",
+                        if self.key_type == PublishKeyType::SingleUse {
+                            "single-use"
+                        } else {
+                            "expiring"
+                        }
+                    ),
+                    LifetimeError::UnexpectedExpiration => {
+                        "permanent publish keys must not have an expiration time".to_string()
+                    }
+                })
+            },
+        )?;
+        Ok(self)
     }
 }
 
@@ -196,19 +188,19 @@ impl PublishKeyService {
 
         let now = self.clock.now().timestamp();
 
-        match (claims.key_type, claims.exp) {
-            (PublishKeyType::SingleUse | PublishKeyType::Expiring, Some(expires_at)) => {
-                if now > expires_at {
-                    return Err(Error::Authentication("Token has expired".to_string()));
-                }
-            }
-            (PublishKeyType::Permanent, None) => {}
-            _ => {
-                return Err(Error::Authentication(
-                    "Publish key lifecycle claims are invalid".to_string(),
-                ));
-            }
-        }
+        lifecycle::validate(claims.key_type, claims.exp, now, Phase::Authenticate).map_err(
+            |error| {
+                Error::Authentication(
+                    match error {
+                        LifetimeError::Expired => "Token has expired",
+                        LifetimeError::RequiresExpiration | LifetimeError::UnexpectedExpiration => {
+                            "Publish key lifecycle claims are invalid"
+                        }
+                    }
+                    .to_string(),
+                )
+            },
+        )?;
 
         if !claims.perm_manage_live_streams {
             return Err(Error::Authorization(
@@ -226,10 +218,7 @@ impl PublishKeyService {
         let expires_at = claims.exp.ok_or_else(|| {
             Error::Authentication("Single-use publish key has no expiration".to_string())
         })?;
-        let ttl_secs = (expires_at - self.clock.now().timestamp())
-            .max(0)
-            .cast_unsigned()
-            .saturating_add(300);
+        let ttl_secs = lifecycle::deduplication_ttl(expires_at, self.clock.now().timestamp());
         if !self.jti_store.try_claim(&claims.jti, ttl_secs).await? {
             return Err(Error::Authentication(
                 "Publish key has already been used (single-use token)".to_string(),

@@ -135,38 +135,8 @@ const DEFAULT_NON_GLOBAL_DENIED_RANGES: &[&str] = &[
     "fe80::/10",       // link-local
 ];
 
-/// Non-global ranges that a hostname allowlist entry still must not unlock.
-///
-/// A hostname allowlist is intended for controlled private services such as
-/// `alist.internal -> 10.0.8.10`. It should not turn DNS names into a shortcut
-/// to loopback, link-local, metadata, documentation, multicast, or reserved
-/// networks. Users can still opt into those explicitly with `allowed_ip_ranges`
-/// or `allow_private_network_targets`.
-const HOST_ALLOWLIST_DENIED_RANGES: &[&str] = &[
-    "0.0.0.0/8",       // current network
-    "100.64.0.0/10",   // carrier-grade NAT
-    "127.0.0.0/8",     // loopback
-    "169.254.0.0/16",  // link-local / cloud metadata
-    "192.0.0.0/24",    // IETF protocol assignments
-    "192.0.2.0/24",    // documentation
-    "192.88.99.0/24",  // 6to4 relay anycast
-    "198.18.0.0/15",   // benchmarking
-    "198.51.100.0/24", // documentation
-    "203.0.113.0/24",  // documentation
-    "224.0.0.0/4",     // IPv4 multicast
-    "240.0.0.0/4",     // reserved
-    "255.255.255.255/32",
-    "::/128",        // unspecified
-    "::1/128",       // loopback
-    "::ffff:0:0/96", // IPv4-mapped
-    "64:ff9b::/96",  // IPv4/IPv6 translation
-    "100::/64",      // discard-only
-    "2001::/32",     // Teredo
-    "2001:db8::/32", // documentation
-    "2002::/16",     // 6to4
-    "fe80::/10",     // link-local
-    "ff00::/8",      // IPv6 multicast
-];
+mod destination;
+use destination::IpAccess;
 
 /// Default denied hostnames.
 const DEFAULT_DENIED_HOSTS: &[&str] = &[
@@ -206,7 +176,6 @@ struct SsrfPolicy {
     deny_all: bool,
     allow_private_network_targets: bool,
     default_denied_ip_ranges: Vec<IpNet>,
-    host_allowlist_denied_ip_ranges: Vec<IpNet>,
     extra_allowed_ip_ranges: Vec<IpNet>,
     denied_hosts: HashSet<String>,
     allowed_hosts: HashSet<String>,
@@ -277,29 +246,29 @@ fn contains_ip(ranges: &[IpNet], ip: &IpAddr) -> bool {
 }
 
 impl SsrfPolicy {
+    fn ip_access(&self, ip: &IpAddr) -> IpAccess {
+        let exception =
+            self.allow_private_network_targets || contains_ip(&self.extra_allowed_ip_ranges, ip);
+        let restricted = !exception && contains_ip(&self.default_denied_ip_ranges, ip);
+        destination::classify(self.deny_all, exception, restricted)
+    }
+
     fn is_ip_allowed(&self, ip: &IpAddr) -> bool {
-        if self.deny_all {
-            return false;
-        }
-
-        if contains_ip(&self.extra_allowed_ip_ranges, ip) {
-            return true;
-        }
-
-        if !self.allow_private_network_targets && contains_ip(&self.default_denied_ip_ranges, ip) {
-            return false;
-        }
-
-        true
+        self.ip_access(ip) == IpAccess::Allowed
     }
 
     fn is_ip_allowed_for_host(&self, host: &str, ip: &IpAddr) -> bool {
-        if self.is_ip_allowed(ip) {
-            return true;
+        match self.ip_access(ip) {
+            IpAccess::Allowed => true,
+            IpAccess::Denied => false,
+            IpAccess::CheckHost => {
+                let private = match ip {
+                    IpAddr::V4(addr) => destination::private_v4(addr.to_bits()),
+                    IpAddr::V6(addr) => destination::private_v6(addr.to_bits()),
+                };
+                private && self.allowed_hosts.contains(&normalize_host(host))
+            }
         }
-
-        self.allowed_hosts.contains(&normalize_host(host))
-            && !contains_ip(&self.host_allowlist_denied_ip_ranges, ip)
     }
 
     fn is_host_blocked(&self, host: &str) -> bool {
@@ -634,7 +603,6 @@ impl SsrfGuardBuilder {
             deny_all: false,
             allow_private_network_targets: self.allow_private_network_targets,
             default_denied_ip_ranges,
-            host_allowlist_denied_ip_ranges: parse_ranges(HOST_ALLOWLIST_DENIED_RANGES)?,
             extra_allowed_ip_ranges,
             denied_hosts,
             allowed_hosts,
@@ -677,7 +645,6 @@ impl SsrfGuard {
             deny_all: true,
             allow_private_network_targets: false,
             default_denied_ip_ranges: Vec::new(),
-            host_allowlist_denied_ip_ranges: Vec::new(),
             extra_allowed_ip_ranges: Vec::new(),
             denied_hosts: HashSet::new(),
             allowed_hosts: HashSet::new(),
@@ -1005,6 +972,22 @@ mod tests {
         assert!(guard.is_ip_blocked(&ip));
         assert!(!guard.is_ip_blocked_for_host("internal.example", &ip));
         assert!(guard.is_ip_blocked_for_host("example.com", &ip));
+    }
+
+    #[test]
+    fn hostname_exception_only_unlocks_private_addresses_among_restricted_ipv6_ranges() -> TestResult
+    {
+        let guard = SsrfGuard::builder()
+            .extra_allowed_host("internal.example".to_string())
+            .build();
+        for (address, blocked) in [("fd00::1", false), ("64:ff9b:1::1", true), ("::1", true)] {
+            let ip = address.parse::<IpAddr>().map_err(|e| e.to_string())?;
+            assert_eq!(
+                guard.is_ip_blocked_for_host("internal.example", &ip),
+                blocked
+            );
+        }
+        Ok(())
     }
 
     #[test]

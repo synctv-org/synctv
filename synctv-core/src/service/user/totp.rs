@@ -13,7 +13,7 @@ use crate::{
     service::{AuthFactorMethod, AuthenticatedLogin, SensitiveVerificationOutcome, UserService},
 };
 
-const TOTP_PERIOD_SECONDS: i64 = 30;
+mod window;
 const TOTP_DIGITS: u32 = 6;
 const TOTP_SETUP_TTL: Duration = Duration::from_secs(600);
 const RECOVERY_CODE_COUNT: usize = 10;
@@ -423,10 +423,9 @@ fn verify_totp_at(
         return None;
     }
     let key = base32_decode(secret)?;
-    let current_step = timestamp.max(0) / TOTP_PERIOD_SECONDS;
-    [current_step, current_step - 1, current_step + 1]
+    window::candidates(timestamp)
         .into_iter()
-        .filter(|step| *step >= 0 && last_used_step.is_none_or(|last| *step > last))
+        .filter(|step| window::unused(*step, last_used_step))
         .find(|step| totp_code(&key, *step).is_some_and(|expected| expected == code))
 }
 

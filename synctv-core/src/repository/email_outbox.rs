@@ -473,13 +473,7 @@ fn row_to_job(row: EmailOutboxRow) -> Result<EmailOutboxJob> {
 }
 
 fn retry_delay_seconds(attempt: i32, id: &str) -> i32 {
-    let exponent = u32::try_from(attempt.clamp(1, 9) - 1).unwrap_or_default();
-    let base = 5u64.saturating_mul(2u64.saturating_pow(exponent));
-    let jitter = id
-        .bytes()
-        .fold(0u64, |accumulator, byte| accumulator + u64::from(byte))
-        % 5;
-    i32::try_from(base.saturating_add(jitter).min(900)).unwrap_or(900)
+    super::outbox_retry::email_delay(attempt, id.as_bytes())
 }
 
 #[cfg(test)]

@@ -7,8 +7,8 @@ use crate::{
     service::{TokenCredentialBinding, user::UserService},
 };
 
+use super::password_binding;
 use super::session_types::TWO_FACTOR_REQUIRED_MESSAGE;
-use super::{nonnegative_i64_to_u64, password_binding};
 
 impl UserService {
     /// Refresh token with rotation and replay protection.
@@ -88,14 +88,12 @@ impl UserService {
             let family_revoked_at = self
                 .token_blacklist
                 .get_family_revoked_at_checked(&family_key)
-                .await;
-            if let Some(revoked_at) = family_revoked_at?
-                && claims.iat <= revoked_at
-            {
+                .await?;
+            if crate::service::JwtService::family_revoked(claims.iat, family_revoked_at) {
                 tracing::warn!(
                     user_id = %user_id,
                     jti = old_jti,
-                    revoked_at = revoked_at,
+                    revoked_at = family_revoked_at,
                     token_iat = claims.iat,
                     "Refresh token rejected: token family revoked (possible token theft)"
                 );
@@ -104,7 +102,7 @@ impl UserService {
 
             let blacklist_key = self.key_builder.refresh_token_blacklist(old_jti);
             let now = crate::SystemClock.now().timestamp();
-            let remaining_ttl = nonnegative_i64_to_u64((claims.exp - now).max(60));
+            let remaining_ttl = self.jwt_service.revocation_ttl(claims.exp, now)?.max(60);
 
             let already_existed = self
                 .token_blacklist
@@ -118,10 +116,7 @@ impl UserService {
                     "Blacklisted refresh token JTI replayed - revoking token session"
                 );
 
-                let family_ttl = self
-                    .jwt_service
-                    .refresh_token_duration_seconds()
-                    .saturating_add(3600);
+                let family_ttl = self.jwt_service.refresh_family_retention()?;
                 self.token_blacklist
                     .set_family_revoked(&family_key, now, family_ttl)
                     .await?;
@@ -217,10 +212,7 @@ impl UserService {
         revoked_at: i64,
     ) -> Result<()> {
         let key = self.refresh_token_family_key(user_id, session_id);
-        let family_ttl = self
-            .jwt_service
-            .refresh_token_duration_seconds()
-            .saturating_add(3600);
+        let family_ttl = self.jwt_service.refresh_family_retention()?;
         self.token_blacklist
             .set_family_revoked(&key, revoked_at, family_ttl)
             .await

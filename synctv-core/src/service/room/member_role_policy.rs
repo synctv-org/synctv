@@ -1,3 +1,5 @@
+mod overrides;
+
 use crate::{
     Error, Result,
     models::{
@@ -72,19 +74,23 @@ pub(in crate::service) fn validate_member_permission_update_actor(
     target_user_id: &UserId,
     target_is_elevated: bool,
 ) -> Result<()> {
-    if actor_id == target_user_id {
-        return Err(Error::Authorization(
-            "Cannot change your own member permissions".to_string(),
-        ));
-    }
-
-    if target_is_elevated && room.created_by != *actor_id {
-        return Err(Error::Authorization(
-            "Only room creator can change permissions of elevated members".to_string(),
-        ));
-    }
-
-    Ok(())
+    overrides::check_actor(
+        room.created_by.get(),
+        actor_id.get(),
+        target_user_id.get(),
+        target_is_elevated,
+    )
+    .map_err(|err| {
+        Error::Authorization(
+            match err {
+                overrides::ActorError::SelfEdit => "Cannot change your own member permissions",
+                overrides::ActorError::ElevatedTarget => {
+                    "Only room creator can change permissions of elevated members"
+                }
+            }
+            .to_string(),
+        )
+    })
 }
 
 pub(in crate::service::room) fn validate_admin_override_bits(
@@ -138,19 +144,22 @@ pub(in crate::service::room) fn validate_member_permission_override_channel(
     admin_added_permissions: u64,
     admin_removed_permissions: u64,
 ) -> Result<()> {
-    if effective_is_admin && (added_permissions > 0 || removed_permissions > 0) {
-        return Err(Error::Authorization(
-            "Admin members must use admin_added_permissions/admin_removed_permissions".to_string(),
-        ));
+    if overrides::valid_channel(
+        effective_is_admin,
+        added_permissions,
+        removed_permissions,
+        admin_added_permissions,
+        admin_removed_permissions,
+    ) {
+        Ok(())
+    } else {
+        let message = if effective_is_admin {
+            "Admin members must use admin_added_permissions/admin_removed_permissions"
+        } else {
+            "Only admin members use admin_added_permissions/admin_removed_permissions"
+        };
+        Err(Error::Authorization(message.to_string()))
     }
-
-    if !effective_is_admin && (admin_added_permissions > 0 || admin_removed_permissions > 0) {
-        return Err(Error::Authorization(
-            "Only admin members use admin_added_permissions/admin_removed_permissions".to_string(),
-        ));
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]

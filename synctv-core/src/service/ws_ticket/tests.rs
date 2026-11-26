@@ -640,6 +640,23 @@ async fn test_in_memory_claim_mismatch_does_not_consume_ticket() {
 }
 
 #[tokio::test]
+async fn stale_snapshot_preserves_replacement_ticket() -> crate::Result<()> {
+    let store = InMemoryTicketStore::new();
+    let user = create_test_user_id(50_032);
+    let room = create_test_room_id(50_031);
+    let first = WsTicketData::user(&user, &room, 7);
+    let replacement = WsTicketData::user(&user, &room, 8);
+    store.store("key", &first, 1).await?;
+    let snapshot = some(store.load("key").await?, "first ticket");
+    store.store("key", &replacement, 60).await?;
+    assert!(!store.claim("key", &snapshot).await?);
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    assert!(store.claim("key", &replacement).await?);
+    assert!(!store.claim("key", &replacement).await?);
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_ticket_expiration_memory_mode() {
     let service = WsTicketService::with_memory(Some(1)); // 1 second TTL
     let user_id = create_test_user_id(50_033);

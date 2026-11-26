@@ -17,59 +17,12 @@ use h3::quic::WriteBuf;
 use h3::quic::{self, ConnectionErrorIncoming, StreamErrorIncoming};
 use h3_datagram::quic_traits::DatagramConnectionExt;
 
-/// Maximum declared length accepted for a non-DATA frame before the request
-/// resolves. Mirrors the inbound frame cap used by the synctv frame codec.
-pub const MAX_CONTROL_FRAME_LEN: usize = 64 * 1024;
+mod header;
+pub use header::MAX_CONTROL_FRAME_LEN;
+use header::{MAX_FRAME_HEADER, Verdict, verdict};
 
 /// h3 `H3_EXCESSIVE_LOAD` error code (h3 `error/codes.rs`).
 const H3_EXCESSIVE_LOAD: u64 = 0x107;
-
-/// A frame type varint plus a length varint never exceed 16 bytes.
-const MAX_FRAME_HEADER: usize = 16;
-
-enum Verdict {
-    /// Not enough bytes buffered yet to decide.
-    NeedMore,
-    /// The first frame is within budget (or carries no length to police).
-    Ok,
-    /// The declared length exceeds the budget.
-    TooBig(u64),
-}
-
-fn read_varint(buf: &[u8]) -> Option<(u64, usize)> {
-    let first = *buf.first()?;
-    let len = 1_usize << (first >> 6);
-    if buf.len() < len {
-        return None;
-    }
-    let mut value = u64::from(first & 0x3f);
-    for byte in &buf[1..len] {
-        value = (value << 8) | u64::from(*byte);
-    }
-    Some((value, len))
-}
-
-fn verdict(header: &[u8]) -> Verdict {
-    let Some((frame_type, type_len)) = read_varint(header) else {
-        return Verdict::NeedMore;
-    };
-    // DATA (0x0) has its own downstream body cap; extended stream types
-    // (>= 0x40, e.g. WebTransport streams) carry only a session id.
-    if frame_type == 0x0 || frame_type >= 0x40 {
-        return Verdict::Ok;
-    }
-    let Some((length, length_len)) = read_varint(&header[type_len..]) else {
-        return Verdict::NeedMore;
-    };
-    let declared = usize::try_from(length).unwrap_or(usize::MAX);
-    match type_len
-        .checked_add(length_len)
-        .and_then(|prefix| prefix.checked_add(declared))
-    {
-        Some(total) if total > MAX_CONTROL_FRAME_LEN => Verdict::TooBig(length),
-        _ => Verdict::Ok,
-    }
-}
 
 /// Receives stream bytes while refusing to buffer a non-DATA frame whose
 /// declared length exceeds [`MAX_CONTROL_FRAME_LEN`]. Wraps any h3 quic
@@ -106,8 +59,7 @@ impl<S: quic::RecvStream<Buf = Bytes>> quic::RecvStream for BudgetedRecvStream<S
                     .extend_from_slice(&bytes[..bytes.len().min(want)]);
             }
             match verdict(&self.header) {
-                // Two varints cannot span 16 bytes: a header that never
-                // completes within them is hostile.
+                // Two complete varints fit in MAX_FRAME_HEADER bytes.
                 Verdict::NeedMore if self.header.len() >= MAX_FRAME_HEADER => {
                     self.inner.stop_sending(H3_EXCESSIVE_LOAD);
                     return std::task::Poll::Ready(Err(StreamErrorIncoming::Unknown(

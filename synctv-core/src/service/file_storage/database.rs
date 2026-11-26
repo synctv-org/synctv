@@ -347,25 +347,19 @@ fn ensure_database_parts_cover_range(parts: &[FileBlobPart], range: FileByteRang
     let end_exclusive = range_end_exclusive(range)?;
     let mut expected = range.start;
     for part in parts {
-        let part_start = u64::try_from(part.offset_bytes)
-            .map_err(|_| Error::Internal("file blob part offset is invalid".to_string()))?;
-        let part_size = u64::try_from(part.size_bytes)
-            .map_err(|_| Error::Internal("file blob part size is invalid".to_string()))?;
-        let part_end = part_start
-            .checked_add(part_size)
-            .ok_or_else(|| Error::Internal("file blob part offset overflow".to_string()))?;
-        if part_end <= expected {
-            continue;
-        }
-        if part_start > expected {
-            return Err(Error::Internal(
-                "file object is missing one or more blob parts".to_string(),
-            ));
-        }
-        expected = part_end.min(end_exclusive);
-        if expected >= end_exclusive {
-            return Ok(());
-        }
+        expected = super::read_bounds::advance_part(
+            range.start,
+            end_exclusive,
+            expected,
+            part.offset_bytes,
+            part.size_bytes,
+        )
+        .ok_or_else(|| {
+            Error::Internal("file blob parts do not form a contiguous range".to_string())
+        })?;
+    }
+    if expected == end_exclusive {
+        return Ok(());
     }
     Err(Error::Internal(
         "file object is missing one or more blob parts".to_string(),
@@ -1608,5 +1602,37 @@ impl FileStorageService for DatabaseFileStorageService {
         )
         .await
         .map(|result| result.variants)
+    }
+}
+
+#[cfg(test)]
+mod range_coverage_tests {
+    use super::*;
+
+    #[test]
+    fn clipped_parts_must_cover_the_range_exactly_once() {
+        let part = |offset_bytes, size_bytes| FileBlobPart {
+            storage_backend: String::new(),
+            object_key: String::new(),
+            part_index: 0,
+            offset_bytes,
+            size_bytes,
+            checksum_sha256: String::new(),
+            compression: FileBlobCompression::None,
+            data: Vec::new(),
+            created_at: chrono::Utc::now(),
+        };
+        let range = FileByteRange {
+            start: 2,
+            end_inclusive: 7,
+        };
+        assert!(ensure_database_parts_cover_range(&[part(0, 4), part(4, 6)], range).is_ok());
+        for parts in [
+            [part(0, 4), part(5, 3)],
+            [part(0, 5), part(4, 4)],
+            [part(0, 9), part(6, 2)],
+        ] {
+            assert!(ensure_database_parts_cover_range(&parts, range).is_err());
+        }
     }
 }

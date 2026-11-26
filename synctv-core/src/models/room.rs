@@ -152,21 +152,9 @@ impl TryFrom<i32> for RoomStatus {
     }
 }
 
-/// Playback mode for auto-play
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-#[derive(Default)]
-pub enum PlayMode {
-    /// Sequential play (stop after last item)
-    #[default]
-    Sequential,
-    /// Repeat single item
-    RepeatOne,
-    /// Repeat all items (loop back to start)
-    RepeatAll,
-    /// Random playback
-    Shuffle,
-}
+mod play_mode;
+pub use play_mode::PlayMode;
+pub(crate) use play_mode::{CurrentItem, StaticChoice};
 
 /// Auto-play settings
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

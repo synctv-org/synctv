@@ -12,19 +12,10 @@ impl crate::service::ws_ticket::UserValidator for UserService {
             .await?
             .ok_or_else(|| crate::Error::NotFound("User not found".to_string()))?;
 
-        if user.is_deleted() || user.is_banned {
+        if !user.can_login() {
             return Err(crate::Error::Authorization(
                 "Authentication failed".to_string(),
             ));
-        }
-
-        match user.status {
-            crate::models::UserStatus::Active => {}
-            crate::models::UserStatus::Banned => {
-                return Err(crate::Error::Authorization(
-                    "Authentication failed".to_string(),
-                ));
-            }
         }
 
         let password_version = self

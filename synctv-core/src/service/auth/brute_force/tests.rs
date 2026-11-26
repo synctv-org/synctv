@@ -182,6 +182,39 @@ async fn in_memory_tracker_operations_succeed() {
     assert!(tracker.reset(key).await.is_ok());
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn redis_fallback_counts_concurrent_failures_for_one_key() {
+    struct OfflineRedis;
+    #[async_trait::async_trait]
+    impl crate::RedisConnectionRuntime for OfflineRedis {
+        async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
+            Err(std::io::Error::from(std::io::ErrorKind::NotConnected).into())
+        }
+    }
+
+    let tracker = RedisAttemptTracker::from_runtime(Arc::new(OfflineRedis), 128, 60);
+    let start = Arc::new(tokio::sync::Barrier::new(32));
+    let mut tasks = tokio::task::JoinSet::new();
+    for _ in 0..32 {
+        let tracker = tracker.clone();
+        let start = start.clone();
+        tasks.spawn(async move {
+            start.wait().await;
+            tracker.record_failure("same-user", 100, 60).await
+        });
+    }
+    while let Some(task) = tasks.join_next().await {
+        ok(ok(task, "failure recording task"), "record failure");
+    }
+    assert_eq!(
+        ok(
+            tracker.get_attempts("same-user").await,
+            "read fallback count"
+        ),
+        (32, 100)
+    );
+}
+
 #[test]
 fn fail_closed_backend_error_is_service_unavailable() {
     let err = RedisAttemptTracker::fail_closed_backend_error("please try again later");

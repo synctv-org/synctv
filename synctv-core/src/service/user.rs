@@ -23,10 +23,6 @@ use crate::{
 const REFRESH_RATE_LIMIT_REQUESTS: u32 = 10;
 const REFRESH_RATE_LIMIT_WINDOW_SECS: u64 = 60;
 
-fn nonnegative_i64_to_u64(value: i64) -> u64 {
-    value.max(0).cast_unsigned()
-}
-
 #[derive(Debug, Clone, Copy)]
 pub struct RefreshRateLimitConfig {
     pub requests: u32,
@@ -186,6 +182,7 @@ pub use registration_types::{
     AccountRegistrationOutcome, CreateUserAvatarUploadSession, PendingAccountRegistration,
     RegistrationMode, RegistrationPolicy,
 };
+mod factors;
 mod session_types;
 pub use session_types::{
     AuthFactorMethod, AuthenticatedLogin, LoginSession, LoginSessionIdentity, LoginSessionState,

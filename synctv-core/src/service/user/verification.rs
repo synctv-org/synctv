@@ -1,3 +1,5 @@
+use super::factors::{self, Factors};
+
 use std::{net::IpAddr, time::Duration};
 
 use synctv_common::ExecutionControl;
@@ -17,7 +19,7 @@ mod sensitive;
 
 impl UserService {
     pub(super) fn validate_user_access(user: &User) -> Result<()> {
-        if user.is_banned || user.is_deleted() {
+        if !user.can_login() {
             return Err(Error::Authentication("Authentication failed".to_string()));
         }
 
@@ -122,20 +124,22 @@ impl UserService {
         auth_factors: &UserAuthFactors,
         first_factor: AuthFactorMethod,
     ) -> Vec<AuthFactorMethod> {
-        let mut methods = Vec::with_capacity(4);
-        if auth_factors.webauthn && first_factor != AuthFactorMethod::WebAuthn {
-            methods.push(AuthFactorMethod::WebAuthn);
+        let mut enrolled = Self::enrolled_factors(auth_factors);
+        // Password is a first factor in the login flow.
+        enrolled.password = false;
+        enrolled.available(
+            &factors::from_methods(&[first_factor]),
+            auth_factors.totp_recovery_codes_remaining > 0,
+        )
+    }
+
+    fn enrolled_factors(auth_factors: &UserAuthFactors) -> Factors {
+        Factors {
+            password: auth_factors.password,
+            webauthn: auth_factors.webauthn,
+            totp: auth_factors.totp,
+            email: auth_factors.email,
         }
-        if auth_factors.totp {
-            methods.push(AuthFactorMethod::Totp);
-            if auth_factors.totp_recovery_codes_remaining > 0 {
-                methods.push(AuthFactorMethod::RecoveryCode);
-            }
-        }
-        if auth_factors.email && first_factor != AuthFactorMethod::Email {
-            methods.push(AuthFactorMethod::Email);
-        }
-        methods
     }
 
     fn mfa_challenge_from_session(

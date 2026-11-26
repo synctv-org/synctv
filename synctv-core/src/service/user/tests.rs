@@ -1,4 +1,4 @@
-use super::{UserService, nonnegative_i64_to_u64};
+use super::UserService;
 use crate::{
     Error, Result,
     models::{UserAuthFactors, UserId},
@@ -145,14 +145,6 @@ fn test_validation_failures_return_invalid_input_error() {
             Error::InvalidInput(_)
         ));
     }
-}
-
-#[test]
-fn nonnegative_i64_to_u64_clamps_negative_values() {
-    assert_eq!(nonnegative_i64_to_u64(-1), 0);
-    assert_eq!(nonnegative_i64_to_u64(0), 0);
-    assert_eq!(nonnegative_i64_to_u64(42), 42);
-    assert_eq!(nonnegative_i64_to_u64(i64::MAX), i64::MAX as u64);
 }
 
 #[tokio::test]

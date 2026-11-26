@@ -4,6 +4,8 @@ use crate::Result;
 
 use super::{TicketStore, WsTicketData, now_unix_seconds};
 
+mod claim;
+
 /// Wrapper that pairs ticket data with its per-entry TTL for moka's `Expiry` trait.
 #[derive(Clone)]
 struct TtlTicketData {
@@ -20,6 +22,16 @@ impl moka::Expiry<String, TtlTicketData> for TicketEntryExpiry {
         _key: &String,
         value: &TtlTicketData,
         _now: std::time::Instant,
+    ) -> Option<std::time::Duration> {
+        Some(value.ttl)
+    }
+
+    fn expire_after_update(
+        &self,
+        _key: &String,
+        value: &TtlTicketData,
+        _updated_at: std::time::Instant,
+        _remaining: Option<std::time::Duration>,
     ) -> Option<std::time::Duration> {
         Some(value.ttl)
     }
@@ -46,13 +58,13 @@ impl InMemoryTicketStore {
 impl TicketStore for InMemoryTicketStore {
     async fn store(&self, ticket: &str, data: &WsTicketData, ttl_secs: u64) -> Result<()> {
         self.cache
-            .insert(
-                ticket.to_string(),
+            .entry_by_ref(ticket)
+            .and_upsert_with(|_| async {
                 TtlTicketData {
                     data: data.clone(),
                     ttl: std::time::Duration::from_secs(ttl_secs),
-                },
-            )
+                }
+            })
             .await;
         Ok(())
     }
@@ -63,8 +75,7 @@ impl TicketStore for InMemoryTicketStore {
         };
 
         let now = now_unix_seconds();
-        if now.saturating_sub(entry.data.created_at) > entry.ttl.as_secs() {
-            self.cache.remove(ticket).await;
+        if !claim::within_ttl(entry.data.created_at, now, entry.ttl.as_secs()) {
             return Ok(None);
         }
 
@@ -72,26 +83,26 @@ impl TicketStore for InMemoryTicketStore {
     }
 
     async fn claim(&self, ticket: &str, expected_ticket: &WsTicketData) -> Result<bool> {
-        let Some(entry) = self.cache.get(ticket).await else {
-            return Ok(false);
-        };
-        let now = now_unix_seconds();
-        if now.saturating_sub(entry.data.created_at) > entry.ttl.as_secs() {
-            self.cache.remove(ticket).await;
-            return Ok(false);
-        }
-        if entry.data != *expected_ticket {
-            return Ok(false);
-        }
-
-        let Some(removed) = self.cache.remove(ticket).await else {
-            return Ok(false);
-        };
-        if now.saturating_sub(removed.data.created_at) > removed.ttl.as_secs() {
-            return Ok(false);
-        }
-
-        Ok(removed.data == *expected_ticket)
+        use moka::ops::compute::{CompResult, Op};
+        let result = self
+            .cache
+            .entry_by_ref(ticket)
+            .and_compute_with(|entry| async move {
+                if let Some(entry) = entry {
+                    let value = entry.value();
+                    if claim::may_consume(
+                        value.data == *expected_ticket,
+                        value.data.created_at,
+                        now_unix_seconds(),
+                        value.ttl.as_secs(),
+                    ) {
+                        return Op::Remove;
+                    }
+                }
+                Op::Nop
+            })
+            .await;
+        Ok(matches!(result, CompResult::Removed(_)))
     }
 
     fn supports_cluster_runtime(&self) -> bool {

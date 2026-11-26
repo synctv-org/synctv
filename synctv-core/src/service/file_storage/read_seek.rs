@@ -76,14 +76,27 @@ impl AsyncRead for RangeSeekReader {
             }
         }
         if self.buffered.is_empty() {
-            return Poll::Ready(Ok(()));
+            return Poll::Ready(Err(std::io::Error::new(
+                ErrorKind::UnexpectedEof,
+                "file ended before its declared size",
+            )));
         }
-        let take = self.buffered.len().min(buf.remaining());
+        let (take, next) = super::read_bounds::consume(
+            self.position,
+            self.size_bytes,
+            self.buffered.len(),
+            self.chunk_size,
+            buf.remaining(),
+        )
+        .ok_or_else(|| {
+            std::io::Error::new(
+                ErrorKind::InvalidData,
+                "file backend returned more bytes than requested",
+            )
+        })?;
         let chunk = self.buffered.split_to(take);
         buf.put_slice(&chunk);
-        self.position += i64::try_from(take).map_err(|_| {
-            std::io::Error::new(ErrorKind::InvalidData, "file reader position overflow")
-        })?;
+        self.position = next;
         Poll::Ready(Ok(()))
     }
 }
@@ -127,6 +140,24 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
     use super::*;
+
+    #[tokio::test]
+    async fn inconsistent_backend_read_is_rejected_before_copy() -> anyhow::Result<()> {
+        for (bytes, kind) in [
+            (Bytes::new(), ErrorKind::UnexpectedEof),
+            (Bytes::from_static(b"abc"), ErrorKind::InvalidData),
+        ] {
+            let mut reader = RangeSeekReader::new(2, 2, move |_, _| {
+                let bytes = bytes.clone();
+                Box::pin(async { Ok(bytes) })
+            })?;
+            let mut output = Vec::new();
+            let result = reader.read_to_end(&mut output).await;
+            assert_eq!(result.err().map(|error| error.kind()), Some(kind));
+            assert!(output.is_empty());
+        }
+        Ok(())
+    }
 
     #[tokio::test]
     async fn range_seek_reader_reads_and_seeks_without_buffering_whole_object() {

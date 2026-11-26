@@ -46,6 +46,28 @@ impl RedisConnectionRuntime for FailingRedisRuntime {
 }
 
 #[test]
+fn concurrent_first_checks_share_one_burst() {
+    let limiter = InMemoryGovernorLimiter::new();
+    let start = std::sync::Barrier::new(12);
+    let admitted = std::thread::scope(|scope| {
+        let workers = (0..12)
+            .map(|_| {
+                scope.spawn(|| {
+                    start.wait();
+                    limiter.check("shared", 1, 60).is_ok()
+                })
+            })
+            .collect::<Vec<_>>();
+        workers
+            .into_iter()
+            .map(|worker| worker.join().expect("rate-limit worker"))
+            .filter(|ok| *ok)
+            .count()
+    });
+    assert_eq!(admitted, 1);
+}
+
+#[test]
 fn test_retry_after_uses_ceiled_remaining_window() {
     assert_eq!(retry_after_seconds_from_oldest(1_250, 1_000, 1), 1);
     assert_eq!(retry_after_seconds_from_oldest(2_001, 1_000, 2), 1);

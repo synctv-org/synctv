@@ -6,7 +6,7 @@ use tokio::task::JoinHandle;
 
 const MAX_STREAM_ID_COMPONENT_LEN: usize = 128;
 const MAX_HLS_SEGMENT_NAME_LEN: usize = 256;
-const MAX_HLS_SEGMENT_URL_PART_LEN: usize = 2048;
+mod playlist_field;
 
 #[cfg(test)]
 pub(crate) const TEST_GENERATION_ID: &str = "00000000-0000-4000-8000-000000000001";
@@ -87,18 +87,15 @@ pub(crate) fn validate_hls_segment_url_suffix(segment_url_suffix: &str) -> anyho
 }
 
 fn validate_hls_segment_url_part(value: &str, field: &str) -> anyhow::Result<()> {
-    if value.len() > MAX_HLS_SEGMENT_URL_PART_LEN {
-        return Err(anyhow::anyhow!(
-            "{field} exceeds maximum length of {MAX_HLS_SEGMENT_URL_PART_LEN} bytes"
-        ));
-    }
-    if value.contains('\r') || value.contains('\n') {
-        return Err(anyhow::anyhow!("{field} must not contain CR/LF characters"));
-    }
-    if value.contains('\0') {
-        return Err(anyhow::anyhow!("{field} must not contain null bytes"));
-    }
-    Ok(())
+    use playlist_field::FieldError;
+    playlist_field::validate(value.as_bytes()).map_err(|reason| match reason {
+        FieldError::Length => anyhow::anyhow!(
+            "{field} exceeds maximum length of {} bytes",
+            playlist_field::MAX_LEN
+        ),
+        FieldError::Newline => anyhow::anyhow!("{field} must not contain CR/LF characters"),
+        FieldError::Null => anyhow::anyhow!("{field} must not contain null bytes"),
+    })
 }
 
 /// Get current unix timestamp in seconds.

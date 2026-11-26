@@ -28,6 +28,7 @@ pub use metrics::{ConnectionMetrics, ShutdownReport};
 mod disconnects;
 mod redis_maintenance;
 mod redis_state;
+mod reservation;
 use redis_state::{
     ACTOR_INDEX_DIRECTORY_KEY_SUFFIX, CONNECTION_METADATA_TTL_SECONDS, PendingRedisOp,
     ROOM_INDEX_DIRECTORY_KEY_SUFFIX, UnregisterCleanupScriptArgs, run_unregister_cleanup_script,
@@ -876,18 +877,15 @@ impl ConnectionManager {
         loop {
             let pending = counter.load(Ordering::Acquire);
             let registered = self.room_connections.get(room_id).map_or(0, |v| v.len());
-            let effective = registered + pending;
-
-            if effective >= self.limits.max_per_room {
-                return Err(ConnectionReservationError::RoomAtCapacity {
-                    current: effective,
+            let next = reservation::reserve(registered, pending, self.limits.max_per_room)
+                .map_err(|current| ConnectionReservationError::RoomAtCapacity {
+                    current,
                     max: self.limits.max_per_room,
-                });
-            }
+                })?;
 
             // Try to atomically increment the pending count
             if counter
-                .compare_exchange_weak(pending, pending + 1, Ordering::AcqRel, Ordering::Acquire)
+                .compare_exchange_weak(pending, next, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
             {
                 return Ok(());
@@ -903,13 +901,8 @@ impl ConnectionManager {
     pub fn release_room_reservation(&self, room_id: &RoomId) {
         let mut should_remove_entry = false;
         if let Some(counter) = self.pending_room_reservations.get(room_id) {
-            let result = counter.try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                if current > 0 {
-                    Some(current - 1)
-                } else {
-                    None // refuse to decrement below zero
-                }
-            });
+            let result =
+                counter.try_update(Ordering::AcqRel, Ordering::Acquire, reservation::release);
             match result {
                 Ok(previous) => {
                     should_remove_entry = previous == 1;
@@ -957,17 +950,14 @@ impl ConnectionManager {
                 .actor_connections
                 .get(actor_key)
                 .map_or(0, |connections| connections.len());
-            let effective = registered + pending;
-
-            if effective >= self.limits.max_per_user {
-                return Err(ConnectionReservationError::ActorAtCapacity {
-                    current: effective,
+            let next = reservation::reserve(registered, pending, self.limits.max_per_user)
+                .map_err(|current| ConnectionReservationError::ActorAtCapacity {
+                    current,
                     max: self.limits.max_per_user,
-                });
-            }
+                })?;
 
             if counter
-                .compare_exchange_weak(pending, pending + 1, Ordering::AcqRel, Ordering::Acquire)
+                .compare_exchange_weak(pending, next, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
             {
                 return Ok(());
@@ -987,13 +977,8 @@ impl ConnectionManager {
     fn release_actor_key_reservation(&self, actor_key: &str) {
         let mut should_remove_entry = false;
         if let Some(counter) = self.pending_actor_reservations.get(actor_key) {
-            let result = counter.try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                if current > 0 {
-                    Some(current - 1)
-                } else {
-                    None // refuse to decrement below zero
-                }
-            });
+            let result =
+                counter.try_update(Ordering::AcqRel, Ordering::Acquire, reservation::release);
             match result {
                 Ok(previous) => {
                     should_remove_entry = previous == 1;
@@ -1046,11 +1031,13 @@ impl ConnectionManager {
         }
 
         // Atomically reserve a slot in the total connection count.
-        // fetch_add returns the previous value; if it was already at the limit,
-        // roll back and reject.
-        let prev = self.total_connections.fetch_add(1, Ordering::AcqRel);
-        if prev >= self.limits.max_total {
-            self.total_connections.fetch_sub(1, Ordering::AcqRel);
+        if self
+            .total_connections
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+                reservation::reserve(0, used, self.limits.max_total).ok()
+            })
+            .is_err()
+        {
             return Err(if self.redis_enabled() {
                 format!(
                     "Server at capacity across all replicas ({} connections)",

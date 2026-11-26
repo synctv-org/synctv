@@ -64,6 +64,8 @@ Rotating it can invalidate existing access and refresh tokens. Rotate immediatel
 | `jwt.guest_token_duration_hours` | `4` | Guest token lifetime |
 | `jwt.clock_skew_leeway_secs` | `60` | Clock skew tolerance |
 
+SyncTV checks the signed expiration timestamp of custom tokens, including publish keys. Permanent publish keys may omit expiration. Publish keys have an additional lifecycle check and expire immediately after their signed expiration timestamp.
+
 For internet-facing deployments, keep access tokens short and rely on refresh rotation. Use NTP instead of increasing clock skew to hide server time drift.
 
 ## `security.credential_encryption_key`
@@ -250,7 +252,7 @@ Field behavior:
 - `enabled=false`: default; disable SSRF protection.
 - `enabled=true`: enable SSRF protection and block local, private, and metadata targets.
 - `allow_private_network_targets=false`: keep local, private, and metadata targets blocked when SSRF protection is enabled.
-- `allowed_hosts`: allow known internal services by hostname.
+- A hostname in `allowed_hosts` may resolve to an RFC 1918 IPv4 address or an IPv6 unique-local address (`fc00::/7`). Other restricted addresses require an explicit IP policy.
 - `allowed_ip_ranges`: allow known internal services or subnets by IP/CIDR.
 - `allow_private_network_targets=true`: allow all private/non-global targets; use only in trusted private deployments.
 

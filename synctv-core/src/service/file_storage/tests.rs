@@ -45,6 +45,37 @@ fn empty_reference_metadata() -> FileReferenceMetadata {
 }
 
 #[test]
+fn upload_plan_rounds_up_and_reports_unrepresentable_part_count() -> anyhow::Result<()> {
+    let width = upload_session_part_size();
+    for (size, count, last_size) in [(1, 1, 1), (width, 1, width), (width + 1, 2, 1)] {
+        let plan = create_file_upload_plan(size, i64::MAX)?;
+        assert_eq!(plan.parts.len(), count);
+        assert_eq!(
+            plan.parts.last().map(|part| part.size_bytes),
+            Some(last_size)
+        );
+    }
+    assert!(matches!(
+        create_file_upload_plan(i64::MAX, i64::MAX),
+        Err(Error::InvalidInput(message)) if message.contains("too many parts")
+    ));
+    Ok(())
+}
+
+#[test]
+fn final_upload_part_respects_stored_part_width() -> anyhow::Result<()> {
+    let range = |start, end_inclusive| FileUploadRange {
+        start,
+        end_inclusive,
+        total_size: 10,
+    };
+    assert_eq!(validate_upload_range(range(4, 7), 4, 10, 4)?, 1);
+    assert_eq!(validate_upload_range(range(8, 9), 2, 10, 4)?, 2);
+    assert!(validate_upload_range(range(4, 9), 6, 10, 4).is_err());
+    Ok(())
+}
+
+#[test]
 fn file_ranges_resolve_to_consistent_closed_intervals() {
     assert_eq!(
         resolve_file_range(Some(FileRangeRequest::From { start: 900 }), 1_000)

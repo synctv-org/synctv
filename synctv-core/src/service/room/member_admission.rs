@@ -1,3 +1,6 @@
+mod admission;
+use admission::Refusal;
+
 use sqlx::{Postgres, Transaction};
 
 use crate::{
@@ -22,7 +25,12 @@ impl RoomService {
                 "Target user cannot be added while banned".to_string(),
             ));
         }
-        if !user.status.can_join_room() {
+        if user.is_deleted() {
+            return Err(Error::Authorization(
+                "Target user cannot be added while deleted".to_string(),
+            ));
+        }
+        if !user.can_join_room() {
             return Err(Error::Authorization(format!(
                 "Target user cannot be added while account status is {}",
                 user.status
@@ -85,23 +93,21 @@ impl RoomService {
         .await?
         .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
 
-        if room_state.closed_at.is_some() {
-            return Err(Error::InvalidInput("Room is closed".to_string()));
-        }
-        let is_banned = room_state
-            .is_banned
-            .ok_or_else(|| Error::Internal("Room ban EXISTS query returned NULL".to_string()))?;
-        if is_banned {
-            return Err(Error::Authorization("Room is banned".to_string()));
-        }
-        let is_target_in_kick_cooldown =
-            room_state.is_target_in_kick_cooldown.ok_or_else(|| {
+        admission::admit(
+            room_state.closed_at.is_some(),
+            room_state.is_banned,
+            room_state.is_target_in_kick_cooldown,
+        )
+        .map_err(|reason| match reason {
+            Refusal::Closed => Error::InvalidInput("Room is closed".to_string()),
+            Refusal::MissingBanState => {
+                Error::Internal("Room ban EXISTS query returned NULL".to_string())
+            }
+            Refusal::Banned => Error::Authorization("Room is banned".to_string()),
+            Refusal::MissingCooldown => {
                 Error::Internal("Room kick cooldown EXISTS query returned NULL".to_string())
-            })?;
-        if is_target_in_kick_cooldown {
-            return Err(Error::kick_cooldown_denied());
-        }
-
-        Ok(())
+            }
+            Refusal::Cooldown => Error::kick_cooldown_denied(),
+        })
     }
 }

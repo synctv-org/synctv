@@ -423,6 +423,36 @@ async fn test_file_backend_corrupted_file_handled() -> TestResult {
 }
 
 #[tokio::test]
+async fn cache_reader_checks_declared_size_before_reserving_body() -> TestResult {
+    use crate::slice_cache::backend::file_format::{read_cache_file, read_cache_file_header};
+    let tmp = TempDir::new()?;
+    let path = tmp.path().join("entry");
+    let header = encode_header(&FileEntryHeader {
+        key: "entry".into(),
+        inserted_at_millis: 0,
+        ttl_secs: 60,
+        last_accessed_millis: 0,
+        data_size: u64::MAX,
+    })?;
+    let mut bytes = CACHE_FILE_MAGIC.to_vec();
+    bytes.extend_from_slice(&u32::try_from(header.len())?.to_le_bytes());
+    bytes.extend_from_slice(&header);
+    fs::write(&path, bytes).await?;
+    let read_error = read_cache_file(&path)
+        .await
+        .err()
+        .ok_or("cache read should reject the oversized declaration")?;
+    assert!(read_error.to_string().contains("size overflow"));
+
+    let header_error = read_cache_file_header(&path)
+        .await
+        .err()
+        .ok_or("cache header read should reject the oversized declaration")?;
+    assert!(header_error.to_string().contains("size overflow"));
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_file_backend_load_index_deletes_size_mismatch() -> TestResult {
     let tmp = TempDir::new()?;
     let cache_dir = tmp.path().to_path_buf();

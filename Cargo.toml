@@ -37,6 +37,7 @@ license = "MIT"
 
 [workspace.lints.rust]
 unsafe_code = "deny"
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(verus_only)"] }
 
 # Fail every cargo invocation on unused dependencies. Replaces the
 # cargo-udeps CI job, whose vendored cargo cannot parse this workspace's

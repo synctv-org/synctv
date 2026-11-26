@@ -24,7 +24,7 @@ use percent_encoding::percent_decode_str;
 use synctv_adapter::PublicIdCodec;
 use synctv_core::{
     Error as CoreError, RedisConnectionRuntime, SharedStateMode, SharedStateProfile,
-    models::{MediaId, Room, RoomId, RoomStatus, UserId, UserStatus},
+    models::{MediaId, Room, RoomId, RoomStatus, UserId},
     service::{RoomService, StreamingPublishKeyService, UserService},
 };
 use synctv_livestream::{
@@ -803,24 +803,8 @@ struct ValidatedPublish {
     media_mode: synctv_core::models::RtmpStreamMode,
 }
 
-fn media_creator_publish_authorized(
-    is_global_admin: bool,
-    is_room_admin_or_creator: bool,
-    is_room_member: bool,
-    media_creator_id: Option<&UserId>,
-    user_id: &UserId,
-) -> bool {
-    !is_global_admin
-        && !is_room_admin_or_creator
-        && is_room_member
-        && media_creator_id == Some(user_id)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RoomAccessRejection {
-    Banned,
-    Closed,
-}
+mod access;
+use access::{Authority, RoomAccessRejection};
 
 impl RoomAccessRejection {
     fn into_error(self, app_name: &str) -> Box<dyn std::error::Error + Send + Sync> {
@@ -832,14 +816,7 @@ impl RoomAccessRejection {
 }
 
 fn validate_rtmp_room_state(room: &Room) -> Result<(), RoomAccessRejection> {
-    if room.is_banned {
-        return Err(RoomAccessRejection::Banned);
-    }
-    if room.status == RoomStatus::Closed {
-        return Err(RoomAccessRejection::Closed);
-    }
-
-    Ok(())
+    access::room(room.is_banned, room.status == RoomStatus::Closed)
 }
 
 impl SyncTvRtmpAuth {
@@ -890,7 +867,7 @@ impl SyncTvRtmpAuth {
             .await
             .map_err(|e| format!("Failed to load user: {e}"))?;
 
-        if user.status == UserStatus::Banned {
+        if user.is_banned || user.status.is_banned() {
             return Err(format!(
                 "User {} is not allowed to publish while account status is {}",
                 claims.user_id, user.status
@@ -967,36 +944,17 @@ impl SyncTvRtmpAuth {
             .await
             .map_err(|error| format!("Media is unavailable: {error}"))?;
 
-        let is_media_creator = if !is_global_admin && !is_room_admin_or_creator {
-            if room_member.is_none() {
-                return Err(format!(
-                    "Insufficient permissions to publish: user {user_id} is not a member of room {room_id}"
-                )
-                .into());
-            }
-            media_creator_publish_authorized(
-                is_global_admin,
-                is_room_admin_or_creator,
-                room_member.is_some(),
-                media.creator_id.as_ref(),
-                user_id,
-            )
-        } else {
-            false
-        };
-
-        if !is_global_admin && !is_room_admin_or_creator && !is_media_creator {
-            return Err(format!(
+        let auth_level = match access::authority(is_global_admin, room_member.is_some(), is_room_admin_or_creator,
+            media.creator_id.map(|id| id.as_i64()), user_id.as_i64()) {
+            Authority::GlobalAdmin => "global_admin",
+            Authority::RoomAdmin => "room_admin",
+            Authority::MediaCreator => "media_creator",
+            Authority::NonMember => return Err(format!(
+                "Insufficient permissions to publish: user {user_id} is not a member of room {room_id}"
+            ).into()),
+            Authority::Unauthorized => return Err(format!(
                 "Insufficient permissions to publish: user {user_id} is not admin, room admin/creator, or media creator"
-            ).into());
-        }
-
-        let auth_level = if is_global_admin {
-            "global_admin"
-        } else if is_room_admin_or_creator {
-            "room_admin"
-        } else {
-            "media_creator"
+            ).into()),
         };
         let media_mode = match &media.source_config {
             synctv_core::models::MediaSourceConfig::Rtmp(config) => config.mode,
@@ -1026,7 +984,7 @@ impl SyncTvRtmpAuth {
             .map_err(|error| {
                 format!("Failed to reload publisher after publisher registration: {error}")
             })?;
-        if user.status == UserStatus::Banned || user.deleted_at.is_some() {
+        if !user.can_login() {
             return Err(format!(
                 "User {} became unavailable during publisher registration",
                 validated.user_id
@@ -1785,22 +1743,14 @@ mod tests {
 
     #[test]
     fn test_media_creator_publish_authorization_requires_room_membership() {
-        let user_id = UserId::expect_positive(301);
-
-        assert!(!media_creator_publish_authorized(
-            false,
-            false,
-            false,
-            Some(&user_id),
-            &user_id
-        ));
-        assert!(media_creator_publish_authorized(
-            false,
-            false,
-            true,
-            Some(&user_id),
-            &user_id
-        ));
+        assert_eq!(
+            access::authority(false, false, false, Some(301), 301),
+            Authority::NonMember
+        );
+        assert_eq!(
+            access::authority(false, true, false, Some(301), 301),
+            Authority::MediaCreator
+        );
     }
 
     struct RegistryPublisherStopControl {

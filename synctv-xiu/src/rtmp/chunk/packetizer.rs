@@ -184,14 +184,23 @@ impl ChunkPacketizer {
         Ok(())
     }
 
-    pub async fn write_chunk<P: Buf + AsRef<[u8]>>(
+    pub async fn write_chunk<P: Buf>(
         &mut self,
         chunk_info: &mut ChunkInfo<P>,
     ) -> Result<(), PackError> {
-        if chunk_info.message_header.msg_length > 0x00ff_ffff {
-            return Err(
-                PackErrorValue::MessageTooLarge(chunk_info.message_header.msg_length).into(),
-            );
+        let declared = chunk_info.message_header.msg_length;
+        let actual = chunk_info.payload.remaining();
+        if declared > 0x00ff_ffff {
+            return Err(PackErrorValue::MessageTooLarge(declared).into());
+        }
+        if usize::try_from(declared) != Ok(actual) {
+            return Err(PackErrorValue::PayloadLengthMismatch { declared, actual }.into());
+        }
+        if chunk_info.basic_header.chunk_stream_id < 2 {
+            return Err(PackErrorValue::InvalidChunkStreamId(
+                chunk_info.basic_header.chunk_stream_id,
+            )
+            .into());
         }
         self.zip_chunk_header(chunk_info);
 
@@ -222,17 +231,20 @@ impl ChunkPacketizer {
             self.write_extened_timestamp(extended_timestamp)?;
         }
 
-        let payload = chunk_info.payload.as_ref();
-        for (index, part) in payload.chunks(self.max_chunk_size).enumerate() {
-            if index > 0 {
+        for offset in (0..actual).step_by(self.max_chunk_size) {
+            if offset > 0 {
                 self.write_basic_header(3, chunk_info.basic_header.chunk_stream_id)?;
                 if let Some(timestamp) = extended_timestamp {
                     self.write_extened_timestamp(timestamp)?;
                 }
             }
-            self.writer.write(part)?;
+            let mut chunk = (&mut chunk_info.payload).take(self.max_chunk_size);
+            while chunk.has_remaining() {
+                let part = chunk.chunk();
+                self.writer.write(part)?;
+                chunk.advance(part.len());
+            }
         }
-        chunk_info.payload.advance(payload.len());
         self.writer.flush_timeout(WRITE_FLUSH_TIMEOUT).await?;
 
         Ok(())
@@ -313,11 +325,19 @@ mod tests {
         let timestamp = 0x0100_0000;
         let data = Bytes::from(vec![0xab; CHUNK_SIZE as usize * 2 + 1]);
 
-        for payload in [Bytes::new(), data.clone()] {
+        for (csid, declared) in [(7, 0x0100_0000), (7, 2), (7, 0), (1, 1)] {
+            let mut invalid = ChunkInfo::new(csid, 0, timestamp, declared, 9, 1, &b"x"[..]);
+            packetizer.write_chunk(&mut invalid).await.unwrap_err();
+            assert_eq!(invalid.payload, b"x");
+            assert!(captured.lock().is_empty());
+        }
+
+        for mut payload in [Bytes::new(), data.clone()] {
             let length = u32::try_from(payload.len()).unwrap();
-            let mut chunk = ChunkInfo::new(7, 0, timestamp, length, 9, 1, payload);
+            let prefix = payload.split_to(payload.len().min(3));
+            let mut chunk = ChunkInfo::new(7, 0, timestamp, length, 9, 1, prefix.chain(payload));
             packetizer.write_chunk(&mut chunk).await.unwrap();
-            assert!(chunk.payload.is_empty());
+            assert_eq!(chunk.payload.remaining(), 0);
         }
         let mut unpacker = ChunkUnpacketizer::new();
         unpacker.update_max_chunk_size(CHUNK_SIZE as usize);

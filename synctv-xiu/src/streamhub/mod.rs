@@ -1146,23 +1146,59 @@ mod tests {
     }
 
     #[test]
-    fn raw_audio_counts_toward_publisher_and_subscriber_traffic() {
+    fn audio_counts_toward_publisher_and_subscriber_traffic() {
+        use crate::flv::define::aac_packet_type::{AAC_RAW, AAC_SEQHDR};
         let mut stats = StatisticsStream::new(test_identifier());
         let subscriber = test_subscriber();
         let id = subscriber.id;
         stats.register_subscriber(subscriber);
-        for uuid in [None, Some(id)] {
-            stats.record(StatisticData::Audio {
-                uuid,
-                data_size: 17,
-                aac_packet_type: crate::flv::define::aac_packet_type::AAC_RAW,
-                duration: 0,
-            });
+        for aac_packet_type in [AAC_SEQHDR, AAC_RAW] {
+            for uuid in [None, Some(id)] {
+                stats.record(StatisticData::Audio {
+                    uuid,
+                    data_size: 17,
+                    aac_packet_type,
+                    duration: 0,
+                });
+            }
         }
-        assert_eq!(stats.publisher.recv_bytes, 17);
-        assert_eq!(stats.total_recv_bytes, 17);
-        assert_eq!(stats.subscribers[&id].total_send_bytes, 17);
-        assert_eq!(stats.total_send_bytes, 17);
+        assert_eq!(stats.publisher.audio.recv_bytes, 34);
+        assert_eq!(stats.publisher.recv_bytes, 34);
+        assert_eq!(stats.total_recv_bytes, 34);
+        assert_eq!(stats.subscribers[&id].total_send_bytes, 34);
+        assert_eq!(stats.total_send_bytes, 34);
+    }
+
+    #[test]
+    fn video_statistics_follow_codec_changes() {
+        use crate::flv::define::{AvcCodecId, AvcLevel, AvcProfile, HevcLevel, HevcProfile};
+        let mut stats = StatisticsStream::new(test_identifier());
+        let avc = || StatisticData::VideoCodec {
+            codec: AvcCodecId::H264,
+            profile: AvcProfile::High,
+            level: AvcLevel::Level4,
+            width: 1920,
+            height: 1080,
+        };
+        stats.record(avc());
+        stats.record(StatisticData::HevcCodec {
+            codec: AvcCodecId::HEVC,
+            profile: HevcProfile::Main10,
+            level: HevcLevel::Level51,
+            width: 3840,
+            height: 2160,
+        });
+        let video = &stats.publisher.video;
+        assert!(matches!(video.profile, AvcProfile::UNKNOWN));
+        assert!(matches!(video.level, AvcLevel::UNKNOWN));
+        assert_eq!(video.hevc_profile, Some(HevcProfile::Main10));
+        assert_eq!(video.hevc_level, Some(HevcLevel::Level51));
+        stats.record(avc());
+        let video = &stats.publisher.video;
+        assert!(matches!(video.profile, AvcProfile::High));
+        assert!(matches!(video.level, AvcLevel::Level4));
+        assert_eq!(video.hevc_profile, None);
+        assert_eq!(video.hevc_level, None);
     }
 
     #[tokio::test]

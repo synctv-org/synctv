@@ -1,4 +1,3 @@
-use crate::flv::define::aac_packet_type;
 use crate::streamhub::define::{StatisticData, SubscriberInfo};
 use {
     super::stream::StreamIdentifier,
@@ -145,18 +144,13 @@ impl StatisticsStream {
     pub(super) fn record(&mut self, data: StatisticData) {
         match data {
             StatisticData::Audio {
-                uuid,
-                data_size,
-                aac_packet_type,
-                ..
+                uuid, data_size, ..
             } => {
                 if let Some(uid) = uuid {
                     self.record_sent_bytes(&uid, data_size);
                 } else {
-                    if aac_packet_type == aac_packet_type::AAC_RAW {
-                        self.publisher.audio.recv_bytes += data_size;
-                        self.publisher.recv_bytes += data_size;
-                    }
+                    self.publisher.audio.recv_bytes += data_size;
+                    self.publisher.recv_bytes += data_size;
                     self.total_recv_bytes += data_size;
                 }
             }
@@ -208,18 +202,24 @@ impl StatisticsStream {
                 video_codec_data.codec = codec;
                 video_codec_data.profile = profile;
                 video_codec_data.level = level;
+                video_codec_data.hevc_profile = None;
+                video_codec_data.hevc_level = None;
                 video_codec_data.width = width;
                 video_codec_data.height = height;
             }
             StatisticData::HevcCodec {
                 codec,
-                profile: _,
-                level: _,
+                profile,
+                level,
                 width,
                 height,
             } => {
                 let video_codec_data = &mut self.publisher.video;
                 video_codec_data.codec = codec;
+                video_codec_data.profile = AvcProfile::UNKNOWN;
+                video_codec_data.level = AvcLevel::UNKNOWN;
+                video_codec_data.hevc_profile = Some(profile);
+                video_codec_data.hevc_level = Some(level);
                 video_codec_data.width = width;
                 video_codec_data.height = height;
             }

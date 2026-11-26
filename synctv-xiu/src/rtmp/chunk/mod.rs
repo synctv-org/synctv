@@ -5,7 +5,7 @@ pub mod unpacketizer;
 
 // pub use chunk::{ChunkBasicHeader, ChunkHeader, ChunkInfo, ChunkMessageHeader};
 
-use bytes::BytesMut;
+use bytes::{Buf, BytesMut};
 use std::fmt;
 
 //5.3.1.1
@@ -104,12 +104,12 @@ pub struct ChunkInfo<P = BytesMut> {
     pub payload: P,
 }
 
-impl<P: AsRef<[u8]>> fmt::Debug for ChunkInfo<P> {
+impl<P: Buf> fmt::Debug for ChunkInfo<P> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ChunkInfo")
             .field("basic_header", &self.basic_header)
             .field("message_header", &self.message_header)
-            .field("payload_len", &self.payload.as_ref().len())
+            .field("payload_len", &self.payload.remaining())
             .finish()
     }
 }

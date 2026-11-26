@@ -5,34 +5,48 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use moka::ops::compute::{CompResult, Op};
 use rayon::prelude::*;
 
 use super::SliceCacheBackend;
 use crate::slice_cache::etag::StoredEntry;
 
-/// In-memory cache backend backed by [`moka::future::Cache`].
-///
-/// An [`AtomicU64`] tracks the approximate total data bytes stored.  Both
-/// explicit removals and moka-internal evictions keep this counter accurate
-/// via the eviction listener.
+struct MemoryEntry {
+    value: StoredEntry,
+    last_accessed: AtomicU64,
+}
+
+/// In-memory slice storage. Each value carries its own LRU timestamp, and Moka
+/// accounts for the byte weight of admitted entries during maintenance.
 pub struct MemoryBackend {
-    cache: moka::future::Cache<String, StoredEntry>,
-    /// Approximate total data bytes stored.
-    ///
-    /// Wrapped in `Arc` so the moka eviction listener can decrement it when
-    /// entries are automatically evicted.
-    total_bytes: Arc<AtomicU64>,
-    /// Per-key last-access timestamps for true LRU eviction ordering.
-    /// Updated on every `get()` so `evict_to_size` sorts by actual recency
-    /// instead of insertion time (which would be FIFO). Cleaned up by the
-    /// eviction listener when entries are removed.
-    access_times: Arc<dashmap::DashMap<String, std::time::SystemTime>>,
+    cache: moka::future::Cache<String, Arc<MemoryEntry>>,
+    started: Instant,
 }
 
 impl MemoryBackend {
+    pub(super) async fn evict_expired_with_grace(&self, grace: Duration) -> u64 {
+        let candidates: Vec<_> = self
+            .cache
+            .iter()
+            .filter(|(_, entry)| entry.value.is_expired_after(grace))
+            .map(|(key, _)| key)
+            .collect();
+        let mut removed = 0;
+        for key in candidates {
+            if self
+                .remove_if(&key, |entry| entry.value.is_expired_after(grace))
+                .await
+                .is_some()
+            {
+                removed += 1;
+            }
+        }
+        removed
+    }
+
     pub(super) fn keys_with_prefix(&self, prefix: &str) -> Vec<String> {
         self.cache
             .iter()
@@ -47,53 +61,48 @@ impl MemoryBackend {
     /// - `time_to_idle`: hard upper bound TTL for moka's internal eviction.
     #[must_use]
     pub fn new(max_capacity: u64, time_to_idle: Duration) -> Self {
-        let total_bytes = Arc::new(AtomicU64::new(0));
-        let access_times: Arc<dashmap::DashMap<String, std::time::SystemTime>> =
-            Arc::new(dashmap::DashMap::new());
-
-        // Clones for the eviction listener closure.
-        let total_bytes_clone = Arc::clone(&total_bytes);
-        let access_times_clone = Arc::clone(&access_times);
-
         let cache = moka::future::Cache::builder()
             .max_capacity(max_capacity)
-            .weigher(|_key: &String, entry: &StoredEntry| -> u32 {
-                u32::try_from(entry.data_size()).unwrap_or(u32::MAX)
+            .weigher(|_: &String, entry: &Arc<MemoryEntry>| {
+                u32::try_from(entry.value.data_size()).unwrap_or(u32::MAX)
             })
             .time_to_idle(time_to_idle)
-            .eviction_listener(move |key: Arc<String>, value, cause| {
-                // Handle ALL eviction causes for accurate size tracking.
-                // Previously we only handled `was_evicted()` (Expired | Size)
-                // and manually adjusted sizes in `put()` and `remove()`.  This
-                // created a race: between `get(key)` and `insert(key, new)` in
-                // `put()`, moka could fire a Size eviction for the same key,
-                // causing a double-subtract of the old size.
-                // Now the listener is the single source of truth for size
-                // decrements.  `put()` only adds the new size, and `remove()`
-                // delegates entirely to the listener via `run_pending_tasks`.
-                let size = value.data_size();
-                if total_bytes_clone
-                    .try_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
-                        Some(cur.saturating_sub(size))
-                    })
-                    .is_err()
-                {
-                    tracing::debug!(
-                        size,
-                        "failed to update in-memory slice cache size during eviction"
-                    );
-                }
-
-                if !matches!(cause, moka::notification::RemovalCause::Replaced) {
-                    access_times_clone.remove(key.as_ref());
-                }
-            })
             .build();
 
         Self {
             cache,
-            total_bytes,
-            access_times,
+            started: Instant::now(),
+        }
+    }
+
+    fn access_time(&self) -> u64 {
+        u64::try_from(self.started.elapsed().as_nanos()).unwrap_or(u64::MAX)
+    }
+
+    async fn remove_if(
+        &self,
+        key: &str,
+        should_remove: impl FnOnce(&Arc<MemoryEntry>) -> bool + Send,
+    ) -> Option<u64> {
+        let result = self
+            .cache
+            .entry_by_ref(key)
+            .and_compute_with(|entry| async move {
+                if entry
+                    .as_ref()
+                    .is_some_and(|entry| should_remove(entry.value()))
+                {
+                    Op::Remove
+                } else {
+                    Op::Nop
+                }
+            })
+            .await;
+        if let CompResult::Removed(entry) = result {
+            self.cache.run_pending_tasks().await;
+            Some(entry.value().value.data_size())
+        } else {
+            None
         }
     }
 
@@ -106,48 +115,38 @@ impl MemoryBackend {
 #[async_trait]
 impl SliceCacheBackend for MemoryBackend {
     async fn get(&self, key: &str) -> Option<StoredEntry> {
-        let entry = self.cache.get(key).await;
-        if entry.is_some() {
-            // Record access time for true LRU eviction ordering.
-            self.access_times
-                .insert(key.to_string(), std::time::SystemTime::now());
-        }
+        let entry = self.cache.get(key).await?;
         entry
+            .last_accessed
+            .fetch_max(self.access_time(), Ordering::Relaxed);
+        Some(entry.value.clone())
     }
 
-    async fn put(&self, key: &str, entry: StoredEntry) -> anyhow::Result<()> {
-        let new_size = entry.data_size();
-
-        // Record initial access time for LRU tracking.
-        self.access_times
-            .insert(key.to_string(), std::time::SystemTime::now());
-
-        // Insert into moka.  If a previous value existed, moka will fire the
-        // eviction listener with `Replaced` cause, which decrements total_bytes
-        // by the old size.  We only add the new size here -- no manual
-        // get-then-subtract, which was racy with moka's internal Size eviction.
-        self.cache.insert(key.to_string(), entry).await;
-
-        // Ensure the `Replaced` listener fires before we add the new size,
-        // so total_bytes transitions: old -> (old - old_size) -> (new_size).
+    async fn put(&self, key: &str, value: StoredEntry) -> anyhow::Result<()> {
+        // Moka's weight is a u32. A larger single body can still be served,
+        // but admitting it would undercount memory and defeat the byte limit.
+        if value.data_size() > u64::from(u32::MAX) {
+            self.remove(key).await;
+            return Ok(());
+        }
+        let entry = Arc::new(MemoryEntry {
+            value,
+            last_accessed: AtomicU64::new(self.access_time()),
+        });
+        self.cache
+            .entry_by_ref(key)
+            .and_compute_with(|_| async move { Op::Put(entry) })
+            .await;
         self.cache.run_pending_tasks().await;
-        self.total_bytes.fetch_add(new_size, Ordering::Relaxed);
-
         Ok(())
     }
 
     async fn remove(&self, key: &str) {
-        // Invalidate in moka.  The eviction listener (with `Explicit` cause)
-        // will decrement total_bytes and remove the access timestamp.
-        self.cache.remove(key).await;
-        // Run pending tasks to ensure the eviction listener fires immediately,
-        // so size tracking is accurate for callers that check current_size()
-        // right after remove().
-        self.cache.run_pending_tasks().await;
+        self.remove_if(key, |_| true).await;
     }
 
     fn current_size(&self) -> u64 {
-        self.total_bytes.load(Ordering::Relaxed)
+        self.cache.weighted_size()
     }
 
     fn entry_count(&self) -> u64 {
@@ -159,52 +158,37 @@ impl SliceCacheBackend for MemoryBackend {
             return 0;
         }
 
-        // Use iter() instead of get() to avoid updating moka's internal access times.
-        // Use access_times DashMap for true LRU ordering (updated on every get()),
-        // falling back to StoredEntry.last_accessed (insertion time) for entries
-        // never read via get().
-        let mut entries: Vec<(String, std::time::SystemTime, u64)> = self
+        let mut candidates: Vec<_> = self
             .cache
             .iter()
             .map(|(key, entry)| {
-                let access_time = self
-                    .access_times
-                    .get(key.as_ref())
-                    .map_or(entry.last_accessed, |r| *r.value());
-                (key.as_ref().clone(), access_time, entry.data_size())
+                (
+                    key,
+                    entry.last_accessed.load(Ordering::Relaxed),
+                    Arc::downgrade(&entry),
+                )
             })
             .collect();
+        candidates.par_sort_unstable_by_key(|(_, accessed, _)| *accessed);
 
-        // Sort by last access time ascending (oldest first = LRU).
-        entries.par_sort_by_key(|entry| entry.1);
-
-        let mut freed = 0u64;
-        for (key, _, size) in entries {
+        let mut freed = 0;
+        for (key, accessed, candidate) in candidates {
             if self.current_size() <= target_bytes {
                 break;
             }
-            self.remove(&key).await;
-            freed += size;
+            freed += self
+                .remove_if(&key, |entry| {
+                    std::ptr::eq(candidate.as_ptr(), Arc::as_ptr(entry))
+                        && entry.last_accessed.load(Ordering::Relaxed) == accessed
+                })
+                .await
+                .unwrap_or(0);
         }
-
         freed
     }
 
     async fn evict_expired(&self) -> u64 {
-        // Use iter() instead of get() to avoid updating moka's internal access times.
-        // iter() does not update the historic popularity estimator or reset idle timers.
-        let expired_keys: Vec<String> = self
-            .cache
-            .iter()
-            .filter(|(_, entry)| entry.is_expired())
-            .map(|(key, _)| key.as_ref().clone())
-            .collect();
-
-        let count = expired_keys.len() as u64;
-        for key in expired_keys {
-            self.remove(&key).await;
-        }
-        count
+        self.evict_expired_with_grace(Duration::ZERO).await
     }
 
     async fn keys(&self) -> Vec<String> {

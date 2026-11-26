@@ -2968,9 +2968,7 @@ impl ResourceObserver {
         }
     }
 
-    pub(super) async fn next_expired_resource_refresh_deadline(
-        &self,
-    ) -> Option<tokio::time::Instant> {
+    async fn next_expired_resource_refresh_deadline(&self) -> Option<tokio::time::Instant> {
         let state = self.state.lock().await;
         let expires_at = state
             .observations
@@ -2982,7 +2980,7 @@ impl ResourceObserver {
         if expires_at <= now_wall {
             return Some(now_instant);
         }
-        let refresh_after = Duration::from_secs((expires_at - now_wall).cast_unsigned());
+        let refresh_after = Duration::from_secs(expires_at.abs_diff(now_wall));
         Some(
             now_instant
                 .checked_add(refresh_after)
@@ -2992,15 +2990,17 @@ impl ResourceObserver {
 
     pub(super) async fn wait_for_expired_resource_refresh_deadline(&self) {
         loop {
+            // Subscribe before reading state so a concurrent earlier deadline wakes this wait.
+            let changed = self.observation_change.notified();
             match self.next_expired_resource_refresh_deadline().await {
                 Some(deadline) => {
                     tokio::select! {
                         () = tokio::time::sleep_until(deadline) => return,
-                        () = self.observation_change.notified() => {}
+                        () = changed => {}
                     }
                 }
                 None => {
-                    self.observation_change.notified().await;
+                    changed.await;
                 }
             }
         }

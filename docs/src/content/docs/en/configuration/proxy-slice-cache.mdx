@@ -84,6 +84,8 @@ SYNCTV_PROXY_SLICE_CACHE_WATERMARK_RATIO=0.875
 
 ## Production
 
+Scheduled expiry retains entries through the stale window when background revalidation is enabled. Capacity eviction can remove them earlier. The `slice-cache evict-expired` command immediately removes entries past their TTL.
+
 For single-node production, mount `data_dir` or `file_cache_dir` to persistent storage if the file backend is enabled, and monitor capacity plus cleanup.
 
 In Kubernetes, shared storage can make files visible across replicas, but the current index is process-local and there is no cross-process index or distributed lock. Do not treat the file backend as a strongly consistent realtime multi-replica cache.

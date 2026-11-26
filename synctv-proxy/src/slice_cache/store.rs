@@ -8,6 +8,8 @@
 //! and key hashing live in sibling modules to keep this file focused on cache
 //! behavior.
 
+mod full_response;
+
 use std::collections::BinaryHeap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,15 +29,13 @@ use super::bounds::{aligned_request, response_extent};
 use super::config::{CacheBackendConfig, SliceCacheConfig};
 use super::etag::{CachedResourceMeta, StoredEntry};
 use super::head::HeadFetchContext;
-use super::keys::{
-    full_response_cache_key, full_response_meta_key, resource_meta_key, slice_cache_key,
-};
+use super::keys::{resource_meta_key, slice_cache_key};
 use super::maintenance::{MetaEvictionCandidate, UpdatingKeyGuard, ratio_u64};
 use super::range::{format_request_range, parse_content_range};
 use super::status::CacheStatus;
 use super::types::{
-    CachedFullResponse, CachedSlice, FetchedSlice, FullResponseFetchResult, HeadResourceResult,
-    SliceCachePurgeResult, SliceCacheStats, SliceFetchRequest, SliceFetchResult,
+    CachedSlice, FetchedSlice, HeadResourceResult, SliceCachePurgeResult, SliceCacheStats,
+    SliceFetchRequest, SliceFetchResult,
 };
 
 pub(super) fn cleanup_stale_resource_meta(
@@ -74,7 +74,9 @@ pub(super) fn cleanup_stale_resource_meta(
     }
 
     for candidate in oldest_candidates {
-        meta.remove(&candidate.key);
+        meta.remove_if(&candidate.key, |_, entry| {
+            entry.last_accessed == candidate.last_accessed
+        });
     }
 }
 
@@ -82,13 +84,6 @@ pub(super) fn cleanup_stale_resource_meta(
 const LOCK_CLEANUP_INTERVAL: u64 = 64;
 pub(super) const MAX_META_ENTRIES: usize = 100_000;
 const META_RETENTION_TARGET_DIVISOR: usize = 2;
-/// Largest complete response eligible for the non-slice cache.
-///
-/// Media streams stay streaming regardless of size. This cap only bounds a
-/// response that is fully buffered before being placed in the shared cache.
-const MAX_FULL_RESPONSE_CACHE_ENTRY_SIZE: usize = 16 * 1024 * 1024;
-
-// SliceCache
 
 /// Per-key Mutex to prevent thundering herd on the same slice.
 type SliceLock = Arc<Mutex<()>>;
@@ -99,8 +94,7 @@ struct SliceRangeRequest {
 }
 
 struct SliceResponseContext<'a> {
-    url: &'a str,
-    provider_headers: &'a ProviderHeaders,
+    meta_key: &'a str,
     key: &'a str,
     slice_index: u64,
     known_total_size: Option<u64>,
@@ -153,6 +147,7 @@ async fn read_exact_slice_body(
 /// Resource metadata (`ETag`, Last-Modified, Content-Type) is stored in a
 /// separate `DashMap` keyed by `url_hash + "meta"` to enable cross-slice
 /// ETag/Last-Modified validation and conditional requests.
+#[derive(Clone)]
 pub struct SliceCache {
     pub(super) config: SliceCacheConfig,
     /// SSRF policy used for cache fill and revalidation requests.
@@ -165,31 +160,10 @@ pub struct SliceCache {
     locks: Arc<dashmap::DashMap<String, SliceLock>>,
     /// Per-resource metadata for `ETag` consistency validation.
     pub(super) meta: Arc<dashmap::DashMap<String, CachedResourceMeta>>,
-    /// Tracks which cache keys have been inserted recently so we can
-    /// distinguish `EXPIRED` (was cached, TTL elapsed) from `MISS`
-    /// (never seen before). Backed by moka with TTL to prevent unbounded
-    /// growth.
-    pub(super) seen_keys: moka::future::Cache<String, ()>,
     /// Keys currently being updated (STALE/UPDATING support).
     updating_keys: Arc<dashmap::DashSet<String>>,
     /// Counter for periodic stale lock cleanup.
     lock_ops: Arc<std::sync::atomic::AtomicU64>,
-}
-
-impl Clone for SliceCache {
-    fn clone(&self) -> Self {
-        Self {
-            config: self.config.clone(),
-            ssrf_guard: self.ssrf_guard.clone(),
-            client: self.client.clone(),
-            backend: Arc::clone(&self.backend),
-            locks: Arc::clone(&self.locks),
-            meta: Arc::clone(&self.meta),
-            seen_keys: self.seen_keys.clone(),
-            updating_keys: Arc::clone(&self.updating_keys),
-            lock_ops: Arc::clone(&self.lock_ops),
-        }
-    }
 }
 
 impl SliceCache {
@@ -199,11 +173,7 @@ impl SliceCache {
         wait_error: impl Into<String>,
         request_control: Option<&ExecutionControl>,
     ) -> Result<OwnedMutexGuard<()>, anyhow::Error> {
-        let lock = self
-            .locks
-            .entry(key.to_string())
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone();
+        let lock = self.key_lock(key.to_string());
 
         if let Some(control) = request_control {
             let cancellation = control.cancellation_token();
@@ -221,7 +191,7 @@ impl SliceCache {
         url: &str,
         provider_headers: &ProviderHeaders,
         slice_index: u64,
-        include_conditionals: bool,
+        validators: Option<&CachedResourceMeta>,
     ) -> Result<SliceRangeRequest, anyhow::Error> {
         let (range_start, range_end) = aligned_request(slice_index, self.config.slice_size as u64)
             .with_context(|| format!("Invalid slice range for index {slice_index}"))?;
@@ -231,16 +201,13 @@ impl SliceCache {
         request = apply_provider_headers(request, url, provider_headers)?;
         request = request.header(reqwest::header::RANGE, &range_header);
 
-        if include_conditionals {
-            let meta_key = Self::meta_key(url, provider_headers);
-            if let Some(meta_ref) = self.meta.get(&meta_key) {
-                if let Some(ref etag) = meta_ref.etag {
-                    request = request.header(reqwest::header::IF_NONE_MATCH, etag.as_str());
-                }
-                if let Some(ref last_modified) = meta_ref.last_modified {
-                    request =
-                        request.header(reqwest::header::IF_MODIFIED_SINCE, last_modified.as_str());
-                }
+        if let Some(meta) = validators {
+            if let Some(etag) = &meta.etag {
+                request = request.header(reqwest::header::IF_NONE_MATCH, etag.as_str());
+            }
+            if let Some(last_modified) = &meta.last_modified {
+                request =
+                    request.header(reqwest::header::IF_MODIFIED_SINCE, last_modified.as_str());
             }
         }
 
@@ -255,13 +222,14 @@ impl SliceCache {
     async fn drain_not_modified_body(
         resp: reqwest::Response,
         request_control: Option<&ExecutionControl>,
-    ) {
+    ) -> anyhow::Result<()> {
         if let Err(error) =
             run_with_proxy_cancellation("slice cache 304 drain", request_control, resp.bytes())
-                .await
+                .await?
         {
             tracing::debug!(%error, "failed to drain slice cache 304 response body");
         }
+        Ok(())
     }
 
     /// Re-insert the still-cached slice data under a fresh segment TTL after a
@@ -295,136 +263,33 @@ impl SliceCache {
 
     fn spawn_slice_revalidation(
         &self,
-        url: &str,
-        provider_headers: &ProviderHeaders,
-        slice_index: u64,
+        registration: UpdatingKeyGuard,
+        fetch: &SliceFetchRequest<'_>,
         total_size: u64,
-        upstream_header_timeout: Option<Duration>,
+        meta_key: String,
     ) {
         let cache = self.clone();
-        let url = url.to_string();
-        let provider_headers = provider_headers.clone();
-
+        let url = fetch.url.to_owned();
+        let provider_headers = fetch.provider_headers.clone();
+        let slice_index = fetch.slice_index;
+        let upstream_header_timeout = fetch.upstream_header_timeout;
         tokio::spawn(async move {
-            if let Err(error) = cache
-                .refresh_stale_slice(
-                    &url,
-                    &provider_headers,
-                    slice_index,
-                    total_size,
-                    upstream_header_timeout,
-                )
-                .await
-            {
-                tracing::debug!(
-                    url = %url,
-                    slice_index,
-                    error = %error,
-                    "Background slice revalidation failed"
-                );
-            }
-        });
-    }
-
-    async fn refresh_stale_slice(
-        &self,
-        url: &str,
-        provider_headers: &ProviderHeaders,
-        slice_index: u64,
-        total_size: u64,
-        upstream_header_timeout: Option<Duration>,
-    ) -> Result<(), anyhow::Error> {
-        let key = Self::compute_cache_key(url, provider_headers, slice_index);
-        let _updating_guard = UpdatingKeyGuard::new(self.updating_keys.clone(), key.clone());
-
-        let _guard = self.lock_slice_key(&key, "", None).await?;
-
-        let mut should_send_conditional = false;
-
-        if let Some(entry) = self.backend.get(&key).await {
-            if !entry.is_expired() {
-                return Ok(());
-            }
-            should_send_conditional = true;
-        }
-
-        let range_request = self.build_slice_range_request(
-            url,
-            provider_headers,
-            slice_index,
-            should_send_conditional,
-        )?;
-
-        let resp = match send_with_redirect_validation_with_control_and_timeout(
-            &self.client,
-            range_request.request,
-            &self.ssrf_guard,
-            None,
-            upstream_header_timeout,
-        )
-        .await
-        {
-            Ok(proxy_response) => proxy_response.response,
-            Err(e) => return Err(anyhow::anyhow!("Slice fetch failed: {e}")),
-        };
-
-        if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
-            Self::drain_not_modified_body(resp, None).await;
-
-            if let Some(existing) = self.backend.get(&key).await {
-                self.refresh_cached_slice_ttl(&key, existing.data.clone())
-                    .await?;
-                return Ok(());
-            }
-
-            let retry_request =
-                self.build_slice_range_request(url, provider_headers, slice_index, false)?;
-            let retry_resp = match send_with_redirect_validation_with_control_and_timeout(
-                &self.client,
-                retry_request.request,
-                &self.ssrf_guard,
-                None,
-                upstream_header_timeout,
-            )
-            .await
-            {
-                Ok(proxy_response) => proxy_response.response,
-                Err(e) => return Err(anyhow::anyhow!("Slice re-fetch failed after 304: {e}")),
-            };
-            self.process_slice_response(
-                retry_resp,
-                SliceResponseContext {
-                    url,
-                    provider_headers,
-                    key: &key,
-                    slice_index,
-                    known_total_size: Some(total_size),
-                    range_start: range_request.range_start,
-                    cache_status: CacheStatus::Miss,
-                    request_control: None,
-                },
-            )
-            .await
-            .map(|_| ())?;
-            return Ok(());
-        }
-
-        self.process_slice_response(
-            resp,
-            SliceResponseContext {
-                url,
-                provider_headers,
-                key: &key,
+            let fetch = SliceFetchRequest {
+                url: &url,
+                provider_headers: &provider_headers,
                 slice_index,
                 known_total_size: Some(total_size),
-                range_start: range_request.range_start,
-                cache_status: CacheStatus::Miss,
                 request_control: None,
-            },
-        )
-        .await
-        .map(|_| ())?;
-        Ok(())
+                upstream_header_timeout,
+                bypass_on_non_partial: false,
+            };
+            if let Err(error) = cache
+                .fetch_slice_after_lock(&fetch, registration.key(), &meta_key)
+                .await
+            {
+                tracing::debug!(slice_index, %error, "Background slice revalidation failed");
+            }
+        });
     }
 
     /// Create a new `SliceCache` with the given configuration.
@@ -493,7 +358,7 @@ impl SliceCache {
             } => {
                 let fb =
                     super::backend::file::FileBackend::new(cache_dir.clone(), *dir_levels).await?;
-                fb.load_index(config.stale_max_age).await?;
+                fb.load_index(config.stale_retention()).await?;
                 CacheBackend::File(fb)
             }
         };
@@ -508,14 +373,6 @@ impl SliceCache {
         ssrf_guard: synctv_common::ssrf::SsrfGuard,
         backend: CacheBackend,
     ) -> Self {
-        // seen_keys uses a moka cache with a TTL slightly longer than
-        // the main cache's time_to_idle so that "was ever seen" info
-        // outlives the data entry but does not grow unbounded.
-        let seen_keys = moka::future::Cache::builder()
-            .max_capacity(1_000_000)
-            .time_to_idle(Duration::from_hours(2))
-            .build();
-
         Self {
             config,
             ssrf_guard,
@@ -523,7 +380,6 @@ impl SliceCache {
             backend: Arc::new(backend),
             locks: Arc::new(dashmap::DashMap::new()),
             meta: Arc::new(dashmap::DashMap::new()),
-            seen_keys,
             updating_keys: Arc::new(dashmap::DashSet::new()),
             lock_ops: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
@@ -593,9 +449,8 @@ impl SliceCache {
             self.backend.remove(&key).await;
         }
         self.meta.clear();
-        self.updating_keys.clear();
-        self.locks.clear();
-        self.seen_keys.invalidate_all();
+        // In-flight requests still own their locks and refresh registrations.
+        self.cleanup_stale_locks();
 
         SliceCachePurgeResult {
             removed_entries,
@@ -603,7 +458,7 @@ impl SliceCache {
         }
     }
 
-    /// Remove expired cached entries using the same backend primitive as the lifecycle manager.
+    /// Remove expired cached entries immediately, including entries in the stale window.
     pub async fn evict_expired_entries(&self) -> u64 {
         self.backend.evict_expired().await
     }
@@ -624,286 +479,6 @@ impl SliceCache {
     /// Compute the key used to store per-resource metadata.
     pub(super) fn meta_key(url: &str, provider_headers: &ProviderHeaders) -> String {
         resource_meta_key(url, provider_headers)
-    }
-
-    /// Fetch a non-range response as one cacheable object.
-    ///
-    /// Every upstream response updates admission metadata. Requests without
-    /// metadata use the per-resource lock as a single-flight guard and check
-    /// metadata again after acquiring it. Resources already known to be
-    /// ineligible bypass the lock and stream directly.
-    pub(super) async fn get_or_fetch_full_response_with_control(
-        &self,
-        url: &str,
-        provider_headers: &ProviderHeaders,
-        request_control: Option<&ExecutionControl>,
-        upstream_header_timeout: Option<Duration>,
-    ) -> Result<FullResponseFetchResult, anyhow::Error> {
-        let key = full_response_cache_key(url, provider_headers);
-        let meta_key = full_response_meta_key(url, provider_headers);
-
-        let stored_metadata = self.meta.get(&meta_key).map(|metadata| metadata.clone());
-
-        if let Some(metadata) = stored_metadata {
-            if Self::full_response_metadata_allows_cache(&metadata) {
-                if let Some(cached) = self
-                    .get_cached_full_response(&key, &metadata, CacheStatus::Hit)
-                    .await
-                {
-                    return Ok(FullResponseFetchResult::Cached(cached));
-                }
-
-                return self
-                    .complete_full_response_cache_fill(
-                        &key,
-                        &meta_key,
-                        url,
-                        provider_headers,
-                        request_control,
-                        upstream_header_timeout,
-                    )
-                    .await;
-            }
-
-            let response = self
-                .fetch_full_response(
-                    url,
-                    provider_headers,
-                    request_control,
-                    upstream_header_timeout,
-                )
-                .await?;
-            let metadata = Self::full_response_resource_metadata(&response);
-            self.store_full_response_metadata(&key, &meta_key, metadata)
-                .await;
-            return Ok(FullResponseFetchResult::Bypass(response));
-        }
-
-        self.complete_full_response_cache_fill(
-            &key,
-            &meta_key,
-            url,
-            provider_headers,
-            request_control,
-            upstream_header_timeout,
-        )
-        .await
-    }
-
-    async fn fetch_full_response(
-        &self,
-        url: &str,
-        provider_headers: &ProviderHeaders,
-        request_control: Option<&ExecutionControl>,
-        upstream_header_timeout: Option<Duration>,
-    ) -> Result<reqwest::Response, anyhow::Error> {
-        let request = apply_provider_headers(self.client.get(url), url, provider_headers)?;
-        send_with_redirect_validation_with_control_and_timeout(
-            &self.client,
-            request,
-            &self.ssrf_guard,
-            request_control,
-            upstream_header_timeout,
-        )
-        .await
-        .context("Full response cache fetch failed")
-        .map(|proxy_response| proxy_response.response)
-    }
-
-    fn full_response_resource_metadata(response: &reqwest::Response) -> CachedResourceMeta {
-        let content_length = response.content_length();
-        let header = |name| {
-            response
-                .headers()
-                .get(name)
-                .and_then(|value| value.to_str().ok())
-                .map(ToString::to_string)
-        };
-
-        CachedResourceMeta {
-            status: Some(response.status().as_u16()),
-            etag: header("etag"),
-            last_modified: header("last-modified"),
-            total_size: content_length,
-            supports_ranges: false,
-            content_type: header("content-type"),
-            content_encoding: header("content-encoding"),
-            validated_at: std::time::SystemTime::now(),
-            last_accessed: std::time::SystemTime::now(),
-        }
-    }
-
-    fn full_response_metadata_allows_cache(metadata: &CachedResourceMeta) -> bool {
-        metadata.status == Some(reqwest::StatusCode::OK.as_u16())
-            && metadata
-                .total_size
-                .and_then(|length| usize::try_from(length).ok())
-                .is_some_and(|length| length <= MAX_FULL_RESPONSE_CACHE_ENTRY_SIZE)
-    }
-
-    async fn store_full_response_metadata(
-        &self,
-        key: &str,
-        meta_key: &str,
-        metadata: CachedResourceMeta,
-    ) {
-        if !Self::full_response_metadata_allows_cache(&metadata) {
-            self.backend.remove(key).await;
-        }
-        self.put_resource_meta_by_key(meta_key.to_string(), metadata);
-        self.maybe_cleanup_locks();
-    }
-
-    async fn get_cached_full_response(
-        &self,
-        key: &str,
-        metadata: &CachedResourceMeta,
-        status: CacheStatus,
-    ) -> Option<CachedFullResponse> {
-        let entry = self.backend.get(key).await?;
-        if entry.is_expired() {
-            self.backend.remove(key).await;
-            return None;
-        }
-
-        Some(CachedFullResponse {
-            data: entry.data,
-            content_type: metadata.content_type.clone(),
-            content_encoding: metadata.content_encoding.clone(),
-            etag: metadata.etag.clone(),
-            last_modified: metadata.last_modified.clone(),
-            status,
-        })
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn complete_full_response_cache_fill(
-        &self,
-        key: &str,
-        meta_key: &str,
-        url: &str,
-        provider_headers: &ProviderHeaders,
-        request_control: Option<&ExecutionControl>,
-        upstream_header_timeout: Option<Duration>,
-    ) -> Result<FullResponseFetchResult, anyhow::Error> {
-        let guard = self
-            .lock_slice_key(
-                key,
-                "Request cancelled while waiting for full response cache lock",
-                request_control,
-            )
-            .await?;
-
-        if let Some(metadata) = self.meta.get(meta_key).map(|metadata| metadata.clone()) {
-            if Self::full_response_metadata_allows_cache(&metadata) {
-                if let Some(cached) = self
-                    .get_cached_full_response(key, &metadata, CacheStatus::Hit)
-                    .await
-                {
-                    return Ok(FullResponseFetchResult::Cached(cached));
-                }
-            } else {
-                drop(guard);
-                self.maybe_cleanup_locks();
-
-                let response = self
-                    .fetch_full_response(
-                        url,
-                        provider_headers,
-                        request_control,
-                        upstream_header_timeout,
-                    )
-                    .await?;
-                let metadata = Self::full_response_resource_metadata(&response);
-                self.store_full_response_metadata(key, meta_key, metadata)
-                    .await;
-                return Ok(FullResponseFetchResult::Bypass(response));
-            }
-        }
-
-        let response = self
-            .fetch_full_response(
-                url,
-                provider_headers,
-                request_control,
-                upstream_header_timeout,
-            )
-            .await?;
-        let metadata = Self::full_response_resource_metadata(&response);
-        if !Self::full_response_metadata_allows_cache(&metadata) {
-            self.put_resource_meta_by_key(meta_key.to_string(), metadata);
-            drop(guard);
-            self.backend.remove(key).await;
-            self.maybe_cleanup_locks();
-            return Ok(FullResponseFetchResult::Bypass(response));
-        }
-        // File-backed bodies survive restarts while metadata does not. Remove
-        // any independently restored body before publishing the new metadata.
-        self.backend.remove(key).await;
-        self.store_full_response_metadata(key, meta_key, metadata.clone())
-            .await;
-
-        self.cache_full_response(key, metadata, response, request_control)
-            .await
-    }
-
-    async fn cache_full_response(
-        &self,
-        key: &str,
-        metadata: CachedResourceMeta,
-        mut response: reqwest::Response,
-        request_control: Option<&ExecutionControl>,
-    ) -> Result<FullResponseFetchResult, anyhow::Error> {
-        let content_length =
-            usize::try_from(metadata.total_size.ok_or_else(|| {
-                anyhow::anyhow!("Cacheable full response omitted Content-Length")
-            })?)
-            .map_err(|_| anyhow::anyhow!("Cacheable full response Content-Length exceeds usize"))?;
-        let mut body = Vec::with_capacity(content_length);
-        while let Some(chunk) = run_with_proxy_cancellation(
-            "full response cache body read",
-            request_control,
-            response.chunk(),
-        )
-        .await?
-        .map_err(|error| anyhow::anyhow!("Failed to read full response cache body: {error}"))?
-        {
-            let next_length = body
-                .len()
-                .checked_add(chunk.len())
-                .ok_or_else(|| anyhow::anyhow!("Full response cache body length overflow"))?;
-            body.extend_from_slice(&chunk);
-            if next_length > content_length {
-                return Err(anyhow::anyhow!(
-                    "Full response cache body exceeded declared Content-Length: got at least {next_length}, expected {content_length}"
-                ));
-            }
-        }
-
-        if body.len() != content_length {
-            return Err(anyhow::anyhow!(
-                "Full response cache body length mismatch: got {}, expected {content_length}",
-                body.len()
-            ));
-        }
-
-        let data = Bytes::from(body);
-        self.backend
-            .put(key, StoredEntry::new(data.clone(), self.config.segment_ttl))
-            .await
-            .map_err(|error| {
-                anyhow::anyhow!("Failed to store full response cache entry: {error}")
-            })?;
-        self.maybe_cleanup_locks();
-
-        Ok(FullResponseFetchResult::Cached(CachedFullResponse {
-            data,
-            content_type: metadata.content_type,
-            content_encoding: metadata.content_encoding,
-            etag: metadata.etag,
-            last_modified: metadata.last_modified,
-            status: CacheStatus::Miss,
-        }))
     }
 
     fn cached_meta_and_total_size(
@@ -974,16 +549,23 @@ impl SliceCache {
         self.cleanup_stale_meta_with_limit(max_meta_entries);
     }
 
-    pub(super) fn resource_meta_lock(
-        &self,
-        url: &str,
-        provider_headers: &ProviderHeaders,
-    ) -> SliceLock {
-        let key = format!("meta:{}", Self::meta_key(url, provider_headers));
-        self.locks
+    fn resource_meta_lock(&self, meta_key: &str) -> SliceLock {
+        self.key_lock(format!("meta:{meta_key}"))
+    }
+
+    fn key_lock(&self, key: String) -> SliceLock {
+        let lock = self
+            .locks
             .entry(key)
             .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone()
+            .clone();
+        let count = self
+            .lock_ops
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if count.is_multiple_of(LOCK_CLEANUP_INTERVAL) {
+            self.cleanup_stale_locks();
+        }
+        lock
     }
 
     pub(super) async fn get_or_fetch_head_resource_with_control(
@@ -994,14 +576,15 @@ impl SliceCache {
         request_control: Option<&ExecutionControl>,
         upstream_header_timeout: Option<Duration>,
     ) -> Result<HeadResourceResult, anyhow::Error> {
+        let meta_key = Self::meta_key(url, provider_headers);
         super::head::get_or_fetch_head_resource_with_control(
             HeadFetchContext {
                 client: &self.client,
                 ssrf_guard: &self.ssrf_guard,
                 segment_ttl: self.config.segment_ttl,
                 meta: &self.meta,
-                meta_key: Self::meta_key(url, provider_headers),
-                meta_lock: self.resource_meta_lock(url, provider_headers),
+                meta_lock: self.resource_meta_lock(&meta_key),
+                meta_key,
             },
             url,
             provider_headers,
@@ -1105,19 +688,10 @@ impl SliceCache {
         &self,
         fetch: SliceFetchRequest<'_>,
     ) -> Result<SliceFetchResult, anyhow::Error> {
-        let SliceFetchRequest {
-            url,
-            provider_headers,
-            slice_index,
-            known_total_size,
-            request_control,
-            upstream_header_timeout,
-            bypass_on_non_partial,
-        } = fetch;
-        let meta_key = Self::meta_key(url, provider_headers);
-        let key = slice_cache_key(&meta_key, slice_index);
-        let (mut cached_meta, mut effective_total_size) =
-            self.cached_meta_and_total_size(&meta_key, known_total_size);
+        let meta_key = Self::meta_key(fetch.url, fetch.provider_headers);
+        let key = slice_cache_key(&meta_key, fetch.slice_index);
+        let (cached_meta, effective_total_size) =
+            self.cached_meta_and_total_size(&meta_key, fetch.known_total_size);
 
         // Fast path: check cache without locking.
         if let Some(entry) = self.backend.get(&key).await {
@@ -1136,31 +710,19 @@ impl SliceCache {
                 && entry.is_stale(self.config.stale_max_age)
                 && let Some(total_size) = effective_total_size
             {
-                // Mark as updating so subsequent requests know a refresh
-                // is expected.  `DashSet::insert` returns true if the key
-                // was newly inserted (i.e., we are the first stale request).
-                if self.updating_keys.insert(key.clone()) {
-                    // Newly inserted -- we are the first stale request.
-                    self.spawn_slice_revalidation(
-                        url,
-                        provider_headers,
-                        slice_index,
-                        total_size,
-                        upstream_header_timeout,
-                    );
-                    return Ok(SliceFetchResult::Slice(Self::fetched_slice_from_meta(
-                        total_size,
-                        cached_meta.as_ref(),
-                        entry.data,
-                        CacheStatus::Stale,
-                    )));
-                }
-                // Already present -- another request is updating this key.
+                let status = if let Some(registration) =
+                    UpdatingKeyGuard::try_register(&self.updating_keys, key)
+                {
+                    self.spawn_slice_revalidation(registration, &fetch, total_size, meta_key);
+                    CacheStatus::Stale
+                } else {
+                    CacheStatus::Updating
+                };
                 return Ok(SliceFetchResult::Slice(Self::fetched_slice_from_meta(
                     total_size,
                     cached_meta.as_ref(),
                     entry.data,
-                    CacheStatus::Updating,
+                    status,
                 )));
             }
             // Expired beyond stale window -- fall through to re-fetch
@@ -1168,91 +730,73 @@ impl SliceCache {
             // needed for conditional request (304 Not Modified) handling.
         }
 
-        // Acquire the per-key lock cooperatively.
-        // Proxy requests should only stop for caller cancellation, not for a
-        // proxy-local timeout budget.
+        self.fetch_slice_after_lock(&fetch, &key, &meta_key).await
+    }
+
+    async fn fetch_slice_after_lock(
+        &self,
+        fetch: &SliceFetchRequest<'_>,
+        key: &str,
+        meta_key: &str,
+    ) -> anyhow::Result<SliceFetchResult> {
+        let SliceFetchRequest {
+            url,
+            provider_headers,
+            slice_index,
+            known_total_size,
+            request_control,
+            upstream_header_timeout,
+            bypass_on_non_partial,
+        } = *fetch;
         let _guard = self
             .lock_slice_key(
-                &key,
+                key,
                 format!("Request cancelled while waiting for slice cache lock {slice_index}"),
                 request_control,
             )
             .await?;
-
-        let mut should_send_conditional = false;
-        let mut fetch_status = CacheStatus::Miss;
-
-        (cached_meta, effective_total_size) =
-            self.cached_meta_and_total_size(&meta_key, known_total_size);
-
-        // Double-check after acquiring lock.
-        if let Some(entry) = self.backend.get(&key).await {
-            if !entry.is_expired() {
-                // Another task may have completed a re-fetch while we were
-                // waiting for the lock.
-                if let Some(total_size) = effective_total_size {
-                    self.updating_keys.remove(&key);
-                    return Ok(SliceFetchResult::Slice(Self::fetched_slice_from_meta(
-                        total_size,
-                        cached_meta.as_ref(),
-                        entry.data,
-                        CacheStatus::Hit,
-                    )));
-                }
-            }
-            should_send_conditional = true;
-            fetch_status = CacheStatus::Expired;
-            // Still expired -- check stale once more for concurrent stale
-            // serving case, then proceed with re-fetch. Keep the entry
-            // in the backend for now (conditional request may use it).
-            if self.config.stale_while_revalidate && entry.is_stale(self.config.stale_max_age) {
-                // We hold the lock and will do the re-fetch below, so
-                // let stale requests continue being served.
-            }
-            // Do NOT remove here; the entry is still needed for
-            // conditional request (304 Not Modified) support. It will
-            // be overwritten by a successful re-fetch or naturally
-            // evicted by the lifecycle manager.
+        let (cached_meta, effective_total_size) =
+            self.cached_meta_and_total_size(meta_key, known_total_size);
+        let existing = self.backend.get(key).await;
+        if let Some(entry) = &existing
+            && !entry.is_expired()
+            && let Some(total_size) = effective_total_size
+        {
+            return Ok(SliceFetchResult::Slice(Self::fetched_slice_from_meta(
+                total_size,
+                cached_meta.as_ref(),
+                entry.data.clone(),
+                CacheStatus::Hit,
+            )));
         }
+        let has_entry = existing.is_some();
+        drop(existing);
 
-        // Build the upstream request.
-        let range_request = self.build_slice_range_request(
-            url,
-            provider_headers,
-            slice_index,
-            should_send_conditional,
-        )?;
-
-        let resp = match send_with_redirect_validation_with_control_and_timeout(
+        let validators = cached_meta
+            .as_ref()
+            .filter(|meta| has_entry && (meta.etag.is_some() || meta.last_modified.is_some()));
+        let request =
+            self.build_slice_range_request(url, provider_headers, slice_index, validators)?;
+        let range_start = request.range_start;
+        let mut resp = send_with_redirect_validation_with_control_and_timeout(
             &self.client,
-            range_request.request,
+            request.request,
             &self.ssrf_guard,
             request_control,
             upstream_header_timeout,
         )
         .await
-        {
-            Ok(proxy_response) => proxy_response.response,
-            Err(e) => {
-                // Clean up updating_keys on send failure so the key is not
-                // permanently stuck in "updating" state.
-                self.updating_keys.remove(&key);
-                return Err(e).context("Slice fetch failed");
-            }
-        };
+        .context("Slice fetch failed")?
+        .response;
 
-        // Handle 304 Not Modified: refresh the TTL and return Revalidated.
         if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
-            // Consume the (empty) body to release the connection.
-            Self::drain_not_modified_body(resp, request_control).await;
-
-            // Refresh the entry's TTL by re-inserting it.
-            if let Some(existing) = self.backend.get(&key).await
+            Self::drain_not_modified_body(resp, request_control).await?;
+            if validators.is_some()
+                && let Some(existing) = self.backend.get(key).await
                 && let Some(total_size) = effective_total_size
             {
-                self.refresh_cached_slice_ttl(&key, existing.data.clone())
+                self.refresh_cached_slice_ttl(key, existing.data.clone())
                     .await?;
-                self.updating_keys.remove(&key);
                 return Ok(SliceFetchResult::Slice(Self::fetched_slice_from_meta(
                     total_size,
                     cached_meta.as_ref(),
@@ -1260,76 +804,42 @@ impl SliceCache {
                     CacheStatus::Revalidated,
                 )));
             }
-            // Entry was evicted between the conditional request and now --
-            // fall through to a full re-fetch.  This is an unlikely edge
-            // case; we rebuild the request without conditional headers.
-            let request2 =
-                self.build_slice_range_request(url, provider_headers, slice_index, false)?;
-            let resp2 = match send_with_redirect_validation_with_control_and_timeout(
+            // An unsolicited 304 or an eviction during revalidation requires fresh bytes.
+            let retry = self.build_slice_range_request(url, provider_headers, slice_index, None)?;
+            resp = send_with_redirect_validation_with_control_and_timeout(
                 &self.client,
-                request2.request,
+                retry.request,
                 &self.ssrf_guard,
                 request_control,
                 upstream_header_timeout,
             )
             .await
-            {
-                Ok(proxy_response) => proxy_response.response,
-                Err(e) => {
-                    self.updating_keys.remove(&key);
-                    return Err(e).context("Slice re-fetch failed after 304");
-                }
-            };
-            if bypass_on_non_partial && resp2.status() != reqwest::StatusCode::PARTIAL_CONTENT {
-                self.updating_keys.remove(&key);
-                warn_upstream_slice_rejection(&resp2, slice_index, url);
-                return Ok(SliceFetchResult::Bypass(resp2));
-            }
-            let result = self
-                .process_slice_response(
-                    resp2,
-                    SliceResponseContext {
-                        url,
-                        provider_headers,
-                        key: &key,
-                        slice_index,
-                        known_total_size: effective_total_size,
-                        range_start: range_request.range_start,
-                        cache_status: fetch_status,
-                        request_control,
-                    },
-                )
-                .await;
-            // Always clean up updating_keys (idempotent remove).
-            self.updating_keys.remove(&key);
-            return result.map(SliceFetchResult::Slice);
+            .context("Slice re-fetch failed after 304")?
+            .response;
         }
 
         if bypass_on_non_partial && resp.status() != reqwest::StatusCode::PARTIAL_CONTENT {
-            self.updating_keys.remove(&key);
             warn_upstream_slice_rejection(&resp, slice_index, url);
             return Ok(SliceFetchResult::Bypass(resp));
         }
-
-        let result = self
-            .process_slice_response(
-                resp,
-                SliceResponseContext {
-                    url,
-                    provider_headers,
-                    key: &key,
-                    slice_index,
-                    known_total_size: effective_total_size,
-                    range_start: range_request.range_start,
-                    cache_status: fetch_status,
-                    request_control,
+        self.process_slice_response(
+            resp,
+            SliceResponseContext {
+                meta_key,
+                key,
+                slice_index,
+                known_total_size: effective_total_size,
+                range_start,
+                cache_status: if has_entry {
+                    CacheStatus::Expired
+                } else {
+                    CacheStatus::Miss
                 },
-            )
-            .await;
-        // Always clean up updating_keys (idempotent). Prevents the key from
-        // being stuck in "updating" state if process_slice_response errs.
-        self.updating_keys.remove(&key);
-        result.map(SliceFetchResult::Slice)
+                request_control,
+            },
+        )
+        .await
+        .map(SliceFetchResult::Slice)
     }
 
     /// Process a successful (non-304) slice response: validate, store, and
@@ -1340,8 +850,7 @@ impl SliceCache {
         context: SliceResponseContext<'_>,
     ) -> Result<FetchedSlice, anyhow::Error> {
         let SliceResponseContext {
-            url,
-            provider_headers,
+            meta_key,
             key,
             slice_index,
             known_total_size,
@@ -1406,10 +915,9 @@ impl SliceCache {
         // IMPORTANT: we must not hold a DashMap `Ref` across the call to
         // `invalidate_resource`, which needs a write lock on the same shard.
         // Clone existing validators out of the DashMap first to avoid deadlock.
-        let mk = Self::meta_key(url, provider_headers);
         let existing_validators = self
             .meta
-            .get(&mk)
+            .get(meta_key)
             .map(|m| (m.etag.clone(), m.last_modified.clone()));
 
         if let Some(content_length) = resp.content_length() {
@@ -1426,14 +934,14 @@ impl SliceCache {
             match &resp_etag {
                 Some(new_etag) if new_etag == existing_etag => {}
                 Some(new_etag) => {
-                    self.invalidate_resource(&mk).await;
+                    self.invalidate_resource(meta_key).await;
                     return Err(anyhow::anyhow!(
                         "ETag mismatch: resource modified between slice fetches \
                          (expected {existing_etag}, got {new_etag})"
                     ));
                 }
                 None => {
-                    self.invalidate_resource(&mk).await;
+                    self.invalidate_resource(meta_key).await;
                     return Err(anyhow::anyhow!(
                         "ETag disappeared while fetching slices for resource"
                     ));
@@ -1442,7 +950,7 @@ impl SliceCache {
         } else if let Some((None, Some(existing_last_modified))) = &existing_validators
             && resp_last_modified.as_ref() != Some(existing_last_modified)
         {
-            self.invalidate_resource(&mk).await;
+            self.invalidate_resource(meta_key).await;
             return Err(anyhow::anyhow!(
                 "Last-Modified mismatch: resource modified between slice fetches"
             ));
@@ -1451,7 +959,7 @@ impl SliceCache {
         let data = read_exact_slice_body(resp, expected_len, request_control).await?;
 
         self.put_resource_meta_by_key(
-            mk,
+            meta_key.to_owned(),
             CachedResourceMeta {
                 status: Some(reqwest::StatusCode::PARTIAL_CONTENT.as_u16()),
                 etag: resp_etag.clone(),
@@ -1471,13 +979,6 @@ impl SliceCache {
             .put(key, entry)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to store slice in cache: {e}"))?;
-        self.seen_keys.insert(key.to_string(), ()).await;
-
-        // Clear updating flag now that fresh data is stored.
-        self.updating_keys.remove(key);
-
-        // Periodically clean up stale per-key locks to prevent unbounded growth.
-        self.maybe_cleanup_locks();
 
         Ok(FetchedSlice {
             slice: CachedSlice {
@@ -1498,21 +999,6 @@ impl SliceCache {
             self.backend.remove(&key).await;
         }
         self.meta.remove(resource);
-    }
-
-    /// Periodically remove stale per-key locks that are not currently held
-    /// by any task.  A lock is considered stale when the only remaining
-    /// `Arc` reference is the one stored in the `DashMap` itself
-    /// (`strong_count == 1`).
-    fn maybe_cleanup_locks(&self) {
-        let count = self
-            .lock_ops
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if !count.is_multiple_of(LOCK_CLEANUP_INTERVAL) {
-            return;
-        }
-        self.cleanup_stale_locks();
-        self.cleanup_stale_meta();
     }
 
     /// Remove all per-key locks not currently held by any task.
@@ -1542,21 +1028,6 @@ impl SliceCache {
     #[must_use]
     pub fn meta_count(&self) -> usize {
         self.meta.len()
-    }
-
-    /// Return the current number of entries in `seen_keys` (for diagnostics/testing).
-    ///
-    /// Note: moka's `entry_count()` is eventually consistent. Call
-    /// `sync_seen_keys()` first for an accurate count after recent inserts.
-    #[must_use]
-    pub fn seen_keys_count(&self) -> u64 {
-        self.seen_keys.entry_count()
-    }
-
-    /// Run pending maintenance tasks on the `seen_keys` cache so that
-    /// `entry_count()` reflects recent inserts.
-    pub async fn sync_seen_keys(&self) {
-        self.seen_keys.run_pending_tasks().await;
     }
 }
 

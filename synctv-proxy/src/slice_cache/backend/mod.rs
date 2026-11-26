@@ -10,6 +10,8 @@ mod file_loader;
 mod file_ops;
 pub mod memory;
 
+use std::time::Duration;
+
 use async_trait::async_trait;
 
 use super::etag::StoredEntry;
@@ -56,6 +58,13 @@ pub enum CacheBackend {
 }
 
 impl CacheBackend {
+    pub(super) async fn evict_expired_with_grace(&self, grace: Duration) -> u64 {
+        match self {
+            Self::Memory(backend) => backend.evict_expired_with_grace(grace).await,
+            Self::File(backend) => backend.evict_expired_with_grace(grace).await,
+        }
+    }
+
     pub(super) fn keys_with_prefix(&self, prefix: &str) -> Vec<String> {
         match self {
             Self::Memory(backend) => backend.keys_with_prefix(prefix),
@@ -109,10 +118,7 @@ impl SliceCacheBackend for CacheBackend {
     }
 
     async fn evict_expired(&self) -> u64 {
-        match self {
-            Self::Memory(b) => b.evict_expired().await,
-            Self::File(b) => b.evict_expired().await,
-        }
+        self.evict_expired_with_grace(Duration::ZERO).await
     }
 
     async fn keys(&self) -> Vec<String> {

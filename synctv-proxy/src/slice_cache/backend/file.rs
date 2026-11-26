@@ -67,6 +67,15 @@ pub struct FileBackend {
 }
 
 impl FileBackend {
+    pub(super) async fn evict_expired_with_grace(&self, grace: Duration) -> u64 {
+        let expired_keys = file_ops::expired_keys(&self.index, grace);
+        let count = expired_keys.len() as u64;
+        for key in expired_keys {
+            self.remove_entry(&key).await;
+        }
+        count
+    }
+
     pub(super) fn keys_with_prefix(&self, prefix: &str) -> Vec<String> {
         self.index
             .entries
@@ -333,12 +342,7 @@ impl SliceCacheBackend for FileBackend {
     }
 
     async fn evict_expired(&self) -> u64 {
-        let expired_keys = file_ops::expired_keys(&self.index);
-        let count = expired_keys.len() as u64;
-        for key in expired_keys {
-            self.remove_entry(&key).await;
-        }
-        count
+        self.evict_expired_with_grace(Duration::ZERO).await
     }
 
     async fn keys(&self) -> Vec<String> {

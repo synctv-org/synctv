@@ -208,6 +208,27 @@ async fn test_memory_backend_keys_only_returns_live_entries() -> TestResult {
 }
 
 #[tokio::test]
+async fn rejected_entry_does_not_inflate_resident_bytes() -> TestResult {
+    let backend = MemoryBackend::new(4, Duration::from_hours(1));
+    backend
+        .put(
+            "oversized",
+            make_entry(b"oversized", Duration::from_hours(1)),
+        )
+        .await?;
+    assert!(backend.get("oversized").await.is_none());
+    assert_eq!(backend.current_size(), 0);
+
+    backend
+        .put("small", make_entry(b"fits", Duration::from_hours(1)))
+        .await?;
+    assert_eq!(backend.current_size(), 4);
+    backend.remove("small").await;
+    assert_eq!(backend.current_size(), 0);
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_memory_backend_replace_size_tracking_no_double_subtract() -> TestResult {
     let backend = MemoryBackend::new(500, Duration::from_hours(1));
 

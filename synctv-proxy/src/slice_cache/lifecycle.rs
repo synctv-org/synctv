@@ -3,7 +3,7 @@
 //!
 //! Runs a periodic background task that:
 //!
-//! 1. **Evicts expired entries** -- removes entries whose TTL has elapsed.
+//! 1. **Evicts expired entries** -- removes entries past their TTL and configured stale window.
 //! 2. **Watermark eviction** -- when total cache size exceeds
 //!    `max_cache_size * watermark_ratio` (default 7/8, matching nginx), evicts
 //!    the least-recently-used entries until the target is reached.
@@ -126,7 +126,10 @@ impl CacheLifecycleManager {
     /// `ngx_http_file_cache_manager` function.
     async fn run_cycle(&self) {
         // 1. Evict expired entries.
-        let expired = self.backend.evict_expired().await;
+        let expired = self
+            .backend
+            .evict_expired_with_grace(self.config.stale_retention())
+            .await;
         if expired > 0 {
             tracing::debug!(expired, "Cache lifecycle: evicted expired entries");
         }

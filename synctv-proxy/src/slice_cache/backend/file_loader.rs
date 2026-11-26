@@ -131,9 +131,11 @@ async fn load_cache_file(
                 return;
             }
 
-            let deadline_millis =
-                cache_entry_deadline_millis(header.inserted_at_millis, header.ttl_secs);
-            let stale_deadline = deadline_millis.saturating_add(stale_max_millis);
+            let stale_deadline = cache_entry_deadline_millis(
+                header.inserted_at_millis,
+                header.ttl_secs,
+                stale_max_millis,
+            );
 
             if now > stale_deadline {
                 if let Err(e) = fs::remove_file(&path).await {

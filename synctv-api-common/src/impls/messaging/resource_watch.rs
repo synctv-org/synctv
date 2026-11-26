@@ -414,15 +414,7 @@ impl PreparedResourceWatchSession {
                             }
                         }
                     }
-                    () = async {
-                        match session
-                            .resource_observer
-                            .next_expired_resource_refresh_deadline()
-                            .await {
-                            Some(deadline) => tokio::time::sleep_until(deadline).await,
-                            None => std::future::pending::<()>().await,
-                        }
-                    } => {
+                    () = session.resource_observer.wait_for_expired_resource_refresh_deadline() => {
                         if let Err(error) = session
                             .resource_observer
                             .refresh_expired_resource_observations()

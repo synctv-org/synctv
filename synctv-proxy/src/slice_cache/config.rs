@@ -69,3 +69,13 @@ pub enum CacheBackendConfig {
         dir_levels: (usize, usize),
     },
 }
+
+impl SliceCacheConfig {
+    pub(super) const fn stale_retention(&self) -> Duration {
+        if self.stale_while_revalidate {
+            self.stale_max_age
+        } else {
+            Duration::ZERO
+        }
+    }
+}

@@ -12,8 +12,18 @@ pub(super) struct UpdatingKeyGuard {
 }
 
 impl UpdatingKeyGuard {
-    pub(super) const fn new(updating_keys: Arc<dashmap::DashSet<String>>, key: String) -> Self {
-        Self { updating_keys, key }
+    pub(super) fn try_register(
+        updating_keys: &Arc<dashmap::DashSet<String>>,
+        key: String,
+    ) -> Option<Self> {
+        updating_keys.insert(key.clone()).then(|| Self {
+            updating_keys: Arc::clone(updating_keys),
+            key,
+        })
+    }
+
+    pub(super) fn key(&self) -> &str {
+        &self.key
     }
 }
 

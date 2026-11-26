@@ -62,9 +62,9 @@ async fn short_and_multibyte_cache_keys_survive_index_rebuild() -> TestResult {
 
 #[test]
 fn test_cache_entry_deadline_saturates() {
-    assert_eq!(cache_entry_deadline_millis(1_000, 5), 6_000);
-    assert_eq!(cache_entry_deadline_millis(u64::MAX - 1, 1), u64::MAX);
-    assert_eq!(cache_entry_deadline_millis(0, u64::MAX), u64::MAX);
+    assert_eq!(cache_entry_deadline_millis(1_000, 5, 0), 6_000);
+    assert_eq!(cache_entry_deadline_millis(u64::MAX - 1, 1, 0), u64::MAX);
+    assert_eq!(cache_entry_deadline_millis(0, u64::MAX, 0), u64::MAX);
 }
 
 #[test]

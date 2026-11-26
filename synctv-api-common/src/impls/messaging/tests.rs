@@ -5138,14 +5138,7 @@ async fn test_playback_observation_refreshes_when_playback_expires_without_state
     .await
     .checked("initial playback observation should be delivered");
 
-    tokio::time::sleep(Duration::from_secs(2)).await;
-    handler
-        .resource_observer
-        .refresh_expired_resource_observations()
-        .await
-        .checked("expired playbacks should refresh without state changes");
-
-    assert!(
+    wait_for_condition(Duration::from_secs(5), || {
         message_sender
             .sent_messages()
             .iter()
@@ -5156,9 +5149,10 @@ async fn test_playback_observation_refreshes_when_playback_expires_without_state
                     .as_ref()
                     .and_then(playback_metadata_name)
                     .is_some_and(|name| name == "refreshed")
-            }),
-        "expired playback refresh should send the refreshed playback"
-    );
+            })
+    })
+    .await
+    .checked("the session should deliver refreshed playback when its deadline expires");
 
     connection_service.disconnect_connection(handler.connection_id());
     wait_for_run_after_join_cleanup(&handler, connection_service, event_service, run_task).await;

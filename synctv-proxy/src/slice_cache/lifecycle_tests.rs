@@ -68,6 +68,40 @@ async fn test_lifecycle_evicts_expired() -> TestResult {
 }
 
 #[tokio::test]
+async fn scheduled_eviction_preserves_revalidatable_entries_on_both_backends() -> TestResult {
+    use crate::slice_cache::backend::file::FileBackend;
+    let directory = tempfile::tempdir()?;
+    let file_backend = Arc::new(CacheBackend::File(
+        FileBackend::new(directory.path().to_owned(), (2, 2)).await?,
+    ));
+    for backend in [memory_backend(), file_backend] {
+        let mut stale = StoredEntry::new(Bytes::from_static(b"cached"), Duration::from_secs(1));
+        stale.inserted_at = std::time::SystemTime::now() - Duration::from_secs(10);
+        backend.put("slice-ab", stale).await?;
+        let config = SliceCacheConfig {
+            stale_while_revalidate: true,
+            stale_max_age: Duration::from_mins(1),
+            ..fast_config()
+        };
+        CacheLifecycleManager::new(backend.clone(), config.clone())
+            .run_cycle()
+            .await;
+        assert!(backend.get("slice-ab").await.is_some());
+        CacheLifecycleManager::new(
+            backend.clone(),
+            SliceCacheConfig {
+                stale_while_revalidate: false,
+                ..config
+            },
+        )
+        .run_cycle()
+        .await;
+        assert!(backend.get("slice-ab").await.is_none());
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_lifecycle_watermark_eviction() -> TestResult {
     let backend = memory_backend();
 

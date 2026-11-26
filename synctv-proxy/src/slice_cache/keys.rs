@@ -31,14 +31,16 @@ pub(super) fn resource_meta_key(url: &str, provider_headers: &ProviderHeaders) -
     hex::encode(hasher.finalize())
 }
 
-pub(super) fn full_response_cache_key(url: &str, provider_headers: &ProviderHeaders) -> String {
-    let mut hasher = hash_resource(url, provider_headers);
-    hasher.update(b"\0full-response");
-    hex::encode(hasher.finalize())
-}
-
-pub(super) fn full_response_meta_key(url: &str, provider_headers: &ProviderHeaders) -> String {
-    let mut hasher = hash_resource(url, provider_headers);
-    hasher.update(b"\0full-response-meta");
-    hex::encode(hasher.finalize())
+pub(super) fn full_response_keys(
+    url: &str,
+    provider_headers: &ProviderHeaders,
+) -> (String, String) {
+    let mut body = hash_resource(url, provider_headers);
+    let mut metadata = body.clone();
+    body.update(b"\0full-response");
+    metadata.update(b"\0full-response-meta");
+    (
+        hex::encode(body.finalize()),
+        hex::encode(metadata.finalize()),
+    )
 }

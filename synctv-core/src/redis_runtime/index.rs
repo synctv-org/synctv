@@ -89,6 +89,7 @@ pub async fn prune_stale_members(
 mod tests {
     use super::*;
     use redis::AsyncCommands;
+    use std::collections::HashSet;
     use synctv_core_testing::{start_redis, test_redis_key_prefix};
 
     #[tokio::test]
@@ -130,8 +131,11 @@ mod tests {
 
         let removed = prune_stale_members(&mut conn, IndexKind::Set, &index, &candidates).await?;
         assert_eq!(removed, PRUNE_BATCH_SIZE + 2);
-        let remaining: std::collections::HashSet<String> = conn.smembers(&index).await?;
-        assert_eq!(remaining, [recovered, changed, disappeared, retyped].into());
+        let remaining: HashSet<String> = conn.smembers(&index).await?;
+        assert_eq!(
+            remaining,
+            HashSet::from([recovered, changed, disappeared, retyped])
+        );
         Ok(())
     }
 }

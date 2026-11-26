@@ -251,6 +251,7 @@ impl RoomMessageHub {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
     use synctv_core_testing::{start_redis, test_redis_key_prefix};
 
     #[tokio::test]
@@ -284,12 +285,10 @@ mod tests {
         }
         write.query_async::<()>(&mut conn).await?;
         prune_subscribers(&mut conn, &room, &directory, &stale).await?;
-        let remaining: std::collections::HashSet<String> = conn.hkeys(&room).await?;
+        let remaining: HashSet<String> = conn.hkeys(&room).await?;
         assert_eq!(
             remaining,
-            ["rejoined", "moved-back", "repaired-actor"]
-                .map(String::from)
-                .into()
+            HashSet::from(["rejoined", "moved-back", "repaired-actor"].map(String::from))
         );
         assert!(conn.sismember::<_, _, bool>(&directory, &room).await?);
 

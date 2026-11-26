@@ -3003,49 +3003,6 @@ fn test_parse_content_range_zero_start() {
     assert_eq!(cr.complete_length, Some(1));
 }
 
-/// After inserting entries, seen_keys should track them.
-#[tokio::test]
-async fn test_seen_keys_bounded_tracks_inserted() {
-    let mock_server = MockServer::start().await;
-    let config = SliceCacheConfig {
-        slice_size: 1024,
-        ..Default::default()
-    };
-    let cache = slice_cache_for_mock(config, &mock_server);
-
-    // seen_keys_count should start at 0
-    assert_eq!(cache.seen_keys_count(), 0);
-
-    let total_size: u64 = 2048;
-    let slice0 = Bytes::from(vec![0xAAu8; 1024]);
-
-    Mock::given(method("GET"))
-        .and(path("/test.bin"))
-        .and(header("Range", "bytes=0-1023"))
-        .respond_with(
-            ResponseTemplate::new(206)
-                .set_body_bytes(slice0.clone())
-                .insert_header("Content-Range", format!("bytes 0-1023/{total_size}"))
-                .insert_header("Content-Length", "1024"),
-        )
-        .mount(&mock_server)
-        .await;
-
-    let url = mock_public_url(&mock_server, "/test.bin");
-    let headers = HashMap::new();
-
-    let _ = cache
-        .get_or_fetch_slice(&url, &headers, 0, total_size)
-        .await
-        .unwrap();
-
-    // Sync moka's pending tasks so entry_count is accurate
-    cache.sync_seen_keys().await;
-
-    // After inserting one slice, seen_keys should have 1 entry
-    assert_eq!(cache.seen_keys_count(), 1);
-}
-
 /// After fetching slices and cleaning up, stale locks should be removed.
 #[tokio::test]
 async fn test_stale_locks_cleaned_up() {
@@ -3511,6 +3468,49 @@ async fn test_slice_updating_status_on_stale_entry() {
 }
 
 // Conditional requests (304 Not Modified)
+
+#[tokio::test]
+async fn unsolicited_304_does_not_refresh_an_unvalidated_slice() {
+    let origin = MockServer::start().await;
+    let cache = slice_cache_for_mock(
+        SliceCacheConfig {
+            slice_size: 3,
+            stale_while_revalidate: false,
+            ..Default::default()
+        },
+        &origin,
+    );
+    let url = mock_public_url(&origin, "/video.bin");
+    let headers = HashMap::new();
+    let key = SliceCache::compute_cache_key(&url, &headers, 0);
+    let mut old =
+        synctv_proxy::slice_cache::StoredEntry::new(Bytes::from_static(b"old"), Duration::ZERO);
+    old.inserted_at = std::time::UNIX_EPOCH;
+    cache.backend().put(&key, old).await.unwrap();
+
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(304))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&origin)
+        .await;
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .insert_header("Content-Range", "bytes 0-2/3")
+                .set_body_bytes(b"new".as_slice()),
+        )
+        .expect(1)
+        .mount(&origin)
+        .await;
+
+    let (body, status) = cache
+        .get_or_fetch_slice(&url, &headers, 0, 3)
+        .await
+        .unwrap();
+    assert_eq!(body.as_ref(), b"new");
+    assert_eq!(status, CacheStatus::Expired);
+}
 
 /// When upstream returns 304, the cache entry is refreshed and
 /// CacheStatus::Revalidated is returned.

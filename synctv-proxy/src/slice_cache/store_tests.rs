@@ -169,10 +169,12 @@ async fn purge_all_removes_entries_and_runtime_metadata() -> TestResult {
             last_accessed: std::time::SystemTime::now(),
         },
     );
-    cache.updating_keys.insert("slice-1".to_string());
-    cache
-        .locks
-        .insert("slice-1".to_string(), Arc::new(Mutex::new(())));
+    let key = "slice-1";
+    let active = cache.key_lock(key.to_string());
+    let held = active.lock().await;
+    drop(cache.key_lock("idle".to_string()));
+    let registration = UpdatingKeyGuard::try_register(&cache.updating_keys, key.to_string())
+        .ok_or("expected first refresh")?;
 
     let result = cache.purge_all().await;
 
@@ -180,8 +182,13 @@ async fn purge_all_removes_entries_and_runtime_metadata() -> TestResult {
     assert_eq!(result.freed_bytes, 6);
     assert_eq!(cache.backend.entry_count(), 0);
     assert_eq!(cache.meta_count(), 0);
+    assert_eq!(cache.lock_count(), 1);
+    assert!(cache.key_lock(key.to_string()).try_lock().is_err());
+    assert!(UpdatingKeyGuard::try_register(&cache.updating_keys, key.to_string()).is_none());
+    drop(registration);
+    drop(held);
     assert!(cache.updating_keys.is_empty());
-    assert!(cache.locks.is_empty());
+    assert!(cache.key_lock(key.to_string()).try_lock().is_ok());
     Ok(())
 }
 
@@ -200,5 +207,23 @@ async fn evict_expired_entries_removes_expired_backend_entries() -> TestResult {
 
     assert_eq!(removed, 1);
     assert_eq!(cache.backend.entry_count(), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn head_and_abandoned_fill_locks_are_swept_without_successful_writes() -> TestResult {
+    let cache = test_cache()?;
+    for index in 0..LOCK_CLEANUP_INTERVAL * 2 {
+        drop(cache.resource_meta_lock(&format!("resource-{index}")));
+    }
+    assert!(u64::try_from(cache.lock_count())? <= LOCK_CLEANUP_INTERVAL);
+    for index in 0..LOCK_CLEANUP_INTERVAL * 2 {
+        drop(
+            cache
+                .lock_slice_key(&format!("slice-{index}"), "", None)
+                .await?,
+        );
+    }
+    assert!(u64::try_from(cache.lock_count())? <= LOCK_CLEANUP_INTERVAL);
     Ok(())
 }

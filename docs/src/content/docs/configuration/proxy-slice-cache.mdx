@@ -87,6 +87,8 @@ SYNCTV_PROXY_SLICE_CACHE_RANGE_FETCH_CONCURRENCY=4
 
 ## 生产部署
 
+启用后台刷新后，定时清理会保留仍处于过期宽限期的缓存。达到容量阈值时可以提前淘汰。手动执行 `slice-cache evict-expired` 会立即清除超过 TTL 的条目。
+
 单机生产如果启用文件后端，挂载 `data_dir` 或 `file_cache_dir` 到持久化卷，并预留清理策略和容量监控。
 
 Kubernetes 多副本可以使用共享存储让文件跨副本可见，但当前索引是进程内维护，没有跨进程共享索引或分布式锁。不要把它当成强一致的多副本实时缓存。

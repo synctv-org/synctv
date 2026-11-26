@@ -127,14 +127,15 @@ pub(super) fn lru_candidates(index: &FileIndex) -> Vec<EvictionCandidate> {
         .collect()
 }
 
-pub(super) fn expired_keys(index: &FileIndex) -> Vec<String> {
+pub(super) fn expired_keys(index: &FileIndex, grace: Duration) -> Vec<String> {
     let now = millis_since_epoch();
+    let grace_millis = u64::try_from(grace.as_millis()).unwrap_or(u64::MAX);
     index
         .entries
         .iter()
         .filter_map(|entry| {
             let deadline_millis =
-                cache_entry_deadline_millis(entry.inserted_at_millis, entry.ttl_secs);
+                cache_entry_deadline_millis(entry.inserted_at_millis, entry.ttl_secs, grace_millis);
             (now > deadline_millis).then(|| entry.key().clone())
         })
         .collect()

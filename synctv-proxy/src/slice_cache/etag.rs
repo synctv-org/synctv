@@ -68,20 +68,22 @@ impl StoredEntry {
     /// Returns `true` if the entry's TTL has elapsed.
     #[must_use]
     pub fn is_expired(&self) -> bool {
-        SystemTime::now()
-            .duration_since(self.inserted_at)
-            .unwrap_or(Duration::ZERO)
-            > self.ttl
+        self.is_expired_after(Duration::ZERO)
     }
 
-    /// Returns `true` if the entry is expired but still within the stale
-    /// serving window (i.e., `elapsed > ttl && elapsed <= ttl + stale_max_age`).
+    pub(super) fn is_expired_after(&self, grace: Duration) -> bool {
+        self.age() > self.ttl.saturating_add(grace)
+    }
+
+    /// Returns true after the TTL and through the inclusive stale deadline.
     #[must_use]
     pub fn is_stale(&self, stale_max_age: Duration) -> bool {
-        let elapsed = SystemTime::now()
-            .duration_since(self.inserted_at)
-            .unwrap_or(Duration::ZERO);
-        elapsed > self.ttl && elapsed <= self.ttl + stale_max_age
+        let age = self.age();
+        age > self.ttl && age <= self.ttl.saturating_add(stale_max_age)
+    }
+
+    fn age(&self) -> Duration {
+        self.inserted_at.elapsed().unwrap_or_default()
     }
 
     /// Returns the size of the stored data in bytes.
@@ -158,6 +160,8 @@ mod tests {
         };
         assert!(entry.is_expired());
         assert!(entry.is_stale(Duration::from_mins(1)));
+        assert!(entry.is_stale(Duration::MAX));
+        assert!(!entry.is_expired_after(Duration::MAX));
     }
 
     #[test]

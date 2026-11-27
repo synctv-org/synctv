@@ -39,6 +39,7 @@ use synctv_xiu::streamhub::{
     utils::Uuid,
 };
 use tokio::sync::Notify;
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tracing::{debug, info, warn};
 
 use crate::relay::registry_trait::StreamRegistryTrait;
@@ -125,6 +126,8 @@ struct ManagerInner {
     local_cluster_address: String,
     state: Mutex<HashMap<SourceKey, SourceState>>,
     schedule_wake: Notify,
+    shutdown: CancellationToken,
+    tasks: TaskTracker,
 }
 
 struct WorkerSlot {
@@ -156,26 +159,26 @@ impl RungViewerGuard {
         if let Some(inner) = self.inner.take() {
             let now = std::time::Instant::now();
             let mut state = inner.state.lock().expect("transcode state poisoned");
-            if let Some(source) = state.get_mut(&self.key) {
-                if let Some(rung_state) = source.rungs.get_mut(&self.rung) {
-                    match self.role {
-                        ViewerRole::Waiting => {
-                            rung_state.waiting_viewers =
-                                rung_state.waiting_viewers.saturating_sub(1);
-                        }
-                        ViewerRole::Subscribed => {
-                            rung_state.subscribers = rung_state.subscribers.saturating_sub(1);
-                        }
+            if let Some(rung_state) = state
+                .get_mut(&self.key)
+                .and_then(|source| source.rungs.get_mut(&self.rung))
+            {
+                match self.role {
+                    ViewerRole::Waiting => {
+                        rung_state.waiting_viewers = rung_state.waiting_viewers.saturating_sub(1);
                     }
-                    if rung_state.waiting_viewers == 0
-                        && rung_state.subscribers == 0
-                        && let Some(running) = rung_state.running.as_mut()
-                    {
-                        running.idle_since.get_or_insert(now);
+                    ViewerRole::Subscribed => {
+                        rung_state.subscribers = rung_state.subscribers.saturating_sub(1);
                     }
                 }
-                prune_source(source);
+                if rung_state.waiting_viewers == 0
+                    && rung_state.subscribers == 0
+                    && let Some(running) = rung_state.running.as_mut()
+                {
+                    running.idle_since.get_or_insert(now);
+                }
             }
+            prune_source(&mut state, &self.key);
             drop(state);
             inner.schedule_wake.notify_one();
         }
@@ -190,17 +193,33 @@ impl Drop for RungViewerGuard {
 
 /// Drop rung entries that no longer carry information: no viewers, no
 /// running job, no permanent verdict.
-fn prune_source(source: &mut SourceState) {
+fn prune_source(state: &mut HashMap<SourceKey, SourceState>, key: &SourceKey) {
+    let Some(source) = state.get_mut(key) else {
+        return;
+    };
     source.rungs.retain(|_, rung_state| {
         rung_state.running.is_some()
             || rung_state.waiting_viewers > 0
             || rung_state.subscribers > 0
             || rung_state.unsupported.is_some()
     });
+    if source.rungs.is_empty()
+        && source.source_resolution.is_none()
+        && source.source_frame_rate.is_none()
+        && source.source_video_bitrate_kbps.is_none()
+    {
+        state.remove(key);
+    }
 }
 
 pub struct TranscodeManager {
     inner: Arc<ManagerInner>,
+}
+
+impl Drop for TranscodeManager {
+    fn drop(&mut self) {
+        self.stop();
+    }
 }
 
 impl TranscodeManager {
@@ -254,20 +273,37 @@ impl TranscodeManager {
             local_cluster_address,
             state: Mutex::new(HashMap::new()),
             schedule_wake: Notify::new(),
+            shutdown: CancellationToken::new(),
+            tasks: TaskTracker::new(),
         });
         let manager = Arc::new(Self { inner });
         match tokio::runtime::Handle::try_current() {
             Ok(handle) => {
                 let scheduler = Arc::clone(&manager.inner);
-                handle.spawn(async move {
-                    scheduler_loop(scheduler).await;
-                });
+                manager.inner.tasks.spawn_on(
+                    manager
+                        .inner
+                        .shutdown
+                        .clone()
+                        .run_until_cancelled_owned(scheduler_loop(scheduler)),
+                    &handle,
+                );
             }
             _ => {
                 warn!("No Tokio runtime; transcode scheduler not started");
             }
         }
         manager
+    }
+
+    pub(crate) fn stop(&self) {
+        self.inner.shutdown.cancel();
+        self.inner.tasks.close();
+    }
+
+    pub(crate) async fn shutdown(&self) {
+        self.stop();
+        self.inner.tasks.wait().await;
     }
 
     /// The configured quality rungs, best-first.
@@ -477,10 +513,17 @@ impl TranscodeManager {
     ) -> tokio::task::JoinHandle<()> {
         use synctv_xiu::streamhub::define::BroadcastEvent;
 
-        let manager = Arc::clone(self);
-        tokio::spawn(async move {
+        let manager = Arc::downgrade(self);
+        let shutdown = self.inner.shutdown.clone();
+        self.inner.tasks.spawn(async move {
             loop {
-                match events.recv().await {
+                let event = tokio::select! {
+                    biased;
+                    () = shutdown.cancelled() => break,
+                    event = events.recv() => event,
+                };
+                let Some(manager) = manager.upgrade() else { break };
+                match event {
                     Ok(BroadcastEvent::Publish { identifier, .. }) => {
                         let StreamIdentifier::Rtmp {
                             app_name,
@@ -551,42 +594,46 @@ impl ManagerInner {
         self.schedule_wake.notify_one();
     }
 
-    /// Called by the job supervisor when a rung job has fully ended.
+    /// Record a submission rejection (`job` is absent) or the outcome of
+    /// the specific running job. A previous session may finish after a restart.
     fn note_rung_finished(
-        self: &Arc<Self>,
+        &self,
         room_id: &str,
         media_id: &str,
         rung: &str,
+        job: Option<&CancellationToken>,
         outcome: &Result<(), TranscodeError>,
     ) {
         let mut wake = false;
         {
             let mut state = self.state.lock().expect("transcode state poisoned");
             let now = std::time::Instant::now();
-            if let Some(source) = state.get_mut(&(room_id.to_string(), media_id.to_string())) {
-                if let Some(rung_state) = source.rungs.get_mut(rung)
-                    && rung_state.running.take().is_some()
-                {
-                    wake = true;
-                    match outcome {
-                        Ok(()) => {
-                            debug!(room_id, media_id, rung, "Transcode rung ended");
-                        }
-                        Err(TranscodeError::Unsupported(reason)) => {
-                            warn!(
-                                room_id,
-                                media_id, rung, reason, "Transcode rung permanently unsupported"
-                            );
-                            rung_state.unsupported = Some(reason.clone());
-                        }
-                        Err(error) => {
-                            warn!(room_id, media_id, rung, %error, "Transcode rung failed");
-                            rung_state.last_failure = Some(now);
-                        }
+            let key = (room_id.to_string(), media_id.to_string());
+            if let Some(rung_state) = state
+                .get_mut(&key)
+                .and_then(|source| source.rungs.get_mut(rung))
+                && rung_state.running.as_ref().map(|running| &running.cancel) == job
+            {
+                rung_state.running = None;
+                wake = true;
+                match outcome {
+                    Ok(()) => {
+                        debug!(room_id, media_id, rung, "Transcode rung ended");
+                    }
+                    Err(TranscodeError::Unsupported(reason)) => {
+                        warn!(
+                            room_id,
+                            media_id, rung, reason, "Transcode rung permanently unsupported"
+                        );
+                        rung_state.unsupported = Some(reason.clone());
+                    }
+                    Err(error) => {
+                        warn!(room_id, media_id, rung, %error, "Transcode rung failed");
+                        rung_state.last_failure = Some(now);
                     }
                 }
-                prune_source(source);
             }
+            prune_source(&mut state, &key);
         }
         if wake {
             self.schedule_wake.notify_one();
@@ -662,17 +709,18 @@ async fn scheduler_tick(inner: &Arc<ManagerInner>) {
         inner.clear_source(&room_id, &media_id);
         return;
     };
-    // Watch the subscription's metadata so failed picks and future picks can
-    // skip rungs that would only re-encode at the source's own quality.
-    // `onMetaData` carries resolution and frame rate in one tag, so both
-    // slots fill together; exit once either is observed.
-    {
+    // Only the supervisor of an accepted job polls these slots. A rejected
+    // input or a finished publisher has no worker left to supply metadata.
+    let cancel = inner.shutdown.child_token();
+    let observe_metadata = {
         let inner = Arc::clone(inner);
         let key = (room_id.clone(), media_id.clone());
+        let rung = rung.clone();
+        let job_cancel = cancel.clone();
         let resolution_slot = Arc::clone(&input.source_resolution);
         let frame_rate_slot = Arc::clone(&input.source_frame_rate);
         let video_bitrate_slot = Arc::clone(&input.source_video_bitrate_kbps);
-        tokio::spawn(async move {
+        async move {
             loop {
                 let (resolution, frame_rate, video_bitrate) = {
                     let resolution = *resolution_slot.lock().expect("resolution slot poisoned");
@@ -682,7 +730,13 @@ async fn scheduler_tick(inner: &Arc<ManagerInner>) {
                 };
                 if resolution.is_some() || frame_rate.is_some() || video_bitrate.is_some() {
                     let mut state = inner.state.lock().expect("transcode state poisoned");
-                    if let Some(source) = state.get_mut(&key) {
+                    if let Some(source) = state.get_mut(&key)
+                        && source
+                            .rungs
+                            .get(&rung)
+                            .and_then(|state| state.running.as_ref())
+                            .is_some_and(|running| running.cancel == job_cancel)
+                    {
                         if let Some(resolution) = resolution {
                             source.source_resolution = Some(resolution);
                         }
@@ -697,16 +751,15 @@ async fn scheduler_tick(inner: &Arc<ManagerInner>) {
                 }
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }
-        });
-    }
+        }
+    };
 
     info!(room_id, media_id, rung, demand, "Submitting transcode job");
-    let cancel = tokio_util::sync::CancellationToken::new();
     // Offer the job to the workers in priority order; rejections return the
     // input untouched so the next worker can take it.
     let mut input = input;
     let mut started: Option<(TranscodeJobHandle, TranscodeOutputReceiver, String)> = None;
-    let mut all_capacity_exhausted = true;
+    let mut at_capacity = false;
     let mut unsupported: Option<String> = None;
     let mut failed: Option<String> = None;
     for slot in &inner.workers {
@@ -719,6 +772,7 @@ async fn scheduler_tick(inner: &Arc<ManagerInner>) {
                 input = returned_input;
                 match error {
                     TranscodeError::CapacityExhausted => {
+                        at_capacity = true;
                         debug!(
                             room_id, media_id, rung,
                             worker = %slot.label,
@@ -726,7 +780,6 @@ async fn scheduler_tick(inner: &Arc<ManagerInner>) {
                         );
                     }
                     TranscodeError::Unsupported(reason) => {
-                        all_capacity_exhausted = false;
                         warn!(
                             room_id, media_id, rung,
                             worker = %slot.label,
@@ -736,7 +789,6 @@ async fn scheduler_tick(inner: &Arc<ManagerInner>) {
                         unsupported = unsupported.or(Some(reason));
                     }
                     TranscodeError::Failed(reason) => {
-                        all_capacity_exhausted = false;
                         warn!(
                             room_id, media_id, rung,
                             worker = %slot.label,
@@ -751,27 +803,29 @@ async fn scheduler_tick(inner: &Arc<ManagerInner>) {
     }
 
     let Some((handle, output, worker_label)) = started else {
-        if all_capacity_exhausted {
+        if at_capacity {
             debug!(
                 room_id,
-                media_id, rung, "Every transcode worker is at capacity; backing off"
+                media_id, rung, "A transcode worker is at capacity; backing off"
             );
             tokio::time::sleep(CAPACITY_BACKOFF).await;
             inner.schedule_wake.notify_one();
-        } else if let Some(reason) = unsupported {
-            // Permanent only when no worker could run it for engine reasons.
-            inner.note_rung_finished(
-                &room_id,
-                &media_id,
-                &rung,
-                &Err(TranscodeError::Unsupported(reason)),
-            );
         } else if let Some(reason) = failed {
             inner.note_rung_finished(
                 &room_id,
                 &media_id,
                 &rung,
+                None,
                 &Err(TranscodeError::Failed(reason)),
+            );
+        } else if let Some(reason) = unsupported {
+            // Permanent only when every worker rejected this source as unsupported.
+            inner.note_rung_finished(
+                &room_id,
+                &media_id,
+                &rung,
+                None,
+                &Err(TranscodeError::Unsupported(reason)),
             );
         }
         return;
@@ -812,8 +866,8 @@ async fn scheduler_tick(inner: &Arc<ManagerInner>) {
     let hub_sender = inner.stream_hub_event_sender.clone();
     let node_id = inner.local_node_id.clone();
     let cluster_address = inner.local_cluster_address.clone();
-    tokio::spawn(async move {
-        let publisher_result = publisher::run(
+    inner.tasks.spawn(async move {
+        let publishing = publisher::run(
             &publisher,
             output,
             registry,
@@ -821,8 +875,13 @@ async fn scheduler_tick(inner: &Arc<ManagerInner>) {
             &node_id,
             &cluster_address,
             &cancel,
-        )
-        .await;
+        );
+        tokio::pin!(publishing);
+        let publisher_result = tokio::select! {
+            biased;
+            () = observe_metadata => publishing.await,
+            result = &mut publishing => result,
+        };
         // End the worker side if it is still running (it usually
         // ended on its own and closed the output channel).
         handle.cancel.cancel();
@@ -837,6 +896,7 @@ async fn scheduler_tick(inner: &Arc<ManagerInner>) {
             &supervisor_room,
             &supervisor_media,
             &supervisor_rung,
+            Some(&cancel),
             &outcome,
         );
     });

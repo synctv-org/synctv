@@ -70,6 +70,14 @@ pub fn start_request() -> GaugeGuard {
 }
 
 pub fn record_request(method: &str, path: &str, status: u16, elapsed: std::time::Duration) {
+    // Extension methods are open-ended. Each distinct label lives for the
+    // lifetime of the registry, including every bucket of its histogram.
+    let method = match method {
+        "GET" | "HEAD" | "POST" | "PUT" | "DELETE" | "CONNECT" | "OPTIONS" | "TRACE" | "PATCH" => {
+            method
+        }
+        _ => "_OTHER",
+    };
     let status = status.to_string();
     HTTP_REQUESTS_TOTAL
         .with_label_values(&[method, path, &status])
@@ -95,6 +103,26 @@ pub fn record_websocket_error(error_type: &'static str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extension_methods_share_one_metric_series() {
+        let path = "/extension-method-test";
+        for method in ["PROPFIND", "REPORT"] {
+            record_request(method, path, 405, std::time::Duration::ZERO);
+        }
+        assert_eq!(
+            HTTP_REQUESTS_TOTAL
+                .with_label_values(&["_OTHER", path, "405"])
+                .get(),
+            2
+        );
+        assert_eq!(
+            HTTP_REQUEST_DURATION_SECONDS
+                .with_label_values(&["_OTHER", path])
+                .get_sample_count(),
+            2
+        );
+    }
 
     #[test]
     fn request_facade_uses_bounded_route_labels() {

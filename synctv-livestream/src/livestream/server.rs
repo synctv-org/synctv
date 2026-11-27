@@ -431,9 +431,6 @@ pub struct LivestreamHandle {
     hls_remuxer_handle: JoinHandle<()>,
     publisher_manager: Arc<PublisherManager>,
     publisher_manager_handle: JoinHandle<()>,
-    /// Transcode publish-lifecycle watcher; `None` when transcoding is
-    /// disabled. Tracked to prevent task leaks on shutdown.
-    transcode_lifecycle_handle: Option<JoinHandle<()>>,
     /// Inner re-registration task spawned inside `publisher_manager_handle`.
     /// Must be tracked separately to prevent task leaks on shutdown.
     reregister_task_handle: JoinHandle<()>,
@@ -520,8 +517,8 @@ impl LivestreamHandle {
         self.reregister_cancel_token.cancel();
         self.reregister_task_handle.abort();
         self.publisher_manager_handle.abort();
-        if let Some(handle) = &self.transcode_lifecycle_handle {
-            handle.abort();
+        if let Some(manager) = self.infrastructure.transcode_manager() {
+            manager.stop();
         }
         // Cancel HLS tasks (remuxer and cleanup)
         self.hls_shutdown_token.cancel();
@@ -611,9 +608,14 @@ impl LivestreamHandle {
         abort_and_log_join("publisher manager", &mut self.publisher_manager_handle).await;
         info!("Publisher manager stopped");
 
-        // 5a. Abort the transcode lifecycle watcher with the event loops.
-        if let Some(mut handle) = self.transcode_lifecycle_handle.take() {
-            abort_and_log_join("transcode lifecycle watcher", &mut handle).await;
+        // Let transcode publishers release their registrations while the hub is live.
+        if let Some(manager) = self.infrastructure.transcode_manager()
+            && tokio::time::timeout_at(shutdown_deadline, manager.shutdown())
+                .await
+                .is_err()
+        {
+            warn!("Timed out waiting for transcode tasks");
+            all_graceful = false;
         }
 
         // 6. Stop HLS tasks gracefully. The remuxer requests generation-aware
@@ -709,8 +711,12 @@ impl LivestreamHandle {
             .shutdown_maintenance(Duration::from_millis(200))
             .await;
         abort_and_log_join("publisher manager", &mut self.publisher_manager_handle).await;
-        if let Some(mut handle) = self.transcode_lifecycle_handle.take() {
-            abort_and_log_join("transcode lifecycle watcher", &mut handle).await;
+        if let Some(manager) = self.infrastructure.transcode_manager()
+            && timeout(Duration::from_millis(200), manager.shutdown())
+                .await
+                .is_err()
+        {
+            warn!("Force shutdown timed out waiting for transcode tasks");
         }
 
         self.hls_shutdown_token.cancel();
@@ -736,6 +742,9 @@ impl Drop for LivestreamHandle {
     /// task handles are aborted.
     fn drop(&mut self) {
         self.spawn_force_cleanup();
+        if let Some(manager) = self.infrastructure.transcode_manager() {
+            manager.stop();
+        }
         // Cancel all cancellation tokens to signal tasks to exit
         self.reregister_cancel_token.cancel();
         self.hls_shutdown_token.cancel();
@@ -1360,9 +1369,9 @@ impl LivestreamServer {
         // RTMP session with fresh `onMetaData`) to change resolution, frame
         // rate, or bitrate, and rung eligibility must follow each session's
         // own metadata instead of the previous session's.
-        let transcode_lifecycle_handle = transcode_manager.as_ref().map(|manager| {
-            manager.spawn_lifecycle_watcher(external_broadcast_tx_for_transcode.subscribe())
-        });
+        if let Some(manager) = &transcode_manager {
+            manager.spawn_lifecycle_watcher(external_broadcast_tx_for_transcode.subscribe());
+        }
         let infrastructure = Arc::new(
             LiveStreamingInfrastructure::from_parts(
                 self.publisher_registry,
@@ -1394,7 +1403,6 @@ impl LivestreamServer {
             hls_remuxer_handle,
             publisher_manager,
             publisher_manager_handle,
-            transcode_lifecycle_handle,
             reregister_task_handle,
             reregister_cancel_token,
             hls_shutdown_token,

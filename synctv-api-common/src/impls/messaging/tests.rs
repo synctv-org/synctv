@@ -3551,45 +3551,72 @@ async fn test_observe_playback_reports_current_playback_with_event_cursor() {
 
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
-async fn test_replay_room_resource_event_without_payload_advances_cursor() {
+async fn test_replay_room_resource_events_across_batches() {
+    use super::resource_observer::ROOM_RESOURCE_EVENT_REPLAY_BATCH_LIMIT as AUDIT_EVENTS;
+    use synctv_core::repository::{
+        NewRoomResourceEvent, RoomResourceEventPayload, RoomResourceEventScope,
+    };
+    use synctv_proto::client::resource_event::Payload;
+
     let message_sender = RecordingMessageSender::new();
     let fixture =
-        create_start_handler_fixture("observe_resource_replay_no_payload", message_sender.clone())
+        create_start_handler_fixture("observe_resource_replay_batches", message_sender.clone())
             .await;
     let repository = synctv_core::repository::RoomResourceEventRepository::new(
         fixture.handler.room_service.pool().clone(),
     );
     let now = synctv_core::SystemClock.now();
-    repository
-        .insert(&synctv_core::repository::NewRoomResourceEvent {
-            event_id: "playlist-items-audit-only".to_string(),
-            scope_type: synctv_core::repository::RoomResourceEventScope::Room,
-            room_id: Some(fixture.handler.room_id.as_i64()),
-            user_id: None,
-            aggregate_type: "playlist".to_string(),
-            aggregate_id: fixture.handler.room_id.to_string(),
-            resource_type: RoomResourceKind::PlaylistItems,
-            resource_id: fixture.handler.room_id.to_string(),
-            event_type: "playlist_items_changed".to_string(),
-            event_version: 1,
-            aggregate_version: Some(1),
-            actor_user_id: Some(fixture.handler.test_user_id().as_i64()),
-            payload: None,
-            summary: RoomResourceEventSummary {
-                event_type: "playlist_items_changed".to_string(),
-                room_id: Some(fixture.handler.room_id.as_i64()),
-                actor_user_id: Some(fixture.handler.test_user_id().as_i64()),
-                resource_type: RoomResourceKind::PlaylistItems,
-                details: RoomResourceEventSummaryDetails::PlaylistItems {
-                    user_id: Some(fixture.handler.test_user_id().as_i64()),
-                    username: None,
-                    media_ids: Vec::new(),
-                },
+    let room_id = fixture.handler.room_id;
+    let user_id = fixture.handler.test_user_id();
+    // One full batch of audit-only events followed by a snapshot-producing event.
+    for index in 0..=AUDIT_EVENTS {
+        let event_id = format!("playlist-{index}");
+        let payload = (index == AUDIT_EVENTS).then(|| RoomResourceEventPayload::Realtime {
+            event: RealtimeEvent::PlaylistReordered {
+                event_id: event_id.clone(),
+                room_id,
+                user_id,
+                username: "member".to_string(),
+                media_ids: Vec::new(),
+                timestamp: now,
             },
-            occurred_at: now,
-        })
+        });
+        repository
+            .insert(&NewRoomResourceEvent {
+                event_id,
+                scope_type: RoomResourceEventScope::Room,
+                room_id: Some(room_id.as_i64()),
+                user_id: None,
+                aggregate_type: "playlist".to_string(),
+                aggregate_id: room_id.to_string(),
+                resource_type: RoomResourceKind::PlaylistItems,
+                resource_id: room_id.to_string(),
+                event_type: "playlist_reordered".to_string(),
+                event_version: 1,
+                aggregate_version: None,
+                actor_user_id: Some(user_id.as_i64()),
+                payload,
+                summary: RoomResourceEventSummary {
+                    event_type: "playlist_reordered".to_string(),
+                    room_id: Some(room_id.as_i64()),
+                    actor_user_id: Some(user_id.as_i64()),
+                    resource_type: RoomResourceKind::PlaylistItems,
+                    details: RoomResourceEventSummaryDetails::PlaylistItems {
+                        user_id: Some(user_id.as_i64()),
+                        username: None,
+                        media_ids: Vec::new(),
+                    },
+                },
+                occurred_at: now,
+            })
+            .await
+            .checked("room resource event should insert");
+    }
+    let first_cursor = repository
+        .room_event_cursor_by_event_id(&room_id, "playlist-0")
         .await
-        .checked("audit-only room resource event should insert");
+        .checked("cursor lookup should succeed")
+        .checked("first event should exist");
 
     let handler = fixture
         .handler
@@ -3600,7 +3627,7 @@ async fn test_replay_room_resource_event_without_payload_advances_cursor() {
     let request = observe_playlist_items_resource_with_sequence(
         "playlist-items",
         synctv_proto::client::ListPlaylistItemsRequest::default(),
-        Some(0),
+        Some(first_cursor.sequence - 1),
     );
 
     handler
@@ -3608,34 +3635,38 @@ async fn test_replay_room_resource_event_without_payload_advances_cursor() {
         .handle_observe_resource(&request)
         .await
         .checked("playlist items observe should register");
+    let initial_messages = message_sender.sent_messages().len();
     handler
         .resource_observer
         .replay_room_resource_events_after(&request)
         .await
         .checked("playlist items replay should succeed");
 
-    let replayed = message_sender
-        .sent_messages()
-        .into_iter()
-        .filter_map(|message| match message.message {
-            Some(Message::ResourceEvent(changed)) if changed.observe_id == "playlist-items" => {
-                Some(changed)
-            }
-            _ => None,
-        })
-        .find(|changed| {
-            changed
-                .event_cursor
-                .as_ref()
-                .is_some_and(|cursor| cursor.sequence == 1)
-        })
-        .checked("audit-only event should produce a cursor-advancing change");
-    assert!(matches!(
-        replayed.payload,
-        Some(synctv_proto::client::resource_event::Payload::ChangedOnly(
-            _
-        ))
-    ));
+    let messages = message_sender.sent_messages();
+    let replayed = &messages[initial_messages..];
+    assert_eq!(replayed.len(), usize::from(AUDIT_EVENTS) + 1);
+    for (index, message) in (0..=AUDIT_EVENTS).zip(replayed) {
+        let Some(Message::ResourceEvent(event)) = &message.message else {
+            panic!("expected resource event at index {index}");
+        };
+        assert_eq!(event.observe_id, "playlist-items");
+        let cursor = event
+            .event_cursor
+            .as_ref()
+            .checked("replay must send a cursor");
+        assert_eq!(cursor.sequence, first_cursor.sequence + i64::from(index));
+        assert_eq!(cursor.event_id, Some(format!("playlist-{index}")));
+        if index == AUDIT_EVENTS {
+            assert_eq!(
+                event.payload,
+                Some(Payload::PlaylistItems(empty_playlist_items_response(
+                    "playlist-items-v1"
+                )))
+            );
+        } else {
+            assert!(matches!(event.payload, Some(Payload::ChangedOnly(_))));
+        }
+    }
 
     fixture.shutdown().await;
 }

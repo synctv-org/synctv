@@ -404,10 +404,10 @@ H.sideEffect();
         let player = PLAYER
             .replacen(
                 "var H={};",
-                r#"var H={};
+                r"var H={};
 H.link=function(child,parent){child.prototype=Object.create(parent.prototype);child.prototype.constructor=child};
 function Base(){}
-Base.prototype.setup=function(){};"#,
+Base.prototype.setup=function(){};",
                 1,
             )
             .replacen(

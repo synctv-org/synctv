@@ -2291,7 +2291,7 @@ impl PublishRequest {
         }
     }
 
-    fn expects_ack(&self) -> bool {
+    pub(super) const fn expects_ack(&self) -> bool {
         self.ack.is_some()
     }
 }

@@ -1329,6 +1329,34 @@ async fn test_publish_only_user_notification_does_not_hit_admin_channel() -> Tes
 }
 
 #[tokio::test]
+async fn test_confirmed_critical_publish_rejects_full_queue_without_retry() -> TestResult {
+    let mut manager = RealtimeManager::new(RealtimeConfig {
+        critical_channel_capacity: 1,
+        ..RealtimeConfig::default()
+    })
+    .await?;
+    let (tx, _rx) = mpsc::channel(1);
+    manager.redis_critical_tx = Some(tx);
+    let event = RealtimeEvent::KickUser {
+        event_id: synctv_common::snanoid!(16),
+        user_id: UserId::expect_positive(10_000_106),
+        reason: "session revoked".to_string(),
+        timestamp: synctv_core::SystemClock.now(),
+    };
+    assert!(manager.publish_only(event.clone()));
+
+    let result = manager
+        .publish_only_confirmed(event, Duration::from_secs(1))
+        .await;
+    assert_eq!(
+        result,
+        Err("Realtime publish queue rejected event".to_string())
+    );
+    assert!(manager.critical_retry_tasks.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_publish_only_confirmed_waits_for_publisher_ack() -> TestResult {
     let config = RealtimeConfig {
         distributed_transport_factory: None,

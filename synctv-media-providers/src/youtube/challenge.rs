@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use boa_engine::{Context, Source};
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{Expression, FunctionBody, Statement};
@@ -109,6 +111,10 @@ impl YoutubeChallengeSolver {
         let wrapper = player_wrapper(&parsed.program.body)?;
         let marker = Regex::new(r#"[\"']alr[\"']\s*,\s*[\"']yes[\"']"#)
             .map_err(|error| ProviderClientError::Parse(error.to_string()))?;
+        let inheritance_marker = Regex::new(
+            r"\.\s*prototype\s*=\s*[^;]+\.\s*prototype[^;]*;\s*[\w$]+\.\s*prototype\s*\.\s*constructor\s*=",
+        )
+        .map_err(|error| ProviderClientError::Parse(error.to_string()))?;
         let mut prepared = String::with_capacity(player_js.len() + SOLVER_SOURCE.len());
         prepared.push_str(SETUP_SOURCE);
         if let Some(initializer) = wrapper.initializer {
@@ -128,9 +134,19 @@ impl YoutubeChallengeSolver {
             prepared.push_str(";\n");
         }
         let mut transformers = Vec::new();
+        let mut inheritance_helpers = HashSet::new();
 
         for statement in &wrapper.body.statements {
-            if keep_statement(statement) {
+            if let Statement::ExpressionStatement(statement) = statement
+                && let Expression::AssignmentExpression(assignment) =
+                    statement.expression.without_parentheses()
+                && let Expression::FunctionExpression(function) = assignment.right.without_parentheses()
+                && function.params.items.len() == 2
+                && function_has_marker(function.body.as_deref(), player_js, &inheritance_marker)
+            {
+                inheritance_helpers.insert(source_for_span(player_js, assignment.left.span())?);
+            }
+            if keep_statement(statement, player_js, &inheritance_helpers) {
                 prepared.push_str(source_for_span(player_js, statement.span())?);
                 prepared.push('\n');
             }
@@ -169,6 +185,13 @@ impl YoutubeChallengeSolver {
     }
 
     fn solve(&self, kind: &str, input: &str) -> Result<String, ProviderClientError> {
+        // Boa compiles a multi-megabyte player script on the calling thread.
+        stacker::maybe_grow(8 * 1024 * 1024, 16 * 1024 * 1024, || {
+            self.evaluate(kind, input)
+        })
+    }
+
+    fn evaluate(&self, kind: &str, input: &str) -> Result<String, ProviderClientError> {
         let mut context = Context::default();
         context
             .runtime_limits_mut()
@@ -234,19 +257,30 @@ fn unexpected_player_structure<T>() -> Result<T, ProviderClientError> {
     ))
 }
 
-fn keep_statement(statement: &Statement<'_>) -> bool {
+fn keep_statement(
+    statement: &Statement<'_>,
+    source: &str,
+    inheritance_helpers: &HashSet<&str>,
+) -> bool {
     match statement {
-        Statement::ExpressionStatement(statement) => matches!(
-            statement.expression.without_parentheses(),
-            Expression::AssignmentExpression(_)
-                | Expression::BooleanLiteral(_)
-                | Expression::NullLiteral(_)
-                | Expression::NumericLiteral(_)
-                | Expression::BigIntLiteral(_)
-                | Expression::RegExpLiteral(_)
-                | Expression::StringLiteral(_)
-                | Expression::TemplateLiteral(_)
-        ),
+        Statement::ExpressionStatement(statement) => match statement.expression.without_parentheses() {
+            Expression::CallExpression(call) => {
+                call.arguments.len() == 2
+                    && source_for_span(source, call.callee.without_parentheses().span())
+                        .is_ok_and(|callee| inheritance_helpers.contains(callee))
+            }
+            expression => matches!(
+                expression,
+                Expression::AssignmentExpression(_)
+                    | Expression::BooleanLiteral(_)
+                    | Expression::NullLiteral(_)
+                    | Expression::NumericLiteral(_)
+                    | Expression::BigIntLiteral(_)
+                    | Expression::RegExpLiteral(_)
+                    | Expression::StringLiteral(_)
+                    | Expression::TemplateLiteral(_)
+            ),
+        },
         _ => true,
     }
 }
@@ -360,5 +394,25 @@ H.sideEffect();
         let solver = YoutubeChallengeSolver::prepare(&player).expect("prepare solver");
         assert_eq!(solver.solve_signature("abcd").expect("signature"), "dcba");
         assert_eq!(solver.solve_n("a1-b").expect("n"), "A1-B");
+    }
+
+    #[test]
+    fn keeps_player_inheritance_initialization() {
+        let player = PLAYER
+            .replacen(
+                "var H={};",
+                r#"var H={};
+H.link=function(child,parent){child.prototype=Object.create(parent.prototype);child.prototype.constructor=child};
+function Base(){}
+Base.prototype.setup=function(){};"#,
+                1,
+            )
+            .replacen(
+                "U.prototype.set=",
+                "H.link(U,Base);var ready=new U().setup();\nU.prototype.set=",
+                1,
+            );
+        let solver = YoutubeChallengeSolver::prepare(&player).expect("prepare solver");
+        assert_eq!(solver.solve_signature("abcd").expect("signature"), "dcba");
     }
 }

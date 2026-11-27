@@ -200,11 +200,12 @@ fn player_wrapper<'a>(
     body: &'a oxc_allocator::Vec<'a, Statement<'a>>,
 ) -> Result<PlayerWrapper<'a>, ProviderClientError> {
     let (initializer, wrapper) = match body.as_slice() {
-        [Statement::VariableDeclaration(initializer), Statement::ExpressionStatement(statement)] => {
-            (Some(initializer.span), &statement.expression)
-        }
-        [Statement::ExpressionStatement(statement)] => (None, &statement.expression),
-        [_, Statement::ExpressionStatement(statement)] => (None, &statement.expression),
+        [
+            Statement::VariableDeclaration(initializer),
+            Statement::ExpressionStatement(statement),
+        ] => (Some(initializer.span), &statement.expression),
+        [Statement::ExpressionStatement(statement)]
+        | [_, Statement::ExpressionStatement(statement)] => (None, &statement.expression),
         _ => return unexpected_player_structure(),
     };
     let Expression::CallExpression(call) = wrapper.without_parentheses() else {

@@ -450,7 +450,7 @@ impl RealtimeManager {
         &self.admin_event_tx
     }
 
-    fn validate_redis_publish(&self, event: &RealtimeEvent, is_critical: bool) -> bool {
+    fn validate_redis_publish(&self, event: &RealtimeEvent) -> bool {
         let event_type = event.event_type();
 
         if self.is_quarantined() {
@@ -463,7 +463,7 @@ impl RealtimeManager {
             return false;
         }
 
-        if self.shutdown_started.load(Ordering::Acquire) && !is_critical {
+        if self.shutdown_started.load(Ordering::Acquire) && !event.is_critical() {
             debug!(
                 event_type = %event_type,
                 "Skipping Redis publish because RealtimeManager shutdown is in progress"
@@ -481,20 +481,14 @@ impl RealtimeManager {
         true
     }
 
-    fn enqueue_redis_publish_request(
-        &self,
-        req: PublishRequest,
-        is_critical: bool,
-        allow_waiting_retry: bool,
-    ) -> bool {
-        if is_critical {
+    fn enqueue_redis_publish_request(&self, req: PublishRequest) -> bool {
+        if req.event.is_critical() {
             if let Some(tx) = &self.redis_critical_tx {
                 self.enqueue_critical_publish_request(
                     tx,
                     req,
                     self.critical_channel_capacity,
                     "critical",
-                    allow_waiting_retry,
                 )
             } else if let Some(tx) = &self.redis_publish_tx {
                 self.enqueue_critical_publish_request(
@@ -502,7 +496,6 @@ impl RealtimeManager {
                     req,
                     self.publish_channel_capacity,
                     "fallback",
-                    allow_waiting_retry,
                 )
             } else {
                 false
@@ -536,11 +529,10 @@ impl RealtimeManager {
         req: PublishRequest,
         capacity: usize,
         channel: &'static str,
-        allow_waiting_retry: bool,
     ) -> bool {
         match tx.try_send(req) {
             Ok(()) => true,
-            Err(mpsc::error::TrySendError::Full(req)) if allow_waiting_retry => {
+            Err(mpsc::error::TrySendError::Full(req)) if !req.expects_ack() => {
                 let tx = tx.clone();
                 warn!(
                     channel = %channel,
@@ -571,10 +563,6 @@ impl RealtimeManager {
                 false
             }
         }
-    }
-
-    fn enqueue_redis_publish(&self, event: RealtimeEvent, is_critical: bool) -> bool {
-        self.enqueue_redis_publish_request(PublishRequest::new(event), is_critical, true)
     }
 
     /// Broadcast an event to local subscribers only.
@@ -689,13 +677,12 @@ impl RealtimeManager {
     /// event locally and only need cross-node fan-out.
     pub fn publish_only(&self, event: RealtimeEvent) -> bool {
         let event_type = event.event_type();
-        let is_critical = event.is_critical();
 
-        if !self.validate_redis_publish(&event, is_critical) {
+        if !self.validate_redis_publish(&event) {
             return false;
         }
 
-        let redis_sent = self.enqueue_redis_publish(event, is_critical);
+        let redis_sent = self.enqueue_redis_publish_request(PublishRequest::new(event));
 
         debug!(
             event_type = %event_type,
@@ -716,14 +703,13 @@ impl RealtimeManager {
         timeout_duration: Duration,
     ) -> std::result::Result<(), String> {
         let event_type = event.event_type();
-        let is_critical = event.is_critical();
 
-        if !self.validate_redis_publish(&event, is_critical) {
+        if !self.validate_redis_publish(&event) {
             return Err("Realtime publish queue rejected event".to_string());
         }
 
         let (request, ack) = PublishRequest::with_ack(event);
-        if !self.enqueue_redis_publish_request(request, is_critical, false) {
+        if !self.enqueue_redis_publish_request(request) {
             return Err("Realtime publish queue rejected event".to_string());
         }
 
@@ -1133,7 +1119,7 @@ impl RealtimeManager {
             super::events::publish_admin_event(&self.admin_event_tx, event.clone(), "outbound");
         }
 
-        let redis_sent = self.enqueue_redis_publish(event, is_critical);
+        let redis_sent = self.enqueue_redis_publish_request(PublishRequest::new(event));
 
         // Record realtime metrics
         synctv_core::metrics::cluster::REALTIME_EVENTS_PUBLISHED

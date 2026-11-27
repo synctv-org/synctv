@@ -44,10 +44,8 @@ pub(super) const MAX_RESOURCE_OBSERVATIONS_PER_CONNECTION: usize = 64;
 /// so WS, WT, SSE and gRPC degrade identically instead of the WT transport
 /// failing the session on an oversized frame.
 pub const MAX_SERVER_MESSAGE_BYTES: usize = 1024 * 1024;
-const CHAT_EVENT_REPLAY_BATCH_LIMIT: i32 = 500;
-const CHAT_EVENT_REPLAY_BATCH_LIMIT_USIZE: usize = 500;
-const ROOM_RESOURCE_EVENT_REPLAY_BATCH_LIMIT: i32 = 500;
-const ROOM_RESOURCE_EVENT_REPLAY_BATCH_LIMIT_USIZE: usize = 500;
+const CHAT_EVENT_REPLAY_BATCH_LIMIT: u16 = 500;
+pub(super) const ROOM_RESOURCE_EVENT_REPLAY_BATCH_LIMIT: u16 = 500;
 const ONLINE_COUNT_REFRESH_INTERVAL_SECONDS: i64 = 10;
 
 fn event_cursor_for_chat_event(
@@ -2657,7 +2655,7 @@ impl ResourceObserver {
                     .get_events_after_sequence(
                         &self.room_id,
                         after_event_sequence,
-                        CHAT_EVENT_REPLAY_BATCH_LIMIT,
+                        i32::from(CHAT_EVENT_REPLAY_BATCH_LIMIT),
                         &selection,
                     )
                     .await
@@ -2705,7 +2703,7 @@ impl ResourceObserver {
                     self.room_hub.register_observation(self, observation).await;
                 }
 
-                if events.len() < CHAT_EVENT_REPLAY_BATCH_LIMIT_USIZE {
+                if events.len() < usize::from(CHAT_EVENT_REPLAY_BATCH_LIMIT) {
                     return Ok(());
                 }
             }
@@ -2768,15 +2766,13 @@ impl ResourceObserver {
                     &self.room_id,
                     resource_types,
                     after_event_sequence,
-                    ROOM_RESOURCE_EVENT_REPLAY_BATCH_LIMIT,
+                    i32::from(ROOM_RESOURCE_EVENT_REPLAY_BATCH_LIMIT),
                 )
                 .await
                 .map_err(|error| error.to_string())?;
-            if events.is_empty() {
-                return Ok(());
-            }
+            let last_batch = events.len() < usize::from(ROOM_RESOURCE_EVENT_REPLAY_BATCH_LIMIT);
 
-            for logged in &events {
+            for logged in events {
                 after_event_sequence = logged.sequence;
                 let cursor = synctv_proto::client::EventCursor {
                     event_id: Some(logged.event_id.clone()),
@@ -2785,7 +2781,7 @@ impl ResourceObserver {
                 let Some(mut observation) = self.local_observation(observe_id).await else {
                     return Ok(());
                 };
-                let Some(payload) = logged.payload.clone() else {
+                let Some(payload) = logged.payload else {
                     if !Self::apply_event_cursor_to_observation(&mut observation, &cursor) {
                         continue;
                     }
@@ -2898,16 +2894,14 @@ impl ResourceObserver {
                     self.room_hub.register_observation(self, observation).await;
                     continue;
                 }
-                let mut update = self
+                let update = self
                     .evaluate_observation_with_force(&mut observation, true)
                     .await?;
-                if let Some(changed) = update.changed_message.as_mut() {
+                if let Some(mut changed) = update.changed_message {
                     changed.event_cursor = Some(cursor);
                     self.send_server_message(ServerMessage {
                         message: Some(
-                            synctv_proto::client::server_message::Message::ResourceEvent(
-                                changed.clone(),
-                            ),
+                            synctv_proto::client::server_message::Message::ResourceEvent(changed),
                         ),
                     })?;
                 }
@@ -2915,7 +2909,7 @@ impl ResourceObserver {
                 self.room_hub.register_observation(self, observation).await;
             }
 
-            if events.len() < ROOM_RESOURCE_EVENT_REPLAY_BATCH_LIMIT_USIZE {
+            if last_batch {
                 return Ok(());
             }
         }

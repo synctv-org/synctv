@@ -556,6 +556,56 @@ fn lifecycle_test_manager() -> std::sync::Arc<super::TranscodeManager> {
     )
 }
 
+#[tokio::test(start_paused = true)]
+async fn hls_master_keeps_rung_demand_while_resolving_generation() -> anyhow::Result<()> {
+    use crate::{HlsStreamingApi, LiveStreamingInfrastructure, StreamTracker};
+    use std::sync::Arc;
+
+    let manager = lifecycle_test_manager();
+    let generation = crate::util::TEST_GENERATION_ID;
+    let rung = rung_stream_name("123", "480p");
+    manager
+        .inner
+        .registry
+        .try_activate_generation("room", &rung, "node", "", "127.0.0.1:1935", generation)
+        .await?;
+    // The scheduler sees the publisher before the HLS lookup observes it.
+    let registry = crate::local_stream_registry();
+    let infrastructure = LiveStreamingInfrastructure::new(
+        registry.clone(),
+        manager.inner.stream_hub_event_sender.clone(),
+        Arc::new(StreamTracker::new()),
+        "node".to_string(),
+        synctv_common::ssrf::SsrfGuard::disabled(),
+    )?
+    .with_transcode(Some(Arc::clone(&manager)));
+    let lookup =
+        HlsStreamingApi::resolve_active_generation_with_pull(&infrastructure, "room", &rung, None);
+    tokio::pin!(lookup);
+    assert!(futures::poll!(&mut lookup).is_pending());
+    let subscribers = || {
+        let state = manager
+            .inner
+            .state
+            .lock()
+            .expect("transcode state poisoned");
+        state
+            .get(&("room".to_string(), "123".to_string()))
+            .and_then(|source| source.rungs.get("480p"))
+            .map_or(0, |rung| rung.subscribers)
+    };
+    assert_eq!(subscribers(), 1);
+    registry
+        .try_activate_generation("room", &rung, "node", "", "127.0.0.1:1935", generation)
+        .await?;
+    assert_eq!(
+        lookup.await?.map(|stream| stream.generation_id),
+        Some(generation.to_string())
+    );
+    assert_eq!(subscribers(), 0);
+    Ok(())
+}
+
 fn seed_lifecycle_source(manager: &super::TranscodeManager) {
     let mut state = manager
         .inner

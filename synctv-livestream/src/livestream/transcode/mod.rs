@@ -143,6 +143,7 @@ enum ViewerRole {
 
 /// Keeps one viewer's rung demand registered until dropped. Held by the
 /// serving layer for the lifetime of the viewer's session.
+#[must_use = "hold the guard for the viewer's session to keep demand for the rung registered"]
 pub struct RungViewerGuard {
     inner: Option<Arc<ManagerInner>>,
     key: SourceKey,
@@ -403,7 +404,6 @@ impl TranscodeManager {
 
     /// Register an already-live rung viewer (local session or relay
     /// subscription served by this node) without the waiting phase.
-    #[must_use]
     pub fn attach_rung_viewer(&self, room_id: &str, media_id: &str, rung: &str) -> RungViewerGuard {
         self.inner
             .add_viewer(room_id, media_id, rung, ViewerRole::Subscribed);

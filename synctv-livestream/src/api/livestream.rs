@@ -998,10 +998,9 @@ impl HlsStreamingApi {
     /// Resolve the active generation used by an HLS master playlist.
     ///
     /// For live_proxy media, the external source is lazily pulled even when the
-    /// first viewer is an HLS client. The returned guard is kept only for this
-    /// request; idle cleanup still owns long-term shutdown. A rung media id
-    /// registers its demand here; subsequent playlist and segment requests
-    /// refresh the rung's viewer accounting per request.
+    /// first viewer is an HLS client. Source and transcode rung demand stay
+    /// registered until generation resolution finishes. Subsequent playlist
+    /// and segment requests refresh viewer accounting for their own duration.
     pub async fn resolve_active_generation_with_pull(
         infrastructure: &LiveStreamingInfrastructure,
         room_id: &str,
@@ -1009,7 +1008,7 @@ impl HlsStreamingApi {
         external_source: Option<&synctv_core::models::LiveProxyMediaSourceConfig>,
     ) -> Result<Option<StreamGeneration>> {
         let route = infrastructure.route_stream_key(media_id);
-        let _guard = if let Some(source) = external_source {
+        let _source_guard = if let Some(source) = external_source {
             let active = infrastructure
                 .registry
                 .get_active_generation(room_id, &route.base_media_id)
@@ -1032,24 +1031,16 @@ impl HlsStreamingApi {
         } else {
             None
         };
-        if let (Some(rung), Some(manager)) = (&route.rung, &infrastructure.transcode) {
-            let _rung_guard = manager
-                .ensure_rung_stream(room_id, &route.base_media_id, rung)
-                .await?;
-        }
-
-        let generation = infrastructure
-            .registry
-            .get_active_generation(room_id, &route.stream_media_id)
-            .await
-            .map_err(|error| {
-                StreamError::RegistryError(format!(
-                    "Failed to resolve active HLS generation: {error}"
-                ))
-            })?;
-        if generation.is_some() {
-            return Ok(generation);
-        }
+        let _rung_guard =
+            if let (Some(rung), Some(manager)) = (&route.rung, &infrastructure.transcode) {
+                Some(
+                    manager
+                        .ensure_rung_stream(room_id, &route.base_media_id, rung)
+                        .await?,
+                )
+            } else {
+                None
+            };
 
         Self::wait_for_active_generation(infrastructure, room_id, &route.stream_media_id).await
     }

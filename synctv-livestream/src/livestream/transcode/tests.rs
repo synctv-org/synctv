@@ -596,11 +596,55 @@ async fn rejected_transcode_job_releases_metadata_observer() {
             .is_ok()
     );
     frames.closed().await;
+    assert!(
+        tokio::time::timeout(super::SCHEDULER_TICK * 2, events.recv())
+            .await
+            .is_err(),
+        "the same demand must not resubscribe during the failure cooldown"
+    );
 
     let inner = std::sync::Arc::downgrade(&manager.inner);
     manager.shutdown().await;
     drop(manager);
     assert!(inner.upgrade().is_none());
+}
+
+#[test]
+fn late_supervisor_cannot_finish_a_replacement_job() {
+    let manager = lifecycle_test_manager();
+    let key = ("room".to_owned(), "media".to_owned());
+    let _viewer = manager.attach_rung_viewer(&key.0, &key.1, "480p");
+    let previous = manager.inner.shutdown.child_token();
+    let current = manager.inner.shutdown.child_token();
+    {
+        let mut state = manager.inner.state.lock().expect("state");
+        let rung = state
+            .get_mut(&key)
+            .and_then(|source| source.rungs.get_mut("480p"))
+            .expect("viewer registered the rung");
+        rung.running = Some(super::RunningRung {
+            cancel: current.clone(),
+            idle_since: None,
+        });
+    }
+
+    let outcome = Err(super::TranscodeError::Unsupported("codec".to_owned()));
+    manager
+        .inner
+        .note_rung_finished(&key.0, &key.1, "480p", Some(&previous), &outcome);
+    {
+        let state = manager.inner.state.lock().expect("state");
+        let rung = &state[&key].rungs["480p"];
+        assert_eq!(rung.running.as_ref().map(|job| &job.cancel), Some(&current));
+        assert!(rung.unsupported.is_none());
+    }
+    manager
+        .inner
+        .note_rung_finished(&key.0, &key.1, "480p", Some(&current), &outcome);
+    let state = manager.inner.state.lock().expect("state");
+    let rung = &state[&key].rungs["480p"];
+    assert!(rung.running.is_none());
+    assert_eq!(rung.unsupported.as_deref(), Some("codec"));
 }
 
 #[test]

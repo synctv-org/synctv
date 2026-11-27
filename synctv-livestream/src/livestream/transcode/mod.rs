@@ -594,12 +594,14 @@ impl ManagerInner {
         self.schedule_wake.notify_one();
     }
 
-    /// Called by the job supervisor when a rung job has fully ended.
+    /// Record a submission rejection (`job` is absent) or the outcome of
+    /// the specific running job. A previous session may finish after a restart.
     fn note_rung_finished(
-        self: &Arc<Self>,
+        &self,
         room_id: &str,
         media_id: &str,
         rung: &str,
+        job: Option<&CancellationToken>,
         outcome: &Result<(), TranscodeError>,
     ) {
         let mut wake = false;
@@ -610,8 +612,9 @@ impl ManagerInner {
             if let Some(rung_state) = state
                 .get_mut(&key)
                 .and_then(|source| source.rungs.get_mut(rung))
-                && rung_state.running.take().is_some()
+                && rung_state.running.as_ref().map(|running| &running.cancel) == job
             {
+                rung_state.running = None;
                 wake = true;
                 match outcome {
                     Ok(()) => {
@@ -708,9 +711,12 @@ async fn scheduler_tick(inner: &Arc<ManagerInner>) {
     };
     // Only the supervisor of an accepted job polls these slots. A rejected
     // input or a finished publisher has no worker left to supply metadata.
+    let cancel = inner.shutdown.child_token();
     let observe_metadata = {
         let inner = Arc::clone(inner);
         let key = (room_id.clone(), media_id.clone());
+        let rung = rung.clone();
+        let job_cancel = cancel.clone();
         let resolution_slot = Arc::clone(&input.source_resolution);
         let frame_rate_slot = Arc::clone(&input.source_frame_rate);
         let video_bitrate_slot = Arc::clone(&input.source_video_bitrate_kbps);
@@ -724,7 +730,13 @@ async fn scheduler_tick(inner: &Arc<ManagerInner>) {
                 };
                 if resolution.is_some() || frame_rate.is_some() || video_bitrate.is_some() {
                     let mut state = inner.state.lock().expect("transcode state poisoned");
-                    if let Some(source) = state.get_mut(&key) {
+                    if let Some(source) = state.get_mut(&key)
+                        && source
+                            .rungs
+                            .get(&rung)
+                            .and_then(|state| state.running.as_ref())
+                            .is_some_and(|running| running.cancel == job_cancel)
+                    {
                         if let Some(resolution) = resolution {
                             source.source_resolution = Some(resolution);
                         }
@@ -743,12 +755,11 @@ async fn scheduler_tick(inner: &Arc<ManagerInner>) {
     };
 
     info!(room_id, media_id, rung, demand, "Submitting transcode job");
-    let cancel = inner.shutdown.child_token();
     // Offer the job to the workers in priority order; rejections return the
     // input untouched so the next worker can take it.
     let mut input = input;
     let mut started: Option<(TranscodeJobHandle, TranscodeOutputReceiver, String)> = None;
-    let mut all_capacity_exhausted = true;
+    let mut at_capacity = false;
     let mut unsupported: Option<String> = None;
     let mut failed: Option<String> = None;
     for slot in &inner.workers {
@@ -761,6 +772,7 @@ async fn scheduler_tick(inner: &Arc<ManagerInner>) {
                 input = returned_input;
                 match error {
                     TranscodeError::CapacityExhausted => {
+                        at_capacity = true;
                         debug!(
                             room_id, media_id, rung,
                             worker = %slot.label,
@@ -768,7 +780,6 @@ async fn scheduler_tick(inner: &Arc<ManagerInner>) {
                         );
                     }
                     TranscodeError::Unsupported(reason) => {
-                        all_capacity_exhausted = false;
                         warn!(
                             room_id, media_id, rung,
                             worker = %slot.label,
@@ -778,7 +789,6 @@ async fn scheduler_tick(inner: &Arc<ManagerInner>) {
                         unsupported = unsupported.or(Some(reason));
                     }
                     TranscodeError::Failed(reason) => {
-                        all_capacity_exhausted = false;
                         warn!(
                             room_id, media_id, rung,
                             worker = %slot.label,
@@ -793,27 +803,29 @@ async fn scheduler_tick(inner: &Arc<ManagerInner>) {
     }
 
     let Some((handle, output, worker_label)) = started else {
-        if all_capacity_exhausted {
+        if at_capacity {
             debug!(
                 room_id,
-                media_id, rung, "Every transcode worker is at capacity; backing off"
+                media_id, rung, "A transcode worker is at capacity; backing off"
             );
             tokio::time::sleep(CAPACITY_BACKOFF).await;
             inner.schedule_wake.notify_one();
-        } else if let Some(reason) = unsupported {
-            // Permanent only when no worker could run it for engine reasons.
-            inner.note_rung_finished(
-                &room_id,
-                &media_id,
-                &rung,
-                &Err(TranscodeError::Unsupported(reason)),
-            );
         } else if let Some(reason) = failed {
             inner.note_rung_finished(
                 &room_id,
                 &media_id,
                 &rung,
+                None,
                 &Err(TranscodeError::Failed(reason)),
+            );
+        } else if let Some(reason) = unsupported {
+            // Permanent only when every worker rejected this source as unsupported.
+            inner.note_rung_finished(
+                &room_id,
+                &media_id,
+                &rung,
+                None,
+                &Err(TranscodeError::Unsupported(reason)),
             );
         }
         return;
@@ -884,6 +896,7 @@ async fn scheduler_tick(inner: &Arc<ManagerInner>) {
             &supervisor_room,
             &supervisor_media,
             &supervisor_rung,
+            Some(&cancel),
             &outcome,
         );
     });

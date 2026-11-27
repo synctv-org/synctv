@@ -336,4 +336,19 @@ H.sideEffect();
         let solver = YoutubeChallengeSolver::prepare(&player).expect("prepare solver");
         assert_eq!(solver.solve_signature("abcd").expect("signature"), "dcba");
     }
+
+    #[test]
+    fn preserves_player_wrapper_argument() {
+        let player = PLAYER
+            .replacen(
+                "(function(){\nvar H={};",
+                "var player = {}; (function(g){var window=this;",
+                1,
+            )
+            .replace("H.", "g.")
+            .replacen("}).call(this);", "})(player);", 1);
+        let solver = YoutubeChallengeSolver::prepare(&player).expect("prepare solver");
+        assert_eq!(solver.solve_signature("abcd").expect("signature"), "dcba");
+        assert_eq!(solver.solve_n("a1-b").expect("n"), "A1-B");
+    }
 }

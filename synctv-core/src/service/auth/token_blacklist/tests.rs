@@ -655,55 +655,43 @@ async fn test_in_memory_concurrent_blacklist_if_not_exists_atomicity() {
 }
 
 #[tokio::test]
-async fn test_in_memory_blacklist_lock_cleanup_does_not_replace_live_mutex() {
+async fn cancelled_blacklist_waiters_release_the_last_lock_entry() {
     let store = make_in_memory_store();
-    let key = "jti:lock_cleanup_in_memory";
-
-    let original_mutex = store
-        .blacklist_locks
-        .entry(key.to_string())
-        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-        .value()
-        .clone();
-
-    let _guard = original_mutex.lock().await;
-
-    store.cleanup_blacklist_lock(key, &original_mutex);
-
-    let stored_mutex = some(
-        store.blacklist_locks.get(key),
-        "live mutex entry must not be removed while in use",
-    );
-    assert!(
-        Arc::ptr_eq(stored_mutex.value(), &original_mutex),
-        "cleanup must not swap out an in-flight mutex"
-    );
+    let key = "jti:cancelled";
+    let held = Arc::clone(
+        store
+            .blacklist_locks
+            .entry(key.to_owned())
+            .or_default()
+            .value(),
+    )
+    .lock_owned()
+    .await;
+    let mut first = store.blacklist_if_not_exists(key, 3600);
+    let mut second = store.blacklist_if_not_exists(key, 3600);
+    assert!(futures::poll!(&mut first).is_pending());
+    assert!(futures::poll!(&mut second).is_pending());
+    drop(held);
+    drop(first);
+    assert!(store.blacklist_locks.contains_key(key));
+    drop(second);
+    assert!(store.blacklist_locks.is_empty());
 }
 
 #[tokio::test]
-async fn test_tiered_blacklist_lock_cleanup_does_not_replace_live_mutex() {
-    let store = make_tiered_l1_only();
-    let key = "jti:lock_cleanup_tiered";
-
-    let original_mutex = store
-        .blacklist_locks
-        .entry(key.to_string())
-        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-        .value()
-        .clone();
-
-    let _guard = original_mutex.lock().await;
-
-    store.cleanup_blacklist_lock(key, &original_mutex);
-
-    let stored_mutex = some(
-        store.blacklist_locks.get(key),
-        "live mutex entry must not be removed while in use",
+async fn failed_durable_blacklist_releases_the_lock_entry() {
+    let store = TieredTokenBlacklistStore::from_runtime(
+        FailingDurableTokenBlacklistStore,
+        None,
+        String::new(),
     );
     assert!(
-        Arc::ptr_eq(stored_mutex.value(), &original_mutex),
-        "cleanup must not swap out an in-flight mutex"
+        store
+            .blacklist_if_not_exists("jti:failed", 3600)
+            .await
+            .is_err()
     );
+    assert!(store.blacklist_locks.is_empty());
 }
 
 /// Test that concurrent calls to `blacklist_if_not_exists` on different tokens
@@ -753,13 +741,6 @@ async fn test_in_memory_blacklist_lock_cleanup() {
         "blacklist-if-not-exists should run",
     );
 
-    // Lock should be cleaned up after the operation
-    // Note: There might be a brief moment where the lock exists,
-    // but it should be removed after the operation completes
-    tokio::time::sleep(Duration::from_millis(10)).await;
-
-    // The lock entry should be removed (or at least not grow unbounded)
-    // Since we're testing with a single key, the count should be back to initial
     assert_eq!(
         store.blacklist_locks.len(),
         initial_count,

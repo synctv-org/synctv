@@ -35,6 +35,29 @@ fn database_deadline(ttl_secs: u64) -> Result<chrono::DateTime<chrono::Utc>> {
         })
 }
 
+type BlacklistLocks = dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>;
+
+struct BlacklistLockEntry<'a> {
+    locks: &'a BlacklistLocks,
+    key: &'a str,
+}
+
+impl BlacklistLockEntry<'_> {
+    async fn lock(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        let mutex = Arc::clone(self.locks.entry(self.key.to_owned()).or_default().value());
+        mutex.lock_owned().await
+    }
+}
+
+impl Drop for BlacklistLockEntry<'_> {
+    fn drop(&mut self) {
+        // The waiter or owned guard drops before this entry. Check under the
+        // map's shard lock so a concurrent acquisition cannot be detached.
+        self.locks
+            .remove_if(self.key, |_, lock| Arc::strong_count(lock) == 1);
+    }
+}
+
 /// In-memory [`TokenBlacklistStore`] using moka caches with per-entry TTL tracking.
 ///
 /// Used in standalone mode without Redis. Moka provides capacity-based eviction
@@ -45,8 +68,7 @@ fn database_deadline(ttl_secs: u64) -> Result<chrono::DateTime<chrono::Utc>> {
 ///
 /// ## Atomicity for `blacklist_if_not_exists`
 ///
-/// Since moka doesn't support atomic "insert if absent", we use a `DashMap` of
-/// `Arc<tokio::sync::Mutex>` per key to serialize concurrent operations on the same JTI.
+/// A per-key mutex serializes the expiry check and insert for the same JTI.
 /// This prevents TOCTOU race conditions during refresh token rotation.
 pub struct InMemoryTokenBlacklistStore {
     /// JTI -> expiry Instant (presence + non-expired = blacklisted)
@@ -55,7 +77,7 @@ pub struct InMemoryTokenBlacklistStore {
     pub(super) family_revoked: Arc<moka::future::Cache<String, (i64, Instant)>>,
     /// Per-key mutex for atomic `blacklist_if_not_exists` operations
     /// Uses `DashMap` for O(1) lock acquisition without global contention
-    pub(super) blacklist_locks: Arc<dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    pub(super) blacklist_locks: BlacklistLocks,
 }
 
 impl InMemoryTokenBlacklistStore {
@@ -83,21 +105,8 @@ impl InMemoryTokenBlacklistStore {
                     .time_to_live(Duration::from_secs(family_ttl_secs))
                     .build(),
             ),
-            blacklist_locks: Arc::new(dashmap::DashMap::new()),
+            blacklist_locks: BlacklistLocks::new(),
         }
-    }
-
-    pub(super) fn cleanup_blacklist_lock(&self, key: &str, mutex: &Arc<tokio::sync::Mutex<()>>) {
-        if Arc::strong_count(mutex) != 2 {
-            return;
-        }
-        let Ok(_cleanup_guard) = mutex.try_lock() else {
-            return;
-        };
-        drop(
-            self.blacklist_locks
-                .remove_if(key, |_, stored_mutex| Arc::ptr_eq(stored_mutex, mutex)),
-        );
     }
 }
 
@@ -123,34 +132,16 @@ impl TokenBlacklistStore for InMemoryTokenBlacklistStore {
     /// - `Ok(true)` if key already existed (replay detected)
     /// - `Ok(false)` if key was newly inserted (first use)
     async fn blacklist_if_not_exists(&self, key: &str, ttl_secs: u64) -> Result<bool> {
-        // Get or create a mutex for this specific key
-        // Using entry API to avoid race between get and insert
-        let mutex: Arc<tokio::sync::Mutex<()>> = self
-            .blacklist_locks
-            .entry(key.to_string())
-            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-            .value()
-            .clone();
-
-        let already_blacklisted = {
-            let _guard = mutex.lock().await;
-
-            // Double-check pattern: check if already blacklisted
-            if self.is_blacklisted_checked(key).await? {
-                true
-            } else {
-                // Not blacklisted, so insert atomically
-                let expiry = local_deadline(ttl_secs)?;
-                self.jti_blacklist.insert(key.to_string(), expiry).await;
-                false
-            }
+        let entry = BlacklistLockEntry {
+            locks: &self.blacklist_locks,
+            key,
         };
-
-        // Clean up only after releasing the mutex, and only when no other task
-        // still holds or waits on the same per-key mutex.
-        self.cleanup_blacklist_lock(key, &mutex);
-
-        Ok(already_blacklisted)
+        let _guard = entry.lock().await;
+        if self.is_blacklisted_checked(key).await? {
+            return Ok(true);
+        }
+        self.blacklist(key, ttl_secs).await?;
+        Ok(false)
     }
 
     async fn get_family_revoked_at_checked(&self, key: &str) -> Result<Option<i64>> {
@@ -430,7 +421,7 @@ pub struct TieredTokenBlacklistStore {
     key_prefix: String,
     /// Per-key mutex for atomic `blacklist_if_not_exists` operations (used when Redis unavailable)
     /// Uses `DashMap` for O(1) lock acquisition without global contention
-    pub(super) blacklist_locks: Arc<dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    pub(super) blacklist_locks: BlacklistLocks,
 }
 
 impl TieredTokenBlacklistStore {
@@ -454,7 +445,7 @@ impl TieredTokenBlacklistStore {
                 .time_to_live(L1_POSITIVE_TTL)
                 .build(),
             key_prefix,
-            blacklist_locks: Arc::new(dashmap::DashMap::new()),
+            blacklist_locks: BlacklistLocks::new(),
         }
     }
 
@@ -483,19 +474,6 @@ impl TieredTokenBlacklistStore {
     /// Compute L2 TTL for a positive entry: `token_ttl - margin`, minimum 1s.
     pub(super) fn l2_positive_ttl(ttl_secs: u64) -> u64 {
         ttl_secs.saturating_sub(L2_TTL_MARGIN_SECS).max(1)
-    }
-
-    pub(super) fn cleanup_blacklist_lock(&self, key: &str, mutex: &Arc<tokio::sync::Mutex<()>>) {
-        if Arc::strong_count(mutex) != 2 {
-            return;
-        }
-        let Ok(_cleanup_guard) = mutex.try_lock() else {
-            return;
-        };
-        drop(
-            self.blacklist_locks
-                .remove_if(key, |_, stored_mutex| Arc::ptr_eq(stored_mutex, mutex)),
-        );
     }
 
     async fn redis_conn_snapshot(&self) -> Option<redis::aio::ConnectionManager> {
@@ -683,28 +661,21 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
         // Use a per-key mutex to collapse same-process concurrency and reduce
         // duplicate PG writes, while PostgreSQL remains the cross-replica atomic
         // source of truth.
-        let mutex = self
-            .blacklist_locks
-            .entry(key.to_string())
-            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-            .value()
-            .clone();
-
         let already_existed = {
-            let _guard = mutex.lock().await;
+            let entry = BlacklistLockEntry {
+                locks: &self.blacklist_locks,
+                key,
+            };
+            let _guard = entry.lock().await;
 
-            // Double-check L1 cache (may have been populated by another concurrent request)
-            if let Some((is_bl, expiry)) = self.l1_blacklist.get(key).await {
-                if Instant::now() < expiry && is_bl {
-                    true
-                } else {
-                    // Delegate to PG's atomic operation first. Returning `Ok` before this
-                    // succeeds would violate the durable-primary architecture.
-                    self.durable.blacklist_if_not_exists(key, ttl_secs).await?
-                }
+            if self
+                .l1_blacklist
+                .get(key)
+                .await
+                .is_some_and(|(blacklisted, expiry)| blacklisted && Instant::now() < expiry)
+            {
+                true
             } else {
-                // Delegate to PG's atomic operation first. Returning `Ok` before this
-                // succeeds would violate the durable-primary architecture.
                 self.durable.blacklist_if_not_exists(key, ttl_secs).await?
             }
         };
@@ -734,10 +705,6 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
         self.l1_blacklist
             .insert(key.to_string(), (true, Instant::now() + L1_POSITIVE_TTL))
             .await;
-
-        // Remove the entry only after releasing the mutex, and only if no
-        // other waiter still shares the same lock instance.
-        self.cleanup_blacklist_lock(key, &mutex);
 
         Ok(already_existed)
     }

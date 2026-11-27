@@ -518,42 +518,109 @@ fn bitrate_gate_keeps_the_ladder_for_a_healthy_source() {
 }
 
 fn lifecycle_test_manager() -> std::sync::Arc<super::TranscodeManager> {
-    use crate::relay::in_memory_registry::InMemoryStreamRegistry;
-    use synctv_xiu::streamhub::define::StreamHubEventSender;
+    let (hub, _) = tokio::sync::mpsc::channel(1);
+    lifecycle_manager_with_hub(hub, "ffmpeg")
+}
 
+fn lifecycle_manager_with_hub(
+    hub: synctv_xiu::streamhub::define::StreamHubEventSender,
+    binary: &str,
+) -> std::sync::Arc<super::TranscodeManager> {
+    use crate::relay::in_memory_registry::InMemoryStreamRegistry;
+
+    let worker = super::FfmpegWorkerConfig {
+        max_concurrent: 1,
+        binary: binary.to_owned(),
+        x264_preset: Default::default(),
+    };
     let config = super::TranscodeConfig {
         enabled: true,
         workers: vec![super::WorkerConfig {
             name: None,
             priority: 100,
-            engine: super::WorkerEngine::Ffmpeg(super::FfmpegWorkerConfig {
-                max_concurrent: 1,
-                binary: "ffmpeg".to_string(),
-                x264_preset: Default::default(),
-            }),
+            engine: super::WorkerEngine::Ffmpeg(worker.clone()),
         }],
         presets: vec![preset("1080p", 1080), preset("480p", 480)],
     };
     assert!(config.validate().is_empty());
-    let (event_tx, _event_rx): (
-        StreamHubEventSender,
-        tokio::sync::mpsc::Receiver<synctv_xiu::streamhub::define::StreamHubEvent>,
-    ) = tokio::sync::mpsc::channel(1);
-    // No runtime here, so `TranscodeManager::new` skips its scheduler loop;
-    // the lifecycle methods under test are synchronous. The event channel
-    // has no receiver: nothing in these tests reaches the hub.
     super::TranscodeManager::new(
         config,
-        vec![super::FfmpegWorker::new(&super::FfmpegWorkerConfig {
-            max_concurrent: 1,
-            binary: "ffmpeg".to_string(),
-            x264_preset: Default::default(),
-        })],
+        vec![super::FfmpegWorker::new(&worker)],
         std::sync::Arc::new(InMemoryStreamRegistry::new()),
-        event_tx,
+        hub,
         "node".to_string(),
         "127.0.0.1:1935".to_string(),
     )
+}
+
+#[tokio::test(start_paused = true)]
+async fn dropping_manager_releases_background_tasks_in_a_live_runtime() {
+    let (events, _) = tokio::sync::broadcast::channel(1);
+    for _ in 0..2 {
+        let manager = lifecycle_test_manager();
+        let weak = std::sync::Arc::downgrade(&manager.inner);
+        let tasks = manager.inner.tasks.clone();
+        let watcher = manager.spawn_lifecycle_watcher(events.subscribe());
+        tokio::task::yield_now().await;
+        drop(manager);
+        tokio::time::timeout(std::time::Duration::from_secs(1), tasks.wait())
+            .await
+            .expect("transcode tasks should stop");
+        watcher.await.expect("lifecycle watcher should exit");
+        assert!(weak.upgrade().is_none());
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn rejected_transcode_job_releases_metadata_observer() {
+    use synctv_xiu::streamhub::define::{DataReceiver, FrameDataReceiver, StreamHubEvent};
+
+    let (hub, mut events) = tokio::sync::mpsc::channel(1);
+    let manager = lifecycle_manager_with_hub(hub, "./missing-test-ffmpeg");
+    manager
+        .inner
+        .add_viewer("room", "media", "480p", super::ViewerRole::Waiting);
+    let Some(StreamHubEvent::Subscribe { result_sender, .. }) = events.recv().await else {
+        panic!("expected source subscription");
+    };
+    let (frames, receiver) = tokio::sync::mpsc::unbounded_channel();
+    assert!(
+        result_sender
+            .send(Ok((
+                DataReceiver {
+                    frame_receiver: Some(FrameDataReceiver::Unbounded(receiver)),
+                    packet_receiver: None,
+                },
+                None
+            )))
+            .is_ok()
+    );
+    frames.closed().await;
+
+    let inner = std::sync::Arc::downgrade(&manager.inner);
+    manager.shutdown().await;
+    drop(manager);
+    assert!(inner.upgrade().is_none());
+}
+
+#[test]
+fn last_viewer_preserves_source_metadata() {
+    let manager = lifecycle_test_manager();
+    let guard = manager.attach_rung_viewer("room", "media", "480p");
+    let key = ("room".to_owned(), "media".to_owned());
+    manager
+        .inner
+        .state
+        .lock()
+        .expect("state")
+        .get_mut(&key)
+        .expect("source")
+        .source_resolution = Some((640, 360));
+    drop(guard);
+    let state = manager.inner.state.lock().expect("state");
+    let source = state.get(&key).expect("metadata survives the last viewer");
+    assert!(source.rungs.is_empty());
+    assert_eq!(source.source_resolution, Some((640, 360)));
 }
 
 #[tokio::test(start_paused = true)]
@@ -602,7 +669,15 @@ async fn hls_master_keeps_rung_demand_while_resolving_generation() -> anyhow::Re
         lookup.await?.map(|stream| stream.generation_id),
         Some(generation.to_string())
     );
-    assert_eq!(subscribers(), 0);
+    assert!(
+        manager
+            .inner
+            .state
+            .lock()
+            .expect("transcode state poisoned")
+            .is_empty(),
+        "the last viewer releases a source with no local metadata"
+    );
     Ok(())
 }
 

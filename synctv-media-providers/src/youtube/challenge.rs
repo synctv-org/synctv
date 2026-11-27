@@ -140,7 +140,8 @@ impl YoutubeChallengeSolver {
             if let Statement::ExpressionStatement(statement) = statement
                 && let Expression::AssignmentExpression(assignment) =
                     statement.expression.without_parentheses()
-                && let Expression::FunctionExpression(function) = assignment.right.without_parentheses()
+                && let Expression::FunctionExpression(function) =
+                    assignment.right.without_parentheses()
                 && function.params.items.len() == 2
                 && function_has_marker(function.body.as_deref(), player_js, &inheritance_marker)
             {
@@ -263,24 +264,26 @@ fn keep_statement(
     inheritance_helpers: &HashSet<&str>,
 ) -> bool {
     match statement {
-        Statement::ExpressionStatement(statement) => match statement.expression.without_parentheses() {
-            Expression::CallExpression(call) => {
-                call.arguments.len() == 2
-                    && source_for_span(source, call.callee.without_parentheses().span())
-                        .is_ok_and(|callee| inheritance_helpers.contains(callee))
+        Statement::ExpressionStatement(statement) => {
+            match statement.expression.without_parentheses() {
+                Expression::CallExpression(call) => {
+                    call.arguments.len() == 2
+                        && source_for_span(source, call.callee.without_parentheses().span())
+                            .is_ok_and(|callee| inheritance_helpers.contains(callee))
+                }
+                expression => matches!(
+                    expression,
+                    Expression::AssignmentExpression(_)
+                        | Expression::BooleanLiteral(_)
+                        | Expression::NullLiteral(_)
+                        | Expression::NumericLiteral(_)
+                        | Expression::BigIntLiteral(_)
+                        | Expression::RegExpLiteral(_)
+                        | Expression::StringLiteral(_)
+                        | Expression::TemplateLiteral(_)
+                ),
             }
-            expression => matches!(
-                expression,
-                Expression::AssignmentExpression(_)
-                    | Expression::BooleanLiteral(_)
-                    | Expression::NullLiteral(_)
-                    | Expression::NumericLiteral(_)
-                    | Expression::BigIntLiteral(_)
-                    | Expression::RegExpLiteral(_)
-                    | Expression::StringLiteral(_)
-                    | Expression::TemplateLiteral(_)
-            ),
-        },
+        }
         _ => true,
     }
 }

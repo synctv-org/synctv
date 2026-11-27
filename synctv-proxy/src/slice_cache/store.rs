@@ -85,6 +85,26 @@ const LOCK_CLEANUP_INTERVAL: u64 = 64;
 pub(super) const MAX_META_ENTRIES: usize = 100_000;
 const META_RETENTION_TARGET_DIVISOR: usize = 2;
 
+/// Bound for a background revalidation when the request carries no upstream
+/// header timeout.
+const BACKGROUND_REVALIDATION_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Whether `current` names a different resource than `previous`. Two present
+/// validators of the same kind decide; one that appears or disappears does not.
+fn validators_changed(
+    previous: &(Option<String>, Option<String>),
+    current: &(Option<String>, Option<String>),
+) -> bool {
+    match (&previous.0, &current.0) {
+        (Some(previous), Some(current)) => previous != current,
+        (None, None) => match (&previous.1, &current.1) {
+            (Some(previous), Some(current)) => previous != current,
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 /// Per-key Mutex to prevent thundering herd on the same slice.
 type SliceLock = Arc<Mutex<()>>;
 
@@ -283,11 +303,27 @@ impl SliceCache {
                 upstream_header_timeout,
                 bypass_on_non_partial: false,
             };
-            if let Err(error) = cache
-                .fetch_slice_after_lock(&fetch, registration.key(), &meta_key)
-                .await
-            {
-                tracing::debug!(slice_index, %error, "Background slice revalidation failed");
+            // Nobody waits for this fetch, so bound it as a whole. An upstream
+            // that sends its headers and then stalls would otherwise hold the
+            // slice lock, and with it every later reader of the slice.
+            let deadline = fetch
+                .upstream_header_timeout
+                .map_or(BACKGROUND_REVALIDATION_TIMEOUT, |timeout| {
+                    timeout.saturating_mul(2)
+                });
+            let fetched = tokio::time::timeout(
+                deadline,
+                cache.fetch_slice_after_lock(&fetch, registration.key(), &meta_key),
+            )
+            .await;
+            match fetched {
+                Ok(Err(error)) => {
+                    tracing::debug!(slice_index, %error, "Background slice revalidation failed");
+                }
+                Err(_) => {
+                    tracing::debug!(slice_index, "Background slice revalidation timed out");
+                }
+                Ok(Ok(_)) => {}
             }
         });
     }
@@ -577,14 +613,15 @@ impl SliceCache {
         upstream_header_timeout: Option<Duration>,
     ) -> Result<HeadResourceResult, anyhow::Error> {
         let meta_key = Self::meta_key(url, provider_headers);
-        super::head::get_or_fetch_head_resource_with_control(
+        let previous_validators = self.resource_validators(&meta_key);
+        let result = super::head::get_or_fetch_head_resource_with_control(
             HeadFetchContext {
                 client: &self.client,
                 ssrf_guard: &self.ssrf_guard,
                 segment_ttl: self.config.segment_ttl,
                 meta: &self.meta,
                 meta_lock: self.resource_meta_lock(&meta_key),
-                meta_key,
+                meta_key: meta_key.clone(),
             },
             url,
             provider_headers,
@@ -592,7 +629,26 @@ impl SliceCache {
             request_control,
             upstream_header_timeout,
         )
-        .await
+        .await?;
+        // Slices are revalidated against the resource metadata. When a HEAD
+        // learns other validators, they are stale, and a later 304 would keep
+        // serving the old bytes as fresh. Drop them and keep the metadata.
+        if result.cache_status == CacheStatus::Miss
+            && let Some(previous) = previous_validators
+            && let Some(current) = self.resource_validators(&meta_key)
+            && validators_changed(&previous, &current)
+        {
+            self.drop_resource_slices(&meta_key).await;
+        }
+        Ok(result)
+    }
+
+    /// The `ETag` and `Last-Modified` a conditional request for the resource
+    /// would send.
+    fn resource_validators(&self, meta_key: &str) -> Option<(Option<String>, Option<String>)> {
+        self.meta
+            .get(meta_key)
+            .map(|meta| (meta.etag.clone(), meta.last_modified.clone()))
     }
 
     // Slice fetch
@@ -993,11 +1049,16 @@ impl SliceCache {
         })
     }
 
-    async fn invalidate_resource(&self, resource: &str) {
+    /// Removes the cached slices of a resource and keeps its metadata.
+    async fn drop_resource_slices(&self, resource: &str) {
         let prefix = format!("{resource}-");
         for key in self.backend.keys_with_prefix(&prefix) {
             self.backend.remove(&key).await;
         }
+    }
+
+    async fn invalidate_resource(&self, resource: &str) {
+        self.drop_resource_slices(resource).await;
         self.meta.remove(resource);
     }
 

@@ -5740,3 +5740,280 @@ async fn test_range_fetch_concurrency_one_fetches_remaining_slices_serially() {
 
     server_task.await.expect("test server task");
 }
+
+/// A HEAD that reports other validators makes every cached slice of the
+/// resource stale. Left in place, a later 304 refreshed the old bytes.
+#[tokio::test]
+async fn head_with_new_validators_drops_cached_slices() {
+    let mock_server = MockServer::start().await;
+    let slice_size = 1024_usize;
+    let total_size: u64 = 2048;
+    let slice0 = Bytes::from(vec![0xAAu8; slice_size]);
+
+    Mock::given(method("GET"))
+        .and(path("/head-validator.bin"))
+        .and(header("Range", "bytes=0-1023"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(slice0.clone())
+                .insert_header("Content-Range", format!("bytes 0-1023/{total_size}"))
+                .insert_header("Content-Length", "1024")
+                .insert_header("ETag", "\"v1\""),
+        )
+        .mount(&mock_server)
+        .await;
+
+    // The origin replaced the object. Only HEAD reports the new validator.
+    Mock::given(method("HEAD"))
+        .and(path("/head-validator.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Length", "2048")
+                .insert_header("Accept-Ranges", "bytes")
+                .insert_header("ETag", "\"v2\""),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let cache = slice_cache_for_mock(
+        SliceCacheConfig {
+            slice_size,
+            segment_ttl: Duration::from_millis(20),
+            ..Default::default()
+        },
+        &mock_server,
+    );
+    let url = mock_public_url(&mock_server, "/head-validator.bin");
+    let headers = HashMap::new();
+
+    let (bytes, status) = cache
+        .get_or_fetch_slice(&url, &headers, 0, total_size)
+        .await
+        .unwrap();
+    assert_eq!(status, CacheStatus::Miss);
+    assert_eq!(bytes, slice0);
+
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let head = proxy_head_slice_enabled_with_control(&cache, true, None, &url, &headers, None)
+        .await
+        .unwrap();
+    assert_eq!(head.headers().get("X-Cache-Status").unwrap(), "MISS");
+
+    let key = SliceCache::compute_cache_key(&url, &headers, 0);
+    assert!(
+        cache.backend().get(&key).await.is_none(),
+        "the slice stored under \"v1\" must not survive a HEAD that reports \"v2\""
+    );
+}
+
+/// A HEAD keeps the cached slices unless two present validators of the same
+/// kind differ. Reporting the stored validator, or none at all, is not a change.
+#[tokio::test]
+async fn head_keeps_cached_slices_when_validators_do_not_differ() {
+    let mock_server = MockServer::start().await;
+    let slice_size = 1024_usize;
+    let total_size: u64 = 2048;
+    let slice0 = Bytes::from(vec![0xAAu8; slice_size]);
+    let cases = [
+        ("/head-same-validator.bin", Some("\"v1\"")),
+        ("/head-no-validator.bin", None),
+    ];
+
+    for (resource, head_etag) in cases {
+        let mut head_response = ResponseTemplate::new(200)
+            .insert_header("Content-Length", "2048")
+            .insert_header("Accept-Ranges", "bytes");
+        if let Some(etag) = head_etag {
+            head_response = head_response.insert_header("ETag", etag);
+        }
+        Mock::given(method("HEAD"))
+            .and(path(resource))
+            .respond_with(head_response)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(resource))
+            .and(header("Range", "bytes=0-1023"))
+            .respond_with(
+                ResponseTemplate::new(206)
+                    .set_body_bytes(slice0.clone())
+                    .insert_header("Content-Range", format!("bytes 0-1023/{total_size}"))
+                    .insert_header("Content-Length", "1024")
+                    .insert_header("ETag", "\"v1\""),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let cache = slice_cache_for_mock(
+            SliceCacheConfig {
+                slice_size,
+                segment_ttl: Duration::from_millis(20),
+                ..Default::default()
+            },
+            &mock_server,
+        );
+        let url = mock_public_url(&mock_server, resource);
+        let headers = HashMap::new();
+
+        let (bytes, status) = cache
+            .get_or_fetch_slice(&url, &headers, 0, total_size)
+            .await
+            .unwrap();
+        assert_eq!(status, CacheStatus::Miss);
+        assert_eq!(bytes, slice0);
+
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let head = proxy_head_slice_enabled_with_control(&cache, true, None, &url, &headers, None)
+            .await
+            .unwrap();
+        assert_eq!(head.headers().get("X-Cache-Status").unwrap(), "MISS");
+
+        let key = SliceCache::compute_cache_key(&url, &headers, 0);
+        assert!(
+            cache.backend().get(&key).await.is_some(),
+            "{resource}: the slice must survive this HEAD"
+        );
+    }
+}
+
+/// Answers `bytes=0-1023` range requests, each on its own connection. The
+/// second request gets its headers and the start of its body, then stalls
+/// until released. Every other request gets a complete response.
+async fn start_stalling_range_listener(
+    total_size: u64,
+) -> (
+    std::net::SocketAddr,
+    Arc<tokio::sync::Notify>,
+    tokio::sync::oneshot::Sender<()>,
+    tokio::task::JoinHandle<()>,
+) {
+    use tokio::io::AsyncWriteExt;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("test listener should bind an ephemeral loopback port");
+    let address = listener
+        .local_addr()
+        .expect("test listener should expose its address");
+    let headers_sent = Arc::new(tokio::sync::Notify::new());
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let release = Arc::new(tokio::sync::Mutex::new(Some(release_rx)));
+    let requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let task = tokio::spawn({
+        let headers_sent = Arc::clone(&headers_sent);
+        async move {
+            let headers = format!(
+                "HTTP/1.1 206 Partial Content\r\n\
+                 Content-Range: bytes 0-1023/{total_size}\r\n\
+                 Content-Length: 1024\r\n\
+                 Connection: close\r\n\r\n"
+            );
+            let body = vec![0x33u8; 1024];
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let request_number = 1 + requests.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let stalled = request_number == 2;
+                let headers = headers.clone();
+                let body = body.clone();
+                let release = Arc::clone(&release);
+                let headers_sent = Arc::clone(&headers_sent);
+                tokio::spawn(async move {
+                    read_test_http_request(&mut stream).await;
+                    let response = async {
+                        stream.write_all(headers.as_bytes()).await?;
+                        if stalled {
+                            stream.write_all(&body[..16]).await?;
+                            stream.flush().await?;
+                            headers_sent.notify_one();
+                            let release = release.lock().await.take();
+                            if let Some(release) = release {
+                                release.await.ok();
+                            }
+                            stream.write_all(&body[16..]).await?;
+                        } else {
+                            stream.write_all(&body).await?;
+                        }
+                        stream.shutdown().await
+                    };
+                    let _ = response.await;
+                });
+            }
+        }
+    });
+    (address, headers_sent, release_tx, task)
+}
+
+/// A background revalidation holds the slice lock while it runs. When the
+/// upstream sends its headers and then stalls, it has to give up by a
+/// deadline so later readers of the slice can fetch it themselves.
+#[tokio::test]
+async fn background_revalidation_gives_up_when_the_upstream_stalls_after_headers() {
+    let total_size: u64 = 1024;
+    let (address, headers_sent, release, listener) =
+        start_stalling_range_listener(total_size).await;
+    let cache = SliceCache::new_with_client_and_ssrf_guard(
+        SliceCacheConfig {
+            slice_size: 1024,
+            segment_ttl: Duration::from_millis(50),
+            stale_max_age: Duration::from_millis(300),
+            stale_while_revalidate: true,
+            ..Default::default()
+        },
+        reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .resolve("cdn.example.com", address)
+            .build()
+            .expect("client should build"),
+        synctv_common::ssrf::SsrfGuard::builder()
+            .extra_allowed_host("cdn.example.com".to_string())
+            .build(),
+    )
+    .expect("mock slice cache should build");
+    let url = format!("http://cdn.example.com:{}/stall.bin", address.port());
+    let headers = HashMap::new();
+    // A background revalidation may take twice the header timeout.
+    let header_timeout = Duration::from_millis(500);
+
+    let (bytes, status) = cache
+        .get_or_fetch_slice_with_control(&url, &headers, 0, total_size, None, Some(header_timeout))
+        .await
+        .unwrap();
+    assert_eq!(status, CacheStatus::Miss);
+    assert_eq!(bytes, vec![0x33u8; 1024]);
+
+    tokio::time::sleep(Duration::from_millis(80)).await;
+
+    let (_, status) = cache
+        .get_or_fetch_slice_with_control(&url, &headers, 0, total_size, None, Some(header_timeout))
+        .await
+        .unwrap();
+    assert_eq!(status, CacheStatus::Stale);
+    tokio::time::timeout(Duration::from_secs(2), headers_sent.notified())
+        .await
+        .expect("the background revalidation should reach the upstream");
+
+    // Past the stale window nothing is served from the cache, so the next
+    // reader needs the slice lock that the stalled revalidation still holds.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let (bytes, status) = tokio::time::timeout(
+        Duration::from_secs(5),
+        cache.get_or_fetch_slice_with_control(
+            &url,
+            &headers,
+            0,
+            total_size,
+            None,
+            Some(header_timeout),
+        ),
+    )
+    .await
+    .expect("the stalled revalidation must release the slice lock")
+    .unwrap();
+    assert_eq!(status, CacheStatus::Expired);
+    assert_eq!(bytes, vec![0x33u8; 1024]);
+
+    release.send(()).expect("release the stalled response");
+    listener.abort();
+}

@@ -86,6 +86,9 @@ message MediaSourceInfo {
   repeated MediaStreamInfo media_stream_info = 8;
   string direct_play_url = 9;
   string transcoding_url = 10;
+  bool supports_direct_play = 11;
+  bool supports_direct_stream = 12;
+  bool supports_transcoding = 13;
 }
 
 message Item {

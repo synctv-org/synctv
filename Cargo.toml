@@ -206,7 +206,7 @@ serde_json = "=1.0.154"
 quick-xml = "=0.42.0"
 serde_yaml = "=0.9.34"
 serde_ignored = "=0.1.14"
-toml = "=1.2.1"
+toml = "=1.2.2"
 serde_urlencoded = "=0.7.1"
 serde_html_form = "=0.4.1"
 serde_path_to_error = "=0.1.20"
@@ -217,7 +217,7 @@ bincode = { version = "=2.0.1", features = ["serde"] }
 # Caching
 moka = { version = "=0.12.16", features = ["future", "sync"] }
 dashmap = "=7.0.0-rc2"
-lru = "=0.19.0"
+lru = "=0.19.1"
 
 # IDs & Crypto
 nanoid = "=0.5.0"
@@ -242,8 +242,8 @@ opus = "=0.4.0"
 fdk-aac = "=0.8.0"
 retina = "=0.4.22"
 rust_h265 = "=0.4.1"
-rusty_aac = { version = "=2.1.0", default-features = false }
-rusty_h264 = "=0.17.2"
+rusty_aac = { version = "=2.1.2", default-features = false }
+rusty_h264 = "=0.17.3"
 
 # Object Storage
 opendal = { version = "=0.59.5", default-features = false, features = [
@@ -265,7 +265,7 @@ dotenvy = "=0.15.7"
 
 # Configuration
 config = { version = "=0.15.27", default-features = false, features = ["yaml", "json", "toml"] }
-clap = { version = "=4.6.8", features = ["wrap_help", "derive"] }
+clap = { version = "=4.6.9", features = ["wrap_help", "derive"] }
 clap_complete = "=4.6.12"
 
 # Utilities

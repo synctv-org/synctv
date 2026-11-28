@@ -497,7 +497,7 @@ fn emby_playback_request_hints(
 }
 
 fn emby_auth_headers(token: &str) -> HashMap<String, String> {
-    HashMap::from([("X-Emby-Token".to_string(), token.to_string())])
+    synctv_media_providers::emby::media_request_auth_headers(token)
 }
 
 fn emby_get_item_request(
@@ -1532,9 +1532,11 @@ impl EmbyProvider {
 
         let mut playback_infos = HashMap::new();
 
-        // Auth headers for Emby: use X-Emby-Token header instead of
-        // embedding api_key in query strings to avoid credential exposure
-        // in URLs (which end up in logs, browser history, Referer headers).
+        // Auth headers for Emby: token headers instead of embedding api_key
+        // in query strings to avoid credential exposure in URLs (which end
+        // up in logs, browser history, Referer headers). Both X-Emby-Token
+        // and the MediaBrowser authorization header are sent because
+        // Jellyfin 12 ignores the legacy header.
         let emby_auth_headers = emby_auth_headers(&config.token);
 
         // Process media sources

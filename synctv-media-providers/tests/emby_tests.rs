@@ -6,7 +6,7 @@
 use synctv_media_providers::EmbyClient;
 use synctv_media_providers::emby::{EmbyInterface, EmbyService};
 use synctv_media_providers::transport_dto::emby::{LoginReq, LoginResp, login_req};
-use wiremock::matchers::{body_partial_json, method, path};
+use wiremock::matchers::{body_partial_json, header, header_regex, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 // validate_item_id is a private function tested indirectly through get_item which calls it.
@@ -208,6 +208,56 @@ async fn test_emby_client_get_items_success() {
     assert_eq!(resp.items[0].name, "Test Movie");
     assert!(!resp.items[0].is_folder);
     assert!(resp.items[1].is_folder);
+}
+
+#[tokio::test]
+async fn test_emby_client_login_sends_mediabrowser_authorization() {
+    let server = MockServer::start().await;
+    mock_public_info(&server, "/emby").await;
+
+    Mock::given(method("POST"))
+        .and(path("/emby/Users/authenticatebyname"))
+        .and(header_regex(
+            "Authorization",
+            r#"^MediaBrowser Client="Emby Web", Device="SyncTV", DeviceId="[^"]+", Version="4.7.14.0"$"#,
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "AccessToken": "emby-test-token-xyz",
+            "User": {"Id": "user-uuid-123", "Name": "admin"}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut client = EmbyClient::new(server.uri()).unwrap();
+    let (token, _user_id) = client.login("admin", "password123").await.unwrap();
+    assert_eq!(token, "emby-test-token-xyz");
+}
+
+#[tokio::test]
+async fn test_emby_client_authenticated_requests_carry_token_in_authorization() {
+    let server = MockServer::start().await;
+    mock_public_info(&server, "/emby").await;
+
+    // Jellyfin 12 ignores the legacy X-Emby-Token header, so authenticated
+    // requests must also carry the token inside the Authorization header.
+    Mock::given(method("GET"))
+        .and(header_regex(
+            "Authorization",
+            r#"^MediaBrowser Client="Emby Web", Device="SyncTV", DeviceId="[^"]+", Version="4.7.14.0", Token="token123"$"#,
+        ))
+        .and(header("X-Emby-Token", "token123"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "Items": [{"Id": "item1", "Name": "Test Movie", "Type": "Movie", "IsFolder": false, "MediaSources": []}],
+            "TotalRecordCount": 1
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
+    let resp = client.get_items(None, None).await.unwrap();
+    assert_eq!(resp.total_record_count, 1);
 }
 
 #[tokio::test]

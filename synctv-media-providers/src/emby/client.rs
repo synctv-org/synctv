@@ -1,6 +1,6 @@
 //! Emby/Jellyfin HTTP Client
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::net::IpAddr;
 use std::sync::LazyLock;
@@ -102,6 +102,37 @@ static API_PREFIX_CACHE: LazyLock<moka::future::Cache<String, String>> = LazyLoc
 });
 
 const X_EMBY_TOKEN: &str = "X-Emby-Token";
+
+const EMBY_AUTH_CLIENT: &str = "Emby Web";
+const EMBY_AUTH_DEVICE: &str = "SyncTV";
+const EMBY_AUTH_VERSION: &str = "4.7.14.0";
+
+/// `Authorization` header value identifying this client to Emby/Jellyfin
+/// servers. Jellyfin 12 dropped support for the legacy `Emby` scheme and
+/// ignores the `X-Emby-Token` header, so authenticated requests must carry
+/// the access token inside the `MediaBrowser` authorization header.
+pub fn emby_authorization_header_value(token: Option<&str>, device_id: &str) -> String {
+    let mut value = format!(
+        r#"MediaBrowser Client="{EMBY_AUTH_CLIENT}", Device="{EMBY_AUTH_DEVICE}", DeviceId="{device_id}", Version="{EMBY_AUTH_VERSION}""#
+    );
+    if let Some(token) = token {
+        let _ = write!(value, r#", Token="{token}""#);
+    }
+    value
+}
+
+/// Headers media/subtitle fetches must send to the Emby/Jellyfin server.
+/// `X-Emby-Token` is the canonical header on Emby and Jellyfin 10.x; the
+/// `Authorization` copy keeps Jellyfin 12 servers working.
+pub fn media_request_auth_headers(token: &str) -> HashMap<String, String> {
+    HashMap::from([
+        ("X-Emby-Token".to_string(), token.to_string()),
+        (
+            "Authorization".to_string(),
+            emby_authorization_header_value(Some(token), EMBY_AUTH_DEVICE),
+        ),
+    ])
+}
 
 /// Emby/Jellyfin HTTP Client
 pub struct EmbyClient {
@@ -334,20 +365,20 @@ impl EmbyClient {
     fn build_headers(&self) -> Result<HeaderMap, EmbyError> {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&emby_authorization_header_value(
+                self.token.as_deref(),
+                &self.device_id,
+            ))
+            .map_err(|e| EmbyError::InvalidConfig(format!("Failed to build auth header: {e}")))?,
+        );
 
         if let Some(ref token) = self.token {
             headers.insert(X_EMBY_TOKEN, HeaderValue::from_str(token)?);
         }
 
         Ok(headers)
-    }
-
-    fn build_emby_auth_header(&self) -> Result<HeaderValue, EmbyError> {
-        HeaderValue::from_str(&format!(
-            r#"Emby Client="Emby Web", Device="SyncTV", DeviceId="{}", Version="4.7.14.0""#,
-            self.device_id
-        ))
-        .map_err(|e| EmbyError::InvalidConfig(format!("Failed to build auth header: {e}")))
     }
 
     /// Perform a retried GET request and deserialize the JSON response body.
@@ -438,8 +469,7 @@ impl EmbyClient {
             "Pw": password,
         });
 
-        let mut headers = self.build_headers()?;
-        headers.insert(AUTHORIZATION, self.build_emby_auth_header()?);
+        let headers = self.build_headers()?;
         let client = self.client.clone();
 
         let (token, user_id) = with_retry(|| {
@@ -714,8 +744,7 @@ impl EmbyClient {
     /// Logout
     pub async fn logout(&self) -> Result<(), EmbyError> {
         let url = self.endpoint_url("Sessions/Logout").await?;
-        let mut headers = self.build_headers()?;
-        headers.insert(AUTHORIZATION, self.build_emby_auth_header()?);
+        let headers = self.build_headers()?;
 
         self.send_post_no_response(&url, None, &headers).await
     }
@@ -783,8 +812,7 @@ impl EmbyClient {
         url.push_str(&url_encode(&self.device_id));
         url.push_str("&PlaySessionId=");
         url.push_str(&url_encode(play_session_id));
-        let mut headers = self.build_headers()?;
-        headers.insert(AUTHORIZATION, self.build_emby_auth_header()?);
+        let headers = self.build_headers()?;
         let client = self.client.clone();
 
         with_retry(|| {

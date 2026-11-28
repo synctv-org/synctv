@@ -14,6 +14,7 @@ mod types;
 
 pub use crate::error::ProviderClientError as EmbyError;
 pub use client::{EmbyClient, EmbyListSource, PlaybackInfoRequest};
+pub use client::{emby_authorization_header_value, media_request_auth_headers};
 pub use service::{EmbyInterface, EmbyService};
 pub use types::{
     AuthResponse, FsListResponse, ImageTags, Item, ItemsResponse, MediaSource, MediaStream,

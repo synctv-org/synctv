@@ -500,6 +500,28 @@ fn emby_auth_headers(token: &str) -> HashMap<String, String> {
     synctv_media_providers::emby::media_request_auth_headers(token)
 }
 
+/// Direct playback URL for an Emby/Jellyfin media source, honoring the
+/// server's playback decision. Jellyfin and Emby fabricate no direct URL
+/// themselves and answer PlaybackInfo with `SupportsDirectPlay=false` /
+/// `SupportsDirectStream=false` (plus a transcoding URL) once a streaming
+/// bitrate limit or transcode-only policy applies, while still including the
+/// file path. Fabricating the `/Items/{id}/Download` URL in that case would
+/// override the server's decision, so the fallback is gated on the server
+/// reporting direct playback as supported.
+fn direct_playback_url(
+    host: &str,
+    item_id: &str,
+    source: &emby_upstream::MediaSourceInfo,
+) -> Option<String> {
+    if !source.direct_play_url.is_empty() {
+        return emby_server_url(host, &source.direct_play_url).ok();
+    }
+    if !source.path.is_empty() && (source.supports_direct_play || source.supports_direct_stream) {
+        return emby_server_url(host, &format!("/Items/{item_id}/Download")).ok();
+    }
+    None
+}
+
 fn emby_get_item_request(
     resolved: &ResolvedEmbyConfig,
     item_id: &str,
@@ -1547,15 +1569,6 @@ impl EmbyProvider {
                 source.name.clone()
             };
 
-            // Get direct stream URL (no transcoding) -- no credentials in URL
-            let direct_url = if !source.direct_play_url.is_empty() {
-                emby_server_url(&config.host, &source.direct_play_url)?
-            } else if !source.path.is_empty() {
-                emby_server_url(&config.host, &format!("/Items/{}/Download", config.item_id))?
-            } else {
-                continue;
-            };
-
             // Extract subtitles -- do NOT include api_key in the URL to avoid
             // leaking the Emby token to clients. Direct clients and the server
             // proxy both use X-Emby-Token headers, same as video streams.
@@ -1612,43 +1625,34 @@ impl EmbyProvider {
             }
             .to_string();
 
-            playback_infos.insert(
-                mode_name.clone(),
-                PlaybackInfo {
-                    thumbnail: None,
-                    medias: vec![
-                        playback_media(
-                            source.name.clone(),
-                            format,
-                            None,
-                            PlaybackMediaProvider::Emby(PlaybackEmbyMedia::Direct {
-                                url: direct_url,
-                                headers: emby_auth_headers.clone(),
-                            }),
-                        )
-                        .with_p2p_swarm_id(super::provider_p2p_swarm_id(
-                            Self::NAME,
-                            config.provider_instance_name.as_deref(),
-                            "media",
-                            &format!("item:{}:source:{}:direct", config.item_id, source.id),
-                        )),
-                    ],
-                    default_media_index: Some(0),
-                    subtitles,
-                    default_subtitle_index: None,
-                    danmakus: Vec::new(),
-                    default_danmaku_index: None,
-                },
-            );
+            // Direct entry first (no credentials in URL); the transcode entry
+            // is appended independently so a server-decided transcode-only
+            // source still yields a playable route.
+            let mut medias = Vec::new();
+            if let Some(direct_url) = direct_playback_url(&config.host, &config.item_id, source) {
+                medias.push(
+                    playback_media(
+                        source.name.clone(),
+                        format,
+                        None,
+                        PlaybackMediaProvider::Emby(PlaybackEmbyMedia::Direct {
+                            url: direct_url,
+                            headers: emby_auth_headers.clone(),
+                        }),
+                    )
+                    .with_p2p_swarm_id(super::provider_p2p_swarm_id(
+                        Self::NAME,
+                        config.provider_instance_name.as_deref(),
+                        "media",
+                        &format!("item:{}:source:{}:direct", config.item_id, source.id),
+                    )),
+                );
+            }
 
             // Also add transcode URLs if available
             if !source.transcoding_url.is_empty() {
                 let transcode_url = emby_server_url(&config.host, &source.transcoding_url)?;
-                let info = playback_infos
-                    .get_mut(&mode_name)
-                    .expect("media source mode was inserted above");
-                let transcode_index = info.medias.len();
-                info.medias.push(
+                medias.push(
                     playback_media(
                         "Transcode".to_string(),
                         "hls".to_string(),
@@ -1665,15 +1669,37 @@ impl EmbyProvider {
                         &format!("item:{}:source:{}:transcode", config.item_id, source.id),
                     )),
                 );
-                if playback_client_profile.is_some_and(|profile| {
+            }
+            if medias.is_empty() {
+                continue;
+            }
+
+            // The transcode entry is the last one when present; prefer it as
+            // the default only when the client asked for transcoding.
+            let default_media_index = if medias.len() > 1
+                && playback_client_profile.is_some_and(|profile| {
                     matches!(
                         profile.stream_preference,
                         super::PlaybackStreamPreference::Transcode
                     )
                 }) {
-                    info.default_media_index = Some(transcode_index);
-                }
-            }
+                Some(medias.len() - 1)
+            } else {
+                Some(0)
+            };
+
+            playback_infos.insert(
+                mode_name.clone(),
+                PlaybackInfo {
+                    thumbnail: None,
+                    medias,
+                    default_media_index,
+                    subtitles,
+                    default_subtitle_index: None,
+                    danmakus: Vec::new(),
+                    default_danmaku_index: None,
+                },
+            );
         }
 
         // Default to first media source in sorted order.
@@ -3070,6 +3096,57 @@ fn emby_browse_path_can_end_at_missing_ancestor(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn media_source(
+        direct_play_url: &str,
+        path: &str,
+        supports_direct_play: bool,
+        supports_direct_stream: bool,
+    ) -> emby_upstream::MediaSourceInfo {
+        emby_upstream::MediaSourceInfo {
+            direct_play_url: direct_play_url.to_string(),
+            path: path.to_string(),
+            supports_direct_play,
+            supports_direct_stream,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn direct_url_from_server_is_used_verbatim() {
+        let source = media_source(
+            "https://emby.example/emby/Videos/1/stream.mkv",
+            "/library/movie.mkv",
+            false,
+            false,
+        );
+        let url = direct_playback_url("https://emby.example", "item-1", &source)
+            .expect("server-provided direct url");
+        assert_eq!(url, "https://emby.example/emby/Videos/1/stream.mkv");
+    }
+
+    #[test]
+    fn download_fallback_requires_the_server_to_support_direct_playback() {
+        let supported = media_source("", "/library/movie.mkv", true, false);
+        let url = direct_playback_url("https://emby.example", "item-1", &supported)
+            .expect("direct playback supported");
+        assert_eq!(url, "https://emby.example/Items/item-1/Download");
+
+        let stream_supported = media_source("", "/library/movie.mkv", false, true);
+        assert!(direct_playback_url("https://emby.example", "item-1", &stream_supported).is_some());
+
+        // With a streaming bitrate limit or a transcode-only policy the
+        // servers answer SupportsDirectPlay=false/SupportsDirectStream=false
+        // while still including the path; the decision must be honored.
+        let transcoding_only = media_source("", "/library/movie.mkv", false, false);
+        assert!(direct_playback_url("https://emby.example", "item-1", &transcoding_only).is_none());
+    }
+
+    #[test]
+    fn sources_without_direct_or_path_have_no_playable_url() {
+        let empty = media_source("", "", true, true);
+        assert!(direct_playback_url("https://emby.example", "item-1", &empty).is_none());
+    }
 
     #[test]
     fn playable_item_types_share_the_metadata_kind_parser() {

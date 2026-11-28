@@ -233,6 +233,8 @@ pub struct MediaSource {
     pub transcoding_url: String,
     #[serde(rename = "SupportsDirectPlay", default)]
     pub supports_direct_play: bool,
+    #[serde(rename = "SupportsDirectStream", default)]
+    pub supports_direct_stream: bool,
     #[serde(rename = "SupportsTranscoding", default)]
     pub supports_transcoding: bool,
 }
@@ -432,6 +434,9 @@ impl From<MediaSource> for crate::transport_dto::emby::MediaSourceInfo {
                 .collect(),
             direct_play_url: source.direct_stream_url,
             transcoding_url: source.transcoding_url,
+            supports_direct_play: source.supports_direct_play,
+            supports_direct_stream: source.supports_direct_stream,
+            supports_transcoding: source.supports_transcoding,
         }
     }
 }

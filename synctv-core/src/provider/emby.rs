@@ -509,7 +509,18 @@ fn emby_auth_headers(token: &str) -> HashMap<String, String> {
 /// populated -- pointing at the transcoding manifest, so using it would both
 /// override the decision and mislabel a transcoded route as direct playback.
 /// Both remnants are therefore gated on the server reporting direct playback
-/// as supported.
+/// as supported, mirroring the official clients which pick the play method
+/// from those flags alone.
+///
+/// When the server provides no stream URL but direct playback is supported
+/// (for example Jellyfin 12 answering unconstrained requests with the raw
+/// default flags and no URLs), the static stream endpoint used by the
+/// official web clients is constructed:
+/// `/Videos/{id}/stream[.{container}]?Static=true&MediaSourceId=...`. It
+/// serves the original bytes and requires playback permission only; the
+/// `/Items/{id}/Download` endpoint would additionally require the
+/// content-downloading permission, which official clients never rely on for
+/// playback.
 fn direct_playback_url(
     host: &str,
     item_id: &str,
@@ -521,10 +532,24 @@ fn direct_playback_url(
     if !source.direct_play_url.is_empty() {
         return emby_server_url(host, &source.direct_play_url).ok();
     }
-    if !source.path.is_empty() {
-        return emby_server_url(host, &format!("/Items/{item_id}/Download")).ok();
+    let mut url = format!("/Videos/{item_id}/stream");
+    let container = source
+        .container
+        .split(',')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if !container.is_empty() {
+        url.push('.');
+        url.push_str(&container);
     }
-    None
+    url.push_str("?Static=true");
+    if !source.id.is_empty() {
+        url.push_str("&MediaSourceId=");
+        url.push_str(&source.id);
+    }
+    emby_server_url(host, &url).ok()
 }
 
 fn emby_get_item_request(
@@ -3145,11 +3170,14 @@ mod tests {
     }
 
     #[test]
-    fn download_fallback_requires_the_server_to_support_direct_playback() {
+    fn static_stream_fallback_requires_the_server_to_support_direct_playback() {
+        // Without a server-provided URL, the static stream endpoint built by
+        // the official web clients serves the original bytes with playback
+        // permission only.
         let supported = media_source("", "/library/movie.mkv", true, false);
         let url = direct_playback_url("https://emby.example", "item-1", &supported)
             .expect("direct playback supported");
-        assert_eq!(url, "https://emby.example/Items/item-1/Download");
+        assert_eq!(url, "https://emby.example/Videos/item-1/stream?Static=true");
 
         let stream_supported = media_source("", "/library/movie.mkv", false, true);
         assert!(direct_playback_url("https://emby.example", "item-1", &stream_supported).is_some());
@@ -3162,9 +3190,36 @@ mod tests {
     }
 
     #[test]
-    fn sources_without_direct_or_path_have_no_playable_url() {
-        let empty = media_source("", "", true, true);
-        assert!(direct_playback_url("https://emby.example", "item-1", &empty).is_none());
+    fn static_stream_fallback_carries_container_and_media_source_id() {
+        let source = emby_upstream::MediaSourceInfo {
+            id: "mediasource_5".to_string(),
+            container: "mp4".to_string(),
+            path: "/library/movie.mp4".to_string(),
+            supports_direct_play: true,
+            ..Default::default()
+        };
+        let url = direct_playback_url("https://emby.example", "item-1", &source)
+            .expect("static stream url");
+        assert_eq!(
+            url,
+            "https://emby.example/Videos/item-1/stream.mp4?Static=true&MediaSourceId=mediasource_5"
+        );
+    }
+
+    #[test]
+    fn container_list_uses_the_first_entry_in_the_fallback() {
+        let source = emby_upstream::MediaSourceInfo {
+            container: "MKV,webm".to_string(),
+            path: "/library/movie.mkv".to_string(),
+            supports_direct_stream: true,
+            ..Default::default()
+        };
+        let url = direct_playback_url("https://emby.example", "item-1", &source)
+            .expect("static stream url");
+        assert_eq!(
+            url,
+            "https://emby.example/Videos/item-1/stream.mkv?Static=true"
+        );
     }
 
     #[test]

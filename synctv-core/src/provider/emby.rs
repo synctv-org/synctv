@@ -501,22 +501,27 @@ fn emby_auth_headers(token: &str) -> HashMap<String, String> {
 }
 
 /// Direct playback URL for an Emby/Jellyfin media source, honoring the
-/// server's playback decision. Jellyfin and Emby fabricate no direct URL
-/// themselves and answer PlaybackInfo with `SupportsDirectPlay=false` /
-/// `SupportsDirectStream=false` (plus a transcoding URL) once a streaming
-/// bitrate limit or transcode-only policy applies, while still including the
-/// file path. Fabricating the `/Items/{id}/Download` URL in that case would
-/// override the server's decision, so the fallback is gated on the server
-/// reporting direct playback as supported.
+/// server's playback decision. Jellyfin and Emby answer PlaybackInfo with
+/// `SupportsDirectPlay=false` / `SupportsDirectStream=false` (plus a
+/// transcoding URL) once a streaming bitrate limit or transcode-only policy
+/// applies. In that state the servers still send misleading remnants: the
+/// file path is included, and Emby additionally keeps `DirectStreamUrl`
+/// populated -- pointing at the transcoding manifest, so using it would both
+/// override the decision and mislabel a transcoded route as direct playback.
+/// Both remnants are therefore gated on the server reporting direct playback
+/// as supported.
 fn direct_playback_url(
     host: &str,
     item_id: &str,
     source: &emby_upstream::MediaSourceInfo,
 ) -> Option<String> {
+    if !(source.supports_direct_play || source.supports_direct_stream) {
+        return None;
+    }
     if !source.direct_play_url.is_empty() {
         return emby_server_url(host, &source.direct_play_url).ok();
     }
-    if !source.path.is_empty() && (source.supports_direct_play || source.supports_direct_stream) {
+    if !source.path.is_empty() {
         return emby_server_url(host, &format!("/Items/{item_id}/Download")).ok();
     }
     None
@@ -3117,12 +3122,26 @@ mod tests {
         let source = media_source(
             "https://emby.example/emby/Videos/1/stream.mkv",
             "/library/movie.mkv",
-            false,
+            true,
             false,
         );
         let url = direct_playback_url("https://emby.example", "item-1", &source)
             .expect("server-provided direct url");
         assert_eq!(url, "https://emby.example/emby/Videos/1/stream.mkv");
+    }
+
+    #[test]
+    fn server_direct_url_is_ignored_when_the_server_decided_to_transcode() {
+        // Emby keeps DirectStreamUrl populated with the transcoding manifest
+        // once a streaming bitrate limit applies; using it would mislabel a
+        // transcoded route as direct playback.
+        let source = media_source(
+            "https://emby.example/emby/Videos/1/master.m3u8",
+            "/library/movie.mkv",
+            false,
+            false,
+        );
+        assert!(direct_playback_url("https://emby.example", "item-1", &source).is_none());
     }
 
     #[test]

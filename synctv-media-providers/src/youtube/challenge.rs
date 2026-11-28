@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use boa_engine::{Context, Source};
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{Expression, FunctionBody, Statement};
@@ -85,6 +87,12 @@ pub struct YoutubeChallengeSolver {
     prepared_source: String,
 }
 
+struct PlayerWrapper<'a> {
+    initializer: Option<Span>,
+    expression: Span,
+    body: &'a FunctionBody<'a>,
+}
+
 impl YoutubeChallengeSolver {
     pub fn prepare(player_js: &str) -> Result<Self, ProviderClientError> {
         let allocator = Allocator::default();
@@ -100,15 +108,46 @@ impl YoutubeChallengeSolver {
             )));
         }
 
-        let statements = player_statements(&parsed.program.body)?;
+        let wrapper = player_wrapper(&parsed.program.body)?;
         let marker = Regex::new(r#"[\"']alr[\"']\s*,\s*[\"']yes[\"']"#)
             .map_err(|error| ProviderClientError::Parse(error.to_string()))?;
+        let inheritance_marker = Regex::new(
+            r"\.\s*prototype\s*=\s*[^;]+\.\s*prototype[^;]*;\s*[\w$]+\.\s*prototype\s*\.\s*constructor\s*=",
+        )
+        .map_err(|error| ProviderClientError::Parse(error.to_string()))?;
         let mut prepared = String::with_capacity(player_js.len() + SOLVER_SOURCE.len());
         prepared.push_str(SETUP_SOURCE);
+        if let Some(initializer) = wrapper.initializer {
+            prepared.push_str(source_for_span(player_js, initializer)?);
+            prepared.push_str(";\n");
+        }
+        // The player defines helpers on the wrapper argument and reads them from its closure.
+        // Keep that scope and invocation while omitting unrelated browser startup expressions.
+        prepared.push_str("const __synctv_run_player = ");
+        prepared.push_str(source_for_span(
+            player_js,
+            Span::new(wrapper.expression.start, wrapper.body.span.start),
+        )?);
+        prepared.push_str("{\n");
+        for directive in &wrapper.body.directives {
+            prepared.push_str(source_for_span(player_js, directive.span)?);
+            prepared.push_str(";\n");
+        }
         let mut transformers = Vec::new();
+        let mut inheritance_helpers = HashSet::new();
 
-        for statement in statements {
-            if keep_statement(statement) {
+        for statement in &wrapper.body.statements {
+            if let Statement::ExpressionStatement(statement) = statement
+                && let Expression::AssignmentExpression(assignment) =
+                    statement.expression.without_parentheses()
+                && let Expression::FunctionExpression(function) =
+                    assignment.right.without_parentheses()
+                && function.params.items.len() == 2
+                && function_has_marker(function.body.as_deref(), player_js, &inheritance_marker)
+            {
+                inheritance_helpers.insert(source_for_span(player_js, assignment.left.span())?);
+            }
+            if keep_statement(statement, player_js, &inheritance_helpers) {
                 prepared.push_str(source_for_span(player_js, statement.span())?);
                 prepared.push('\n');
             }
@@ -126,6 +165,12 @@ impl YoutubeChallengeSolver {
         prepared.push_str(&transformers.join(","));
         prepared.push_str("];\n");
         prepared.push_str(SOLVER_SOURCE);
+        prepared.push_str("return __synctv_solve;\n}");
+        prepared.push_str(source_for_span(
+            player_js,
+            Span::new(wrapper.body.span.end, wrapper.expression.end),
+        )?);
+        prepared.push_str(";\n");
 
         Ok(Self {
             prepared_source: prepared,
@@ -141,6 +186,13 @@ impl YoutubeChallengeSolver {
     }
 
     fn solve(&self, kind: &str, input: &str) -> Result<String, ProviderClientError> {
+        // Boa compiles a multi-megabyte player script on the calling thread.
+        stacker::maybe_grow(8 * 1024 * 1024, 16 * 1024 * 1024, || {
+            self.evaluate(kind, input)
+        })
+    }
+
+    fn evaluate(&self, kind: &str, input: &str) -> Result<String, ProviderClientError> {
         let mut context = Context::default();
         context
             .runtime_limits_mut()
@@ -150,7 +202,10 @@ impl YoutubeChallengeSolver {
 
         let kind = serde_json::to_string(kind)?;
         let input = serde_json::to_string(input)?;
-        let source = format!("{}\n__synctv_solve({kind}, {input});", self.prepared_source);
+        let source = format!(
+            "{}\n__synctv_run_player({kind}, {input});",
+            self.prepared_source
+        );
         let value = context.eval(Source::from_bytes(&source)).map_err(|error| {
             ProviderClientError::Parse(format!("YouTube player challenge failed: {error}"))
         })?;
@@ -165,44 +220,36 @@ impl YoutubeChallengeSolver {
     }
 }
 
-fn player_statements<'a>(
+fn player_wrapper<'a>(
     body: &'a oxc_allocator::Vec<'a, Statement<'a>>,
-) -> Result<&'a [Statement<'a>], ProviderClientError> {
-    let function = match body.as_slice() {
-        [Statement::ExpressionStatement(statement)] => {
-            let Expression::CallExpression(call) = statement.expression.without_parentheses()
-            else {
-                return unexpected_player_structure();
-            };
-            let Some(member) = call.callee.without_parentheses().as_member_expression() else {
-                return unexpected_player_structure();
-            };
-            let Expression::FunctionExpression(function) = member.object().without_parentheses()
-            else {
-                return unexpected_player_structure();
-            };
-            function
-        }
-        [_, Statement::ExpressionStatement(statement)] => {
-            let Expression::CallExpression(call) = statement.expression.without_parentheses()
-            else {
-                return unexpected_player_structure();
-            };
-            let Expression::FunctionExpression(function) = call.callee.without_parentheses() else {
-                return unexpected_player_structure();
-            };
-            function
-        }
+) -> Result<PlayerWrapper<'a>, ProviderClientError> {
+    let (initializer, wrapper) = match body.as_slice() {
+        [
+            Statement::VariableDeclaration(initializer),
+            Statement::ExpressionStatement(statement),
+        ] => (Some(initializer.span), &statement.expression),
+        [Statement::ExpressionStatement(statement)]
+        | [_, Statement::ExpressionStatement(statement)] => (None, &statement.expression),
         _ => return unexpected_player_structure(),
+    };
+    let Expression::CallExpression(call) = wrapper.without_parentheses() else {
+        return unexpected_player_structure();
+    };
+    let callee = call.callee.without_parentheses();
+    let function = callee
+        .as_member_expression()
+        .map_or(callee, |member| member.object().without_parentheses());
+    let Expression::FunctionExpression(function) = function else {
+        return unexpected_player_structure();
     };
     let body = function.body.as_deref().ok_or_else(|| {
         ProviderClientError::Parse("YouTube player wrapper has no body".to_string())
     })?;
-    if matches!(body.statements.first(), Some(statement) if is_window_alias(statement)) {
-        Ok(&body.statements[1..])
-    } else {
-        Ok(body.statements.as_slice())
-    }
+    Ok(PlayerWrapper {
+        initializer,
+        expression: wrapper.span(),
+        body,
+    })
 }
 
 fn unexpected_player_structure<T>() -> Result<T, ProviderClientError> {
@@ -211,32 +258,32 @@ fn unexpected_player_structure<T>() -> Result<T, ProviderClientError> {
     ))
 }
 
-fn is_window_alias(statement: &Statement<'_>) -> bool {
-    matches!(statement, Statement::VariableDeclaration(declaration)
-        if declaration.declarations.len() == 1
-            && source_pattern_is_window_alias(&declaration.declarations[0]))
-}
-
-fn source_pattern_is_window_alias(declaration: &oxc_ast::ast::VariableDeclarator<'_>) -> bool {
-    matches!(
-        declaration.init.as_ref(),
-        Some(Expression::ThisExpression(_))
-    )
-}
-
-fn keep_statement(statement: &Statement<'_>) -> bool {
+fn keep_statement(
+    statement: &Statement<'_>,
+    source: &str,
+    inheritance_helpers: &HashSet<&str>,
+) -> bool {
     match statement {
-        Statement::ExpressionStatement(statement) => matches!(
-            statement.expression.without_parentheses(),
-            Expression::AssignmentExpression(_)
-                | Expression::BooleanLiteral(_)
-                | Expression::NullLiteral(_)
-                | Expression::NumericLiteral(_)
-                | Expression::BigIntLiteral(_)
-                | Expression::RegExpLiteral(_)
-                | Expression::StringLiteral(_)
-                | Expression::TemplateLiteral(_)
-        ),
+        Statement::ExpressionStatement(statement) => {
+            match statement.expression.without_parentheses() {
+                Expression::CallExpression(call) => {
+                    call.arguments.len() == 2
+                        && source_for_span(source, call.callee.without_parentheses().span())
+                            .is_ok_and(|callee| inheritance_helpers.contains(callee))
+                }
+                expression => matches!(
+                    expression,
+                    Expression::AssignmentExpression(_)
+                        | Expression::BooleanLiteral(_)
+                        | Expression::NullLiteral(_)
+                        | Expression::NumericLiteral(_)
+                        | Expression::BigIntLiteral(_)
+                        | Expression::RegExpLiteral(_)
+                        | Expression::StringLiteral(_)
+                        | Expression::TemplateLiteral(_)
+                ),
+            }
+        }
         _ => true,
     }
 }
@@ -333,6 +380,41 @@ H.sideEffect();
                 1,
             )
             .replacen("}).call(this);", "})();", 1);
+        let solver = YoutubeChallengeSolver::prepare(&player).expect("prepare solver");
+        assert_eq!(solver.solve_signature("abcd").expect("signature"), "dcba");
+    }
+
+    #[test]
+    fn preserves_player_wrapper_argument() {
+        let player = PLAYER
+            .replacen(
+                "(function(){\nvar H={};",
+                "var player = {}; (function(g){var window=this;",
+                1,
+            )
+            .replace("H.", "g.")
+            .replacen("}).call(this);", "})(player);", 1);
+        let solver = YoutubeChallengeSolver::prepare(&player).expect("prepare solver");
+        assert_eq!(solver.solve_signature("abcd").expect("signature"), "dcba");
+        assert_eq!(solver.solve_n("a1-b").expect("n"), "A1-B");
+    }
+
+    #[test]
+    fn keeps_player_inheritance_initialization() {
+        let player = PLAYER
+            .replacen(
+                "var H={};",
+                r"var H={};
+H.link=function(child,parent){child.prototype=Object.create(parent.prototype);child.prototype.constructor=child};
+function Base(){}
+Base.prototype.setup=function(){};",
+                1,
+            )
+            .replacen(
+                "U.prototype.set=",
+                "H.link(U,Base);var ready=new U().setup();\nU.prototype.set=",
+                1,
+            );
         let solver = YoutubeChallengeSolver::prepare(&player).expect("prepare solver");
         assert_eq!(solver.solve_signature("abcd").expect("signature"), "dcba");
     }

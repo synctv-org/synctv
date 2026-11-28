@@ -516,14 +516,15 @@ fn emby_auth_headers(token: &str) -> HashMap<String, String> {
 /// (for example Jellyfin 12 answering unconstrained requests with the raw
 /// default flags and no URLs), the static stream endpoint used by the
 /// official web clients is constructed:
-/// `/Videos/{id}/stream[.{container}]?Static=true&MediaSourceId=...`. It
-/// serves the original bytes and requires playback permission only; the
+/// `{Videos,Audio}/{id}/stream[.{container}]?Static=true&MediaSourceId=...`.
+/// It serves the original bytes and requires playback permission only; the
 /// `/Items/{id}/Download` endpoint would additionally require the
 /// content-downloading permission, which official clients never rely on for
 /// playback.
 fn direct_playback_url(
     host: &str,
     item_id: &str,
+    media_type: &str,
     source: &emby_upstream::MediaSourceInfo,
 ) -> Option<String> {
     if !(source.supports_direct_play || source.supports_direct_stream) {
@@ -532,7 +533,7 @@ fn direct_playback_url(
     if !source.direct_play_url.is_empty() {
         return emby_server_url(host, &source.direct_play_url).ok();
     }
-    let mut url = format!("/Videos/{item_id}/stream");
+    let mut url = format!("/{media_type}/{item_id}/stream");
     let container = source
         .container
         .split(',')
@@ -1657,9 +1658,18 @@ impl EmbyProvider {
 
             // Direct entry first (no credentials in URL); the transcode entry
             // is appended independently so a server-decided transcode-only
-            // source still yields a playable route.
+            // source still yields a playable route. Audio items stream
+            // through the Audio endpoint, matching the official clients.
+            let media_type =
+                if matches!(kind, EmbyPlaybackKind::Audio | EmbyPlaybackKind::MusicAlbum) {
+                    "Audio"
+                } else {
+                    "Videos"
+                };
             let mut medias = Vec::new();
-            if let Some(direct_url) = direct_playback_url(&config.host, &config.item_id, source) {
+            if let Some(direct_url) =
+                direct_playback_url(&config.host, &config.item_id, media_type, source)
+            {
                 medias.push(
                     playback_media(
                         source.name.clone(),
@@ -3150,7 +3160,7 @@ mod tests {
             true,
             false,
         );
-        let url = direct_playback_url("https://emby.example", "item-1", &source)
+        let url = direct_playback_url("https://emby.example", "item-1", "Videos", &source)
             .expect("server-provided direct url");
         assert_eq!(url, "https://emby.example/emby/Videos/1/stream.mkv");
     }
@@ -3166,7 +3176,7 @@ mod tests {
             false,
             false,
         );
-        assert!(direct_playback_url("https://emby.example", "item-1", &source).is_none());
+        assert!(direct_playback_url("https://emby.example", "item-1", "Videos", &source).is_none());
     }
 
     #[test]
@@ -3175,18 +3185,34 @@ mod tests {
         // the official web clients serves the original bytes with playback
         // permission only.
         let supported = media_source("", "/library/movie.mkv", true, false);
-        let url = direct_playback_url("https://emby.example", "item-1", &supported)
+        let url = direct_playback_url("https://emby.example", "item-1", "Videos", &supported)
             .expect("direct playback supported");
         assert_eq!(url, "https://emby.example/Videos/item-1/stream?Static=true");
 
         let stream_supported = media_source("", "/library/movie.mkv", false, true);
-        assert!(direct_playback_url("https://emby.example", "item-1", &stream_supported).is_some());
+        assert!(
+            direct_playback_url(
+                "https://emby.example",
+                "item-1",
+                "Videos",
+                &stream_supported
+            )
+            .is_some()
+        );
 
         // With a streaming bitrate limit or a transcode-only policy the
         // servers answer SupportsDirectPlay=false/SupportsDirectStream=false
         // while still including the path; the decision must be honored.
         let transcoding_only = media_source("", "/library/movie.mkv", false, false);
-        assert!(direct_playback_url("https://emby.example", "item-1", &transcoding_only).is_none());
+        assert!(
+            direct_playback_url(
+                "https://emby.example",
+                "item-1",
+                "Videos",
+                &transcoding_only
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -3198,7 +3224,7 @@ mod tests {
             supports_direct_play: true,
             ..Default::default()
         };
-        let url = direct_playback_url("https://emby.example", "item-1", &source)
+        let url = direct_playback_url("https://emby.example", "item-1", "Videos", &source)
             .expect("static stream url");
         assert_eq!(
             url,
@@ -3214,11 +3240,27 @@ mod tests {
             supports_direct_stream: true,
             ..Default::default()
         };
-        let url = direct_playback_url("https://emby.example", "item-1", &source)
+        let url = direct_playback_url("https://emby.example", "item-1", "Videos", &source)
             .expect("static stream url");
         assert_eq!(
             url,
             "https://emby.example/Videos/item-1/stream.mkv?Static=true"
+        );
+    }
+
+    #[test]
+    fn audio_items_stream_through_the_audio_endpoint() {
+        let source = emby_upstream::MediaSourceInfo {
+            container: "flac".to_string(),
+            path: "/music/song.flac".to_string(),
+            supports_direct_play: true,
+            ..Default::default()
+        };
+        let url = direct_playback_url("https://emby.example", "track-1", "Audio", &source)
+            .expect("static stream url");
+        assert_eq!(
+            url,
+            "https://emby.example/Audio/track-1/stream.flac?Static=true"
         );
     }
 
